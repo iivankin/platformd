@@ -18,12 +18,20 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import type { ComponentType } from "react";
-import { NavLink, Navigate, Route, Routes, useLocation } from "react-router";
+import {
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router";
 
 import { fetchMeta } from "@/api";
 import type { Meta } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ProjectsPage } from "@/projects-page";
 
 interface NavigationItem {
   icon: ComponentType<{ className?: string }>;
@@ -122,6 +130,7 @@ const Overview = ({
   error: string | null;
   meta: Meta | null;
 }) => {
+  const navigate = useNavigate();
   const facts = [
     ["Control plane", error ? "unreachable" : (meta?.status ?? "connecting")],
     ["Version", meta?.version ?? "—"],
@@ -152,7 +161,7 @@ const Overview = ({
             Projects contain isolated services, managed databases, object
             stores, and internal DNS names.
           </p>
-          <Button className="mt-5" disabled>
+          <Button className="mt-5" onClick={() => navigate("/projects")}>
             New project
           </Button>
         </div>
@@ -279,13 +288,17 @@ export const App = () => {
         <div className="min-h-0 flex-1 overflow-auto">
           <Routes>
             <Route element={<Overview error={error} meta={meta} />} path="/" />
-            {navigation.slice(1).map((item) => (
-              <Route
-                element={<EmptySection item={item} />}
-                key={item.path}
-                path={`${item.path}/*`}
-              />
-            ))}
+            <Route element={<ProjectsPage />} path="/projects/*" />
+            {navigation
+              .slice(1)
+              .filter((item) => item.path !== "/projects")
+              .map((item) => (
+                <Route
+                  element={<EmptySection item={item} />}
+                  key={item.path}
+                  path={`${item.path}/*`}
+                />
+              ))}
             <Route element={<Navigate replace to="/" />} path="*" />
           </Routes>
         </div>

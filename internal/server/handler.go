@@ -1,12 +1,15 @@
 package server
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/iivankin/platformd/internal/ui"
 	"github.com/iivankin/platformd/internal/version"
@@ -19,11 +22,32 @@ type Meta struct {
 	Version      string `json:"version"`
 }
 
-func Handler(meta Meta) http.Handler {
+type handlerConfig struct {
+	projects ProjectRepository
+	random   io.Reader
+	now      func() time.Time
+}
+
+type Option func(*handlerConfig)
+
+func WithProjects(repository ProjectRepository) Option {
+	return func(config *handlerConfig) {
+		config.projects = repository
+	}
+}
+
+func Handler(meta Meta, options ...Option) http.Handler {
+	config := handlerConfig{random: rand.Reader, now: time.Now}
+	for _, option := range options {
+		option(&config)
+	}
 	static := newSPAHandler(ui.Files())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /api/v1/meta", handleMeta(meta))
+	if config.projects != nil {
+		registerProjectRoutes(mux, config)
+	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)
 }
@@ -49,7 +73,7 @@ func handleMeta(meta Meta) http.HandlerFunc {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self' wss:; font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'")
+		response.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self' data: wss:; font-src 'self'; frame-ancestors 'none'; img-src 'self' data:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'")
 		response.Header().Set("Referrer-Policy", "no-referrer")
 		response.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(response, request)
