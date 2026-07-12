@@ -24,6 +24,7 @@ type ApplicationStore interface {
 	CreateManagedRedis(context.Context, state.CreateManagedRedis) (state.ManagedRedis, error)
 	ManagedRedisInProject(context.Context, string, string) (state.ManagedRedis, error)
 	ManagedRedisByProject(context.Context, string) ([]state.ManagedRedis, error)
+	RecordManagedRedisDataMutation(context.Context, state.RecordManagedRedisDataMutation) error
 }
 
 type ApplicationRuntime interface {
@@ -31,6 +32,7 @@ type ApplicationRuntime interface {
 	StartManagedRedis(context.Context, string) error
 	ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error)
 	PreviewManagedRedisKey(context.Context, string, PreviewQuery) (Preview, error)
+	MutateManagedRedis(context.Context, string, Mutation) (MutationResult, error)
 }
 
 type Actor struct {
@@ -55,12 +57,12 @@ type CreateResult struct {
 }
 
 type Application struct {
-	store   ApplicationStore
-	runtime ApplicationRuntime
-	master  cryptobox.MasterKey
-	random  io.Reader
-	now     func() time.Time
-	browse  chan struct{}
+	store     ApplicationStore
+	runtime   ApplicationRuntime
+	master    cryptobox.MasterKey
+	random    io.Reader
+	now       func() time.Time
+	dataSlots chan struct{}
 }
 
 func NewApplication(store ApplicationStore, runtime ApplicationRuntime, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
@@ -73,7 +75,7 @@ func NewApplication(store ApplicationStore, runtime ApplicationRuntime, master c
 	if now == nil {
 		now = time.Now
 	}
-	return &Application{store: store, runtime: runtime, master: master, random: random, now: now, browse: make(chan struct{}, 4)}, nil
+	return &Application{store: store, runtime: runtime, master: master, random: random, now: now, dataSlots: make(chan struct{}, 4)}, nil
 }
 
 func (application *Application) Create(ctx context.Context, input CreateInput) (CreateResult, error) {
@@ -142,8 +144,8 @@ func (application *Application) Keys(ctx context.Context, projectID, resourceID 
 		return KeyPage{}, err
 	}
 	select {
-	case application.browse <- struct{}{}:
-		defer func() { <-application.browse }()
+	case application.dataSlots <- struct{}{}:
+		defer func() { <-application.dataSlots }()
 	case <-ctx.Done():
 		return KeyPage{}, ctx.Err()
 	}
@@ -157,14 +159,68 @@ func (application *Application) Preview(ctx context.Context, projectID, resource
 		return Preview{}, err
 	}
 	select {
-	case application.browse <- struct{}{}:
-		defer func() { <-application.browse }()
+	case application.dataSlots <- struct{}{}:
+		defer func() { <-application.dataSlots }()
 	case <-ctx.Done():
 		return Preview{}, ctx.Err()
 	}
 	browseContext, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return application.runtime.PreviewManagedRedisKey(browseContext, resourceID, query)
+}
+
+type DataMutationInput struct {
+	ProjectID  string
+	ResourceID string
+	Actor      Actor
+	Mutation   Mutation
+}
+
+type DataMutationResult struct {
+	MutationResult
+	RequestID     string
+	AuditRecorded bool
+}
+
+func (application *Application) Mutate(ctx context.Context, input DataMutationInput) (DataMutationResult, error) {
+	if input.ProjectID == "" || input.ResourceID == "" || input.Actor.Kind != "access" || input.Actor.ID == "" || input.Actor.Email == "" {
+		return DataMutationResult{}, fmt.Errorf("%w: Access identity and Redis target are required", ErrInvalidInput)
+	}
+	if _, err := application.store.ManagedRedisInProject(ctx, input.ProjectID, input.ResourceID); err != nil {
+		return DataMutationResult{}, err
+	}
+	timestamp := application.now()
+	identifiers, err := application.identifiers(timestamp, 2)
+	if err != nil {
+		return DataMutationResult{}, err
+	}
+	select {
+	case application.dataSlots <- struct{}{}:
+		defer func() { <-application.dataSlots }()
+	case <-ctx.Done():
+		return DataMutationResult{}, ctx.Err()
+	}
+	mutationContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	result, mutationErr := application.runtime.MutateManagedRedis(mutationContext, input.ResourceID, input.Mutation)
+	auditResult := "succeeded"
+	if mutationErr != nil {
+		auditResult = "failed"
+	}
+	auditContext, cancelAudit := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelAudit()
+	auditErr := application.store.RecordManagedRedisDataMutation(auditContext, state.RecordManagedRedisDataMutation{
+		ResourceID: input.ResourceID, ProjectID: input.ProjectID, Operation: string(input.Mutation.Kind),
+		Result: auditResult, AuditEventID: identifiers[0], ActorID: input.Actor.ID,
+		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[1],
+		CreatedAtMillis: timestamp.UnixMilli(),
+	})
+	if mutationErr != nil {
+		return DataMutationResult{}, mutationErr
+	}
+	return DataMutationResult{
+		MutationResult: result, RequestID: identifiers[1], AuditRecorded: auditErr == nil,
+	}, nil
 }
 
 func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {

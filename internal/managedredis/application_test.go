@@ -12,6 +12,7 @@ import (
 
 type applicationStore struct {
 	input state.CreateManagedRedis
+	audit state.RecordManagedRedisDataMutation
 }
 
 func (store *applicationStore) CreateManagedRedis(_ context.Context, input state.CreateManagedRedis) (state.ManagedRedis, error) {
@@ -31,9 +32,16 @@ func (*applicationStore) ManagedRedisByProject(context.Context, string) ([]state
 	return nil, nil
 }
 
+func (store *applicationStore) RecordManagedRedisDataMutation(_ context.Context, input state.RecordManagedRedisDataMutation) error {
+	store.audit = input
+	return nil
+}
+
 type applicationRuntime struct {
 	tag       string
 	startedID string
+	mutation  Mutation
+	mutatedID string
 }
 
 func (runtime *applicationRuntime) ResolveManagedRedisImage(_ context.Context, tag string) (string, error) {
@@ -52,6 +60,44 @@ func (*applicationRuntime) ScanManagedRedisKeys(context.Context, string, ScanQue
 
 func (*applicationRuntime) PreviewManagedRedisKey(context.Context, string, PreviewQuery) (Preview, error) {
 	return Preview{}, nil
+}
+
+func (runtime *applicationRuntime) MutateManagedRedis(_ context.Context, id string, mutation Mutation) (MutationResult, error) {
+	runtime.mutatedID = id
+	runtime.mutation = mutation
+	return MutationResult{Affected: 1}, nil
+}
+
+func TestApplicationRestrictsDataMutationsToAccessAndAuditsWithoutContent(t *testing.T) {
+	t.Parallel()
+	store := &applicationStore{}
+	runtime := &applicationRuntime{}
+	application, err := NewApplication(
+		store, runtime, cryptobox.MasterKey{1}, bytes.NewReader(bytes.Repeat([]byte{0x24}, 128)),
+		func() time.Time { return time.UnixMilli(1_700_000_000_000) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutation := Mutation{Kind: MutationStringSet, Key: []byte("secret-key"), Value: []byte("secret-value")}
+	if _, err := application.Mutate(context.Background(), DataMutationInput{
+		ProjectID: "project", ResourceID: "redis", Actor: Actor{Kind: "token", ID: "token"}, Mutation: mutation,
+	}); err == nil {
+		t.Fatal("token actor was allowed to mutate Redis data")
+	}
+	result, err := application.Mutate(context.Background(), DataMutationInput{
+		ProjectID: "project", ResourceID: "redis",
+		Actor: Actor{Kind: "access", ID: "user", Email: "user@example.com"}, Mutation: mutation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Affected != 1 || !result.AuditRecorded || result.RequestID == "" || runtime.mutatedID != "redis" {
+		t.Fatalf("mutation result/runtime = %+v/%+v", result, runtime)
+	}
+	if store.audit.Operation != "string_set" || store.audit.ActorEmail != "user@example.com" || store.audit.Result != "succeeded" {
+		t.Fatalf("mutation audit = %+v", store.audit)
+	}
 }
 
 func TestApplicationPinsImageEncryptsPasswordAndStartsDurableResource(t *testing.T) {

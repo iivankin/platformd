@@ -4,6 +4,7 @@ import {
   APIError,
   attachServiceDomain,
   createAPIToken,
+  createManagedRedis,
   createProject,
   createImageCredential,
   createService,
@@ -17,12 +18,16 @@ import {
   fetchImageCredentials,
   fetchIdentity,
   fetchManagedImageTags,
+  fetchManagedRedis,
   fetchMeta,
   fetchProjectCanvas,
   fetchProjects,
+  mutateManagedRedis,
+  previewManagedRedisKey,
   redeployService,
   revokeAPIToken,
   rollbackService,
+  scanManagedRedisKeys,
   updateService,
 } from "@/api";
 
@@ -428,6 +433,123 @@ test("reads one official managed image tag page", async () => {
   expect(requested).toBe(
     "/api/v1/managed-images/postgres/tags?page=2&pageSize=25&search=18"
   );
+});
+
+test("uses Access-only managed Redis data routes with encoded values unchanged", async () => {
+  const resource = {
+    backupEnabled: false,
+    backupRetentionCount: 7,
+    createdAt: 1,
+    hostname: "cache.shop.internal",
+    id: "redis/id",
+    imageDigest: "sha256:redis",
+    imageTag: "7.4",
+    name: "cache",
+    port: 6379 as const,
+    projectId: "project/id",
+    updatedAt: 1,
+  };
+  await expect(
+    createManagedRedis(
+      resource.projectId,
+      { imageTag: resource.imageTag, name: resource.name },
+      (_input, init) => {
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          imageTag: "7.4",
+          name: "cache",
+        });
+        return Promise.resolve(Response.json(resource, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(resource);
+  await expect(
+    fetchManagedRedis(resource.projectId, resource.id, undefined, (input) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/redis/redis%2Fid"
+      );
+      return Promise.resolve(Response.json(resource));
+    })
+  ).resolves.toEqual(resource);
+
+  await expect(
+    scanManagedRedisKeys(
+      resource.projectId,
+      resource.id,
+      { count: 25, cursor: "9", match: "user:*" },
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/redis/redis%2Fid/keys?count=25&cursor=9&match=user%3A*"
+        );
+        return Promise.resolve(
+          Response.json({
+            keys: [
+              {
+                keyBase64: "dXNlcjox",
+                keyText: "user:1",
+                sizeBytes: 32,
+                type: "hash",
+              },
+            ],
+            nextCursor: "0",
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ keys: [{ type: "hash" }] });
+
+  await expect(
+    previewManagedRedisKey(
+      resource.projectId,
+      resource.id,
+      "dXNlcjox",
+      undefined,
+      (input) => {
+        expect(input.toString()).toContain("/preview?count=20&key=dXNlcjox");
+        return Promise.resolve(
+          Response.json({
+            items: [
+              {
+                values: [
+                  { base64: "bmFtZQ", text: "name" },
+                  { base64: "QWRh", text: "Ada" },
+                ],
+              },
+            ],
+            length: 1,
+            nextCursor: "0",
+            truncated: false,
+            type: "hash",
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ length: 1, type: "hash" });
+
+  await expect(
+    mutateManagedRedis(
+      resource.projectId,
+      resource.id,
+      {
+        field: "bmFtZQ",
+        key: "dXNlcjox",
+        operation: "hash_set",
+        value: "QWRh",
+      },
+      (_input, init) => {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          field: "bmFtZQ",
+          key: "dXNlcjox",
+          operation: "hash_set",
+          value: "QWRh",
+        });
+        return Promise.resolve(
+          Response.json({ affected: 1, auditRecorded: true, streamId: "" })
+        );
+      }
+    )
+  ).resolves.toEqual({ affected: 1, auditRecorded: true, streamId: "" });
 });
 
 test("lists, attaches, moves, and detaches exact service domains", async () => {

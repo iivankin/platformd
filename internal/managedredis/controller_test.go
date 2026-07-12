@@ -97,6 +97,10 @@ func (*testConnection) PreviewKey(context.Context, PreviewQuery) (Preview, error
 	return Preview{}, nil
 }
 
+func (*testConnection) Mutate(context.Context, Mutation) (MutationResult, error) {
+	return MutationResult{Affected: 1}, nil
+}
+
 func (connection *testConnection) Close() error {
 	connection.closed = true
 	return nil

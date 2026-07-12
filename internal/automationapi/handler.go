@@ -25,14 +25,13 @@ type ManagedImageCatalog interface {
 }
 
 type Config struct {
-	Hostname     string
-	Repository   Repository
-	Services     *automation.ServiceApplication
-	Logs         *automation.LogApplication
-	Images       ManagedImageCatalog
-	Redis        *automation.ManagedRedisApplication
-	RedisStore   managedRedisRepository
-	RedisBrowser managedRedisBrowser
+	Hostname   string
+	Repository Repository
+	Services   *automation.ServiceApplication
+	Logs       *automation.LogApplication
+	Images     ManagedImageCatalog
+	Redis      *automation.ManagedRedisApplication
+	RedisStore managedRedisRepository
 }
 
 func Handler(config Config) (http.Handler, error) {
@@ -53,12 +52,10 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
 	mux.HandleFunc("GET /api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
-	if config.Redis != nil && config.RedisStore != nil && config.RedisBrowser != nil {
+	if config.Redis != nil && config.RedisStore != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(config.RedisStore))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(config.RedisStore))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(config.Redis))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(config.RedisBrowser))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(config.RedisBrowser))
 	}
 	return noStore(mux), nil
 }

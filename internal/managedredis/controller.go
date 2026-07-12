@@ -46,6 +46,7 @@ type RedisConnection interface {
 	Save(context.Context) error
 	ScanKeys(context.Context, ScanQuery) (KeyPage, error)
 	PreviewKey(context.Context, PreviewQuery) (Preview, error)
+	Mutate(context.Context, Mutation) (MutationResult, error)
 	Close() error
 }
 
@@ -330,6 +331,31 @@ func (controller *Controller) PreviewKey(ctx context.Context, resourceID string,
 	}
 	defer connection.Close()
 	return connection.PreviewKey(ctx, query)
+}
+
+func (controller *Controller) Mutate(ctx context.Context, resourceID string, mutation Mutation) (MutationResult, error) {
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return MutationResult{}, ErrNotRunning
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	addresses := container.IPs[active.network]
+	if container.State != "running" || len(addresses) != 1 {
+		return MutationResult{}, ErrNotRunning
+	}
+	connection, err := controller.dial(ctx, net.JoinHostPort(addresses[0], fmt.Sprint(Port)), password)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	defer connection.Close()
+	return connection.Mutate(ctx, mutation)
 }
 
 func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedRedis, imageID string, placement Placement, volume, configPath string) (containerengine.Container, error) {

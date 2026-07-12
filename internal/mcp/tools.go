@@ -167,24 +167,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.createManagedRedis(request.Context(), call.Arguments, identity)
-	case "scan_managed_redis_keys":
-		if handler.redisBrowser == nil {
-			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
-			return
-		}
-		output, err = handler.scanManagedRedisKeys(request.Context(), call.Arguments, identity)
-	case "preview_managed_redis_key":
-		if handler.redisBrowser == nil {
-			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
-			return
-		}
-		output, err = handler.previewManagedRedisKey(request.Context(), call.Arguments, identity)
 	default:
 		writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedredis.ErrInvalidBrowserQuery) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

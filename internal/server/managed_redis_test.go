@@ -19,6 +19,7 @@ const managedRedisTestDigest = "sha256:3b26d8c8e877651e756205368bbee1163b621f62e
 type managedRedisRepository struct {
 	input    managedredis.CreateInput
 	resource state.ManagedRedis
+	mutation managedredis.DataMutationInput
 }
 
 func (repository *managedRedisRepository) Create(_ context.Context, input managedredis.CreateInput) (managedredis.CreateResult, error) {
@@ -49,6 +50,11 @@ func (*managedRedisRepository) Keys(context.Context, string, string, managedredi
 
 func (*managedRedisRepository) Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error) {
 	return managedredis.Preview{Type: "string", Length: 5, Items: []managedredis.PreviewItem{{Values: [][]byte{[]byte("hello")}}}}, nil
+}
+
+func (repository *managedRedisRepository) Mutate(_ context.Context, input managedredis.DataMutationInput) (managedredis.DataMutationResult, error) {
+	repository.mutation = input
+	return managedredis.DataMutationResult{MutationResult: managedredis.MutationResult{Affected: 1}, RequestID: "mutation-request", AuditRecorded: true}, nil
 }
 
 func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
@@ -106,5 +112,17 @@ func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
 	handler.ServeHTTP(previewResponse, preview)
 	if previewResponse.Code != http.StatusOK || !strings.Contains(previewResponse.Body.String(), `"type":"string"`) || !strings.Contains(previewResponse.Body.String(), `"text":"hello"`) {
 		t.Fatalf("preview status/body = %d/%s", previewResponse.Code, previewResponse.Body)
+	}
+	mutation := projectRequest(http.MethodPost, "/api/v1/projects/project/redis/redis/data/mutations", `{
+  "operation":"hash_set","key":"a2V5","field":"ZmllbGQ","value":"dmFsdWU"
+}`)
+	mutation.Header.Set("Origin", "https://admin.example.com")
+	mutationResponse := httptest.NewRecorder()
+	handler.ServeHTTP(mutationResponse, mutation)
+	if mutationResponse.Code != http.StatusOK || mutationResponse.Header().Get("X-Request-ID") != "mutation-request" || !strings.Contains(mutationResponse.Body.String(), `"auditRecorded":true`) {
+		t.Fatalf("mutation status/body = %d/%s", mutationResponse.Code, mutationResponse.Body)
+	}
+	if repository.mutation.Actor.Kind != "access" || repository.mutation.Actor.ID != "subject" || string(repository.mutation.Mutation.Key) != "key" || string(repository.mutation.Mutation.Field) != "field" || string(repository.mutation.Mutation.Value) != "value" {
+		t.Fatalf("mutation input = %+v", repository.mutation)
 	}
 }

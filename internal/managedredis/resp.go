@@ -47,6 +47,14 @@ type Client struct {
 	mu         sync.Mutex
 }
 
+type CommandError struct {
+	Message string
+}
+
+func (err *CommandError) Error() string {
+	return "Redis rejected command: " + err.Message
+}
+
 func Dial(ctx context.Context, address, password string) (*Client, error) {
 	if address == "" || password == "" {
 		return nil, errors.New("Redis address and password are required")
@@ -180,7 +188,7 @@ func readResponse(reader *bufio.Reader, depth int, budget *int) (response, error
 	case '+':
 		return response{kind: responseString, text: string(line)}, nil
 	case '-':
-		return response{}, fmt.Errorf("Redis error: %s", sanitizeError(line))
+		return response{}, &CommandError{Message: sanitizeError(line)}
 	case ':':
 		value, err := parseDecimal(line)
 		return response{kind: responseInteger, integer: value}, err

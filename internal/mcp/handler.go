@@ -12,7 +12,6 @@ import (
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/managedimages"
-	"github.com/iivankin/platformd/internal/managedredis"
 )
 
 const (
@@ -21,31 +20,24 @@ const (
 )
 
 type Handler struct {
-	hostname     string
-	version      string
-	repository   Repository
-	services     *automation.ServiceApplication
-	logs         *automation.LogApplication
-	images       ManagedImageCatalog
-	redis        *automation.ManagedRedisApplication
-	redisBrowser ManagedRedisBrowser
-	tools        []Tool
+	hostname   string
+	version    string
+	repository Repository
+	services   *automation.ServiceApplication
+	logs       *automation.LogApplication
+	images     ManagedImageCatalog
+	redis      *automation.ManagedRedisApplication
+	tools      []Tool
 }
 
 type Config struct {
-	Hostname     string
-	Version      string
-	Repository   Repository
-	Services     *automation.ServiceApplication
-	Logs         *automation.LogApplication
-	Images       ManagedImageCatalog
-	Redis        *automation.ManagedRedisApplication
-	RedisBrowser ManagedRedisBrowser
-}
-
-type ManagedRedisBrowser interface {
-	Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error)
-	Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error)
+	Hostname   string
+	Version    string
+	Repository Repository
+	Services   *automation.ServiceApplication
+	Logs       *automation.LogApplication
+	Images     ManagedImageCatalog
+	Redis      *automation.ManagedRedisApplication
 }
 
 type ManagedImageCatalog interface {
@@ -56,14 +48,10 @@ func New(config Config) (*Handler, error) {
 	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil {
 		return nil, errors.New("MCP handler dependencies are incomplete")
 	}
-	tools := readTools()
-	if config.RedisBrowser != nil {
-		tools = append(tools, managedRedisBrowserTool(), managedRedisPreviewTool())
-	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis,
-		redisBrowser: config.RedisBrowser, tools: tools,
+		tools: readTools(),
 	}, nil
 }
 
