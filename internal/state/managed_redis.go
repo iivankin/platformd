@@ -125,19 +125,36 @@ INSERT INTO audit_events(
 }
 
 func (store *Store) ManagedRedis(ctx context.Context, resourceID string) (ManagedRedis, error) {
+	return store.managedRedis(ctx, resourceID, "")
+}
+
+func (store *Store) ManagedRedisInProject(ctx context.Context, projectID, resourceID string) (ManagedRedis, error) {
+	if projectID == "" {
+		return ManagedRedis{}, ErrManagedRedisNotFound
+	}
+	return store.managedRedis(ctx, resourceID, projectID)
+}
+
+func (store *Store) managedRedis(ctx context.Context, resourceID, projectID string) (ManagedRedis, error) {
 	var resource ManagedRedis
 	var cpuMillis sql.NullInt64
 	var memoryBytes sql.NullInt64
 	var backupEnabled int
 	var backupCron sql.NullString
-	err := store.database.QueryRowContext(ctx, `
+	query := `
 SELECT r.id, r.project_id, p.name, r.name, r.image_tag, r.image_digest,
        r.volume_id, r.password_encrypted, r.cpu_millis, r.memory_bytes,
        r.backup_enabled, r.backup_cron, r.backup_retention_count,
        r.created_at, r.updated_at
 FROM managed_redis r
 JOIN projects p ON p.id = r.project_id
-WHERE r.id = ?`, resourceID).Scan(
+WHERE r.id = ?`
+	arguments := []any{resourceID}
+	if projectID != "" {
+		query += " AND r.project_id = ?"
+		arguments = append(arguments, projectID)
+	}
+	err := store.database.QueryRowContext(ctx, query, arguments...).Scan(
 		&resource.ID, &resource.ProjectID, &resource.ProjectName, &resource.Name,
 		&resource.ImageTag, &resource.ImageDigest, &resource.VolumeID,
 		&resource.PasswordEncrypted, &cpuMillis, &memoryBytes, &backupEnabled,
@@ -158,6 +175,13 @@ WHERE r.id = ?`, resourceID).Scan(
 }
 
 func (store *Store) ManagedRedisByProject(ctx context.Context, projectID string) ([]ManagedRedis, error) {
+	var exists int
+	if err := store.database.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)", projectID).Scan(&exists); err != nil {
+		return nil, fmt.Errorf("check managed Redis project: %w", err)
+	}
+	if exists == 0 {
+		return nil, ErrProjectNotFound
+	}
 	rows, err := store.database.QueryContext(ctx, `
 SELECT r.id FROM managed_redis r WHERE r.project_id = ? ORDER BY r.name, r.id`, projectID)
 	if err != nil {

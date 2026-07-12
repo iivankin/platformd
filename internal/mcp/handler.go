@@ -26,6 +26,7 @@ type Handler struct {
 	services   *automation.ServiceApplication
 	logs       *automation.LogApplication
 	images     ManagedImageCatalog
+	redis      *automation.ManagedRedisApplication
 	tools      []Tool
 }
 
@@ -36,6 +37,7 @@ type Config struct {
 	Services   *automation.ServiceApplication
 	Logs       *automation.LogApplication
 	Images     ManagedImageCatalog
+	Redis      *automation.ManagedRedisApplication
 }
 
 type ManagedImageCatalog interface {
@@ -48,7 +50,7 @@ func New(config Config) (*Handler, error) {
 	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
-		services: config.Services, logs: config.Logs, images: config.Images,
+		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis,
 		tools: readTools(),
 	}, nil
 }

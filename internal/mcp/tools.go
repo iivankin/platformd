@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -120,6 +121,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 	tools := handler.tools
 	if identity.IsAdmin() {
 		tools = append(append([]Tool(nil), tools...), adminTools()...)
+		if handler.redis != nil {
+			tools = append(tools, managedRedisAdminTool())
+		}
 	}
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
 }
@@ -130,7 +134,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		writeRPCError(response, message.ID, codeInvalidParams, "Invalid tools/call params")
 		return
 	}
-	if isServiceMutationTool(call.Name) && !identity.IsAdmin() {
+	if isAdminMutationTool(call.Name) && !identity.IsAdmin() {
 		writeToolResult(response, message.ID, map[string]string{"error": automation.ErrAdminRequired.Error()}, true)
 		return
 	}
@@ -157,12 +161,18 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.redeployService(request.Context(), call.Arguments, identity)
 	case "rollback_service":
 		output, err = handler.rollbackService(request.Context(), call.Arguments, identity)
+	case "create_managed_redis":
+		if handler.redis == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createManagedRedis(request.Context(), call.Arguments, identity)
 	default:
 		writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}
