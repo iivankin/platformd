@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -43,6 +44,10 @@ func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInp
 	return state.ServiceDesired{}, nil
 }
 
+func (*repositoryStub) List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error) {
+	return managedimages.Page{Tags: []managedimages.Tag{{Name: "7.4-alpine"}}, Page: 1, PageSize: 50}, nil
+}
+
 func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	t.Helper()
 	services, err := automation.NewServiceApplication(repository, nil, nil)
@@ -53,11 +58,24 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: repository, Services: services, Logs: logs})
+	handler, err := New(Config{
+		Hostname: "api.example.com", Version: "1.2.3", Repository: repository,
+		Services: services, Logs: logs, Images: repository,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func TestMCPListsOfficialManagedImageTagsForReadToken(t *testing.T) {
+	handler := newTestHandler(t, &repositoryStub{})
+	call := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_managed_image_tags","arguments":{"engine":"redis","search":"alpine"}}}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `7.4-alpine`) {
+		t.Fatalf("managed image tool = %s", response.Body)
+	}
 }
 
 type logReaderStub struct{}

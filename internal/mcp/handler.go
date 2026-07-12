@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/managedimages"
 )
 
 const (
@@ -23,6 +25,7 @@ type Handler struct {
 	repository Repository
 	services   *automation.ServiceApplication
 	logs       *automation.LogApplication
+	images     ManagedImageCatalog
 	tools      []Tool
 }
 
@@ -32,14 +35,20 @@ type Config struct {
 	Repository Repository
 	Services   *automation.ServiceApplication
 	Logs       *automation.LogApplication
+	Images     ManagedImageCatalog
+}
+
+type ManagedImageCatalog interface {
+	List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error)
 }
 
 func New(config Config) (*Handler, error) {
-	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil {
+	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil {
 		return nil, errors.New("MCP handler dependencies are incomplete")
 	}
 	return &Handler{
-		hostname: config.Hostname, version: config.Version, repository: config.Repository, services: config.Services, logs: config.Logs,
+		hostname: config.Hostname, version: config.Version, repository: config.Repository,
+		services: config.Services, logs: config.Logs, images: config.Images,
 		tools: readTools(),
 	}, nil
 }

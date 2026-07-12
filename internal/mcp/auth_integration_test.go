@@ -15,6 +15,7 @@ import (
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -69,7 +70,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	}
 	mcpHandler, err := mcp.New(mcp.Config{
 		Hostname: "api.example.com", Version: "test", Repository: store,
-		Services: serviceAutomation, Logs: logAutomation,
+		Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalogStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -98,6 +99,12 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("revoked initialize status = %d/%s", response.Code, response.Body)
 	}
+}
+
+type managedImageCatalogStub struct{}
+
+func (managedImageCatalogStub) List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error) {
+	return managedimages.Page{}, nil
 }
 
 func initializeRequest(token string) *http.Request {

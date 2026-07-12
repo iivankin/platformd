@@ -30,6 +30,7 @@ type handlerConfig struct {
 	imageCredentials ImageCredentialRepository
 	logs             LogRepository
 	audit            AuditRepository
+	managedImages    ManagedImageCatalog
 	random           io.Reader
 	now              func() time.Time
 }
@@ -78,6 +79,12 @@ func WithAudit(repository AuditRepository) Option {
 	}
 }
 
+func WithManagedImages(catalog ManagedImageCatalog) Option {
+	return func(config *handlerConfig) {
+		config.managedImages = catalog
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -108,6 +115,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.audit != nil {
 		registerAuditRoutes(mux, config.audit)
+	}
+	if config.managedImages != nil {
+		registerManagedImageRoutes(mux, config.managedImages)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

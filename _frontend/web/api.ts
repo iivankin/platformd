@@ -234,6 +234,34 @@ const auditPageSchema = z.object({
 export type AuditEvent = z.infer<typeof auditEventSchema>;
 export type AuditPage = z.infer<typeof auditPageSchema>;
 
+const managedImagePlatformSchema = z.object({
+  architecture: z.string().min(1),
+  digest: z.string().min(1),
+  os: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+});
+
+const managedImageTagSchema = z.object({
+  lastUpdated: z.iso.datetime({ offset: true }),
+  name: z.string().min(1),
+  platforms: z.array(managedImagePlatformSchema),
+});
+
+const managedImagePageSchema = z.object({
+  nextPage: z.number().int().positive().optional(),
+  page: z.number().int().positive(),
+  pageSize: z.number().int().min(1).max(100),
+  previousPage: z.number().int().positive().optional(),
+  rateLimitRemaining: z.number().int().nonnegative().optional(),
+  rateLimitReset: z.number().int().nonnegative().optional(),
+  tags: z.array(managedImageTagSchema),
+  total: z.number().int().nonnegative(),
+});
+
+export type ManagedImageEngine = "postgres" | "redis";
+export type ManagedImageTag = z.infer<typeof managedImageTagSchema>;
+export type ManagedImagePage = z.infer<typeof managedImagePageSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -613,6 +641,32 @@ export const fetchAuditEvents = async (
     );
   }
   return auditPageSchema.parse(await response.json());
+};
+
+export const fetchManagedImageTags = async (
+  engine: ManagedImageEngine,
+  options: { page?: number; pageSize?: number; search?: string } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedImagePage> => {
+  const query = new URLSearchParams({
+    page: String(options.page ?? 1),
+    pageSize: String(options.pageSize ?? 50),
+  });
+  if (options.search) {
+    query.set("search", options.search);
+  }
+  const response = await fetcher(
+    `/api/v1/managed-images/${engine}/tags?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed image tags request failed with ${response.status}`
+    );
+  }
+  return managedImagePageSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>
