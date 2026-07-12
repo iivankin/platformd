@@ -3,6 +3,7 @@
 package cgrouptree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -26,6 +28,11 @@ type Tree struct {
 	mountRoot    string
 	unitPath     string
 	workloadPath string
+}
+
+type Leaf struct {
+	path string
+	file *os.File
 }
 
 func Setup() (*Tree, error) {
@@ -106,6 +113,65 @@ func validResourceID(value string) bool {
 
 func (tree *Tree) WorkloadRoot() string {
 	return tree.workloadPath
+}
+
+func (tree *Tree) CreateLeaf(resourceID string) (*Leaf, error) {
+	if !validResourceID(resourceID) {
+		return nil, fmt.Errorf("invalid cgroup resource ID %q", resourceID)
+	}
+	root := filepath.Join(tree.mountRoot, filepath.FromSlash(strings.TrimPrefix(tree.workloadPath, "/")))
+	leafPath := filepath.Join(root, resourceID)
+	if err := os.Mkdir(leafPath, 0o755); err != nil {
+		return nil, fmt.Errorf("create workload cgroup leaf: %w", err)
+	}
+	file, err := os.Open(leafPath)
+	if err != nil {
+		_ = os.Remove(leafPath)
+		return nil, fmt.Errorf("open workload cgroup leaf: %w", err)
+	}
+	return &Leaf{path: leafPath, file: file}, nil
+}
+
+func (leaf *Leaf) FD() uintptr {
+	return leaf.file.Fd()
+}
+
+func (leaf *Leaf) Kill() error {
+	if err := os.WriteFile(filepath.Join(leaf.path, "cgroup.kill"), []byte("1\n"), 0o644); err != nil {
+		return fmt.Errorf("kill workload cgroup: %w", err)
+	}
+	return nil
+}
+
+func (leaf *Leaf) Close(ctx context.Context) error {
+	var failures []error
+	if leaf.file != nil {
+		failures = append(failures, leaf.file.Close())
+		leaf.file = nil
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pids, err := readIDs(filepath.Join(leaf.path, "cgroup.procs"))
+		if err == nil && len(pids) == 0 {
+			if removeErr := os.Remove(leaf.path); removeErr == nil || errors.Is(removeErr, os.ErrNotExist) {
+				return errors.Join(failures...)
+			} else {
+				failures = append(failures, removeErr)
+				return errors.Join(failures...)
+			}
+		}
+		if err != nil {
+			failures = append(failures, err)
+			return errors.Join(failures...)
+		}
+		select {
+		case <-ctx.Done():
+			failures = append(failures, ctx.Err())
+			return errors.Join(failures...)
+		case <-ticker.C:
+		}
+	}
 }
 
 func parseUnifiedPath(value string) (string, error) {
