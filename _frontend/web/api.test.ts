@@ -1,11 +1,15 @@
 import { expect, test } from "bun:test";
 
 import {
+  APIError,
+  attachServiceDomain,
   createProject,
   createImageCredential,
   createService,
+  detachServiceDomain,
   fetchService,
   fetchServiceDeployments,
+  fetchServiceDomains,
   fetchImageCredentials,
   fetchIdentity,
   fetchMeta,
@@ -308,4 +312,77 @@ test("validates bounded deployment history pages", async () => {
       )
     )
   ).resolves.toMatchObject({ nextCursor: "deployment" });
+});
+
+test("lists, attaches, moves, and detaches exact service domains", async () => {
+  const domain = {
+    createdAt: 1,
+    hostname: "api.example.com",
+    projectId: "project",
+    projectName: "shop",
+    serviceId: "service",
+    serviceName: "api",
+  };
+  await expect(
+    fetchServiceDomains("project", "service", undefined, () =>
+      Promise.resolve(Response.json({ domains: [domain] }))
+    )
+  ).resolves.toEqual([domain]);
+
+  let attachBody = "";
+  await expect(
+    attachServiceDomain(
+      "project",
+      "service",
+      domain.hostname,
+      true,
+      (_input, init) => {
+        attachBody = init?.body?.toString() ?? "";
+        return Promise.resolve(Response.json(domain, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(domain);
+  expect(JSON.parse(attachBody)).toEqual({
+    hostname: domain.hostname,
+    move: true,
+  });
+
+  let detachURL = "";
+  let detachMethod = "";
+  await detachServiceDomain(
+    "project/one",
+    "service/two",
+    domain.hostname,
+    (input, init) => {
+      detachURL = input.toString();
+      detachMethod = init?.method ?? "";
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+  );
+  expect(detachURL).toBe(
+    "/api/v1/projects/project%2Fone/services/service%2Ftwo/domains/api.example.com"
+  );
+  expect(detachMethod).toBe("DELETE");
+
+  const conflict = await attachServiceDomain(
+    "project",
+    "service",
+    domain.hostname,
+    false,
+    () =>
+      Bun.sleep(0).then(() =>
+        Response.json(
+          {
+            error: {
+              code: "domain_conflict",
+              domain,
+              message: "Domain belongs to another service",
+            },
+          },
+          { status: 409 }
+        )
+      )
+  ).catch((error: unknown) => error);
+  expect(conflict).toBeInstanceOf(APIError);
+  expect((conflict as APIError).domain).toEqual(domain);
 });

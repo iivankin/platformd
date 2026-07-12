@@ -4,14 +4,21 @@ import { useCallback, useEffect, useState } from "react";
 import {
   fetchService,
   fetchServiceDeployments,
+  fetchServiceDomains,
   redeployService,
   rollbackService,
   updateService,
 } from "@/api";
-import type { Deployment, Service, UpdateServiceInput } from "@/api";
+import type {
+  Deployment,
+  Service,
+  ServiceDomain,
+  UpdateServiceInput,
+} from "@/api";
 import { Button } from "@/components/ui/button";
 import { DeploymentHistory } from "@/deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
+import { ServiceDomains } from "@/service-domains";
 
 interface ServiceDetailPanelProperties {
   data: ResourceNodeData;
@@ -70,6 +77,7 @@ export const ServiceDetailPanel = ({
 }: ServiceDetailPanelProperties) => {
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [domains, setDomains] = useState<ServiceDomain[]>([]);
   const [nextCursor, setNextCursor] = useState<string>();
   const [rollbackCandidate, setRollbackCandidate] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -77,13 +85,15 @@ export const ServiceDetailPanel = ({
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
-      const [loadedService, page] = await Promise.all([
+      const [loadedService, page, loadedDomains] = await Promise.all([
         fetchService(projectID, serviceID, signal),
         fetchServiceDeployments(projectID, serviceID, undefined, signal),
+        fetchServiceDomains(projectID, serviceID, signal),
       ]);
       setService(loadedService);
       setDeployments(page.deployments);
       setNextCursor(page.nextCursor);
+      setDomains(loadedDomains);
       setError(null);
     },
     [projectID, serviceID]
@@ -256,6 +266,14 @@ export const ServiceDetailPanel = ({
           />
         </dl>
       </section>
+
+      <ServiceDomains
+        domains={domains}
+        onChanged={setDomains}
+        projectID={projectID}
+        serviceID={serviceID}
+        targetPort={service?.targetPort}
+      />
 
       <DeploymentHistory
         busy={Boolean(busy)}

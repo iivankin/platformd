@@ -69,6 +69,12 @@ type RuntimeStatus struct {
 	ExitCode     int32
 }
 
+type Backend struct {
+	DeploymentID string
+	Address      string
+	Port         int
+}
+
 type CredentialResolver interface {
 	Resolve(context.Context, state.ServiceDesired) (ImageCredential, error)
 }
@@ -91,6 +97,8 @@ type Config struct {
 type activeContainer struct {
 	deploymentID string
 	container    containerengine.Container
+	networkName  string
+	targetPort   int
 }
 
 type Controller struct {
@@ -247,45 +255,65 @@ func (controller *Controller) Restore(ctx context.Context, serviceID string) err
 	lock := controller.serviceLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
+	_, err := controller.restoreCurrentLocked(ctx, serviceID, "")
+	return err
+}
 
+// RestoreCurrent recreates the exact logical deployment only while it is
+// still current. The expected pointer prevents a delayed crash-loop attempt
+// from reviving an older deployment after a user action has replaced it.
+func (controller *Controller) RestoreCurrent(ctx context.Context, serviceID, expectedDeploymentID string) (bool, error) {
+	lock := controller.serviceLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+	return controller.restoreCurrentLocked(ctx, serviceID, expectedDeploymentID)
+}
+
+func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceID, expectedDeploymentID string) (bool, error) {
 	desired, err := controller.store.DesiredService(ctx, serviceID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !desired.Enabled || desired.ActiveDeploymentID == "" {
-		return nil
+		return false, nil
+	}
+	if expectedDeploymentID != "" && desired.ActiveDeploymentID != expectedDeploymentID {
+		return false, nil
+	}
+	if _, exists := controller.activeContainer(serviceID); exists {
+		return false, nil
 	}
 	activeDeployment, err := controller.store.Deployment(ctx, desired.ActiveDeploymentID)
 	if err != nil {
-		return fmt.Errorf("load active deployment: %w", err)
+		return false, fmt.Errorf("load active deployment: %w", err)
 	}
 	desired.Snapshot = activeDeployment.Snapshot
 	credential := ImageCredential{}
 	if desired.Snapshot.ImageCredentialID != "" {
 		if controller.credentials == nil {
-			return errors.New("image credential resolution is not configured")
+			return false, errors.New("image credential resolution is not configured")
 		}
 		credential, err = controller.credentials.Resolve(ctx, desired)
 		if err != nil {
-			return fmt.Errorf("resolve active image credential: %w", err)
+			return false, fmt.Errorf("resolve active image credential: %w", err)
 		}
 	}
 	pinnedReference, err := serviceconfig.PinnedReference(desired.Snapshot.ImageReference, activeDeployment.ImageDigest)
 	if err != nil {
-		return err
+		return false, err
 	}
 	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{
 		Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
 	})
 	if err != nil {
-		return fmt.Errorf("pull active service image: %w", err)
+		return false, fmt.Errorf("pull active service image: %w", err)
 	}
 	if image.Digest != activeDeployment.ImageDigest {
-		return fmt.Errorf("active image digest = %s, want %s", image.Digest, activeDeployment.ImageDigest)
+		return false, fmt.Errorf("active image digest = %s, want %s", image.Digest, activeDeployment.ImageDigest)
 	}
 	container, placement, err := controller.createRuntimeContainer(ctx, desired, activeDeployment.ID, image.ID)
 	if err != nil {
-		return err
+		return false, err
 	}
 	remove := true
 	defer func() {
@@ -294,18 +322,41 @@ func (controller *Controller) Restore(ctx context.Context, serviceID string) err
 		}
 	}()
 	if err := controller.engine.StartContainer(ctx, container.ID); err != nil {
-		return fmt.Errorf("start active service container: %w", err)
+		return false, fmt.Errorf("start active service container: %w", err)
 	}
 	ready, err := controller.waitReady(ctx, desired, container.ID, placement.NetworkName)
 	if err != nil {
-		return fmt.Errorf("restore active service readiness: %w", err)
+		return false, fmt.Errorf("restore active service readiness: %w", err)
 	}
-	controller.setActive(desired.ID, activeContainer{deploymentID: activeDeployment.ID, container: ready})
+	controller.setActive(desired.ID, activeContainer{
+		deploymentID: activeDeployment.ID, container: ready,
+		networkName: placement.NetworkName, targetPort: targetPort(desired.Snapshot.TargetPort),
+	})
 	remove = false
 	if err := controller.publisher.Publish(desired, ready); err != nil {
-		return fmt.Errorf("publish restored service: %w", err)
+		return false, fmt.Errorf("publish restored service: %w", err)
 	}
-	return nil
+	return true, nil
+}
+
+// PrepareUnexpectedExit removes publication and the exited runtime attempt.
+// Product state and the logical active deployment pointer remain unchanged.
+func (controller *Controller) PrepareUnexpectedExit(ctx context.Context, serviceID, deploymentID, containerID string) (bool, error) {
+	lock := controller.serviceLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+	desired, err := controller.store.DesiredService(ctx, serviceID)
+	if err != nil {
+		return false, err
+	}
+	active, exists := controller.activeContainer(serviceID)
+	if !desired.Enabled || desired.ActiveDeploymentID != deploymentID || !exists || active.deploymentID != deploymentID || active.container.ID != containerID {
+		return false, nil
+	}
+	withdrawErr := controller.publisher.Withdraw(desired)
+	controller.clearActive(serviceID)
+	removeErr := controller.engine.RemoveContainer(ctx, containerID, true)
+	return true, errors.Join(withdrawErr, removeErr)
 }
 
 func (controller *Controller) Status(serviceID string) (RuntimeStatus, bool, error) {
@@ -324,6 +375,27 @@ func (controller *Controller) Status(serviceID string) (RuntimeStatus, bool, err
 	}, true, nil
 }
 
+func (controller *Controller) Backend(serviceID string) (Backend, bool, error) {
+	active, ok := controller.activeContainer(serviceID)
+	if !ok || active.targetPort == 0 {
+		return Backend{}, false, nil
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return Backend{}, true, err
+	}
+	if container.State != "running" {
+		return Backend{}, false, nil
+	}
+	addresses := container.IPs[active.networkName]
+	if len(addresses) != 1 {
+		return Backend{}, true, fmt.Errorf("service container has %d backend addresses, want one", len(addresses))
+	}
+	return Backend{
+		DeploymentID: active.deploymentID, Address: addresses[0], Port: active.targetPort,
+	}, true, nil
+}
+
 func (controller *Controller) runDeployment(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) error {
 	candidate, placement, err := controller.createRuntimeContainer(ctx, desired, deploymentID, imageID)
 	if err != nil {
@@ -337,16 +409,17 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 	}()
 
 	old, hasOld := controller.activeContainer(desired.ID)
-	if desired.ActiveDeploymentID != "" && (!hasOld || old.deploymentID != desired.ActiveDeploymentID) {
+	if hasOld && old.deploymentID != desired.ActiveDeploymentID {
 		return controller.fail(deploymentID, "active_runtime_missing", errors.New("active deployment has no matching runtime container"))
 	}
 	if hasOld {
-		if err := controller.engine.StopContainer(old.container.ID, stopTimeoutSeconds); err != nil {
-			return controller.fail(deploymentID, "old_stop_failed", err)
-		}
 		if err := controller.publisher.Withdraw(desired); err != nil {
 			controller.restoreOld(desired, old, true)
 			return controller.fail(deploymentID, "publication_withdraw_failed", err)
+		}
+		if err := controller.engine.StopContainer(old.container.ID, stopTimeoutSeconds); err != nil {
+			controller.restoreOld(desired, old, true)
+			return controller.fail(deploymentID, "old_stop_failed", err)
 		}
 	}
 	if err := controller.engine.StartContainer(ctx, candidate.ID); err != nil {
@@ -362,7 +435,11 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 		controller.restoreOld(desired, old, hasOld)
 		return controller.fail(deploymentID, "publication_commit_failed", err)
 	}
-	controller.setActive(desired.ID, activeContainer{deploymentID: deploymentID, container: ready})
+	desired.ActiveDeploymentID = deploymentID
+	controller.setActive(desired.ID, activeContainer{
+		deploymentID: deploymentID, container: ready,
+		networkName: placement.NetworkName, targetPort: targetPort(desired.Snapshot.TargetPort),
+	})
 	candidateActive = false
 	if err := controller.publisher.Publish(desired, ready); err != nil {
 		return fmt.Errorf("publish ready service after deployment commit: %w", err)
@@ -541,4 +618,11 @@ func (controller *Controller) clearActive(serviceID string) {
 
 func safeRoot(value string) bool {
 	return filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator)
+}
+
+func targetPort(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
 }

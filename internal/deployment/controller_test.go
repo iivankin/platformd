@@ -302,6 +302,20 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	if len(restoredEngine.pulls) != 1 || restoredEngine.pulls[0].Username != "robot" || restoredEngine.pulls[0].Password != "secret" {
 		t.Fatalf("restored pull authentication = %+v", restoredEngine.pulls)
 	}
+	prepared, err := restored.PrepareUnexpectedExit(context.Background(), "service", pointer, active.container.ID)
+	if err != nil || !prepared {
+		t.Fatalf("prepare unexpected exit = %t, %v", prepared, err)
+	}
+	if _, exists := restored.activeContainer("service"); exists {
+		t.Fatal("exited runtime remained active")
+	}
+	recreated, err := restored.RestoreCurrent(context.Background(), "service", pointer)
+	if err != nil || !recreated {
+		t.Fatalf("recreate current deployment = %t, %v", recreated, err)
+	}
+	if store.service.ActiveDeploymentID != pointer {
+		t.Fatalf("crash restart changed deployment pointer to %q", store.service.ActiveDeploymentID)
+	}
 }
 
 type emptyReader struct{}

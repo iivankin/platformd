@@ -25,6 +25,7 @@ type Meta struct {
 type handlerConfig struct {
 	projects         ProjectRepository
 	services         ServiceRepository
+	domains          DomainRepository
 	imageCredentials ImageCredentialRepository
 	random           io.Reader
 	now              func() time.Time
@@ -50,6 +51,12 @@ func WithServices(repository ServiceRepository) Option {
 	}
 }
 
+func WithDomains(repository DomainRepository) Option {
+	return func(config *handlerConfig) {
+		config.domains = repository
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -68,6 +75,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.services != nil {
 		registerServiceRoutes(mux, config)
+	}
+	if config.domains != nil {
+		registerServiceDomainRoutes(mux, config)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

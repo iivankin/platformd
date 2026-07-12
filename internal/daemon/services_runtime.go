@@ -10,6 +10,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/imagecredential"
+	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -29,12 +30,21 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 	if err != nil {
 		return err
 	}
+	restarts, err := servicerestart.New(servicerestart.Config{
+		Context: ctx, Engine: stack.engine, Controller: controller,
+		OnResult: stack.recordServiceResult,
+	})
+	if err != nil {
+		return err
+	}
 	stack.mu.Lock()
 	if stack.closed {
 		stack.mu.Unlock()
+		restarts.Close()
 		return errors.New("container runtime is closed")
 	}
 	stack.deployments = controller
+	stack.serviceRestarts = restarts
 	stack.mu.Unlock()
 
 	serviceIDs, err := store.EnabledServiceIDs(ctx)
@@ -218,12 +228,23 @@ func (stack *runtimeStack) Publish(service state.ServiceDesired, container conta
 	if err != nil {
 		return fmt.Errorf("parse service address: %w", err)
 	}
-	return zone.Set(service.Name+"."+service.ProjectName+".internal", address)
+	if err := zone.Set(service.Name+"."+service.ProjectName+".internal", address); err != nil {
+		return err
+	}
+	stack.publishedServices[service.ID] = true
+	if stack.serviceRestarts != nil {
+		stack.serviceRestarts.Publish(service.ID, service.ActiveDeploymentID, container.ID)
+	}
+	return nil
 }
 
 func (stack *runtimeStack) Withdraw(service state.ServiceDesired) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
+	if stack.serviceRestarts != nil {
+		stack.serviceRestarts.Withdraw(service.ID)
+	}
+	delete(stack.publishedServices, service.ID)
 	zone := stack.dnsZones[service.ProjectID]
 	if zone == nil {
 		return fmt.Errorf("project %s DNS runtime is unavailable", service.ProjectID)
@@ -231,8 +252,30 @@ func (stack *runtimeStack) Withdraw(service state.ServiceDesired) error {
 	return zone.Delete(service.Name + "." + service.ProjectName + ".internal")
 }
 
+func (stack *runtimeStack) ServiceBackend(serviceID string) (deployment.Backend, bool, error) {
+	stack.mu.Lock()
+	controller := stack.deployments
+	published := stack.publishedServices[serviceID]
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil || !published {
+		return deployment.Backend{}, false, nil
+	}
+	return controller.Backend(serviceID)
+}
+
 func (stack *runtimeStack) recordServiceFailure(serviceID string, err error) {
 	stack.mu.Lock()
 	stack.serviceFailures[serviceID] = err
+	stack.mu.Unlock()
+}
+
+func (stack *runtimeStack) recordServiceResult(serviceID string, err error) {
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.serviceFailures, serviceID)
+	} else {
+		stack.serviceFailures[serviceID] = err
+	}
 	stack.mu.Unlock()
 }

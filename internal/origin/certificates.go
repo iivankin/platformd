@@ -86,6 +86,11 @@ func (selector *Selector) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certi
 	return nil, fmt.Errorf("no Origin certificate covers SNI %q", hostname)
 }
 
+func (selector *Selector) Covers(hostname string) bool {
+	_, err := selector.GetCertificate(&tls.ClientHelloInfo{ServerName: hostname})
+	return err == nil
+}
+
 func (selector *Selector) TLSConfig() *tls.Config {
 	return &tls.Config{
 		GetCertificate: selector.GetCertificate,
