@@ -44,11 +44,13 @@ type Mount struct {
 type ContainerSpec struct {
 	ImageID        string
 	Name           string
+	Entrypoint     []string
 	Command        []string
 	Environment    map[string]string
 	Labels         map[string]string
 	Network        string
 	DNSServers     []string
+	DNSSearch      []string
 	Mounts         []Mount
 	LogPath        string
 	LogSizeBytes   int64

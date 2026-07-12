@@ -30,6 +30,7 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	yes := true
 	spec := specgen.NewSpecGenerator(input.ImageID, false)
 	spec.Name = input.Name
+	spec.Entrypoint = append([]string(nil), input.Entrypoint...)
 	spec.Command = append([]string(nil), input.Command...)
 	spec.Env = cloneStrings(input.Environment)
 	spec.Labels = cloneStrings(input.Labels)
@@ -62,6 +63,7 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	for _, address := range input.DNSServers {
 		spec.DNSServers = append(spec.DNSServers, net.ParseIP(address))
 	}
+	spec.DNSSearch = append([]string(nil), input.DNSSearch...)
 
 	mounts, err := e.runtimeMounts(input.Mounts)
 	if err != nil {
@@ -236,9 +238,6 @@ func (e *Engine) validateContainerSpec(spec ContainerSpec) error {
 	if spec.ImageID == "" || spec.Name == "" {
 		return fmt.Errorf("container image ID and name are required")
 	}
-	if len(spec.Command) == 0 {
-		return fmt.Errorf("container command is empty")
-	}
 	if err := validateAbsolutePath("container log", spec.LogPath); err != nil {
 		return err
 	}
@@ -262,6 +261,11 @@ func (e *Engine) validateContainerSpec(spec ContainerSpec) error {
 	for _, address := range spec.DNSServers {
 		if net.ParseIP(address) == nil {
 			return fmt.Errorf("invalid DNS server %q", address)
+		}
+	}
+	for _, search := range spec.DNSSearch {
+		if search == "" || len(search) > 253 || strings.ContainsAny(search, "\x00 /:") {
+			return fmt.Errorf("invalid DNS search domain %q", search)
 		}
 	}
 	return nil

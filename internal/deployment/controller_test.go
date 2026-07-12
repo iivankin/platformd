@@ -1,0 +1,221 @@
+package deployment
+
+import (
+	"context"
+	"errors"
+	"io"
+	"net/http"
+	"net/netip"
+	"path/filepath"
+	"slices"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/state"
+)
+
+type fakeStore struct {
+	service     state.ServiceDesired
+	deployments map[string]state.BeginDeployment
+	failed      map[string]bool
+}
+
+func (store *fakeStore) DesiredService(context.Context, string) (state.ServiceDesired, error) {
+	return store.service, nil
+}
+
+func (store *fakeStore) BeginDeployment(_ context.Context, deployment state.BeginDeployment) error {
+	store.deployments[deployment.ID] = deployment
+	return nil
+}
+
+func (store *fakeStore) ActivateDeployment(_ context.Context, _, deploymentID, expected string, _ int64) error {
+	if store.service.ActiveDeploymentID != expected {
+		return state.ErrServiceChanged
+	}
+	deployment := store.deployments[deploymentID]
+	store.service.ActiveDeploymentID = deploymentID
+	store.service.ActiveImageDigest = deployment.ImageDigest
+	store.service.ActiveConfigHash = deployment.ConfigHash
+	return nil
+}
+
+func (store *fakeStore) FailDeployment(_ context.Context, deploymentID, _, _ string, _ int64) error {
+	deployment := store.deployments[deploymentID]
+	store.failed[deployment.ConfigHash+":"+deployment.ImageDigest] = true
+	return nil
+}
+
+func (store *fakeStore) LatestFailedDeployment(_ context.Context, _, configHash, imageDigest string) (bool, error) {
+	return store.failed[configHash+":"+imageDigest], nil
+}
+
+type fakeEngine struct {
+	events     []string
+	created    []containerengine.ContainerSpec
+	containers map[string]containerengine.Container
+}
+
+func (engine *fakeEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
+	engine.events = append(engine.events, "pull")
+	return containerengine.Image{
+		ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68",
+	}, nil
+}
+
+func (engine *fakeEngine) CreateContainer(_ context.Context, spec containerengine.ContainerSpec) (containerengine.Container, error) {
+	engine.events = append(engine.events, "create:"+spec.Name)
+	engine.created = append(engine.created, spec)
+	container := containerengine.Container{
+		ID: spec.Name, Name: spec.Name, State: "created",
+		IPs: map[string][]string{spec.Network: {"10.80.0.2"}},
+	}
+	engine.containers[container.ID] = container
+	return container, nil
+}
+
+func (engine *fakeEngine) StartContainer(_ context.Context, containerID string) error {
+	engine.events = append(engine.events, "start:"+containerID)
+	container := engine.containers[containerID]
+	container.State = "running"
+	engine.containers[containerID] = container
+	return nil
+}
+
+func (engine *fakeEngine) StopContainer(containerID string, _ uint) error {
+	engine.events = append(engine.events, "stop:"+containerID)
+	container := engine.containers[containerID]
+	container.State = "stopped"
+	engine.containers[containerID] = container
+	return nil
+}
+
+func (engine *fakeEngine) RemoveContainer(_ context.Context, containerID string, _ bool) error {
+	engine.events = append(engine.events, "remove:"+containerID)
+	delete(engine.containers, containerID)
+	return nil
+}
+
+func (engine *fakeEngine) InspectContainer(containerID string) (containerengine.Container, error) {
+	container, ok := engine.containers[containerID]
+	if !ok {
+		return containerengine.Container{}, errors.New("container not found")
+	}
+	return container, nil
+}
+
+type fakePublisher struct {
+	events []string
+}
+
+func (publisher *fakePublisher) Publish(service state.ServiceDesired, container containerengine.Container) error {
+	publisher.events = append(publisher.events, "publish:"+service.ID+":"+container.ID)
+	return nil
+}
+
+func (publisher *fakePublisher) Withdraw(service state.ServiceDesired) error {
+	publisher.events = append(publisher.events, "withdraw:"+service.ID)
+	return nil
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing.T) {
+	port := 8080
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: serviceconfig.Snapshot{
+				ImageReference: "alpine:3.22", TargetPort: &port, HealthPath: "/healthz", StartupTimeoutSeconds: 1,
+			},
+		},
+		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
+	}
+	engine := &fakeEngine{containers: make(map[string]containerengine.Container)}
+	publisher := &fakePublisher{}
+	probeFails := false
+	httpClient := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		if probeFails {
+			return nil, errors.New("probe failed")
+		}
+		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
+	})}
+	identifierIndex := 0
+	identifiers := []string{"deployment-1", "attempt-1", "deployment-2", "attempt-2"}
+	clockIndex := 0
+	controller, err := New(Config{
+		Store: store, Engine: engine, Publisher: publisher,
+		Placement: func(state.ServiceDesired) (Placement, error) {
+			return Placement{
+				NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
+				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
+			}, nil
+		},
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2,
+		Now: func() time.Time {
+			clockIndex++
+			return time.Unix(int64(clockIndex*2), 0)
+		},
+		NewID: func(time.Time) (string, error) {
+			value := identifiers[identifierIndex]
+			identifierIndex++
+			return value, nil
+		},
+		HTTPClient: httpClient,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(engine.created) != 1 || len(engine.created[0].Entrypoint) != 0 || len(engine.created[0].Command) != 0 || engine.created[0].DNSSearch[0] != "shop.internal" {
+		t.Fatalf("candidate spec = %+v", engine.created)
+	}
+	oldContainerID := "platformd-service-deployment-1"
+	if store.service.ActiveDeploymentID != "deployment-1" || !slices.Contains(publisher.events, "publish:service:"+oldContainerID) {
+		t.Fatalf("initial publication = %+v / %+v", store.service, publisher.events)
+	}
+
+	store.service.Snapshot.Environment = map[string]string{"REVISION": "2"}
+	probeFails = true
+	err = controller.Deploy(context.Background(), "service", false)
+	if err == nil || !strings.Contains(err.Error(), "probe failed") {
+		t.Fatalf("second deployment error = %v", err)
+	}
+	if store.service.ActiveDeploymentID != "deployment-1" || engine.containers[oldContainerID].State != "running" {
+		t.Fatalf("old runtime was not restored: %+v / %+v", store.service, engine.containers)
+	}
+	secondContainerID := "platformd-service-deployment-2"
+	wantEngineOrder := []string{"stop:" + oldContainerID, "start:" + secondContainerID, "start:" + oldContainerID, "remove:" + secondContainerID}
+	if !orderedSubset(engine.events, wantEngineOrder) {
+		t.Fatalf("engine events = %v, want ordered subset %v", engine.events, wantEngineOrder)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); !errors.Is(err, ErrBlockedPair) {
+		t.Fatalf("blocked retry error = %v", err)
+	}
+}
+
+type emptyReader struct{}
+
+func (*emptyReader) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func orderedSubset(values, wanted []string) bool {
+	index := 0
+	for _, value := range values {
+		if index < len(wanted) && value == wanted[index] {
+			index++
+		}
+	}
+	return index == len(wanted)
+}
