@@ -2,7 +2,7 @@
 
 ## Required checks
 
-- Run `make frontend` and then `go test ./...` after changing Go code.
+- Run `make frontend` and then `go test -tags sqlite_omit_load_extension ./...` after changing Go code.
 - Run `bun --cwd=_frontend run typecheck`, `bun --cwd=_frontend run check`, `bun --cwd=_frontend test`, and `bun --cwd=_frontend run build:web` after changing frontend code.
 - Rebuild `platformd` after every Go change before running the binary.
 - Run the privileged Debian integration suite for runtime, networking, systemd, storage, or update changes.
