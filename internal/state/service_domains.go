@@ -39,6 +39,7 @@ type AttachServiceDomainInput struct {
 	Hostname             string
 	Move                 bool
 	AuditEventID         string
+	ActorKind            string
 	ActorID              string
 	ActorEmail           string
 	RequestCorrelationID string
@@ -50,6 +51,7 @@ type DetachServiceDomainInput struct {
 	ServiceID            string
 	Hostname             string
 	AuditEventID         string
+	ActorKind            string
 	ActorID              string
 	ActorEmail           string
 	RequestCorrelationID string
@@ -89,7 +91,7 @@ ORDER BY d.hostname`)
 }
 
 func (store *Store) AttachServiceDomain(ctx context.Context, input AttachServiceDomainInput) (ServiceDomain, error) {
-	if input.ProjectID == "" || input.ServiceID == "" || input.AuditEventID == "" || input.ActorID == "" || input.ActorEmail == "" || input.CreatedAtMillis <= 0 {
+	if input.ProjectID == "" || input.ServiceID == "" || input.AuditEventID == "" || input.CreatedAtMillis <= 0 || validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail) != nil {
 		return ServiceDomain{}, errors.New("attach service domain input is incomplete")
 	}
 	hostname, err := publichostname.Normalize(input.Hostname)
@@ -143,7 +145,7 @@ INSERT INTO service_domains(hostname, service_id, created_at) VALUES (?, ?, ?)`,
 		route.Hostname = hostname
 		route.CreatedAt = createdAt
 		return insertServiceAudit(ctx, transaction, serviceAudit{
-			ID: input.AuditEventID, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
 			Action: action, ServiceID: input.ServiceID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: metadata,
@@ -156,7 +158,7 @@ INSERT INTO service_domains(hostname, service_id, created_at) VALUES (?, ?, ?)`,
 }
 
 func (store *Store) DetachServiceDomain(ctx context.Context, input DetachServiceDomainInput) error {
-	if input.ProjectID == "" || input.ServiceID == "" || input.AuditEventID == "" || input.ActorID == "" || input.ActorEmail == "" || input.CreatedAtMillis <= 0 {
+	if input.ProjectID == "" || input.ServiceID == "" || input.AuditEventID == "" || input.CreatedAtMillis <= 0 || validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail) != nil {
 		return errors.New("detach service domain input is incomplete")
 	}
 	hostname, err := publichostname.Normalize(input.Hostname)
@@ -180,7 +182,7 @@ DELETE FROM service_domains WHERE hostname = ? AND service_id = ?`, hostname, in
 			return ErrDomainNotFound
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
-			ID: input.AuditEventID, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
 			Action: "service.domain.detach", ServiceID: input.ServiceID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: map[string]string{"hostname": hostname},

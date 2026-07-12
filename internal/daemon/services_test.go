@@ -49,7 +49,7 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	created, err := repository.CreateService(context.Background(), state.CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
 		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine:latest"},
-		AuditEventID: "service-audit", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	if _, err := repository.UpdateService(context.Background(), state.UpdateServiceInput{
 		ID: created.ID, ProjectID: created.ProjectID, Enabled: false, Snapshot: created.Snapshot,
 		ExpectedUpdatedMillis: created.UpdatedAtMillis,
-		AuditEventID:          "update-audit", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
+		AuditEventID:          "update-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	if _, err := store.UpdateService(context.Background(), state.UpdateServiceInput{
 		ID: created.ID, ProjectID: created.ProjectID, Enabled: true, Snapshot: current.Snapshot,
 		ExpectedUpdatedMillis: current.UpdatedAtMillis,
-		AuditEventID:          "enable-audit", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 4,
+		AuditEventID:          "enable-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +86,7 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	runtime.deployErr = errors.New("registry unavailable")
 	_, err = repository.RedeployService(context.Background(), state.RedeployServiceInput{
 		ID: created.ID, ProjectID: created.ProjectID, ExpectedUpdatedMillis: current.UpdatedAtMillis,
-		AuditEventID: "redeploy-audit", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 5,
+		AuditEventID: "redeploy-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 5,
 	})
 	if !errors.Is(err, state.ErrServiceReconcileFailed) {
 		t.Fatalf("redeploy error = %v", err)

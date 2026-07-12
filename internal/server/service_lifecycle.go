@@ -90,7 +90,7 @@ func updateService(config handlerConfig) http.HandlerFunc {
 		updated, err := config.services.UpdateService(request.Context(), state.UpdateServiceInput{
 			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
 			Enabled: *body.Enabled, Snapshot: snapshot, ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
-			AuditEventID: auditID, ActorID: identity.Subject, ActorEmail: identity.Email,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
 		})
 		if writeServiceMutationError(response, err) {
@@ -127,7 +127,7 @@ func redeployService(config handlerConfig) http.HandlerFunc {
 		service, err := config.services.RedeployService(request.Context(), state.RedeployServiceInput{
 			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
 			ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
-			AuditEventID:          auditID, ActorID: identity.Subject, ActorEmail: identity.Email,
+			AuditEventID:          auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: config.now().UnixMilli(),
 		})
 		if writeServiceMutationError(response, err) {
@@ -165,7 +165,7 @@ func rollbackService(config handlerConfig) http.HandlerFunc {
 		service, err := config.services.RollbackService(request.Context(), state.RollbackServiceInput{
 			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"), DeploymentID: body.DeploymentID,
 			ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
-			AuditEventID:          auditID, ActorID: identity.Subject, ActorEmail: identity.Email,
+			AuditEventID:          auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
 		})
 		if writeServiceMutationError(response, err) {

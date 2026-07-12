@@ -26,6 +26,7 @@ type UpdateServiceInput struct {
 	Snapshot              serviceconfig.Snapshot
 	ExpectedUpdatedMillis int64
 	AuditEventID          string
+	ActorKind             string
 	ActorID               string
 	ActorEmail            string
 	RequestCorrelationID  string
@@ -38,6 +39,7 @@ type RollbackServiceInput struct {
 	DeploymentID          string
 	ExpectedUpdatedMillis int64
 	AuditEventID          string
+	ActorKind             string
 	ActorID               string
 	ActorEmail            string
 	RequestCorrelationID  string
@@ -49,6 +51,7 @@ type RedeployServiceInput struct {
 	ProjectID             string
 	ExpectedUpdatedMillis int64
 	AuditEventID          string
+	ActorKind             string
 	ActorID               string
 	ActorEmail            string
 	RequestCorrelationID  string
@@ -56,7 +59,7 @@ type RedeployServiceInput struct {
 }
 
 func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput) (ServiceDesired, error) {
-	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorID, input.ActorEmail, input.UpdatedAtMillis); err != nil {
+	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.UpdatedAtMillis); err != nil {
 		return ServiceDesired{}, err
 	}
 	snapshot, err := serviceconfig.Normalize(input.Snapshot)
@@ -75,7 +78,7 @@ func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput)
 			return err
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
-			ID: input.AuditEventID, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
 			Action: "service.update", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: updatedAt,
 		})
@@ -90,7 +93,7 @@ func (store *Store) RollbackService(ctx context.Context, input RollbackServiceIn
 	if input.DeploymentID == "" {
 		return ServiceDesired{}, errors.New("rollback deployment ID is empty")
 	}
-	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorID, input.ActorEmail, input.UpdatedAtMillis); err != nil {
+	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.UpdatedAtMillis); err != nil {
 		return ServiceDesired{}, err
 	}
 	updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
@@ -139,7 +142,7 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 			return err
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
-			ID: input.AuditEventID, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
 			Action: "service.rollback", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: updatedAt,
 			Metadata: map[string]string{"deploymentId": input.DeploymentID},
@@ -152,7 +155,7 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 }
 
 func (store *Store) RedeployService(ctx context.Context, input RedeployServiceInput) (ServiceDesired, error) {
-	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorID, input.ActorEmail, input.CreatedAtMillis); err != nil {
+	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.CreatedAtMillis); err != nil {
 		return ServiceDesired{}, err
 	}
 	err := store.Write(ctx, func(transaction *sql.Tx) error {
@@ -173,7 +176,7 @@ SELECT enabled, updated_at FROM services WHERE id = ? AND project_id = ?`, input
 			return ErrServiceDisabled
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
-			ID: input.AuditEventID, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
 			Action: "service.redeploy", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 		})

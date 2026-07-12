@@ -32,7 +32,7 @@ func TestServiceLifecycleAPIUpdatesListsDeploymentsAndRollsBack(t *testing.T) {
 	service, err := store.CreateService(context.Background(), state.CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
 		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine:3.22"},
-		AuditEventID: "service-audit", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if err != nil {
 		t.Fatal(err)

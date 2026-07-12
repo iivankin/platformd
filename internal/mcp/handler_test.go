@@ -19,6 +19,39 @@ type repositoryStub struct {
 	canvasCalls   int
 	projectCalls  int
 	projectsCalls int
+	createCalls   int
+	created       state.CreateService
+}
+
+func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
+	repository.createCalls++
+	repository.created = input
+	return state.ServiceDesired{ID: input.ID, ProjectID: input.ProjectID, Name: input.Name, Enabled: input.Enabled, Snapshot: input.Snapshot}, nil
+}
+
+func (*repositoryStub) UpdateService(context.Context, state.UpdateServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*repositoryStub) RollbackService(context.Context, state.RollbackServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
+	t.Helper()
+	services, err := automation.NewServiceApplication(repository, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: repository, Services: services})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
 }
 
 func (repository *repositoryStub) Projects(context.Context) ([]state.ProjectSummary, error) {
@@ -50,10 +83,7 @@ func (repository *repositoryStub) ServiceDeployments(context.Context, string, st
 }
 
 func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
-	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: &repositoryStub{}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	handler := newTestHandler(t, &repositoryStub{})
 
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://api.example.com/mcp", nil))
@@ -93,10 +123,7 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 }
 
 func TestMCPRejectsInvalidTransportHeaders(t *testing.T) {
-	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: &repositoryStub{}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	handler := newTestHandler(t, &repositoryStub{})
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"agent","version":"1"}}}`
 
 	request := mcpRequest(body)
@@ -131,10 +158,7 @@ func TestMCPReadToolsEnforceProjectBoundaryBeforeLookup(t *testing.T) {
 			InternalHostname: "api.alpha.internal",
 		}}},
 	}
-	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: repository})
-	if err != nil {
-		t.Fatal(err)
-	}
+	handler := newTestHandler(t, repository)
 
 	listProjects := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_projects","arguments":{}}}`)
 	listProjects = withMCPIdentity(listProjects, automation.Identity{TokenID: "token", Role: "read", ProjectID: &boundProject})
@@ -153,6 +177,50 @@ func TestMCPReadToolsEnforceProjectBoundaryBeforeLookup(t *testing.T) {
 	handler.ServeHTTP(response, otherProject)
 	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.canvasCalls != 0 {
 		t.Fatalf("cross-project tool result = %s, canvas calls=%d", response.Body, repository.canvasCalls)
+	}
+}
+
+func TestMCPAdminToolVisibilityAndAuthorizationBeforeMutation(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := newTestHandler(t, repository)
+
+	list := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if strings.Contains(response.Body.String(), `"name":"create_service"`) {
+		t.Fatalf("read tools exposed admin mutation: %s", response.Body)
+	}
+
+	list = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`), automation.Identity{TokenID: "admin", Role: "admin"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if !strings.Contains(response.Body.String(), `"name":"create_service"`) || !strings.Contains(response.Body.String(), `"name":"rollback_service"`) {
+		t.Fatalf("admin tools missing mutations: %s", response.Body)
+	}
+
+	call := mcpRequest(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"create_service","arguments":"not-an-object"}}`)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `admin token is required`) || repository.createCalls != 0 {
+		t.Fatalf("read mutation = %s, calls=%d", response.Body, repository.createCalls)
+	}
+
+	boundProject := "project-a"
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_service","arguments":{"projectId":"project-b","name":"api","configuration":{"imageReference":"alpine"}}}}`), automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &boundProject})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.createCalls != 0 {
+		t.Fatalf("bound admin mutation = %s, calls=%d", response.Body, repository.createCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"create_service","arguments":{"projectId":"project-a","name":"api","configuration":{"imageReference":"alpine"}}}}`), automation.Identity{TokenID: "admin-token", Role: "admin", ProjectID: &boundProject})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `requestId`) || repository.createCalls != 1 {
+		t.Fatalf("admin mutation = %s, calls=%d", response.Body, repository.createCalls)
+	}
+	if repository.created.ActorKind != "token" || repository.created.ActorID != "admin-token" || repository.created.ActorEmail != "" {
+		t.Fatalf("mutation actor = %+v", repository.created)
 	}
 }
 

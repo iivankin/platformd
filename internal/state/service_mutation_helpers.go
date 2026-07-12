@@ -11,8 +11,8 @@ import (
 	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
-func validateServiceMutationIdentity(serviceID, projectID string, expectedUpdated int64, auditID, actorID, actorEmail string, timestamp int64) error {
-	if serviceID == "" || projectID == "" || expectedUpdated <= 0 || auditID == "" || actorID == "" || actorEmail == "" || timestamp <= 0 {
+func validateServiceMutationIdentity(serviceID, projectID string, expectedUpdated int64, auditID, actorKind, actorID, actorEmail string, timestamp int64) error {
+	if serviceID == "" || projectID == "" || expectedUpdated <= 0 || auditID == "" || timestamp <= 0 || validateMutationActor(actorKind, actorID, actorEmail) != nil {
 		return errors.New("service mutation input is incomplete")
 	}
 	return nil
@@ -151,6 +151,7 @@ INSERT INTO service_volume_mounts(service_id, volume_id, container_path) VALUES 
 
 type serviceAudit struct {
 	ID              string
+	ActorKind       string
 	ActorID         string
 	ActorEmail      string
 	Action          string
@@ -161,7 +162,13 @@ type serviceAudit struct {
 }
 
 func insertServiceAudit(ctx context.Context, transaction *sql.Tx, audit serviceAudit) error {
-	metadata := map[string]string{"actorEmail": audit.ActorEmail}
+	if err := validateMutationActor(audit.ActorKind, audit.ActorID, audit.ActorEmail); err != nil {
+		return err
+	}
+	metadata := make(map[string]string)
+	if audit.ActorEmail != "" {
+		metadata["actorEmail"] = audit.ActorEmail
+	}
 	for key, value := range audit.Metadata {
 		metadata[key] = value
 	}
@@ -177,10 +184,29 @@ func insertServiceAudit(ctx context.Context, transaction *sql.Tx, audit serviceA
 INSERT INTO audit_events(
   id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, ?, 'service', ?, ?, 'succeeded', ?, ?)`,
-		audit.ID, audit.ActorID, audit.Action, audit.ServiceID, correlationID, string(encoded), audit.CreatedAtMillis,
+) VALUES (?, ?, ?, ?, 'service', ?, ?, 'succeeded', ?, ?)`,
+		audit.ID, audit.ActorKind, audit.ActorID, audit.Action, audit.ServiceID, correlationID, string(encoded), audit.CreatedAtMillis,
 	); err != nil {
 		return fmt.Errorf("audit %s: %w", audit.Action, err)
+	}
+	return nil
+}
+
+func validateMutationActor(kind, id, email string) error {
+	if id == "" {
+		return errors.New("mutation actor ID is empty")
+	}
+	switch kind {
+	case "access":
+		if email == "" {
+			return errors.New("Access mutation actor email is empty")
+		}
+	case "token":
+		if email != "" {
+			return errors.New("token mutation actor must not carry an Access email")
+		}
+	default:
+		return errors.New("mutation actor kind must be access or token")
 	}
 	return nil
 }

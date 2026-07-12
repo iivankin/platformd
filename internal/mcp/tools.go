@@ -88,7 +88,7 @@ func objectSchema(properties map[string]any, required []string) map[string]any {
 	return result
 }
 
-func (handler *Handler) listTools(response http.ResponseWriter, message requestMessage, _ automation.Identity) {
+func (handler *Handler) listTools(response http.ResponseWriter, message requestMessage, identity automation.Identity) {
 	if len(message.Params) != 0 {
 		var params struct {
 			Cursor string `json:"cursor"`
@@ -98,13 +98,21 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 			return
 		}
 	}
-	writeRPCResult(response, message.ID, map[string]any{"tools": handler.tools})
+	tools := handler.tools
+	if identity.IsAdmin() {
+		tools = append(append([]Tool(nil), tools...), adminTools()...)
+	}
+	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
 }
 
 func (handler *Handler) callTool(response http.ResponseWriter, request *http.Request, message requestMessage, identity automation.Identity) {
 	var call toolCallParams
 	if err := decodeArguments(message.Params, &call); err != nil || call.Name == "" {
 		writeRPCError(response, message.ID, codeInvalidParams, "Invalid tools/call params")
+		return
+	}
+	if isServiceMutationTool(call.Name) && !identity.IsAdmin() {
+		writeToolResult(response, message.ID, map[string]string{"error": automation.ErrAdminRequired.Error()}, true)
 		return
 	}
 	var output any
@@ -118,12 +126,20 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.getService(request.Context(), call.Arguments, identity)
 	case "list_service_deployments":
 		output, err = handler.listDeployments(request.Context(), call.Arguments, identity)
+	case "create_service":
+		output, err = handler.createService(request.Context(), call.Arguments, identity)
+	case "update_service":
+		output, err = handler.updateService(request.Context(), call.Arguments, identity)
+	case "redeploy_service":
+		output, err = handler.redeployService(request.Context(), call.Arguments, identity)
+	case "rollback_service":
+		output, err = handler.rollbackService(request.Context(), call.Arguments, identity)
 	default:
 		writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

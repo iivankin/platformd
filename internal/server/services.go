@@ -127,7 +127,7 @@ func createService(config handlerConfig) http.HandlerFunc {
 		created, err := config.services.CreateService(request.Context(), state.CreateService{
 			ID: serviceID, ProjectID: request.PathValue("projectID"), Name: body.Name,
 			Enabled: enabled, Snapshot: snapshot,
-			AuditEventID: auditID, ActorID: identity.Subject, ActorEmail: identity.Email,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
 		if errors.Is(err, state.ErrProjectNotFound) {
