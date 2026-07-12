@@ -13,15 +13,12 @@ import { useParams } from "react-router";
 import { fetchImageCredentials, fetchProjectCanvas } from "@/api";
 import type { ImageCredential, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
+import { ProjectCreateOverlays } from "@/project-create-overlays";
+import type { CreateKind } from "@/project-create-overlays";
+import { ProjectDetailOverlays } from "@/project-detail-overlays";
 import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
 import type { ResourceFlowEdge, ResourceFlowNode } from "@/project-flow";
-import { RedisCreatePanel } from "@/redis-create-panel";
-import { RedisDetailPanel } from "@/redis-detail-panel";
-import { ResourceCreatePanel } from "@/resource-create-panel";
-import { ResourceDetailPanel } from "@/resource-detail-panel";
 import { ResourceNode } from "@/resource-node";
-import { ServiceCreatePanel } from "@/service-create-panel";
-import { ServiceDetailPanel } from "@/service-detail-panel";
 
 const nodeTypes = { resource: ResourceNode };
 const emptyNodes: ResourceFlowNode[] = [];
@@ -51,9 +48,7 @@ export const ProjectCanvasPage = () => {
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<ImageCredential[]>([]);
-  const [createKind, setCreateKind] = useState<
-    "picker" | "redis" | "service" | null
-  >(null);
+  const [createKind, setCreateKind] = useState<CreateKind>(null);
   const [selectedNodeID, setSelectedNodeID] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [nodes, setNodes, onNodesChange] =
@@ -132,60 +127,24 @@ export const ProjectCanvasPage = () => {
       ) : null}
 
       <section className="relative min-h-0 flex-1 bg-background">
-        {createKind === "picker" ? (
-          <ResourceCreatePanel
-            onClose={() => setCreateKind(null)}
-            onSelect={setCreateKind}
-          />
-        ) : null}
-        {createKind === "service" ? (
-          <ServiceCreatePanel
-            credentials={credentials}
-            onClose={() => setCreateKind(null)}
-            onCreated={() => {
-              setCreateKind(null);
-              setRefreshVersion((value) => value + 1);
-            }}
-            projectID={projectID}
-          />
-        ) : null}
-        {createKind === "redis" ? (
-          <RedisCreatePanel
-            onClose={() => setCreateKind(null)}
-            onCreated={() => {
-              setCreateKind(null);
-              setRefreshVersion((value) => value + 1);
-            }}
-            projectID={projectID}
-          />
-        ) : null}
-        {!createKind && selectedNode?.data.kind === "service" ? (
-          <ServiceDetailPanel
-            data={selectedNode.data}
-            onChanged={() => setRefreshVersion((value) => value + 1)}
-            onClose={() => setSelectedNodeID(null)}
-            projectID={projectID}
-            serviceID={selectedNode.id}
-          />
-        ) : null}
-        {!createKind && selectedNode?.data.kind === "redis" ? (
-          <RedisDetailPanel
-            data={selectedNode.data}
-            onChanged={() => setRefreshVersion((value) => value + 1)}
-            onClose={() => setSelectedNodeID(null)}
-            projectID={projectID}
-            redisID={selectedNode.id}
-          />
-        ) : null}
-        {!createKind &&
-        selectedNode &&
-        selectedNode.data.kind !== "service" &&
-        selectedNode.data.kind !== "redis" ? (
-          <ResourceDetailPanel
-            data={selectedNode.data}
-            onClose={() => setSelectedNodeID(null)}
-          />
-        ) : null}
+        <ProjectCreateOverlays
+          credentials={credentials}
+          kind={createKind}
+          onClose={() => setCreateKind(null)}
+          onCreated={() => {
+            setCreateKind(null);
+            setRefreshVersion((value) => value + 1);
+          }}
+          onSelect={setCreateKind}
+          projectID={projectID}
+        />
+        <ProjectDetailOverlays
+          createOpen={createKind !== null}
+          onChanged={() => setRefreshVersion((value) => value + 1)}
+          onClose={() => setSelectedNodeID(null)}
+          projectID={projectID}
+          selectedNode={selectedNode}
+        />
         <EmptyCanvas visible={isCanvasEmpty === true} />
         <ReactFlow<ResourceFlowNode, ResourceFlowEdge>
           edges={edges}

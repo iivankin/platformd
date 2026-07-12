@@ -39,6 +39,14 @@ func (repository liveAutomationRepository) ManagedRedisByProject(ctx context.Con
 	return repository.store.ManagedRedisByProject(ctx, projectID)
 }
 
+func (repository liveAutomationRepository) ManagedPostgresInProject(ctx context.Context, projectID, resourceID string) (state.ManagedPostgres, error) {
+	return repository.store.ManagedPostgresInProject(ctx, projectID, resourceID)
+}
+
+func (repository liveAutomationRepository) ManagedPostgresByProject(ctx context.Context, projectID string) ([]state.ManagedPostgres, error) {
+	return repository.store.ManagedPostgresByProject(ctx, projectID)
+}
+
 func (repository liveAutomationRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
 	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).CreateService(ctx, input)
 }
