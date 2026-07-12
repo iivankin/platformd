@@ -15,6 +15,10 @@ func (repository liveProjectRepository) Projects(ctx context.Context) ([]state.P
 	return repository.store.Projects(ctx)
 }
 
+func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, projectID string) (state.ProjectCanvas, error) {
+	return repository.store.ProjectCanvas(ctx, projectID)
+}
+
 func (repository liveProjectRepository) CreateProject(ctx context.Context, input state.CreateProject) (state.ProjectSummary, error) {
 	created, err := repository.store.CreateProject(ctx, input)
 	if err != nil {

@@ -7,10 +7,11 @@ import {
   Server,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router";
 
-import { createProject, fetchProjects } from "@/api";
+import { createProject } from "@/api";
 import type { Project } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,38 +29,41 @@ const resourceCount = (project: Project) =>
   project.redisCount +
   project.objectStoreCount;
 
-export const ProjectsPage = () => {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+interface ProjectsPageProperties {
+  loadError: string | null;
+  loading: boolean;
+  onCreated: (project: Project) => void;
+  projects: Project[];
+}
+
+export const ProjectsPage = ({
+  loadError,
+  loading,
+  onCreated,
+  projects,
+}: ProjectsPageProperties) => {
+  const navigate = useNavigate();
+  const [searchParameters, setSearchParameters] = useSearchParams();
+  const [createOpen, setCreateOpen] = useState(false);
+  const creating = createOpen || searchParameters.get("new") === "1";
   const [name, setName] = useState("");
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    const loadProjects = async () => {
-      try {
-        const value = await fetchProjects(controller.signal);
-        setProjects(value);
-        setLoadError(null);
-      } catch (error) {
-        if (error instanceof DOMException && error.name === "AbortError") {
-          return;
-        }
-        setLoadError(
-          error instanceof Error ? error.message : "Unable to load projects"
-        );
-      } finally {
-        if (!controller.signal.aborted) {
-          setLoading(false);
-        }
-      }
-    };
-    void loadProjects();
-    return () => controller.abort();
-  }, []);
+  const closeCreate = () => {
+    setCreateOpen(false);
+    setMutationError(null);
+    if (searchParameters.size > 0) {
+      setSearchParameters({}, { replace: true });
+    }
+  };
+
+  const openCreate = () => {
+    setCreateOpen(true);
+    if (searchParameters.size > 0) {
+      setSearchParameters({}, { replace: true });
+    }
+  };
 
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -73,13 +77,10 @@ export const ProjectsPage = () => {
     setMutationError(null);
     try {
       const created = await createProject(name);
-      setProjects((current) =>
-        [...current, created].toSorted((left, right) =>
-          left.name.localeCompare(right.name)
-        )
-      );
+      onCreated(created);
       setName("");
-      setCreating(false);
+      setCreateOpen(false);
+      navigate(`/projects/${created.id}`);
     } catch (error) {
       setMutationError(
         error instanceof Error ? error.message : "Unable to create project"
@@ -103,7 +104,7 @@ export const ProjectsPage = () => {
             resources
           </p>
         </div>
-        <Button onClick={() => setCreating(true)} size="sm">
+        <Button onClick={openCreate} size="sm">
           <Plus />
           New project
         </Button>
@@ -159,10 +160,7 @@ export const ProjectsPage = () => {
             ) : null}
             <div className="mt-4 flex justify-end gap-2">
               <Button
-                onClick={() => {
-                  setCreating(false);
-                  setMutationError(null);
-                }}
+                onClick={closeCreate}
                 size="sm"
                 type="button"
                 variant="ghost"
@@ -199,7 +197,7 @@ export const ProjectsPage = () => {
               Start with one project. Network and internal DNS are provisioned
               by the control plane.
             </p>
-            <Button className="mt-5" onClick={() => setCreating(true)}>
+            <Button className="mt-5" onClick={openCreate}>
               <Plus />
               Create project
             </Button>
@@ -216,9 +214,10 @@ export const ProjectsPage = () => {
           </div>
           <div className="[content-visibility:auto]">
             {projects.map((project) => (
-              <div
+              <Link
                 className="grid min-h-14 grid-cols-[minmax(180px,1.3fr)_minmax(240px,1fr)_100px] items-center border-b border-border px-5 py-3 last:border-b-0 hover:bg-muted/25"
                 key={project.id}
+                to={`/projects/${project.id}`}
               >
                 <div className="min-w-0">
                   <div className="truncate text-xs font-medium">
@@ -254,7 +253,7 @@ export const ProjectsPage = () => {
                 >
                   {dateFormatter.format(project.updatedAt)}
                 </time>
-              </div>
+              </Link>
             ))}
           </div>
         </section>

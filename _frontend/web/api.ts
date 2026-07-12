@@ -9,6 +9,13 @@ const metaSchema = z.object({
 
 export type Meta = z.infer<typeof metaSchema>;
 
+const identitySchema = z.object({
+  email: z.email(),
+  subject: z.string().min(1),
+});
+
+export type Identity = z.infer<typeof identitySchema>;
+
 const projectSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   id: z.string().min(1),
@@ -27,10 +34,41 @@ const apiErrorSchema = z.object({
 
 export type Project = z.infer<typeof projectSchema>;
 
+const canvasResourceSchema = z.object({
+  bucketName: z.string().optional(),
+  enabled: z.boolean(),
+  id: z.string().min(1),
+  imageReference: z.string().optional(),
+  internalHostname: z.string().min(1),
+  kind: z.enum(["service", "postgres", "redis", "object_store"]),
+  name: z.string().min(1),
+});
+
+const canvasConnectionSchema = z.object({
+  environmentNames: z.array(z.string().min(1)),
+  sourceId: z.string().min(1),
+  targetId: z.string().min(1),
+});
+
+const projectCanvasSchema = z.object({
+  connections: z.array(canvasConnectionSchema),
+  project: projectSchema,
+  resources: z.array(canvasResourceSchema),
+});
+
+export type ProjectCanvas = z.infer<typeof projectCanvasSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
 ) => Promise<Response>;
+
+const apiError = async (response: Response, fallback: string) => {
+  const parsed = apiErrorSchema.safeParse(
+    await response.json().catch(() => null)
+  );
+  return new Error(parsed.success ? parsed.data.error.message : fallback);
+};
 
 export const fetchMeta = async (
   signal?: AbortSignal,
@@ -48,11 +86,21 @@ export const fetchMeta = async (
   return metaSchema.parse(await response.json());
 };
 
-const apiError = async (response: Response, fallback: string) => {
-  const parsed = apiErrorSchema.safeParse(
-    await response.json().catch(() => null)
-  );
-  return new Error(parsed.success ? parsed.data.error.message : fallback);
+export const fetchIdentity = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Identity> => {
+  const response = await fetcher("/api/v1/me", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `identity request failed with ${response.status}`
+    );
+  }
+  return identitySchema.parse(await response.json());
 };
 
 export const fetchProjects = async (
@@ -91,4 +139,22 @@ export const createProject = async (
     );
   }
   return projectSchema.parse(await response.json());
+};
+
+export const fetchProjectCanvas = async (
+  projectID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ProjectCanvas> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/canvas`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project canvas request failed with ${response.status}`
+    );
+  }
+  return projectCanvasSchema.parse(await response.json());
 };

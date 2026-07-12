@@ -20,6 +20,7 @@ const maximumProjectRequestBytes = 4096
 
 type ProjectRepository interface {
 	Projects(context.Context) ([]state.ProjectSummary, error)
+	ProjectCanvas(context.Context, string) (state.ProjectCanvas, error)
 	CreateProject(context.Context, state.CreateProject) (state.ProjectSummary, error)
 }
 
@@ -34,9 +35,69 @@ type projectResponse struct {
 	UpdatedAt        int64  `json:"updatedAt"`
 }
 
+type projectCanvasResponse struct {
+	Project     projectResponse           `json:"project"`
+	Resources   []projectCanvasResource   `json:"resources"`
+	Connections []projectCanvasConnection `json:"connections"`
+}
+
+type projectCanvasResource struct {
+	ID               string `json:"id"`
+	Kind             string `json:"kind"`
+	Name             string `json:"name"`
+	InternalHostname string `json:"internalHostname"`
+	ImageReference   string `json:"imageReference,omitempty"`
+	BucketName       string `json:"bucketName,omitempty"`
+	Enabled          bool   `json:"enabled"`
+}
+
+type projectCanvasConnection struct {
+	SourceID         string   `json:"sourceId"`
+	TargetID         string   `json:"targetId"`
+	EnvironmentNames []string `json:"environmentNames"`
+}
+
 func registerProjectRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.projects))
 	mux.HandleFunc("POST /api/v1/projects", createProject(config))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/canvas", getProjectCanvas(config.projects))
+}
+
+func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		canvas, err := repository.ProjectCanvas(request.Context(), request.PathValue("projectID"))
+		if errors.Is(err, state.ErrProjectNotFound) {
+			writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load project canvas")
+			return
+		}
+		resources := make([]projectCanvasResource, 0, len(canvas.Resources))
+		for _, resource := range canvas.Resources {
+			resources = append(resources, projectCanvasResource{
+				ID: resource.ID, Kind: resource.Kind, Name: resource.Name,
+				InternalHostname: resource.InternalHostname,
+				ImageReference:   resource.ImageReference, BucketName: resource.BucketName,
+				Enabled: resource.Enabled,
+			})
+		}
+		connections := make([]projectCanvasConnection, 0, len(canvas.Connections))
+		for _, connection := range canvas.Connections {
+			connections = append(connections, projectCanvasConnection{
+				SourceID: connection.SourceID, TargetID: connection.TargetID,
+				EnvironmentNames: connection.EnvironmentNames,
+			})
+		}
+		writeJSON(response, http.StatusOK, projectCanvasResponse{
+			Project: publicProject(canvas.Project), Resources: resources, Connections: connections,
+		})
+	}
 }
 
 func listProjects(repository ProjectRepository) http.HandlerFunc {
