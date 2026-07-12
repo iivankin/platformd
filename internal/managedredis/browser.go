@@ -320,19 +320,20 @@ func boundPreviewItems(items []PreviewItem, maximum int) ([]PreviewItem, bool) {
 	result := make([]PreviewItem, 0, len(items))
 	remaining := maximum
 	for _, item := range items {
+		itemBytes := 0
+		for _, value := range item.Values {
+			itemBytes += len(value)
+		}
+		// Collection items remain atomic so the UI never offers a destructive
+		// action for a field/member/stream ID truncated by the preview byte cap.
+		if itemBytes > remaining {
+			return result, true
+		}
 		bounded := PreviewItem{Values: make([][]byte, 0, len(item.Values))}
 		for _, value := range item.Values {
-			if remaining == 0 {
-				return result, true
-			}
-			length := min(len(value), remaining)
-			bounded.Values = append(bounded.Values, append([]byte(nil), value[:length]...))
-			remaining -= length
-			if length != len(value) {
-				result = append(result, bounded)
-				return result, true
-			}
+			bounded.Values = append(bounded.Values, append([]byte(nil), value...))
 		}
+		remaining -= itemBytes
 		result = append(result, bounded)
 	}
 	return result, false

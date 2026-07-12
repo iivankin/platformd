@@ -26,6 +26,7 @@ type ManagedRedisRepository interface {
 	Resources(context.Context, string) ([]state.ManagedRedis, error)
 	Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error)
 	Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error)
+	Mutate(context.Context, managedredis.DataMutationInput) (managedredis.DataMutationResult, error)
 }
 
 type managedRedisResponse struct {
@@ -52,6 +53,7 @@ func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepos
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(repository))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis/{redisID}/data/mutations", mutateManagedRedisData(repository))
 }
 
 func previewManagedRedisKey(repository ManagedRedisRepository) http.HandlerFunc {
@@ -267,6 +269,7 @@ func publicManagedRedis(resource state.ManagedRedis, password string) managedRed
 }
 
 func writeManagedRedisError(response http.ResponseWriter, err error) {
+	var commandError *managedredis.CommandError
 	switch {
 	case errors.Is(err, state.ErrProjectNotFound):
 		writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
@@ -284,6 +287,8 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusServiceUnavailable, "redis_not_running", "Managed Redis resource is not running")
 	case errors.Is(err, managedredis.ErrKeyNotFound):
 		writeAPIError(response, http.StatusNotFound, "redis_key_not_found", "Redis key no longer exists")
+	case errors.As(err, &commandError):
+		writeAPIError(response, http.StatusConflict, "redis_mutation_rejected", commandError.Error())
 	default:
 		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage Redis resource")
 	}

@@ -612,7 +612,7 @@ Root exec доступен только unbound `admin` API token. Project-bound
 
 В admin UI можно включить отдельный automation hostname и создавать random API tokens формата `ptk_<public-id>_<256-bit-secret>`. Token показывается один раз. SQLite индексирует только random public ID и хранит HMAC-SHA-256 secret verifier под отдельным key, derived from master key; verification выполняется constant-time после одного indexed lookup. Это не password/Argon2 flow. Authentication считает только failed attempts в fixed one-minute in-memory windows: максимум 10 failures на exact `(publicId, source IP)` и 100 failures суммарно на source IP; malformed credential без parseable public ID учитывается только в source window. Следующий request сверх любого лимита получает `429` и fixed `Retry-After: 60`. Successful request не очищает failure counters, daemon restart очищает весь limiter state. Revoke действует для следующего request.
 
-Token имеет ровно одну role: `read` либо `admin`, и optional exact `projectId` restriction. `read` разрешает list/get/status, bounded logs и bounded data-browser reads без platform secrets. `admin` включает `read`, all project/resource mutations, deployments, backups, Registry management и arbitrary PostgreSQL SQL. Interactive container/server PTY остаются Access-only UI surfaces и API token не доступны. Project-bound token не видит и не изменяет resources других projects.
+Token имеет ровно одну role: `read` либо `admin`, и optional exact `projectId` restriction. `read` разрешает list/get/status и bounded logs без platform secrets. `admin` включает `read`, all project/resource lifecycle mutations, deployments, backups и Registry management. PostgreSQL/Redis row/value data browser и SQL console остаются Access-only UI surfaces и API token не доступны, как и interactive container/server PTY. Project-bound token не видит и не изменяет resources других projects.
 
 Unbound `admin` дополнительно получает installation-wide operations и automation root exec §16.3 и поэтому является полным root credential без console passphrase. Dedicated API endpoints для master-key/Origin-key/token-secret reveal всё равно отсутствуют, но root command может прочитать их напрямую. `read` и project-bound `admin` не получают host root exec, console-passphrase reset или platform secret reveal.
 
@@ -632,8 +632,7 @@ Platformd предоставляет stateless subset MCP Streamable HTTP на e
 - read bounded logs;
 - list managed resources and backup status;
 - on-demand list/search official managed database image tags and start/read `Change version` operation;
-- read PostgreSQL/Redis/S3 metadata through bounded operations;
-- `postgres_query` для arbitrary SQL и result output с `admin` role в пределах token project boundary;
+- read lifecycle/configuration metadata managed PostgreSQL/Redis/S3 resources без row/value/object content;
 - `server_exec` для host root command/output только с unbound `admin` token.
 
 MCP не предоставляет interactive PTY или arbitrary container exec. `server_exec` является отдельным non-interactive root surface и может вернуть любые host secrets; этот риск равен REST root exec и принят явно.
@@ -855,7 +854,7 @@ UI предоставляет:
 - paginated rows с server-side limit;
 - полноценный SQL editor/console в стиле PlanetScale.
 
-SQL console доступна interactive admin через Cloudflare Access, REST `admin` token и MCP `postgres_query`. Project-bound token может обращаться только к PostgreSQL своего project; unbound `admin` — к любой managed PostgreSQL. Console выполняет arbitrary SQL, включая multi-statement, transactions, DDL и DML, от generated managed owner role внутри выбранной database; PostgreSQL superuser/cluster-level privileges не выдаются. Platformd не парсит и не классифицирует SQL. Server одинаково для UI/API/MCP ограничивает concurrent queries, result rows/bytes, idle session и maximum execution time, поддерживает streaming/bounded results и cancellation. API/MCP возвращают columns, rows либо command tag/affected rows и structured error. Query text/history server-side не сохраняется и в audit не попадает; audit содержит actor/token, database, timestamps, duration, result/row count и error class без row values.
+SQL console доступна только interactive admin UI через Cloudflare Access. Она выполняет arbitrary SQL, включая multi-statement, transactions, DDL и DML, от generated managed owner role внутри выбранной database; PostgreSQL superuser/cluster-level privileges не выдаются. Platformd не парсит и не классифицирует SQL. Server ограничивает concurrent queries, result rows/bytes, idle session и maximum execution time, поддерживает streaming/bounded results и cancellation. Query text/history server-side не сохраняется и в audit не попадает; audit содержит Access actor, database, timestamps, duration, result/row count и error class без row values. Public REST, API-token и MCP PostgreSQL data/query endpoints отсутствуют. Позднее для agents может быть добавлен отдельный project-scoped port-forward к native database protocol; в v1 такого surface нет.
 
 ## 24. Managed Redis
 
@@ -883,7 +882,19 @@ Individual restore выбирает complete generation этой Redis instance 
 
 ### 24.2. Data browser
 
-UI использует incremental `SCAN`, а не blocking `KEYS`. Он показывает key, type, TTL и estimated size. Value preview имеет type-aware commands и строгий element/byte limit. Pub/Sub monitor и unrestricted command console отсутствуют в read-only browser.
+UI использует incremental `SCAN`, а не blocking `KEYS`. Он показывает key, type, TTL и estimated size. Value preview имеет type-aware commands и строгий element/byte limit.
+
+Тот же Access-only UI предоставляет bounded type-aware CRUD без unrestricted Redis command console:
+
+- `string`: create/update whole value;
+- `hash`: add/update и delete field;
+- `list`: push left/right, set index и remove by value/count;
+- `set`: add/remove member;
+- `zset`: add/update score и remove member;
+- `stream`: `XADD` field/value pairs с generated ID и `XDEL` exact entry ID;
+- для любого key: set/clear TTL и delete whole key.
+
+Mutation request ограничен 256 KiB, один key/field/value/member — 64 KiB, stream mutation — 100 field/value pairs, общий execution timeout — 5 seconds, а UI data operations разделяют fixed concurrency cap. Audit содержит Access actor, Redis resource и operation kind, но не key, field, member или value. Public REST, API-token и MCP Redis data endpoints отсутствуют. Resource lifecycle/configuration endpoints остаются доступны automation API/MCP по обычным roles. Позднее agents могут получить project-scoped port-forward к native Redis protocol; в v1 его нет.
 
 ## 25. Remote S3 backups
 
@@ -927,16 +938,16 @@ UI каждого resource показывает backup enabled/UTC cron/retentio
 
 ## 26. API/UI data safety
 
-Table/Redis/S3 data browsers являются read-only и bounded. PostgreSQL SQL console §23.3.2 является явным исключением: она разрешает arbitrary mutations, но сохраняет server-side execution/result/concurrency limits. Data surfaces не должны:
+PostgreSQL и Redis data browsers доступны только Access-authenticated admin UI и являются bounded. PostgreSQL SQL console §23.3.2 разрешает arbitrary owner-level mutations, а Redis browser — только fixed type-aware operations §24.2. S3 browser остаётся read-only. Data surfaces не должны:
 
 - загружать целую большую table/keyspace/bucket в память;
 - выполнять automatic full count;
 - раскрывать managed credentials;
 - помещать row/value/object content в audit log;
-- разрешать unrestricted query language, кроме явно выделенного `postgres_query` к managed PostgreSQL от generated managed owner role по §23.3.2;
+- разрешать unrestricted query language, кроме UI SQL console к managed PostgreSQL от generated managed owner role по §23.3.2;
 - продолжать query после browser disconnect без timeout.
 
-Mutating PostgreSQL operations пользователь может выполнять через interactive SQL console. Для Redis/S3 и остальных resources mutations выполняются через их обычный protocol/API, container console либо собственный client внутри project network.
+Mutating PostgreSQL operations пользователь выполняет через interactive UI SQL console. Redis mutations выполняются через fixed UI CRUD §24.2. S3 object mutations происходят через S3 protocol, а его UI browser остаётся read-only. Data browser/query endpoints не публикуются на automation REST/MCP hostname.
 
 ## 27. Resource limits и disk pressure
 
@@ -1061,7 +1072,7 @@ Atomic `current` symlink является единственной durable relea
 - malformed/fuzz Registry, S3, SigV4, DNS и proxy inputs;
 - real Cloudflare test zone для Full (strict), Access JWT, WebSocket и registry push;
 - browser E2E для projects, deploy, logs, terminals, data browsers, backup/restore и tokens;
-- REST/MCP integration tests для arbitrary PostgreSQL SQL, project boundary и unbound-admin root exec с stdout/stderr, timeout и process-tree kill; они также подтверждают отсутствие token-authenticated container/server PTY и attach/resize endpoints; API-token tests подтверждают exact one-minute `10 per (publicId,source)/100 per source` failed-only limits, fixed `Retry-After: 60`, отсутствие success reset, daemon-reset memory state и next-request revoke; MCP transport tests подтверждают initial version negotiation без protocol header, required `serverInfo`, exact subsequent protocol header, dual-type `Accept`, `initialize`/`notifications/initialized`, POST-only stateless JSON, `202` notification response, отсутствие session ID/SSE/resume state и `405` для GET/DELETE; Access tests подтверждают JWKS refresh singleflight/cooldown/bounded negative cache; console-auth tests подтверждают single Argon2 verification, fixed failed-attempt delay, global in-memory cooldown/reset и отсутствие persisted/per-subject/per-IP counters;
+- Access-only browser integration tests покрывают PostgreSQL arbitrary SQL и Redis type-aware CRUD/TTL/delete с bounded output, audit без row/key/value content и отсутствие этих data surfaces на automation REST/MCP hostname; REST/MCP tests покрывают project boundary и unbound-admin root exec с stdout/stderr, timeout и process-tree kill; они также подтверждают отсутствие token-authenticated container/server PTY и attach/resize endpoints; API-token tests подтверждают exact one-minute `10 per (publicId,source)/100 per source` failed-only limits, fixed `Retry-After: 60`, отсутствие success reset, daemon-reset memory state и next-request revoke; MCP transport tests подтверждают initial version negotiation без protocol header, required `serverInfo`, exact subsequent protocol header, dual-type `Accept`, `initialize`/`notifications/initialized`, POST-only stateless JSON, `202` notification response, отсутствие session ID/SSE/resume state и `405` для GET/DELETE; Access tests подтверждают JWKS refresh singleflight/cooldown/bounded negative cache; console-auth tests подтверждают single Argon2 verification, fixed failed-attempt delay, global in-memory cooldown/reset и отсутствие persisted/per-subject/per-IP counters;
 - watcher integration test подтверждает 60-second remote tag polling с maximum 15-minute error backoff, отсутствие polling для digest и embedded references, exact embedded repository/tag callback после manifest commit с coalescing/maximum 1-minute transient retry, startup recovery потерянного callback, stale-result rejection после config change, automatic retry registry/pull errors без остановки active container и отсутствие automatic retry failed candidate той же пары `(serviceConfigHash, digest)` даже после daemon restart; новый digest/config и explicit Redeploy снимают блок;
 - image compatibility tests с OCI image/index и Docker schema 2;
 - network isolation и internal DNS tests;
@@ -1087,7 +1098,7 @@ Release acceptance scenario:
 7. Root PTY в UI требует console passphrase; unbound `admin` token выполняет bounded non-interactive root command через REST/MCP без passphrase.
 8. Embedded registry принимает push/pull, public pull policy работает, а admin UI просматривает repositories/images и безопасно удаляет tag, image либо целый repository.
 9. Embedded private S3 работает из service; optional public hostname принимает valid presigned URL и отклоняет anonymous request.
-10. PostgreSQL/Redis создаются и доступны по internal DNS; UI имеет bounded data browsers, а PostgreSQL arbitrary SQL работает через UI, REST и MCP `admin`.
+10. PostgreSQL/Redis создаются и доступны по internal DNS; Access-only UI имеет bounded PostgreSQL read/write SQL и Redis type-aware CRUD/TTL/delete, а automation REST/MCP не имеют database row/value/query surfaces.
 11. PostgreSQL, Redis, Registry и каждый ObjectStore независимо включают 5-field UTC cron/retention, создают encrypted generations и выполняют individual restore; disabled policy не создаёт scheduled backups.
 12. Ordinary daemon restart и reboot останавливают workloads, полностью пересоздают `/run/platformd/containers` и все networks/containers из SQLite, переиспользуя только cached exact images.
 13. Signed self-update использует тот же clean-runtime startup, переиспользует cached exact images и проходит schema migration; digest, отсутствующий в cache и registry, оставляет resource stopped, но admin UI доступна.
@@ -1131,7 +1142,7 @@ Release acceptance scenario:
 | V2-10 | Embedded minimal OCI Registry и private S3 внутри platformd |
 | V2-11 | Registry не вводит собственный Cloudflare layer limit |
 | V2-12 | PostgreSQL pg_dump и Redis RDB backups в remote S3, без PITR |
-| V2-13 | PostgreSQL, Redis и S3 имеют bounded data browsers; PostgreSQL дополнительно предоставляет arbitrary SQL через UI/REST/MCP |
+| V2-13 | Access-only UI предоставляет bounded PostgreSQL arbitrary owner SQL и Redis type-aware CRUD/TTL/delete; S3 browser read-only; automation REST/MCP database data surfaces отсутствуют |
 | V2-14 | Access принимает только RS256; issuer и exact JWKS URL выводятся из validated team domain и не настраиваются независимо |
 | V2-15 | MCP и REST используют static tokens с role `read/admin` и optional exact project boundary |
 | V2-16 | Interactive host root PTY требует init-only passphrase; unbound `admin` token выполняет non-interactive root exec без неё |

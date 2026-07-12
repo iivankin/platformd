@@ -144,6 +144,33 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 	if err != nil || preview.Type != "string" || preview.Length != 9 || len(preview.Items) != 1 || string(preview.Items[0].Values[0]) != "persisted" {
 		t.Fatalf("value preview = %+v, %v", preview, err)
 	}
+	score := 1.5
+	mutations := []Mutation{
+		{Kind: MutationHashSet, Key: []byte("browser-hash"), Field: []byte("field"), Value: []byte("value")},
+		{Kind: MutationListPushRight, Key: []byte("browser-list"), Value: []byte("value")},
+		{Kind: MutationSetAdd, Key: []byte("browser-set"), Member: []byte("member")},
+		{Kind: MutationZSetAdd, Key: []byte("browser-zset"), Member: []byte("member"), Score: &score},
+		{Kind: MutationStreamAdd, Key: []byte("browser-stream"), Fields: []FieldValue{{Field: []byte("field"), Value: []byte("value")}}},
+		{Kind: MutationTTLSet, Key: []byte("platformd-integration"), TTLMillis: 60_000},
+		{Kind: MutationTTLClear, Key: []byte("platformd-integration")},
+	}
+	for _, mutation := range mutations {
+		if _, err := controller.Mutate(ctx, resource.ID, mutation); err != nil {
+			t.Fatalf("mutation %s: %v", mutation.Kind, err)
+		}
+	}
+	for key, expectedType := range map[string]string{
+		"browser-hash": "hash", "browser-list": "list", "browser-set": "set",
+		"browser-zset": "zset", "browser-stream": "stream",
+	} {
+		preview, err := controller.PreviewKey(ctx, resource.ID, PreviewQuery{Key: []byte(key)})
+		if err != nil || preview.Type != expectedType || len(preview.Items) != 1 {
+			t.Fatalf("%s preview = %+v, %v", key, preview, err)
+		}
+		if _, err := controller.Mutate(ctx, resource.ID, Mutation{Kind: MutationKeyDelete, Key: []byte(key)}); err != nil {
+			t.Fatalf("delete %s: %v", key, err)
+		}
+	}
 	if err := controller.Stop(ctx, resource.ID); err != nil {
 		t.Fatal(err)
 	}

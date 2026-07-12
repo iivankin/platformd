@@ -201,3 +201,14 @@ func (stack *runtimeStack) PreviewManagedRedisKey(ctx context.Context, resourceI
 	}
 	return controller.PreviewKey(ctx, resourceID, query)
 }
+
+func (stack *runtimeStack) MutateManagedRedis(ctx context.Context, resourceID string, mutation managedredis.Mutation) (managedredis.MutationResult, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedredis.MutationResult{}, errors.New("managed Redis runtime is not ready")
+	}
+	return controller.Mutate(ctx, resourceID, mutation)
+}

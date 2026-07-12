@@ -262,6 +262,102 @@ export type ManagedImageEngine = "postgres" | "redis";
 export type ManagedImageTag = z.infer<typeof managedImageTagSchema>;
 export type ManagedImagePage = z.infer<typeof managedImagePageSchema>;
 
+const managedRedisSchema = z.object({
+  backupCron: z.string().optional(),
+  backupEnabled: z.boolean(),
+  backupRetentionCount: z.number().int().min(1).max(100),
+  cpuMillicores: z.number().int().nonnegative().optional(),
+  createdAt: z.number().int().positive(),
+  hostname: z.string().min(1),
+  id: z.string().min(1),
+  imageDigest: z.string().min(1),
+  imageTag: z.string().min(1),
+  memoryBytes: z.number().int().nonnegative().optional(),
+  name: z.string().min(1),
+  password: z.string().min(1).optional(),
+  port: z.literal(6379),
+  projectId: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+});
+
+const redisKeySchema = z.object({
+  expiresInMillis: z.number().int().nonnegative().optional(),
+  keyBase64: z.string(),
+  keyText: z.string().optional(),
+  sizeBytes: z.number().int().nonnegative(),
+  type: z.string().min(1),
+});
+
+const redisKeyPageSchema = z.object({
+  keys: z.array(redisKeySchema),
+  nextCursor: z.string().regex(/^\d+$/u),
+});
+
+const redisPreviewSchema = z.object({
+  items: z.array(
+    z.object({
+      values: z.array(
+        z.object({ base64: z.string(), text: z.string().optional() })
+      ),
+    })
+  ),
+  length: z.number().int().nonnegative(),
+  nextCursor: z.string().regex(/^\d+$/u),
+  truncated: z.boolean(),
+  type: z.string().min(1),
+});
+
+export type ManagedRedis = z.infer<typeof managedRedisSchema>;
+export type RedisKey = z.infer<typeof redisKeySchema>;
+export type RedisKeyPage = z.infer<typeof redisKeyPageSchema>;
+export type RedisPreview = z.infer<typeof redisPreviewSchema>;
+
+export interface CreateManagedRedisInput {
+  cpuMillicores?: number;
+  imageTag: string;
+  memoryBytes?: number;
+  name: string;
+}
+
+export type RedisMutationOperation =
+  | "hash_delete"
+  | "hash_set"
+  | "key_delete"
+  | "list_push_left"
+  | "list_push_right"
+  | "list_remove"
+  | "list_set"
+  | "set_add"
+  | "set_remove"
+  | "stream_add"
+  | "stream_delete"
+  | "string_set"
+  | "ttl_clear"
+  | "ttl_set"
+  | "zset_add"
+  | "zset_remove";
+
+export interface RedisMutationInput {
+  count?: number;
+  field?: string;
+  fields?: { field: string; value: string }[];
+  index?: number;
+  key: string;
+  member?: string;
+  operation: RedisMutationOperation;
+  score?: number;
+  streamId?: string;
+  ttlMillis?: number;
+  value?: string;
+}
+
+const redisMutationResultSchema = z.object({
+  affected: z.number().int().nonnegative(),
+  auditRecorded: z.boolean(),
+  streamId: z.string(),
+});
+export type RedisMutationResult = z.infer<typeof redisMutationResultSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -667,6 +763,126 @@ export const fetchManagedImageTags = async (
     );
   }
   return managedImagePageSchema.parse(await response.json());
+};
+
+const managedRedisPath = (projectID: string, redisID?: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/redis${
+    redisID ? `/${encodeURIComponent(redisID)}` : ""
+  }`;
+
+export const createManagedRedis = async (
+  projectID: string,
+  input: CreateManagedRedisInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedRedis> => {
+  const response = await fetcher(managedRedisPath(projectID), {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis creation failed with ${response.status}`
+    );
+  }
+  return managedRedisSchema.parse(await response.json());
+};
+
+export const fetchManagedRedis = async (
+  projectID: string,
+  redisID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedRedis> => {
+  const response = await fetcher(managedRedisPath(projectID, redisID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis request failed with ${response.status}`
+    );
+  }
+  return managedRedisSchema.parse(await response.json());
+};
+
+export const scanManagedRedisKeys = async (
+  projectID: string,
+  redisID: string,
+  options: { count?: number; cursor?: string; match?: string } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RedisKeyPage> => {
+  const query = new URLSearchParams({
+    count: String(options.count ?? 50),
+    cursor: options.cursor ?? "0",
+  });
+  if (options.match) {
+    query.set("match", options.match);
+  }
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/keys?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis key scan failed with ${response.status}`
+    );
+  }
+  return redisKeyPageSchema.parse(await response.json());
+};
+
+export const previewManagedRedisKey = async (
+  projectID: string,
+  redisID: string,
+  keyBase64: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RedisPreview> => {
+  const query = new URLSearchParams({ count: "20", key: keyBase64 });
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/preview?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis value preview failed with ${response.status}`
+    );
+  }
+  return redisPreviewSchema.parse(await response.json());
+};
+
+export const mutateManagedRedis = async (
+  projectID: string,
+  redisID: string,
+  input: RedisMutationInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RedisMutationResult> => {
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/data/mutations`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis mutation failed with ${response.status}`
+    );
+  }
+  return redisMutationResultSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>

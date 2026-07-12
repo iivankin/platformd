@@ -2,13 +2,8 @@ package automationapi
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"net/http"
-	"strconv"
-	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/managedredis"
@@ -18,44 +13,6 @@ import (
 type managedRedisRepository interface {
 	ManagedRedisInProject(context.Context, string, string) (state.ManagedRedis, error)
 	ManagedRedisByProject(context.Context, string) ([]state.ManagedRedis, error)
-}
-
-type managedRedisBrowser interface {
-	Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error)
-	Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error)
-}
-
-func previewManagedRedisKey(browser managedRedisBrowser) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		projectID := request.PathValue("projectID")
-		if !requireProject(response, request, projectID) {
-			return
-		}
-		encodedKey, present := request.URL.Query()["key"]
-		if !present || len(encodedKey) != 1 {
-			writeError(response, http.StatusBadRequest, "invalid_redis_browser_query", "one base64url key parameter is required")
-			return
-		}
-		key, err := base64.RawURLEncoding.DecodeString(encodedKey[0])
-		if err != nil {
-			writeError(response, http.StatusBadRequest, "invalid_redis_browser_query", "key must be unpadded base64url")
-			return
-		}
-		count := 0
-		if value := request.URL.Query().Get("count"); value != "" {
-			count, err = strconv.Atoi(value)
-			if err != nil {
-				writeError(response, http.StatusBadRequest, "invalid_redis_browser_query", "count must be an integer from 1 to 100")
-				return
-			}
-		}
-		preview, err := browser.Preview(request.Context(), projectID, request.PathValue("redisID"), managedredis.PreviewQuery{Key: key, Count: count})
-		if err != nil {
-			writeManagedRedisBrowserError(response, err)
-			return
-		}
-		writeJSON(response, http.StatusOK, publicManagedRedisPreview(preview))
-	}
 }
 
 type managedRedisResponse struct {
@@ -107,97 +64,6 @@ func getManagedRedis(repository managedRedisRepository) http.HandlerFunc {
 			return
 		}
 		writeJSON(response, http.StatusOK, publicManagedRedis(resource, ""))
-	}
-}
-
-func scanManagedRedisKeys(browser managedRedisBrowser) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		projectID := request.PathValue("projectID")
-		if !requireProject(response, request, projectID) {
-			return
-		}
-		query := managedredis.ScanQuery{Match: request.URL.Query().Get("match")}
-		if value := request.URL.Query().Get("cursor"); value != "" {
-			cursor, err := strconv.ParseUint(value, 10, 64)
-			if err != nil {
-				writeError(response, http.StatusBadRequest, "invalid_redis_browser_query", "cursor must be an unsigned integer")
-				return
-			}
-			query.Cursor = cursor
-		}
-		if value := request.URL.Query().Get("count"); value != "" {
-			count, err := strconv.Atoi(value)
-			if err != nil {
-				writeError(response, http.StatusBadRequest, "invalid_redis_browser_query", "count must be an integer from 1 to 100")
-				return
-			}
-			query.Count = count
-		}
-		page, err := browser.Keys(request.Context(), projectID, request.PathValue("redisID"), query)
-		if err != nil {
-			writeManagedRedisBrowserError(response, err)
-			return
-		}
-		writeJSON(response, http.StatusOK, publicManagedRedisKeyPage(page))
-	}
-}
-
-func publicManagedRedisKeyPage(page managedredis.KeyPage) map[string]any {
-	keys := make([]map[string]any, 0, len(page.Keys))
-	for _, key := range page.Keys {
-		item := map[string]any{
-			"keyBase64": base64.RawURLEncoding.EncodeToString(key.Key), "type": key.Type,
-			"sizeBytes": key.SizeBytes,
-		}
-		if utf8.Valid(key.Key) {
-			text := string(key.Key)
-			if strings.IndexFunc(text, func(character rune) bool { return unicode.IsControl(character) }) < 0 {
-				item["keyText"] = text
-			}
-		}
-		if key.ExpiresInMillis != nil {
-			item["expiresInMillis"] = *key.ExpiresInMillis
-		}
-		keys = append(keys, item)
-	}
-	return map[string]any{"nextCursor": strconv.FormatUint(page.NextCursor, 10), "keys": keys}
-}
-
-func publicManagedRedisPreview(preview managedredis.Preview) map[string]any {
-	items := make([]map[string]any, 0, len(preview.Items))
-	for _, item := range preview.Items {
-		values := make([]map[string]string, 0, len(item.Values))
-		for _, value := range item.Values {
-			encoded := map[string]string{"base64": base64.RawURLEncoding.EncodeToString(value)}
-			if utf8.Valid(value) {
-				text := string(value)
-				if strings.IndexFunc(text, func(character rune) bool { return unicode.IsControl(character) }) < 0 {
-					encoded["text"] = text
-				}
-			}
-			values = append(values, encoded)
-		}
-		items = append(items, map[string]any{"values": values})
-	}
-	return map[string]any{
-		"type": preview.Type, "length": preview.Length,
-		"nextCursor": strconv.FormatUint(preview.NextCursor, 10),
-		"truncated":  preview.Truncated, "items": items,
-	}
-}
-
-func writeManagedRedisBrowserError(response http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, state.ErrManagedRedisNotFound):
-		writeError(response, http.StatusNotFound, "redis_not_found", "Managed Redis resource not found")
-	case errors.Is(err, managedredis.ErrInvalidBrowserQuery):
-		writeError(response, http.StatusBadRequest, "invalid_redis_browser_query", err.Error())
-	case errors.Is(err, managedredis.ErrNotRunning):
-		writeError(response, http.StatusServiceUnavailable, "redis_not_running", "Managed Redis resource is not running")
-	case errors.Is(err, managedredis.ErrKeyNotFound):
-		writeError(response, http.StatusNotFound, "redis_key_not_found", "Redis key no longer exists")
-	default:
-		writeError(response, http.StatusBadGateway, "redis_browser_unavailable", "Unable to read managed Redis keys")
 	}
 }
 

@@ -112,3 +112,15 @@ func TestPreviewKeyBoundsStringWithGETRANGE(t *testing.T) {
 		t.Fatalf("unexpected preview: %+v", preview)
 	}
 }
+
+func TestBoundPreviewItemsNeverReturnsPartialDestructiveIdentifiers(t *testing.T) {
+	t.Parallel()
+	items := []PreviewItem{
+		{Values: [][]byte{[]byte("complete"), []byte("value")}},
+		{Values: [][]byte{[]byte("member-that-does-not-fit")}},
+	}
+	bounded, truncated := boundPreviewItems(items, len("complete")+len("value")+3)
+	if !truncated || len(bounded) != 1 || string(bounded[0].Values[0]) != "complete" {
+		t.Fatalf("bounded preview = %+v, truncated=%v", bounded, truncated)
+	}
+}
