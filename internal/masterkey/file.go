@@ -14,6 +14,10 @@ import (
 
 const fileMode = 0o600
 
+func Load(path string, expectedUID int) (cryptobox.MasterKey, error) {
+	return load(path, expectedUID)
+}
+
 func LoadOrCreate(path string, expectedUID int, random io.Reader) (cryptobox.MasterKey, bool, error) {
 	key, err := load(path, expectedUID)
 	if err == nil {

@@ -19,11 +19,11 @@ type Meta struct {
 	Version      string `json:"version"`
 }
 
-func Handler() http.Handler {
+func Handler(meta Meta) http.Handler {
 	static := newSPAHandler(ui.Files())
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
-	mux.HandleFunc("GET /api/v1/meta", handleMeta)
+	mux.HandleFunc("GET /api/v1/meta", handleMeta(meta))
 	mux.Handle("/", static)
 	return securityHeaders(mux)
 }
@@ -35,15 +35,16 @@ func handleHealth(response http.ResponseWriter, _ *http.Request) {
 	_, _ = response.Write([]byte("ok\n"))
 }
 
-func handleMeta(response http.ResponseWriter, _ *http.Request) {
-	response.Header().Set("Cache-Control", "private, no-store")
-	response.Header().Set("Content-Type", "application/json; charset=utf-8")
-	_ = json.NewEncoder(response).Encode(Meta{
-		Architecture: runtime.GOARCH,
-		OS:           runtime.GOOS,
-		Status:       "bootstrapping",
-		Version:      version.Version,
-	})
+func DefaultMeta(status string) Meta {
+	return Meta{Architecture: runtime.GOARCH, OS: runtime.GOOS, Status: status, Version: version.Version}
+}
+
+func handleMeta(meta Meta) http.HandlerFunc {
+	return func(response http.ResponseWriter, _ *http.Request) {
+		response.Header().Set("Cache-Control", "private, no-store")
+		response.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(response).Encode(meta)
+	}
 }
 
 func securityHeaders(next http.Handler) http.Handler {

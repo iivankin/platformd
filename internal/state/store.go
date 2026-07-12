@@ -168,8 +168,8 @@ func validateSQLite(ctx context.Context, database *sql.DB) error {
 	if err := database.QueryRowContext(ctx, "SELECT sqlite_version()").Scan(&version); err != nil {
 		return fmt.Errorf("read SQLite version: %w", err)
 	}
-	if compareSQLiteVersion(version, [3]int{3, 51, 3}) < 0 {
-		return fmt.Errorf("SQLite %s is older than required 3.51.3", version)
+	if compareSQLiteVersion(version, [3]int{3, 53, 2}) != 0 {
+		return fmt.Errorf("SQLite version = %s, want exact 3.53.2", version)
 	}
 
 	var journalMode string

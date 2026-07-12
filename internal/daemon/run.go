@@ -2,39 +2,111 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"time"
 
+	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/masterkey"
+	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/server"
+	"github.com/iivankin/platformd/internal/state"
 )
 
-const shutdownTimeout = 10 * time.Second
+const shutdownTimeout = 120 * time.Second
 
-// Run starts an HTTP-only development listener until bootstrap owns the
-// installation TLS and state. The environment gate prevents this private mode
-// from accidentally becoming a second public configuration surface.
 func Run(ctx context.Context) error {
-	if os.Getenv("PLATFORMD_DEV") != "1" {
-		return errors.New("installation is not initialized")
+	if os.Getenv("PLATFORMD_DEV") == "1" {
+		return runDevelopment(ctx)
 	}
+	return runProduction(ctx, layout.Production())
+}
 
+func runDevelopment(ctx context.Context) error {
 	address := os.Getenv("PLATFORMD_DEV_ADDR")
 	if address == "" {
 		address = "127.0.0.1:8080"
 	}
-
-	httpServer := &http.Server{
+	return serve(ctx, &http.Server{
 		Addr:              address,
-		Handler:           server.Handler(),
+		Handler:           server.Handler(server.DefaultMeta("bootstrapping")),
 		ReadHeaderTimeout: 5 * time.Second,
+	})
+}
+
+func runProduction(ctx context.Context, paths layout.Paths) error {
+	key, err := masterkey.Load(paths.MasterKey, 0)
+	if err != nil {
+		return fmt.Errorf("load master key: %w", err)
+	}
+	store, err := state.Open(ctx, paths.StateDatabase, 0)
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+	if err := store.MarkInterrupted(ctx, time.Now().UnixMilli()); err != nil {
+		return err
+	}
+	installation, err := store.Installation(ctx)
+	if err != nil {
+		return err
+	}
+	certificates, err := origin.Load(key, installation.OriginCertificates)
+	if err != nil {
+		return err
+	}
+	verifier, err := access.New(access.Config{
+		TeamDomain: installation.AccessTeamDomain,
+		Audience:   installation.AccessAudience,
+	})
+	if err != nil {
+		return fmt.Errorf("configure Cloudflare Access: %w", err)
+	}
+	tlsConfig := certificates.TLSConfig()
+	adminHandler := access.ProtectAdmin(
+		installation.AdminHostname,
+		verifier,
+		server.Handler(server.DefaultMeta(status(installation.RecoveryMode))),
+	)
+	httpServer := &http.Server{
+		Addr:              ":443",
+		Handler:           adminHandler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		TLSConfig:         tlsConfig,
 	}
 
+	listener, err := tls.Listen("tcp", httpServer.Addr, tlsConfig)
+	if err != nil {
+		return fmt.Errorf("listen on %s: %w", httpServer.Addr, err)
+	}
+	return serveListener(ctx, httpServer, listener)
+}
+
+func status(recoveryMode bool) string {
+	if recoveryMode {
+		return "recovery"
+	}
+	return "ready"
+}
+
+func serve(ctx context.Context, httpServer *http.Server) error {
+	listener, err := net.Listen("tcp", httpServer.Addr)
+	if err != nil {
+		return err
+	}
+	return serveListener(ctx, httpServer, listener)
+}
+
+func serveListener(ctx context.Context, httpServer *http.Server, listener net.Listener) error {
 	errChannel := make(chan error, 1)
 	go func() {
-		errChannel <- httpServer.ListenAndServe()
+		errChannel <- httpServer.Serve(listener)
 	}()
 
 	select {
@@ -42,7 +114,7 @@ func Run(ctx context.Context) error {
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
-		return fmt.Errorf("serve %s: %w", address, err)
+		return fmt.Errorf("serve %s: %w", httpServer.Addr, err)
 	case <-ctx.Done():
 		shutdownContext, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
