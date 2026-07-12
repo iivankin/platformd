@@ -1,0 +1,5 @@
+[serve.static]
+plugins = ["tailwindcss-bun-plugin"]
+
+[test]
+coverage = true
