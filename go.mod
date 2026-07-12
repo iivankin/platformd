@@ -8,9 +8,11 @@ require (
 	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/opencontainers/runtime-spec v1.2.1
+	github.com/vishvananda/netlink v1.3.1
 	go.podman.io/common v0.67.1
 	go.podman.io/storage v1.62.0
 	golang.org/x/crypto v0.54.0
+	golang.org/x/net v0.56.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
 )
@@ -135,7 +137,6 @@ require (
 	github.com/ulikunitz/xz v0.5.15 // indirect
 	github.com/vbatts/tar-split v0.12.1 // indirect
 	github.com/vbauerster/mpb/v8 v8.10.2 // indirect
-	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.etcd.io/bbolt v1.4.3 // indirect
@@ -147,7 +148,6 @@ require (
 	go.podman.io/image/v5 v5.39.2 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/mod v0.37.0 // indirect
-	golang.org/x/net v0.56.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20250414145226-207652e42e2e // indirect

@@ -70,7 +70,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot())
+	projects, err := store.RuntimeProjects(ctx)
+	if err != nil {
+		return err
+	}
+	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot(), projects)
 	if err != nil {
 		return err
 	}
