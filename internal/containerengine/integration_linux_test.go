@@ -6,10 +6,15 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/iivankin/platformd/internal/firewall"
 )
 
 const (
@@ -136,6 +141,46 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	}
 }
 
+func TestStaticInitRunsInGlibcImage(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	if err := os.MkdirAll(config.LogRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/debian:13-slim"})
+	if err != nil {
+		t.Fatalf("pull glibc image: %v", err)
+	}
+	container, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID:      image.ID,
+		Name:         "platformd-glibc-init",
+		Command:      []string{"/bin/sh", "-c", "printf glibc-init-ok"},
+		Labels:       map[string]string{"io.platformd.test": "glibc-init"},
+		LogPath:      filepath.Join(config.LogRoot, "glibc-init.log"),
+		LogSizeBytes: 1024,
+		LogMaxFiles:  2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveContainer(context.Background(), container.ID, true)
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatalf("start glibc container: %v", err)
+	}
+	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
+		t.Fatalf("wait glibc container: code=%d err=%v", code, err)
+	}
+}
+
 func TestPrepareStoragePurgesContainersAndKeepsImages(t *testing.T) {
 	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
 		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
@@ -200,6 +245,188 @@ func TestPrepareStoragePurgesContainersAndKeepsImages(t *testing.T) {
 	}
 	if _, err := reopened.InspectContainer(container.ID); err == nil {
 		t.Fatal("stale container survived startup cleanup")
+	}
+}
+
+func TestProjectFirewallPacketPolicy(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" || os.Getenv("PLATFORMD_FIREWALL_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 and PLATFORMD_FIREWALL_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0], config.AllowedMountRoots[1]} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := engine.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	})
+	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/alpine:3.22"})
+	if err != nil {
+		t.Fatalf("pull image: %v", err)
+	}
+
+	projectA := firewall.Project{ID: "packet-a", Bridge: "pdit-a", Subnet: netip.MustParsePrefix("10.89.44.0/24"), Gateway: netip.MustParseAddr("10.89.44.1"), ObjectStoreEnabled: true}
+	projectB := firewall.Project{ID: "packet-b", Bridge: "pdit-b", Subnet: netip.MustParsePrefix("10.89.45.0/24"), Gateway: netip.MustParseAddr("10.89.45.1")}
+	containerA := createPacketTestContainer(t, ctx, engine, image.ID, projectA)
+	containerAPeer := createPacketTestService(t, ctx, engine, image.ID, "packet-a-peer", projectA.ID, projectA.Gateway)
+	containerB := createPacketTestContainer(t, ctx, engine, image.ID, projectB)
+
+	manager := firewall.New()
+	if err := firewall.EnableIPv4Forwarding(); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Apply([]firewall.Project{projectA, projectB}); err != nil {
+		t.Fatalf("publish packet policy: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := manager.Clear(); err != nil {
+			t.Errorf("clear packet policy: %v", err)
+		}
+	})
+
+	addressA := net.JoinHostPort(containerA.IPs["packet-a"][0], "8080")
+	if err := waitForTCP(ctx, addressA); err != nil {
+		t.Fatalf("host-initiated proxy connection: %v", err)
+	}
+
+	allowed, err := net.Listen("tcp", net.JoinHostPort(projectA.Gateway.String(), fmt.Sprint(firewall.ObjectStorePort)))
+	if err != nil {
+		t.Fatalf("listen on allowed gateway port: %v", err)
+	}
+	defer allowed.Close()
+	blocked, err := net.Listen("tcp", net.JoinHostPort(projectA.Gateway.String(), "9001"))
+	if err != nil {
+		t.Fatalf("listen on blocked gateway port: %v", err)
+	}
+	defer blocked.Close()
+	dnsTCP, err := net.Listen("tcp", net.JoinHostPort(projectA.Gateway.String(), fmt.Sprint(firewall.DNSPort)))
+	if err != nil {
+		t.Fatalf("listen on DNS TCP port: %v", err)
+	}
+	defer dnsTCP.Close()
+	dnsUDP, err := net.ListenPacket("udp4", net.JoinHostPort(projectA.Gateway.String(), fmt.Sprint(firewall.DNSPort)))
+	if err != nil {
+		t.Fatalf("listen on DNS UDP port: %v", err)
+	}
+	defer dnsUDP.Close()
+
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "3", projectA.Gateway.String(), fmt.Sprint(firewall.ObjectStorePort))
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "3", projectA.Gateway.String(), fmt.Sprint(firewall.DNSPort))
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 1, "nc", "-z", "-w", "2", projectA.Gateway.String(), "9001")
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "3", containerAPeer.IPs["packet-a"][0], "8080")
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 1, "nc", "-z", "-w", "2", containerB.IPs["packet-b"][0], "8080")
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "5", "1.1.1.1", "443")
+
+	udpResult := make(chan error, 1)
+	go func() {
+		buffer := make([]byte, 16)
+		_ = dnsUDP.SetDeadline(time.Now().Add(5 * time.Second))
+		length, address, readErr := dnsUDP.ReadFrom(buffer)
+		if readErr != nil {
+			udpResult <- readErr
+			return
+		}
+		if string(buffer[:length]) != "ping" {
+			udpResult <- fmt.Errorf("unexpected UDP payload %q", buffer[:length])
+			return
+		}
+		_, writeErr := dnsUDP.WriteTo([]byte("pong"), address)
+		udpResult <- writeErr
+	}()
+	var udpStdout bytes.Buffer
+	udpCode, udpErr := engine.ExecContainer(ctx, containerA.ID, ExecRequest{
+		Command: []string{"/bin/sh", "-c", fmt.Sprintf("printf ping | nc -u -w 2 %s %d", projectA.Gateway, firewall.DNSPort)},
+		Stdout:  &udpStdout,
+	})
+	if udpErr != nil || udpCode != 0 || udpStdout.String() != "pong" {
+		t.Fatalf("DNS UDP round trip: code=%d stdout=%q err=%v", udpCode, udpStdout.String(), udpErr)
+	}
+	if err := <-udpResult; err != nil {
+		t.Fatalf("DNS UDP listener: %v", err)
+	}
+}
+
+func createPacketTestContainer(t *testing.T, ctx context.Context, engine *Engine, imageID string, project firewall.Project) Container {
+	t.Helper()
+	network, err := engine.CreateNetwork(NetworkSpec{
+		Name: project.ID, Interface: project.Bridge, Subnet: project.Subnet.String(), Gateway: project.Gateway.String(),
+		Labels: map[string]string{"io.platformd.test": "firewall"},
+	})
+	if err != nil {
+		t.Fatalf("create network %s: %v", project.ID, err)
+	}
+	t.Cleanup(func() {
+		if err := engine.RemoveNetwork(network.Name); err != nil {
+			t.Errorf("remove network %s: %v", network.Name, err)
+		}
+	})
+	return createPacketTestService(t, ctx, engine, imageID, project.ID, network.Name, project.Gateway)
+}
+
+func createPacketTestService(t *testing.T, ctx context.Context, engine *Engine, imageID, name, network string, gateway netip.Addr) Container {
+	t.Helper()
+	container, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID:      imageID,
+		Name:         "platformd-" + name,
+		Command:      []string{"/bin/sh", "-c", "while true; do printf ok | nc -l -p 8080; done"},
+		Labels:       map[string]string{"io.platformd.test": "firewall"},
+		Network:      network,
+		DNSServers:   []string{gateway.String()},
+		LogPath:      filepath.Join(runtimeIntegrationConfig().LogRoot, name+".log"),
+		LogSizeBytes: 1024,
+		LogMaxFiles:  2,
+	})
+	if err != nil {
+		t.Fatalf("create container %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		if err := engine.RemoveContainer(context.Background(), container.ID, true); err != nil {
+			t.Errorf("remove container %s: %v", container.ID, err)
+		}
+	})
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatalf("start container %s: %v", name, err)
+	}
+	container, err = engine.InspectContainer(container.ID)
+	if err != nil || len(container.IPs[network]) != 1 {
+		t.Fatalf("inspect container %s: %+v, %v", name, container, err)
+	}
+	return container
+}
+
+func waitForTCP(ctx context.Context, address string) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		connection, err := net.DialTimeout("tcp", address, 250*time.Millisecond)
+		if err == nil {
+			_ = connection.Close()
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func assertContainerCommandCode(t *testing.T, ctx context.Context, engine *Engine, containerID string, expected int, command ...string) {
+	t.Helper()
+	var stderr bytes.Buffer
+	code, err := engine.ExecContainer(ctx, containerID, ExecRequest{Command: command, Stderr: &stderr})
+	if err != nil || code != expected {
+		t.Fatalf("command %q: code=%d expected=%d stderr=%q err=%v", command, code, expected, stderr.String(), err)
 	}
 }
 

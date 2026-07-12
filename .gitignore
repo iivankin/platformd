@@ -1,5 +1,6 @@
 /platformd
 /dist/
+/.build/
 /internal/ui/dist/
 /coverage/
 /.platformd-dev/
