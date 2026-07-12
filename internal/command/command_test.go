@@ -37,7 +37,7 @@ func TestInitHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if got := stdout.String(); got != "usage: platformd init [flags]\n" {
+	if got := stdout.String(); got != "usage: platformd init [--input-fd <fd>]\n" {
 		t.Fatalf("stdout = %q", got)
 	}
 }

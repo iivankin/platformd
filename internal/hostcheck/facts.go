@@ -24,6 +24,14 @@ type Facts struct {
 }
 
 func (facts Facts) Validate() error {
+	return facts.validate(false)
+}
+
+func (facts Facts) ValidateForRepair() error {
+	return facts.validate(true)
+}
+
+func (facts Facts) validate(allowOccupiedPort bool) error {
 	var failures []error
 	if facts.EffectiveUID != 0 {
 		failures = append(failures, errors.New("init must run as root"))
@@ -57,7 +65,7 @@ func (facts Facts) Validate() error {
 	if !facts.ClockSynchronized {
 		failures = append(failures, errors.New("system clock is not synchronized"))
 	}
-	if !facts.Port443Available {
+	if !facts.Port443Available && !allowOccupiedPort {
 		failures = append(failures, errors.New("TCP port 443 is already in use"))
 	}
 	reserveBytes := max(uint64(1<<30), facts.FilesystemBytes/50)

@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/iivankin/platformd/internal/bootstrap"
 	"github.com/iivankin/platformd/internal/daemon"
 )
 
-const usage = "usage: platformd init [flags]\n"
+const usage = "usage: platformd init [--input-fd <fd>]\n"
 
 // Run dispatches the one public command and private process modes.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -19,7 +20,7 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "init":
-		return runInit(args[1:], stdout, stderr)
+		return runInit(ctx, args[1:], stdout, stderr)
 	case "__daemon":
 		if err := daemon.Run(ctx); err != nil {
 			_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
@@ -32,12 +33,21 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runInit(args []string, stdout, stderr io.Writer) int {
-	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		_, _ = io.WriteString(stdout, usage)
-		return 0
+func runInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	options, code := parseInitOptions(args, stdout, stderr)
+	if code != -1 {
+		return code
 	}
-
-	_, _ = io.WriteString(stderr, "platformd: init is not available in this development build\n")
-	return 1
+	provider, err := bootstrapInputProvider(options.inputFD)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
+		return 1
+	}
+	installer := bootstrap.ProductionInstaller(confirmRecoveryKey, provider)
+	if err := installer.Init(ctx); err != nil {
+		_, _ = fmt.Fprintf(stderr, "platformd: init: %v\n", err)
+		return 1
+	}
+	_, _ = io.WriteString(stdout, "platformd initialized\n")
+	return 0
 }

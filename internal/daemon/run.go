@@ -14,6 +14,7 @@ import (
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/origin"
+	"github.com/iivankin/platformd/internal/sdnotify"
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -85,7 +86,10 @@ func runProduction(ctx context.Context, paths layout.Paths) error {
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", httpServer.Addr, err)
 	}
-	return serveListener(ctx, httpServer, listener)
+	defer func() { _ = sdnotify.Stopping("platformd is stopping") }()
+	return serveListener(ctx, httpServer, listener, func() error {
+		return sdnotify.Ready("platformd admin control plane is ready")
+	})
 }
 
 func status(recoveryMode bool) string {
@@ -100,14 +104,21 @@ func serve(ctx context.Context, httpServer *http.Server) error {
 	if err != nil {
 		return err
 	}
-	return serveListener(ctx, httpServer, listener)
+	return serveListener(ctx, httpServer, listener, nil)
 }
 
-func serveListener(ctx context.Context, httpServer *http.Server, listener net.Listener) error {
+func serveListener(ctx context.Context, httpServer *http.Server, listener net.Listener, started func() error) error {
 	errChannel := make(chan error, 1)
 	go func() {
 		errChannel <- httpServer.Serve(listener)
 	}()
+	if started != nil {
+		if err := started(); err != nil {
+			_ = listener.Close()
+			<-errChannel
+			return err
+		}
+	}
 
 	select {
 	case err := <-errChannel:

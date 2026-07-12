@@ -16,6 +16,16 @@ func TestSupportedDebianFacts(t *testing.T) {
 	}
 }
 
+func TestRepairAllowsExistingListener(t *testing.T) {
+	t.Parallel()
+
+	facts := validFacts()
+	facts.Port443Available = false
+	if err := facts.ValidateForRepair(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFactsReportAllMissingHostContracts(t *testing.T) {
 	t.Parallel()
 
