@@ -25,13 +25,15 @@ type ManagedImageCatalog interface {
 }
 
 type Config struct {
-	Hostname   string
-	Repository Repository
-	Services   *automation.ServiceApplication
-	Logs       *automation.LogApplication
-	Images     ManagedImageCatalog
-	Redis      *automation.ManagedRedisApplication
-	RedisStore managedRedisRepository
+	Hostname      string
+	Repository    Repository
+	Services      *automation.ServiceApplication
+	Logs          *automation.LogApplication
+	Images        ManagedImageCatalog
+	Redis         *automation.ManagedRedisApplication
+	RedisStore    managedRedisRepository
+	Postgres      *automation.ManagedPostgresApplication
+	PostgresStore managedPostgresRepository
 }
 
 func Handler(config Config) (http.Handler, error) {
@@ -56,6 +58,11 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(config.RedisStore))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(config.RedisStore))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(config.Redis))
+	}
+	if config.Postgres != nil && config.PostgresStore != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(config.PostgresStore))
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(config.PostgresStore))
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(config.Postgres))
 	}
 	return noStore(mux), nil
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/internaldns"
 	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/projectnetwork"
 	"github.com/iivankin/platformd/internal/servicerestart"
@@ -46,6 +47,8 @@ type runtimeStack struct {
 	publishedServices map[string]bool
 	managedRedis      *managedredis.Controller
 	redisFailures     map[string]error
+	managedPostgres   *managedpostgres.Controller
+	postgresFailures  map[string]error
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
@@ -119,6 +122,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		serviceFailures:   make(map[string]error),
 		publishedServices: make(map[string]bool),
 		redisFailures:     make(map[string]error),
+		postgresFailures:  make(map[string]error),
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
@@ -191,6 +195,7 @@ func (stack *runtimeStack) Close() error {
 	serviceWatcher := stack.serviceWatcher
 	serviceRestarts := stack.serviceRestarts
 	redis := stack.managedRedis
+	postgres := stack.managedPostgres
 	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
 	networks := append([]string(nil), stack.networks...)
 	engine := stack.engine
@@ -207,6 +212,11 @@ func (stack *runtimeStack) Close() error {
 	if redis != nil {
 		stopContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		failures = append(failures, redis.StopAll(stopContext))
+		cancel()
+	}
+	if postgres != nil {
+		stopContext, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+		failures = append(failures, postgres.StopAll(stopContext))
 		cancel()
 	}
 	for index := len(dnsServers) - 1; index >= 0; index-- {

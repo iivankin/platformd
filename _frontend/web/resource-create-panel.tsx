@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 
 interface ResourceCreatePanelProperties {
   onClose: () => void;
-  onSelect: (kind: "redis" | "service") => void;
+  onSelect: (kind: "postgres" | "redis" | "service") => void;
 }
 
 const options: {
@@ -31,7 +31,7 @@ const options: {
   },
   {
     description: "Managed owner database and SQL workspace.",
-    enabled: false,
+    enabled: true,
     icon: Database,
     kind: "postgres",
     label: "PostgreSQL",
@@ -77,7 +77,11 @@ export const ResourceCreatePanel = ({
               disabled={!option.enabled}
               key={option.kind}
               onClick={() => {
-                if (option.kind === "redis" || option.kind === "service") {
+                if (
+                  option.kind === "postgres" ||
+                  option.kind === "redis" ||
+                  option.kind === "service"
+                ) {
                   onSelect(option.kind);
                 }
               }}

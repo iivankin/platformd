@@ -32,6 +32,8 @@ func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, proje
 			resource.Status, resource.StatusMessage = runtimeStatus, runtimeMessage
 		case "redis":
 			resource.Status, resource.StatusMessage = repository.runtime.RedisStatus(resource.ID)
+		case "postgres":
+			resource.Status, resource.StatusMessage = repository.runtime.PostgresStatus(resource.ID)
 		}
 	}
 	return canvas, nil

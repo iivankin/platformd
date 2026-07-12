@@ -32,11 +32,19 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 			"/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
 			"/api/v1/projects/{projectID}/redis":                            managedRedisOperation(),
 			"/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
+			"/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
+			"/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
 		},
 	}
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func managedPostgresOperation() map[string]any {
+	operation := readOperation("List managed PostgreSQL resources in one visible project")
+	operation["post"] = writeMethod("Create managed PostgreSQL from an official image tag and return its owner password once (admin token)", http.StatusCreated, "ManagedPostgresCreateRequest")
+	return operation
 }
 
 func managedRedisOperation() map[string]any {
@@ -161,6 +169,15 @@ func serviceMutationSchemas() map[string]any {
 		"ServiceRedeployRequest": expectedUpdatedSchema(nil),
 		"ServiceRollbackRequest": expectedUpdatedSchema(map[string]any{"deploymentId": map[string]string{"type": "string"}}),
 		"ManagedRedisCreateRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"name", "imageTag"},
+			"properties": map[string]any{
+				"name": map[string]string{"type": "string"}, "imageTag": map[string]string{"type": "string"},
+				"cpuMillicores": map[string]any{"type": "integer", "minimum": 0},
+				"memoryBytes":   map[string]any{"type": "integer", "minimum": 0},
+			},
+		},
+		"ManagedPostgresCreateRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"required": []string{"name", "imageTag"},
 			"properties": map[string]any{

@@ -358,6 +358,57 @@ const redisMutationResultSchema = z.object({
 });
 export type RedisMutationResult = z.infer<typeof redisMutationResultSchema>;
 
+const managedPostgresSchema = z.object({
+  backupCron: z.string().optional(),
+  backupEnabled: z.boolean(),
+  backupRetentionCount: z.number().int().min(1).max(100),
+  cpuMillicores: z.number().int().nonnegative().optional(),
+  createdAt: z.number().int().positive(),
+  databaseName: z.string().min(1),
+  hostname: z.string().min(1),
+  id: z.string().min(1),
+  imageDigest: z.string().min(1),
+  imageTag: z.string().min(1),
+  memoryBytes: z.number().int().nonnegative().optional(),
+  name: z.string().min(1),
+  ownerPassword: z.string().min(1).optional(),
+  ownerUsername: z.string().min(1),
+  port: z.literal(5432),
+  projectId: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+});
+
+const postgresCellSchema = z.object({
+  base64: z.string().optional(),
+  null: z.boolean().optional(),
+  text: z.string().optional(),
+});
+
+const postgresQueryResultSchema = z.object({
+  auditRecorded: z.boolean(),
+  statements: z.array(
+    z.object({
+      columns: z.array(
+        z.object({ name: z.string(), typeOid: z.number().int().nonnegative() })
+      ),
+      commandTag: z.string(),
+      rows: z.array(z.array(postgresCellSchema)),
+      truncated: z.boolean(),
+    })
+  ),
+  truncated: z.boolean(),
+});
+
+export type ManagedPostgres = z.infer<typeof managedPostgresSchema>;
+export type PostgresQueryResult = z.infer<typeof postgresQueryResultSchema>;
+
+export interface CreateManagedPostgresInput {
+  cpuMillicores?: number;
+  imageTag: string;
+  memoryBytes?: number;
+  name: string;
+}
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -883,6 +934,78 @@ export const mutateManagedRedis = async (
     );
   }
   return redisMutationResultSchema.parse(await response.json());
+};
+
+const managedPostgresPath = (projectID: string, postgresID?: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/postgres${
+    postgresID ? `/${encodeURIComponent(postgresID)}` : ""
+  }`;
+
+export const createManagedPostgres = async (
+  projectID: string,
+  input: CreateManagedPostgresInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedPostgres> => {
+  const response = await fetcher(managedPostgresPath(projectID), {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL creation failed with ${response.status}`
+    );
+  }
+  return managedPostgresSchema.parse(await response.json());
+};
+
+export const fetchManagedPostgres = async (
+  projectID: string,
+  postgresID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedPostgres> => {
+  const response = await fetcher(managedPostgresPath(projectID, postgresID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL request failed with ${response.status}`
+    );
+  }
+  return managedPostgresSchema.parse(await response.json());
+};
+
+export const queryManagedPostgres = async (
+  projectID: string,
+  postgresID: string,
+  sql: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<PostgresQueryResult> => {
+  const response = await fetcher(
+    `${managedPostgresPath(projectID, postgresID)}/query`,
+    {
+      body: JSON.stringify({ sql }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL query failed with ${response.status}`
+    );
+  }
+  return postgresQueryResultSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>

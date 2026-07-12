@@ -148,7 +148,7 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || strings.Contains(response.Body.String(), `/query`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
 	}
 }

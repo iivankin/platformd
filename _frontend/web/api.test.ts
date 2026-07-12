@@ -7,6 +7,7 @@ import {
   createManagedRedis,
   createProject,
   createImageCredential,
+  createManagedPostgres,
   createService,
   detachServiceDomain,
   fetchAPITokens,
@@ -18,12 +19,14 @@ import {
   fetchImageCredentials,
   fetchIdentity,
   fetchManagedImageTags,
+  fetchManagedPostgres,
   fetchManagedRedis,
   fetchMeta,
   fetchProjectCanvas,
   fetchProjects,
   mutateManagedRedis,
   previewManagedRedisKey,
+  queryManagedPostgres,
   redeployService,
   revokeAPIToken,
   rollbackService,
@@ -550,6 +553,88 @@ test("uses Access-only managed Redis data routes with encoded values unchanged",
       }
     )
   ).resolves.toEqual({ affected: 1, auditRecorded: true, streamId: "" });
+});
+
+test("creates PostgreSQL and runs bounded SQL only through the admin client", async () => {
+  const resource = {
+    backupEnabled: false,
+    backupRetentionCount: 7,
+    createdAt: 1,
+    databaseName: "app_database",
+    hostname: "database.shop.internal",
+    id: "postgres/id",
+    imageDigest: "sha256:postgres",
+    imageTag: "17",
+    name: "database",
+    ownerPassword: "one-time-password",
+    ownerUsername: "owner_database",
+    port: 5432 as const,
+    projectId: "project/id",
+    updatedAt: 1,
+  };
+  await expect(
+    createManagedPostgres(
+      resource.projectId,
+      { imageTag: "17", name: "database" },
+      (input, init) => {
+        expect(input.toString()).toBe("/api/v1/projects/project%2Fid/postgres");
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          imageTag: "17",
+          name: "database",
+        });
+        return Promise.resolve(Response.json(resource, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(resource);
+  await expect(
+    fetchManagedPostgres(
+      resource.projectId,
+      resource.id,
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/postgres/postgres%2Fid"
+        );
+        return Promise.resolve(Response.json(resource));
+      }
+    )
+  ).resolves.toEqual(resource);
+
+  const sql = "DELETE FROM sessions WHERE expired_at < now(); SELECT 1;";
+  const result = await queryManagedPostgres(
+    resource.projectId,
+    resource.id,
+    sql,
+    (input, init) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/query"
+      );
+      expect(init?.method).toBe("POST");
+      expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({ sql });
+      return Promise.resolve(
+        Response.json({
+          auditRecorded: true,
+          statements: [
+            {
+              columns: [],
+              commandTag: "DELETE 2",
+              rows: [],
+              truncated: false,
+            },
+            {
+              columns: [{ name: "?column?", typeOid: 23 }],
+              commandTag: "SELECT 1",
+              rows: [[{ text: "1" }]],
+              truncated: false,
+            },
+          ],
+          truncated: false,
+        })
+      );
+    }
+  );
+  expect(result.statements[0]?.commandTag).toBe("DELETE 2");
+  expect(result.statements[1]?.rows[0]?.[0]?.text).toBe("1");
 });
 
 test("lists, attaches, moves, and detaches exact service domains", async () => {

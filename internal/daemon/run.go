@@ -20,6 +20,7 @@ import (
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
@@ -98,6 +99,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
 	imageCredentials := liveImageCredentialRepository{store: store, master: key}
+	if err := runtime.ConfigureManagedPostgres(ctx, store, key); err != nil {
+		return fmt.Errorf("configure managed PostgreSQL: %w", err)
+	}
 	if err := runtime.ConfigureManagedRedis(ctx, store, key); err != nil {
 		return fmt.Errorf("configure managed Redis: %w", err)
 	}
@@ -141,6 +145,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	managedPostgresApplication, err := managedpostgres.NewApplication(store, runtime, key, nil, nil)
+	if err != nil {
+		return err
+	}
 	var automationHostname string
 	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
@@ -154,6 +162,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
+		postgresAutomation, err := automation.NewManagedPostgresApplication(managedPostgresApplication)
+		if err != nil {
+			return err
+		}
 		logAutomation, err := automation.NewLogApplication(store, logReader)
 		if err != nil {
 			return err
@@ -161,7 +173,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		automationAPI, err := automationapi.Handler(automationapi.Config{
 			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
 			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
-			RedisStore: automationRepository,
+			RedisStore: automationRepository, Postgres: postgresAutomation,
+			PostgresStore: automationRepository,
 		})
 		if err != nil {
 			return err
@@ -169,7 +182,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		mcpHandler, err := mcp.New(mcp.Config{
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
 			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
-			Redis: redisAutomation,
+			Redis: redisAutomation, Postgres: postgresAutomation,
 		})
 		if err != nil {
 			return err
@@ -202,6 +215,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithAudit(store),
 			server.WithManagedImages(managedImageCatalog),
 			server.WithManagedRedis(managedRedisApplication),
+			server.WithManagedPostgres(managedPostgresApplication),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
