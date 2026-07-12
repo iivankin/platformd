@@ -32,4 +32,7 @@ func TestPlatformdLogRotationOption(t *testing.T) {
 	if !container.config.LogRotate || container.config.LogMaxFiles != 4 {
 		t.Fatalf("unexpected log rotation config: %+v", container.config)
 	}
+	if err := WithLogRotation(1)(&Container{config: &ContainerConfig{}}); err == nil {
+		t.Fatal("single-file rotation was accepted even though conmon requires a rotated backup")
+	}
 }

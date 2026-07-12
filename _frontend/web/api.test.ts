@@ -12,6 +12,7 @@ import {
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
+  fetchServiceLogs,
   fetchImageCredentials,
   fetchIdentity,
   fetchMeta,
@@ -315,6 +316,38 @@ test("validates bounded deployment history pages", async () => {
       )
     )
   ).resolves.toMatchObject({ nextCursor: "deployment" });
+});
+
+test("reads a validated bounded structured log window", async () => {
+  let requested = "";
+  await expect(
+    fetchServiceLogs(
+      "project",
+      "service",
+      { contains: "ready", deploymentId: "deployment", limit: 25 },
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            records: [
+              {
+                attemptId: "attempt",
+                deploymentId: "deployment",
+                stream: "stdout",
+                text: "ready",
+                timestamp: "2026-07-12T10:00:00.000000001Z",
+              },
+            ],
+            truncated: false,
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ records: [{ text: "ready" }] });
+  expect(requested).toBe(
+    "/api/v1/projects/project/services/service/logs?limit=25&deploymentId=deployment&contains=ready"
+  );
 });
 
 test("lists, attaches, moves, and detaches exact service domains", async () => {

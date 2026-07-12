@@ -26,6 +26,7 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 			"/api/v1/projects/{projectID}/services":                         readWriteOperation("List services in one visible project", "Create a service (admin token)"),
 			"/api/v1/projects/{projectID}/services/{serviceID}":             readUpdateOperation("Get one visible service", "Update a service (admin token)"),
 			"/api/v1/projects/{projectID}/services/{serviceID}/deployments": readOperation("List bounded deployment history"),
+			"/api/v1/projects/{projectID}/services/{serviceID}/logs":        logReadOperation(),
 			"/api/v1/projects/{projectID}/services/{serviceID}/redeploy":    mutationOperation("Redeploy a service (admin token)", "ServiceRedeployRequest"),
 			"/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
 		},
@@ -33,6 +34,23 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func logReadOperation() map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary": "Read a bounded recent service log window",
+		"parameters": []map[string]any{
+			{"name": "deploymentId", "in": "query", "schema": map[string]string{"type": "string"}},
+			{"name": "contains", "in": "query", "schema": map[string]any{"type": "string", "maxLength": 256}},
+			{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 2000, "default": 500}},
+		},
+		"responses": map[string]any{
+			"200": map[string]string{"description": "Structured timestamp/stream/text records"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"403": map[string]string{"description": "Outside token project boundary"},
+			"404": map[string]string{"description": "Service not found"},
+		},
+	}}
 }
 
 func readWriteOperation(readSummary, writeSummary string) map[string]any {

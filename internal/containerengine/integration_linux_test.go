@@ -36,6 +36,9 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	}
 
 	config := runtimeIntegrationConfig()
+	if err := os.RemoveAll(config.LogRoot); err != nil {
+		t.Fatal(err)
+	}
 	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0], config.AllowedMountRoots[1]} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			t.Fatal(err)
@@ -136,7 +139,7 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(logs) < 2 || len(logs) > 4 {
+	if len(logs) < 2 || len(logs) > 3 {
 		t.Fatalf("expected active plus rotated logs, got %v", logs)
 	}
 }

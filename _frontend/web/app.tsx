@@ -13,6 +13,7 @@ import { APITokensPage } from "@/api-tokens-page";
 import { useAppData } from "@/app-data";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { LogsPage } from "@/logs-page";
 import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectsPage } from "@/projects-page";
 import { globalNavigation, Sidebar } from "@/sidebar";
@@ -187,8 +188,14 @@ export const App = () => {
               element={<APITokensPage projects={data.projects} />}
               path="/tokens"
             />
+            <Route
+              element={<LogsPage projects={data.projects} />}
+              path="/logs"
+            />
             {globalNavigation
-              .filter((item) => item.path !== "/tokens")
+              .filter(
+                (item) => item.path !== "/tokens" && item.path !== "/logs"
+              )
               .map((item) => (
                 <Route
                   element={<EmptySection item={item} />}

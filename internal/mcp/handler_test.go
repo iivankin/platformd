@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -19,6 +20,7 @@ type repositoryStub struct {
 	canvasCalls   int
 	projectCalls  int
 	projectsCalls int
+	serviceCalls  int
 	createCalls   int
 	created       state.CreateService
 }
@@ -47,11 +49,21 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: repository, Services: services})
+	logs, err := automation.NewLogApplication(repository, logReaderStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := New(Config{Hostname: "api.example.com", Version: "1.2.3", Repository: repository, Services: services, Logs: logs})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+type logReaderStub struct{}
+
+func (logReaderStub) Read(context.Context, containerlogs.Query) (containerlogs.Window, error) {
+	return containerlogs.Window{Records: []containerlogs.Record{{Text: "ready"}}}, nil
 }
 
 func (repository *repositoryStub) Projects(context.Context) ([]state.ProjectSummary, error) {
@@ -75,6 +87,7 @@ func (repository *repositoryStub) ProjectCanvas(context.Context, string) (state.
 }
 
 func (repository *repositoryStub) Service(context.Context, string, string) (state.ServiceDesired, error) {
+	repository.serviceCalls++
 	return repository.service, nil
 }
 
@@ -117,8 +130,28 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 	list = mcpRequest(`{"jsonrpc":"2.0","id":"tools","method":"tools/list","params":{}}`)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, list)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) || !strings.Contains(response.Body.String(), `"name":"get_service"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) || !strings.Contains(response.Body.String(), `"name":"get_service"`) || !strings.Contains(response.Body.String(), `"name":"read_service_logs"`) {
 		t.Fatalf("tools/list response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestMCPReadServiceLogsEnforcesBoundaryBeforeLookup(t *testing.T) {
+	repository := &repositoryStub{service: state.ServiceDesired{ID: "service", ProjectID: "project-a"}}
+	handler := newTestHandler(t, repository)
+	bound := "project-a"
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_service_logs","arguments":{"projectId":"project-b","serviceId":"service"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.serviceCalls != 0 {
+		t.Fatalf("cross-project logs = %s calls=%d", response.Body, repository.serviceCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_service_logs","arguments":{"projectId":"project-a","serviceId":"service","limit":10}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `ready`) || repository.serviceCalls != 1 {
+		t.Fatalf("visible logs = %s calls=%d", response.Body, repository.serviceCalls)
 	}
 }
 

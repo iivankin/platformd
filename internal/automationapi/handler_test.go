@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -18,6 +19,8 @@ type repositoryStub struct {
 	canvasCalls   int
 	createCalls   int
 	created       state.CreateService
+	serviceCalls  int
+	service       state.ServiceDesired
 }
 
 func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -47,7 +50,11 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := Handler(Config{Hostname: "api.example.com", Repository: repository, Services: services})
+	logs, err := automation.NewLogApplication(repository, logReaderStub{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := Handler(Config{Hostname: "api.example.com", Repository: repository, Services: services, Logs: logs})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,8 +81,18 @@ func (repository *repositoryStub) ProjectCanvas(context.Context, string) (state.
 	return state.ProjectCanvas{}, nil
 }
 
-func (*repositoryStub) Service(context.Context, string, string) (state.ServiceDesired, error) {
+func (repository *repositoryStub) Service(_ context.Context, projectID, serviceID string) (state.ServiceDesired, error) {
+	repository.serviceCalls++
+	if repository.service.ProjectID == projectID && repository.service.ID == serviceID {
+		return repository.service, nil
+	}
 	return state.ServiceDesired{}, state.ErrServiceNotFound
+}
+
+type logReaderStub struct{}
+
+func (logReaderStub) Read(context.Context, containerlogs.Query) (containerlogs.Window, error) {
+	return containerlogs.Window{Records: []containerlogs.Record{{Text: "ready"}}}, nil
 }
 
 func (*repositoryStub) ServiceDeployments(context.Context, string, string, string, int) (state.DeploymentPage, error) {
@@ -117,6 +134,24 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestAutomationAPIReadsLogsWithinTokenProjectBoundary(t *testing.T) {
+	repository := &repositoryStub{service: state.ServiceDesired{ID: "service", ProjectID: "project-a"}}
+	handler := automationHandler(t, repository)
+	bound := "project-a"
+	identity := automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, automationRequest("/api/v1/projects/project-b/services/service/logs", identity))
+	if response.Code != http.StatusForbidden || repository.serviceCalls != 0 {
+		t.Fatalf("cross-project logs = %d/%s calls=%d", response.Code, response.Body, repository.serviceCalls)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, automationRequest("/api/v1/projects/project-a/services/service/logs?limit=10", identity))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.serviceCalls != 1 {
+		t.Fatalf("visible logs = %d/%s calls=%d", response.Code, response.Body, repository.serviceCalls)
 	}
 }
 

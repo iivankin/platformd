@@ -1360,7 +1360,9 @@ func (r *ConmonOCIRuntime) sharedConmonArgs(ctr *Container, cuuid, bundlePath, p
 		args = append(args, "--log-size-max", strconv.FormatInt(size, 10))
 	}
 	if ctr.config.LogRotate {
-		args = append(args, "--log-rotate", "--log-max-files", strconv.FormatUint(uint64(ctr.config.LogMaxFiles), 10))
+		// Conmon counts only rotated backups in --log-max-files; libpod's
+		// platformd option counts the active file as well.
+		args = append(args, "--log-rotate", "--log-max-files", strconv.FormatUint(uint64(ctr.config.LogMaxFiles-1), 10))
 	}
 
 	if ociLogPath != "" {

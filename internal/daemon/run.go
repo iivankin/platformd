@@ -16,6 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/automationapi"
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/cgrouptree"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/masterkey"
@@ -113,6 +114,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	apiTokens := liveAPITokenRepository{store: store, verifier: tokenVerifier}
+	logReader, err := containerlogs.NewReader(paths.LogsRoot)
+	if err != nil {
+		return err
+	}
+	logs := liveLogRepository{store: store, reader: logReader}
 	var automationHostname string
 	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
@@ -122,14 +128,19 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
+		logAutomation, err := automation.NewLogApplication(store, logReader)
+		if err != nil {
+			return err
+		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
-			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
+			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation, Logs: logAutomation,
 		})
 		if err != nil {
 			return err
 		}
 		mcpHandler, err := mcp.New(mcp.Config{
-			Hostname: automationHostname, Version: version.Version, Repository: automationRepository, Services: serviceAutomation,
+			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
+			Services: serviceAutomation, Logs: logAutomation,
 		})
 		if err != nil {
 			return err
@@ -158,6 +169,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithImageCredentials(imageCredentials),
 			server.WithDomains(domains),
 			server.WithAPITokens(apiTokens),
+			server.WithLogs(logs),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
