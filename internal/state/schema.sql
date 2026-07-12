@@ -9,7 +9,6 @@ CREATE TABLE installation (
   admin_hostname TEXT NOT NULL UNIQUE,
   automation_hostname TEXT UNIQUE,
   access_team_domain TEXT NOT NULL,
-  access_issuer TEXT NOT NULL,
   access_audience TEXT NOT NULL,
   console_passphrase_phc TEXT NOT NULL,
   recovery_mode INTEGER NOT NULL DEFAULT 0 CHECK (recovery_mode IN (0, 1)),

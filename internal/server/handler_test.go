@@ -15,7 +15,7 @@ func TestMetaContract(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/meta", nil)
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, request)
+	server.Handler(server.DefaultMeta("bootstrapping")).ServeHTTP(response, request)
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", response.Code)
@@ -35,7 +35,7 @@ func TestMetaContract(t *testing.T) {
 func TestSPAFallbackDoesNotHideMissingAPI(t *testing.T) {
 	t.Parallel()
 
-	handler := server.Handler()
+	handler := server.Handler(server.DefaultMeta("bootstrapping"))
 
 	pageResponse := httptest.NewRecorder()
 	handler.ServeHTTP(pageResponse, httptest.NewRequest(http.MethodGet, "/projects/example", nil))
@@ -54,7 +54,7 @@ func TestSecurityHeaders(t *testing.T) {
 	t.Parallel()
 
 	response := httptest.NewRecorder()
-	server.Handler().ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+	server.Handler(server.DefaultMeta("bootstrapping")).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 
 	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") || strings.Contains(got, "unsafe-inline") {
 		t.Fatalf("unexpected CSP: %q", got)
