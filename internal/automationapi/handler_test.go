@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -44,6 +45,10 @@ func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInp
 	return state.ServiceDesired{}, nil
 }
 
+func (*repositoryStub) List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error) {
+	return managedimages.Page{Tags: []managedimages.Tag{{Name: "18.3"}}, Page: 1, PageSize: 50}, nil
+}
+
 func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	t.Helper()
 	services, err := automation.NewServiceApplication(repository, nil, nil)
@@ -54,11 +59,22 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := Handler(Config{Hostname: "api.example.com", Repository: repository, Services: services, Logs: logs})
+	handler, err := Handler(Config{
+		Hostname: "api.example.com", Repository: repository, Services: services, Logs: logs, Images: repository,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func TestAutomationAPIListsOfficialManagedImageTags(t *testing.T) {
+	handler := automationHandler(t, &repositoryStub{})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, automationRequest("/api/v1/managed-images/postgres/tags?page=1&pageSize=50&search=18", automation.Identity{TokenID: "token", Role: "read"}))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"18.3"`) {
+		t.Fatalf("managed image tags = %d/%s", response.Code, response.Body)
+	}
 }
 
 func (repository *repositoryStub) Projects(context.Context) ([]state.ProjectSummary, error) {

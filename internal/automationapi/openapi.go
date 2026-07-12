@@ -21,6 +21,7 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 		},
 		"paths": map[string]any{
 			"/api/v1/me":                                                    readOperation("Read current token identity"),
+			"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
 			"/api/v1/projects":                                              readOperation("List visible projects"),
 			"/api/v1/projects/{projectID}":                                  readOperation("Get one visible project"),
 			"/api/v1/projects/{projectID}/services":                         readWriteOperation("List services in one visible project", "Create a service (admin token)"),
@@ -34,6 +35,24 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func managedImageTagsOperation() map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary": "List one Docker Hub page of official PostgreSQL or Redis image tags",
+		"parameters": []map[string]any{
+			{"name": "engine", "in": "path", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"postgres", "redis"}}},
+			{"name": "page", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "default": 1}},
+			{"name": "pageSize", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+			{"name": "search", "in": "query", "description": "Case-insensitive filter within the fetched page", "schema": map[string]any{"type": "string", "maxLength": 128}},
+		},
+		"responses": map[string]any{
+			"200": map[string]string{"description": "Stateless official tag page"},
+			"400": map[string]string{"description": "Invalid engine or page"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"502": map[string]string{"description": "Docker Hub unavailable"},
+		},
+	}}
 }
 
 func logReadOperation() map[string]any {

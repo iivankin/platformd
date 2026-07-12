@@ -10,6 +10,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -81,6 +82,15 @@ func readTools() []Tool {
 				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": containerlogs.MaximumLimit},
 			}, []string{"projectId", "serviceId"}),
 		},
+		{
+			Name: "list_managed_image_tags", Description: "List one documented Docker Hub page for official PostgreSQL or Redis tags; search filters only that page and manual tag input remains valid.",
+			InputSchema: objectSchema(map[string]any{
+				"engine":   map[string]any{"type": "string", "enum": []string{"postgres", "redis"}},
+				"page":     map[string]any{"type": "integer", "minimum": 1},
+				"pageSize": map[string]any{"type": "integer", "minimum": 1, "maximum": managedimages.MaximumPageSize},
+				"search":   map[string]any{"type": "string", "maxLength": 128},
+			}, []string{"engine"}),
+		},
 	}
 }
 
@@ -137,6 +147,8 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.listDeployments(request.Context(), call.Arguments, identity)
 	case "read_service_logs":
 		output, err = handler.readServiceLogs(request.Context(), call.Arguments, identity)
+	case "list_managed_image_tags":
+		output, err = handler.listManagedImageTags(request.Context(), call.Arguments)
 	case "create_service":
 		output, err = handler.createService(request.Context(), call.Arguments, identity)
 	case "update_service":
@@ -150,7 +162,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

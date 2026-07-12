@@ -19,6 +19,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/origin"
@@ -32,6 +33,7 @@ import (
 
 const shutdownTimeout = 120 * time.Second
 const maximumHTTPSConnections = 4096
+const managedImageCatalogTimeout = 10 * time.Second
 
 func Run(ctx context.Context) error {
 	if os.Getenv("PLATFORMD_DEV") == "1" {
@@ -122,6 +124,15 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	logs := liveLogRepository{store: store, reader: logReader}
+	managedImageCatalog, err := managedimages.New("https://hub.docker.com", &http.Client{
+		Timeout: managedImageCatalogTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	})
+	if err != nil {
+		return err
+	}
 	var automationHostname string
 	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
@@ -136,14 +147,15 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return err
 		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
-			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation, Logs: logAutomation,
+			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
+			Logs: logAutomation, Images: managedImageCatalog,
 		})
 		if err != nil {
 			return err
 		}
 		mcpHandler, err := mcp.New(mcp.Config{
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
-			Services: serviceAutomation, Logs: logAutomation,
+			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
 		})
 		if err != nil {
 			return err
@@ -174,6 +186,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithAPITokens(apiTokens),
 			server.WithLogs(logs),
 			server.WithAudit(store),
+			server.WithManagedImages(managedImageCatalog),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{

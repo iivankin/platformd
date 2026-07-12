@@ -16,6 +16,7 @@ import {
   fetchServiceLogs,
   fetchImageCredentials,
   fetchIdentity,
+  fetchManagedImageTags,
   fetchMeta,
   fetchProjectCanvas,
   fetchProjects,
@@ -387,6 +388,45 @@ test("reads filtered paginated audit history", async () => {
   ).resolves.toMatchObject({ events: [{ action: "server.exec" }] });
   expect(requested).toBe(
     "/api/v1/audit?limit=25&action=server.exec&actorKind=token&cursor=cursor&result=succeeded"
+  );
+});
+
+test("reads one official managed image tag page", async () => {
+  let requested = "";
+  await expect(
+    fetchManagedImageTags(
+      "postgres",
+      { page: 2, pageSize: 25, search: "18" },
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            page: 2,
+            pageSize: 25,
+            previousPage: 1,
+            tags: [
+              {
+                lastUpdated: "2026-06-01T00:00:00Z",
+                name: "18.3",
+                platforms: [
+                  {
+                    architecture: "amd64",
+                    digest: "sha256:image",
+                    os: "linux",
+                    sizeBytes: 42,
+                  },
+                ],
+              },
+            ],
+            total: 100,
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ tags: [{ name: "18.3" }] });
+  expect(requested).toBe(
+    "/api/v1/managed-images/postgres/tags?page=2&pageSize=25&search=18"
   );
 });
 

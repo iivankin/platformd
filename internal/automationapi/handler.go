@@ -8,6 +8,7 @@ import (
 	"strconv"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -19,15 +20,20 @@ type Repository interface {
 	ServiceDeployments(context.Context, string, string, string, int) (state.DeploymentPage, error)
 }
 
+type ManagedImageCatalog interface {
+	List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error)
+}
+
 type Config struct {
 	Hostname   string
 	Repository Repository
 	Services   *automation.ServiceApplication
 	Logs       *automation.LogApplication
+	Images     ManagedImageCatalog
 }
 
 func Handler(config Config) (http.Handler, error) {
-	if config.Hostname == "" || config.Repository == nil || config.Services == nil || config.Logs == nil {
+	if config.Hostname == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil {
 		return nil, errors.New("automation API dependencies are incomplete")
 	}
 	mux := http.NewServeMux()
@@ -43,6 +49,7 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
+	mux.HandleFunc("GET /api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
 	return noStore(mux), nil
 }
 
