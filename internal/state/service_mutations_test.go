@@ -37,7 +37,7 @@ func TestUpdateServiceUsesOptimisticVersionAndClearsActivePointerWhenDisabled(t 
 	updated, err := store.UpdateService(context.Background(), UpdateServiceInput{
 		ID: service.ID, ProjectID: service.ProjectID, Enabled: false,
 		Snapshot: normalized, ExpectedUpdatedMillis: active.UpdatedAtMillis,
-		AuditEventID: "update-audit", ActorID: "actor", ActorEmail: "admin@example.com",
+		AuditEventID: "update-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
 		UpdatedAtMillis: active.UpdatedAtMillis,
 	})
 	if err != nil {
@@ -49,7 +49,7 @@ func TestUpdateServiceUsesOptimisticVersionAndClearsActivePointerWhenDisabled(t 
 	_, err = store.UpdateService(context.Background(), UpdateServiceInput{
 		ID: service.ID, ProjectID: service.ProjectID, Enabled: true,
 		Snapshot: normalized, ExpectedUpdatedMillis: active.UpdatedAtMillis,
-		AuditEventID: "stale-audit", ActorID: "actor", ActorEmail: "admin@example.com",
+		AuditEventID: "stale-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
 		UpdatedAtMillis: 10,
 	})
 	if !errors.Is(err, ErrServiceChanged) {
@@ -86,7 +86,7 @@ func TestRollbackCopiesSuccessfulSnapshotAndPinsDigest(t *testing.T) {
 		ID: service.ID, ProjectID: service.ProjectID, Enabled: true,
 		Snapshot:              serviceconfig.Snapshot{ImageReference: "alpine:3.23"},
 		ExpectedUpdatedMillis: active.UpdatedAtMillis,
-		AuditEventID:          "update-audit", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 5,
+		AuditEventID:          "update-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 5,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -94,7 +94,7 @@ func TestRollbackCopiesSuccessfulSnapshotAndPinsDigest(t *testing.T) {
 	rolledBack, err := store.RollbackService(context.Background(), RollbackServiceInput{
 		ID: service.ID, ProjectID: service.ProjectID, DeploymentID: "deployment",
 		ExpectedUpdatedMillis: changed.UpdatedAtMillis,
-		AuditEventID:          "rollback-audit", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
+		AuditEventID:          "rollback-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -132,7 +132,7 @@ func createMutationService(t *testing.T, store *Store, imageReference string) Se
 	service, err := store.CreateService(context.Background(), CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
 		Snapshot:     serviceconfig.Snapshot{ImageReference: imageReference},
-		AuditEventID: "service-audit", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -32,7 +32,7 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 		if _, err := store.CreateService(context.Background(), state.CreateService{
 			ID: "service-" + projectID, ProjectID: projectID, Name: "api", Enabled: true,
 			Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine", TargetPort: &port},
-			AuditEventID: "service-audit-" + projectID, ActorID: "actor", ActorEmail: "admin@example.com",
+			AuditEventID: "service-audit-" + projectID, ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
 			CreatedAtMillis: int64(index + 3),
 		}); err != nil {
 			t.Fatal(err)

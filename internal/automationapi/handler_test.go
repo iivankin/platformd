@@ -16,6 +16,42 @@ type repositoryStub struct {
 	projectCalls  int
 	projectsCalls int
 	canvasCalls   int
+	createCalls   int
+	created       state.CreateService
+}
+
+func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
+	repository.createCalls++
+	repository.created = input
+	return state.ServiceDesired{
+		ID: input.ID, ProjectID: input.ProjectID, Name: input.Name, Enabled: input.Enabled,
+		Snapshot: input.Snapshot, CreatedAtMillis: input.CreatedAtMillis, UpdatedAtMillis: input.CreatedAtMillis,
+	}, nil
+}
+
+func (*repositoryStub) UpdateService(context.Context, state.UpdateServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*repositoryStub) RollbackService(context.Context, state.RollbackServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
+	t.Helper()
+	services, err := automation.NewServiceApplication(repository, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := Handler(Config{Hostname: "api.example.com", Repository: repository, Services: services})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return handler
 }
 
 func (repository *repositoryStub) Projects(context.Context) ([]state.ProjectSummary, error) {
@@ -50,10 +86,7 @@ func TestAutomationAPIEnforcesProjectBoundaryBeforeLookup(t *testing.T) {
 	repository := &repositoryStub{projects: []state.ProjectSummary{
 		{ID: "project-a", Name: "alpha"}, {ID: "project-b", Name: "beta"},
 	}}
-	handler, err := Handler(Config{Hostname: "api.example.com", Repository: repository})
-	if err != nil {
-		t.Fatal(err)
-	}
+	handler := automationHandler(t, repository)
 	projectID := "project-a"
 	identity := automation.Identity{TokenID: "token", Role: "read", ProjectID: &projectID}
 
@@ -74,10 +107,7 @@ func TestAutomationAPIEnforcesProjectBoundaryBeforeLookup(t *testing.T) {
 }
 
 func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
-	handler, err := Handler(Config{Hostname: "api.example.com", Repository: &repositoryStub{}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	handler := automationHandler(t, &repositoryStub{})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects", nil))
 	if response.Code != http.StatusUnauthorized {
@@ -87,6 +117,36 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestAutomationAPIRequiresAdminBeforeDecodingAndCreatesTokenActor(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := automationHandler(t, repository)
+	path := "https://api.example.com/api/v1/projects/project/services"
+
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("not-json"))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "read", Role: "read"}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || repository.createCalls != 0 {
+		t.Fatalf("read mutation = %d/%s, calls=%d", response.Code, response.Body, repository.createCalls)
+	}
+
+	request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{
+  "name":"api",
+  "configuration":{"imageReference":"alpine:3.22"}
+}`))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin-token", Role: "admin"}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || repository.createCalls != 1 {
+		t.Fatalf("admin mutation = %d/%s, calls=%d", response.Code, response.Body, repository.createCalls)
+	}
+	if repository.created.ActorKind != "token" || repository.created.ActorID != "admin-token" || repository.created.ActorEmail != "" {
+		t.Fatalf("mutation actor = %+v", repository.created)
 	}
 }
 

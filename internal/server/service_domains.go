@@ -80,7 +80,7 @@ func attachServiceDomain(config handlerConfig) http.HandlerFunc {
 		domain, err := config.domains.AttachServiceDomain(request.Context(), state.AttachServiceDomainInput{
 			ProjectID: request.PathValue("projectID"), ServiceID: request.PathValue("serviceID"),
 			Hostname: body.Hostname, Move: body.Move,
-			AuditEventID: auditID, ActorID: identity.Subject, ActorEmail: identity.Email,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
 		if writeDomainMutationError(response, err) {
@@ -106,7 +106,7 @@ func detachServiceDomain(config handlerConfig) http.HandlerFunc {
 		}
 		err = config.domains.DetachServiceDomain(request.Context(), state.DetachServiceDomainInput{
 			ProjectID: request.PathValue("projectID"), ServiceID: request.PathValue("serviceID"), Hostname: request.PathValue("hostname"),
-			AuditEventID: auditID, ActorID: identity.Subject, ActorEmail: identity.Email,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
 		if writeDomainMutationError(response, err) {

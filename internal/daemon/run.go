@@ -12,6 +12,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/apitoken"
+	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationapi"
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/cgrouptree"
@@ -117,14 +118,18 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if installation.AutomationHostname != nil {
 		automationHostname = *installation.AutomationHostname
 		automationRepository := liveAutomationRepository{store: store, runtime: runtime}
+		serviceAutomation, err := automation.NewServiceApplication(automationRepository, nil, nil)
+		if err != nil {
+			return err
+		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
-			Hostname: automationHostname, Repository: automationRepository,
+			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
 		})
 		if err != nil {
 			return err
 		}
 		mcpHandler, err := mcp.New(mcp.Config{
-			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
+			Hostname: automationHostname, Version: version.Version, Repository: automationRepository, Services: serviceAutomation,
 		})
 		if err != nil {
 			return err

@@ -39,6 +39,7 @@ type CreateService struct {
 	Enabled              bool
 	Snapshot             serviceconfig.Snapshot
 	AuditEventID         string
+	ActorKind            string
 	ActorID              string
 	ActorEmail           string
 	RequestCorrelationID string
@@ -46,7 +47,7 @@ type CreateService struct {
 }
 
 func (store *Store) CreateService(ctx context.Context, input CreateService) (ServiceDesired, error) {
-	if input.ID == "" || input.ProjectID == "" || input.AuditEventID == "" || input.ActorID == "" || input.ActorEmail == "" || input.CreatedAtMillis <= 0 {
+	if input.ID == "" || input.ProjectID == "" || input.AuditEventID == "" || input.CreatedAtMillis <= 0 || validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail) != nil {
 		return ServiceDesired{}, errors.New("create service input is incomplete")
 	}
 	if err := resourcename.Validate(input.Name); err != nil {
@@ -68,7 +69,11 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	if err != nil {
 		return ServiceDesired{}, fmt.Errorf("encode service environment: %w", err)
 	}
-	metadataJSON, err := json.Marshal(map[string]string{"actorEmail": input.ActorEmail})
+	metadata := make(map[string]string)
+	if input.ActorEmail != "" {
+		metadata["actorEmail"] = input.ActorEmail
+	}
+	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
 		return ServiceDesired{}, err
 	}
@@ -170,8 +175,8 @@ VALUES (?, ?, ?)`, input.ID, reference.EnvironmentName, reference.SecretID); err
 INSERT INTO audit_events(
   id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, 'service.create', 'service', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorID, input.ID, correlationID, string(metadataJSON), input.CreatedAtMillis,
+) VALUES (?, ?, ?, 'service.create', 'service', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadataJSON), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit service creation: %w", err)
 		}

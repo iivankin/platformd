@@ -21,6 +21,7 @@ type Handler struct {
 	hostname   string
 	version    string
 	repository Repository
+	services   *automation.ServiceApplication
 	tools      []Tool
 }
 
@@ -28,14 +29,15 @@ type Config struct {
 	Hostname   string
 	Version    string
 	Repository Repository
+	Services   *automation.ServiceApplication
 }
 
 func New(config Config) (*Handler, error) {
-	if config.Hostname == "" || config.Version == "" || config.Repository == nil {
+	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil {
 		return nil, errors.New("MCP handler dependencies are incomplete")
 	}
 	return &Handler{
-		hostname: config.Hostname, version: config.Version, repository: config.Repository,
+		hostname: config.Hostname, version: config.Version, repository: config.Repository, services: config.Services,
 		tools: readTools(),
 	}, nil
 }
