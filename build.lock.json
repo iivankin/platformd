@@ -1,0 +1,122 @@
+{
+  "formatVersion": 1,
+  "toolchain": {
+    "go": "1.26.3",
+    "bun": "1.3.14",
+    "rust": "1.86.0",
+    "protoc": "3.21.12",
+    "ccByArchitecture": {
+      "amd64": "gcc-13.3.0"
+    }
+  },
+  "goBuild": {
+    "cgo": true,
+    "tags": [
+      "containers_image_openpgp",
+      "exclude_graphdriver_btrfs",
+      "exclude_graphdriver_zfs",
+      "grpcnotrace",
+      "seccomp",
+      "sqlite_omit_load_extension"
+    ]
+  },
+  "helpers": {
+    "crun": {
+      "revision": "54f16ffbefcd022bf032af768b5c5ce075c18bfc",
+      "sourceSha256": "sha256:eb8fe73ffe44d868b14bb94fa6c295bd57e8bf023de43b61579da826c07cc406",
+      "buildFlags": [
+        "--disable-criu",
+        "--disable-dl",
+        "--disable-libcrun",
+        "--disable-systemd",
+        "--enable-crun",
+        "CFLAGS=-O2 -ffile-prefix-map=$BUILD=. -fdebug-prefix-map=$BUILD=.",
+        "LDFLAGS=-Wl,--as-needed -Wl,--build-id=none -Wl,-z,relro,-z,now"
+      ]
+    },
+    "conmon": {
+      "revision": "c8cc2c4db27531bd4e084ce7857f73cd21ee639d",
+      "sourceSha256": "sha256:1d8a5a13033a277a633a49cb1a2cd1af31baf79eca16099fb6a3d4a86269f421",
+      "buildFlags": [
+        "--buildtype=release",
+        "-Db_lto=true",
+        "-Db_ndebug=true",
+        "CFLAGS=-O2 -ffile-prefix-map=$BUILD=. -fdebug-prefix-map=$BUILD=.",
+        "LDFLAGS=-Wl,--as-needed -Wl,--build-id=none -Wl,-z,relro,-z,now"
+      ]
+    },
+    "netavark": {
+      "revision": "bd7a464482bcc02dca4843c457db584ed7fe14e4",
+      "sourceSha256": "sha256:0caa2b1200240ddb93528f1af57c446f8d72383bb0cfe5894d3414922e09634b",
+      "buildFlags": [
+        "--bin=netavark",
+        "--locked",
+        "--release",
+        "RUSTFLAGS=-C panic=abort -C strip=symbols --remap-path-prefix=$BUILD=."
+      ]
+    },
+    "catatonit": {
+      "revision": "bb3b96b99668e544618c5aec427c1f4b6b9ee9bb",
+      "sourceSha256": "sha256:0f8550b55f6a2cee24e7e499f7b2536c4b927ec4d3e25a84979b78c51f59d4f6",
+      "buildFlags": [
+        "CFLAGS=-O2 -ffile-prefix-map=$BUILD=. -fdebug-prefix-map=$BUILD=.",
+        "LDFLAGS=-Wl,--as-needed -Wl,--build-id=none -Wl,-z,relro,-z,now",
+        "catatonit_LDFLAGS=-all-static"
+      ]
+    },
+    "sqlite": {
+      "version": "3.53.2",
+      "sourceSha256": "sha256:dd81fbb265eeaea095abccf2037a63fa7c076d8fe7fdba04f93fc2ab243885ad",
+      "buildFlags": [
+        "sqlite_omit_load_extension"
+      ]
+    }
+  },
+  "nativeDependencies": {
+    "allowedHostSonamesByArchitecture": {
+      "amd64": [
+        "ld-linux-x86-64.so.2",
+        "libatomic.so.1",
+        "libc.so.6",
+        "libcap.so.2",
+        "libgcc_s.so.1",
+        "libglib-2.0.so.0",
+        "libjson-c.so.5",
+        "libm.so.6",
+        "libpcre2-8.so.0",
+        "libseccomp.so.2"
+      ]
+    },
+    "staticOutputsByArchitecture": {
+      "amd64": [
+        "catatonit"
+      ]
+    }
+  },
+  "targets": [
+    {
+      "os": "linux",
+      "architecture": "amd64",
+      "supportedHosts": [
+        "debian-13",
+        "ubuntu-24.04"
+      ],
+      "minimumSystemd": 255
+    }
+  ],
+  "features": {
+    "cgroupV2": true,
+    "deviceControllerBpf": true,
+    "netavarkFirewall": false,
+    "nftablesNetlink": true,
+    "seccomp": true,
+    "overlayfs": true,
+    "nftables": true,
+    "systemdScopes": false
+  },
+  "protocols": {
+    "ociImage": "147f9c13cedb47a0c4d9a11a222961073d585877",
+    "ociDistribution": "a139cc423184af6078077b9b7ee336eddbd03f8f",
+    "mcp": "2025-11-25"
+  }
+}

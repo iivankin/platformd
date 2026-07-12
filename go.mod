@@ -4,6 +4,7 @@ go 1.26.0
 
 require (
 	github.com/containers/podman/v5 v5.8.2
+	github.com/google/nftables v0.3.0
 	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/opencontainers/runtime-spec v1.2.1
@@ -64,6 +65,7 @@ require (
 	github.com/godbus/dbus/v5 v5.1.1-0.20241109141217-c266b19b28e9 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
+	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/go-containerregistry v0.20.6 // indirect
 	github.com/google/go-intervals v0.0.2 // indirect
 	github.com/google/shlex v0.0.0-20191202100458-e7afc7fbc510 // indirect
@@ -82,6 +84,8 @@ require (
 	github.com/manifoldco/promptui v0.9.0 // indirect
 	github.com/mattn/go-runewidth v0.0.16 // indirect
 	github.com/mattn/go-shellwords v1.0.12 // indirect
+	github.com/mdlayher/netlink v1.7.3-0.20250113171957-fbb4dce95f42 // indirect
+	github.com/mdlayher/socket v0.5.1 // indirect
 	github.com/miekg/pkcs11 v1.1.1 // indirect
 	github.com/mistifyio/go-zfs/v3 v3.1.0 // indirect
 	github.com/moby/buildkit v0.25.1 // indirect
