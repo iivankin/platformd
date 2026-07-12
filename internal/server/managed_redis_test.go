@@ -40,6 +40,17 @@ func (repository *managedRedisRepository) Resources(_ context.Context, projectID
 	return []state.ManagedRedis{repository.resource}, nil
 }
 
+func (*managedRedisRepository) Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error) {
+	ttl := int64(1500)
+	return managedredis.KeyPage{NextCursor: 7, Keys: []managedredis.KeySummary{{
+		Key: []byte("user:1"), Type: "string", ExpiresInMillis: &ttl, SizeBytes: 96,
+	}, {Key: []byte{0xff, 0x00}, Type: "hash", SizeBytes: 128}}}, nil
+}
+
+func (*managedRedisRepository) Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error) {
+	return managedredis.Preview{Type: "string", Length: 5, Items: []managedredis.PreviewItem{{Values: [][]byte{[]byte("hello")}}}}, nil
+}
+
 func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
 	t.Parallel()
 	repository := &managedRedisRepository{resource: state.ManagedRedis{
@@ -83,5 +94,17 @@ func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
 	handler.ServeHTTP(listResponse, list)
 	if listResponse.Code != http.StatusOK || strings.Contains(listResponse.Body.String(), "password") || !strings.Contains(listResponse.Body.String(), `"imageDigest"`) {
 		t.Fatalf("list status/body = %d/%s", listResponse.Code, listResponse.Body)
+	}
+	keys := projectRequest(http.MethodGet, "/api/v1/projects/project/redis/redis/keys?count=2", "")
+	keysResponse := httptest.NewRecorder()
+	handler.ServeHTTP(keysResponse, keys)
+	if keysResponse.Code != http.StatusOK || !strings.Contains(keysResponse.Body.String(), `"nextCursor":"7"`) || !strings.Contains(keysResponse.Body.String(), `"keyText":"user:1"`) || !strings.Contains(keysResponse.Body.String(), `"keyBase64":"_wA"`) {
+		t.Fatalf("keys status/body = %d/%s", keysResponse.Code, keysResponse.Body)
+	}
+	preview := projectRequest(http.MethodGet, "/api/v1/projects/project/redis/redis/preview?key=dXNlcjox", "")
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, preview)
+	if previewResponse.Code != http.StatusOK || !strings.Contains(previewResponse.Body.String(), `"type":"string"`) || !strings.Contains(previewResponse.Body.String(), `"text":"hello"`) {
+		t.Fatalf("preview status/body = %d/%s", previewResponse.Code, previewResponse.Body)
 	}
 }

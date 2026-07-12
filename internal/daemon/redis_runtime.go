@@ -179,3 +179,25 @@ func (stack *runtimeStack) StartManagedRedis(ctx context.Context, resourceID str
 	stack.mu.Unlock()
 	return err
 }
+
+func (stack *runtimeStack) ScanManagedRedisKeys(ctx context.Context, resourceID string, query managedredis.ScanQuery) (managedredis.KeyPage, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedredis.KeyPage{}, errors.New("managed Redis runtime is not ready")
+	}
+	return controller.ScanKeys(ctx, resourceID, query)
+}
+
+func (stack *runtimeStack) PreviewManagedRedisKey(ctx context.Context, resourceID string, query managedredis.PreviewQuery) (managedredis.Preview, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedredis.Preview{}, errors.New("managed Redis runtime is not ready")
+	}
+	return controller.PreviewKey(ctx, resourceID, query)
+}

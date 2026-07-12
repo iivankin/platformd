@@ -29,6 +29,8 @@ type ApplicationStore interface {
 type ApplicationRuntime interface {
 	ResolveManagedRedisImage(context.Context, string) (string, error)
 	StartManagedRedis(context.Context, string) error
+	ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error)
+	PreviewManagedRedisKey(context.Context, string, PreviewQuery) (Preview, error)
 }
 
 type Actor struct {
@@ -58,6 +60,7 @@ type Application struct {
 	master  cryptobox.MasterKey
 	random  io.Reader
 	now     func() time.Time
+	browse  chan struct{}
 }
 
 func NewApplication(store ApplicationStore, runtime ApplicationRuntime, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
@@ -70,7 +73,7 @@ func NewApplication(store ApplicationStore, runtime ApplicationRuntime, master c
 	if now == nil {
 		now = time.Now
 	}
-	return &Application{store: store, runtime: runtime, master: master, random: random, now: now}, nil
+	return &Application{store: store, runtime: runtime, master: master, random: random, now: now, browse: make(chan struct{}, 4)}, nil
 }
 
 func (application *Application) Create(ctx context.Context, input CreateInput) (CreateResult, error) {
@@ -132,6 +135,36 @@ func (application *Application) Resource(ctx context.Context, projectID, resourc
 
 func (application *Application) Resources(ctx context.Context, projectID string) ([]state.ManagedRedis, error) {
 	return application.store.ManagedRedisByProject(ctx, projectID)
+}
+
+func (application *Application) Keys(ctx context.Context, projectID, resourceID string, query ScanQuery) (KeyPage, error) {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return KeyPage{}, err
+	}
+	select {
+	case application.browse <- struct{}{}:
+		defer func() { <-application.browse }()
+	case <-ctx.Done():
+		return KeyPage{}, ctx.Err()
+	}
+	browseContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return application.runtime.ScanManagedRedisKeys(browseContext, resourceID, query)
+}
+
+func (application *Application) Preview(ctx context.Context, projectID, resourceID string, query PreviewQuery) (Preview, error) {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return Preview{}, err
+	}
+	select {
+	case application.browse <- struct{}{}:
+		defer func() { <-application.browse }()
+	case <-ctx.Done():
+		return Preview{}, ctx.Err()
+	}
+	browseContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return application.runtime.PreviewManagedRedisKey(browseContext, resourceID, query)
 }
 
 func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {

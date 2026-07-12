@@ -46,6 +46,14 @@ func (runtime *applicationRuntime) StartManagedRedis(_ context.Context, id strin
 	return nil
 }
 
+func (*applicationRuntime) ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error) {
+	return KeyPage{}, nil
+}
+
+func (*applicationRuntime) PreviewManagedRedisKey(context.Context, string, PreviewQuery) (Preview, error) {
+	return Preview{}, nil
+}
+
 func TestApplicationPinsImageEncryptsPasswordAndStartsDurableResource(t *testing.T) {
 	t.Parallel()
 	store := &applicationStore{}

@@ -89,6 +89,14 @@ func (connection *testConnection) Save(context.Context) error {
 	return nil
 }
 
+func (*testConnection) ScanKeys(context.Context, ScanQuery) (KeyPage, error) {
+	return KeyPage{}, nil
+}
+
+func (*testConnection) PreviewKey(context.Context, PreviewQuery) (Preview, error) {
+	return Preview{}, nil
+}
+
 func (connection *testConnection) Close() error {
 	connection.closed = true
 	return nil
