@@ -31,6 +31,13 @@ func TestProjectAPIRequiresAccessAndCommitsAudit(t *testing.T) {
 	raw := server.Handler(server.DefaultMeta("ready"), server.WithProjects(store))
 	protected := access.ProtectAdmin("admin.example.com", projectVerifier{}, raw)
 
+	identity := projectRequest(http.MethodGet, "/api/v1/me", "")
+	identityResponse := httptest.NewRecorder()
+	protected.ServeHTTP(identityResponse, identity)
+	if identityResponse.Code != http.StatusOK || !strings.Contains(identityResponse.Body.String(), `"email":"admin@example.com"`) {
+		t.Fatalf("identity status/body = %d/%s", identityResponse.Code, identityResponse.Body)
+	}
+
 	create := projectRequest(http.MethodPost, "/api/v1/projects", "{\"name\":\"shop\"}")
 	create.Header.Set("Origin", "https://admin.example.com")
 	createResponse := httptest.NewRecorder()
@@ -59,6 +66,19 @@ func TestProjectAPIRequiresAccessAndCommitsAudit(t *testing.T) {
 	if len(projects) != 1 || projects[0]["name"] != "shop" || projects[0]["serviceCount"] != float64(0) {
 		t.Fatalf("projects = %v", projects)
 	}
+
+	canvas := projectRequest(http.MethodGet, "/api/v1/projects/"+created["id"].(string)+"/canvas", "")
+	canvasResponse := httptest.NewRecorder()
+	protected.ServeHTTP(canvasResponse, canvas)
+	if canvasResponse.Code != http.StatusOK || !strings.Contains(canvasResponse.Body.String(), `"resources":[]`) || !strings.Contains(canvasResponse.Body.String(), `"connections":[]`) {
+		t.Fatalf("canvas status/body = %d/%s", canvasResponse.Code, canvasResponse.Body)
+	}
+	missingCanvas := projectRequest(http.MethodGet, "/api/v1/projects/missing/canvas", "")
+	missingCanvasResponse := httptest.NewRecorder()
+	protected.ServeHTTP(missingCanvasResponse, missingCanvas)
+	if missingCanvasResponse.Code != http.StatusNotFound || !strings.Contains(missingCanvasResponse.Body.String(), "project_not_found") {
+		t.Fatalf("missing canvas status/body = %d/%s", missingCanvasResponse.Code, missingCanvasResponse.Body)
+	}
 	var auditCount int
 	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM audit_events WHERE actor_id = 'subject' AND action = 'project.create'").Scan(&auditCount); err != nil || auditCount != 1 {
 		t.Fatalf("audit count = %d, %v", auditCount, err)
@@ -68,6 +88,11 @@ func TestProjectAPIRequiresAccessAndCommitsAudit(t *testing.T) {
 	raw.ServeHTTP(directResponse, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
 	if directResponse.Code != http.StatusForbidden {
 		t.Fatalf("unprotected project API status = %d", directResponse.Code)
+	}
+	directIdentityResponse := httptest.NewRecorder()
+	raw.ServeHTTP(directIdentityResponse, httptest.NewRequest(http.MethodGet, "/api/v1/me", nil))
+	if directIdentityResponse.Code != http.StatusForbidden {
+		t.Fatalf("unprotected identity API status = %d", directIdentityResponse.Code)
 	}
 }
 

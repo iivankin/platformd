@@ -45,6 +45,7 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", handleHealth)
 	mux.HandleFunc("GET /api/v1/meta", handleMeta(meta))
+	mux.HandleFunc("GET /api/v1/me", handleIdentity)
 	if config.projects != nil {
 		registerProjectRoutes(mux, config)
 	}
