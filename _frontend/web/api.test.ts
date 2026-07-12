@@ -4,11 +4,16 @@ import {
   createProject,
   createImageCredential,
   createService,
+  fetchService,
+  fetchServiceDeployments,
   fetchImageCredentials,
   fetchIdentity,
   fetchMeta,
   fetchProjectCanvas,
   fetchProjects,
+  redeployService,
+  rollbackService,
+  updateService,
 } from "@/api";
 
 const invalidMetaFetcher = () =>
@@ -191,6 +196,7 @@ test("lists credentials and creates a service", async () => {
       return Promise.resolve(
         Response.json(
           {
+            createdAt: 1,
             enabled: true,
             environment: { APP_ENV: "production" },
             id: "service",
@@ -198,8 +204,11 @@ test("lists credentials and creates a service", async () => {
             imageReference: "registry.example.com/acme/api:latest",
             name: "api",
             projectId: "project",
+            secretReferences: [],
             startupTimeoutSeconds: 60,
             targetPort: 8080,
+            updatedAt: 1,
+            volumeMounts: [],
           },
           { status: 201 }
         )
@@ -208,4 +217,95 @@ test("lists credentials and creates a service", async () => {
   );
   expect(service.id).toBe("service");
   expect(requestInit?.method).toBe("POST");
+});
+
+test("reads and mutates service lifecycle with optimistic version fields", async () => {
+  const service = {
+    createdAt: 1,
+    enabled: true,
+    environment: {},
+    id: "service",
+    imageReference: "docker.io/library/alpine:latest",
+    name: "api",
+    projectId: "project",
+    secretReferences: [],
+    startupTimeoutSeconds: 60,
+    updatedAt: 2,
+    volumeMounts: [],
+  };
+  await expect(
+    fetchService("project", "service", undefined, () =>
+      Promise.resolve(Response.json(service))
+    )
+  ).resolves.toEqual(service);
+
+  let updateBody = "";
+  await updateService(
+    "project",
+    "service",
+    {
+      enabled: false,
+      environment: {},
+      expectedUpdatedAt: 2,
+      imageReference: service.imageReference,
+      secretReferences: [],
+      startupTimeoutSeconds: 60,
+      volumeMounts: [],
+    },
+    (_input, init) => {
+      updateBody = init?.body?.toString() ?? "";
+      return Promise.resolve(
+        Response.json({ ...service, enabled: false, updatedAt: 3 })
+      );
+    }
+  );
+  expect(JSON.parse(updateBody)).toEqual({
+    enabled: false,
+    environment: {},
+    expectedUpdatedAt: 2,
+    imageReference: service.imageReference,
+    secretReferences: [],
+    startupTimeoutSeconds: 60,
+    volumeMounts: [],
+  });
+
+  await expect(
+    redeployService("project", "service", 2, () =>
+      Promise.resolve(Response.json(service))
+    )
+  ).resolves.toEqual(service);
+  await expect(
+    rollbackService("project", "service", "deployment", 2, () =>
+      Promise.resolve(Response.json({ ...service, updatedAt: 3 }))
+    )
+  ).resolves.toMatchObject({ updatedAt: 3 });
+});
+
+test("validates bounded deployment history pages", async () => {
+  await expect(
+    fetchServiceDeployments("project", "service", undefined, undefined, () =>
+      Promise.resolve(
+        Response.json({
+          deployments: [
+            {
+              createdAt: 1,
+              id: "deployment",
+              imageDigest: "sha256:image",
+              serviceConfigHash: "config",
+              serviceId: "service",
+              snapshot: {
+                environment: {},
+                imageReference: "docker.io/library/alpine:latest",
+                secretReferences: [],
+                startupTimeoutSeconds: 60,
+                volumeMounts: [],
+              },
+              status: "succeeded",
+            },
+          ],
+          nextCursor: "deployment",
+        })
+      )
+    )
+  ).resolves.toMatchObject({ nextCursor: "deployment" });
 });

@@ -18,6 +18,7 @@ import type { ResourceFlowEdge, ResourceFlowNode } from "@/project-flow";
 import { ResourceDetailPanel } from "@/resource-detail-panel";
 import { ResourceNode } from "@/resource-node";
 import { ServiceCreatePanel } from "@/service-create-panel";
+import { ServiceDetailPanel } from "@/service-detail-panel";
 
 const nodeTypes = { resource: ResourceNode };
 const emptyNodes: ResourceFlowNode[] = [];
@@ -118,7 +119,16 @@ export const ProjectCanvasPage = () => {
             projectID={projectID}
           />
         ) : null}
-        {!createOpen && selectedNode ? (
+        {!createOpen && selectedNode?.data.kind === "service" ? (
+          <ServiceDetailPanel
+            data={selectedNode.data}
+            onChanged={() => setRefreshVersion((value) => value + 1)}
+            onClose={() => setSelectedNodeID(null)}
+            projectID={projectID}
+            serviceID={selectedNode.id}
+          />
+        ) : null}
+        {!createOpen && selectedNode && selectedNode.data.kind !== "service" ? (
           <ResourceDetailPanel
             data={selectedNode.data}
             onClose={() => setSelectedNodeID(null)}

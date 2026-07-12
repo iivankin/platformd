@@ -27,6 +27,8 @@ type ServiceDesired struct {
 	ActiveDeploymentID string
 	ActiveImageDigest  string
 	ActiveConfigHash   string
+	CreatedAtMillis    int64
+	UpdatedAtMillis    int64
 	Snapshot           serviceconfig.Snapshot
 }
 
@@ -200,7 +202,7 @@ SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
        d.image_digest, d.service_config_hash,
        s.image_reference, s.image_credential_id, s.command_json, s.args_json,
        s.environment_json, s.target_port, s.health_path, s.startup_timeout_seconds,
-       s.cpu_millis, s.memory_bytes
+       s.cpu_millis, s.memory_bytes, s.created_at, s.updated_at
 FROM services s
 JOIN projects p ON p.id = s.project_id
 LEFT JOIN deployments d ON d.id = s.active_deployment_id
@@ -209,7 +211,7 @@ WHERE s.id = ?`, serviceID).Scan(
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash,
 		&service.Snapshot.ImageReference, &imageCredentialID, &commandJSON, &argsJSON,
 		&environmentJSON, &targetPort, &healthPath, &service.Snapshot.StartupTimeoutSeconds,
-		&cpuMillis, &memoryBytes,
+		&cpuMillis, &memoryBytes, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDesired{}, sql.ErrNoRows

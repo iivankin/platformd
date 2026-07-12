@@ -143,27 +143,12 @@ SELECT EXISTS(
 }
 
 func (store *Store) Deployment(ctx context.Context, deploymentID string) (DeploymentRecord, error) {
-	var deployment DeploymentRecord
-	var snapshotJSON string
-	var errorCode sql.NullString
-	var errorMessage sql.NullString
-	var finishedAt sql.NullInt64
-	err := store.database.QueryRowContext(ctx, `
+	deployment, err := scanDeploymentRecord(store.database.QueryRowContext(ctx, `
 SELECT id, service_id, image_digest, service_config_hash, snapshot_json, status,
        error_code, error_message, created_at, finished_at
-FROM deployments WHERE id = ?`, deploymentID).Scan(
-		&deployment.ID, &deployment.ServiceID, &deployment.ImageDigest, &deployment.ConfigHash,
-		&snapshotJSON, &deployment.Status, &errorCode, &errorMessage,
-		&deployment.CreatedAtMillis, &finishedAt,
-	)
+FROM deployments WHERE id = ?`, deploymentID))
 	if err != nil {
 		return DeploymentRecord{}, err
 	}
-	if err := json.Unmarshal([]byte(snapshotJSON), &deployment.Snapshot); err != nil {
-		return DeploymentRecord{}, fmt.Errorf("decode deployment snapshot: %w", err)
-	}
-	deployment.ErrorCode = errorCode.String
-	deployment.ErrorMessage = errorMessage.String
-	deployment.FinishedAtMillis = finishedAt.Int64
 	return deployment, nil
 }
