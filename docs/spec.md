@@ -69,9 +69,9 @@ Bundle manifest содержит format version, relative path под `runtime/`
 
 Это single-file distribution, но не single-process runtime. Helpers являются приватной реализацией продукта и не образуют публичный CLI.
 
-Bundle не содержит private glibc, ELF loader или private shared libraries. Поддерживаемые Ubuntu/Debian уже имеют glibc как часть базового host ABI; release собирается против самой старой заявленной glibc baseline, поэтому host security update автоматически применяется к platformd/helpers. Все остальные native dependencies статически link-ятся только в binary, которому нужны: libseccomp — в crun/runtime integration для компиляции и установки OCI seccomp policy, GLib — в conmon как его upstream implementation dependency. Они не появляются отдельными runtime files и обновляются только новым platformd release. Удаление libseccomp означало бы отказ от обязательного seccomp sandbox, а удаление GLib потребовало бы поддерживать fork/rewrite conmon; оба усложнения отвергнуты.
+Bundle не содержит private glibc, ELF loader или private shared libraries. Platformd и helpers динамически используют только зафиксированные SONAME из базового ABI поддерживаемых Ubuntu/Debian: loader/glibc, libm, GCC unwind runtime, libseccomp, libcap, json-c, GLib, PCRE2 и libatomic. Эти packages не копируются в release slot и обновляются обычными security updates host OS. `platformd init` не запускает package manager: отсутствие либо несовместимость любой required library является failed host probe до установки. Libseccomp обязателен для OCI seccomp policy, а GLib остаётся upstream dependency conmon; их самостоятельные fork/rewrite не вводятся.
 
-Release CI собирает Linux/amd64 artifact один раз против Ubuntu 24.04 glibc baseline, затем проверяет **те же bytes** на чистых Ubuntu 24.04 и Debian 13. На каждом host `readelf`/`ldd` допускают только зафиксированные host glibc ABI SONAMEs; bundled loader/glibc и любые private/distro shared libraries запрещены. Затем CI выполняет реальный create/start/exec/network/remove container cycle. Случайная зависимость от host Podman, GPGME, CNI, hooks, CDI, SELinux/AppArmor files или `/etc/containers` запрещена.
+Release CI собирает Linux/amd64 artifact один раз против Ubuntu 24.04 baseline, затем проверяет **те же bytes** на чистых Ubuntu 24.04 и Debian 13. На каждом host `readelf`/`ldd` проверяют полный direct/transitive dependency graph против exact SONAME allowlist из build lock; bundled loader/glibc/shared libraries и любой незаявленный SONAME запрещены. Затем CI выполняет реальный create/start/exec/network/remove container cycle. Случайная зависимость от host Podman, GPGME, CNI, hooks, CDI, SELinux/AppArmor files или `/etc/containers` запрещена.
 
 Единственный top-level release/build contract — `build.lock.json`. Нормативная структура:
 
@@ -125,40 +125,19 @@ Release CI собирает Linux/amd64 artifact один раз против Ub
   },
   "nativeDependencies": {
     "allowedHostSonamesByArchitecture": {
-      "amd64": ["ld-linux-x86-64.so.2", "libc.so.6", "libm.so.6"]
-    },
-    "staticClosure": [
-      {
-        "name": "glib",
-        "version": "exact-version",
-        "sourceSha256": "sha256:...",
-        "buildFlags": ["exact", "canonical", "flags"]
-      },
-      {
-        "name": "json-c",
-        "version": "exact-version",
-        "sourceSha256": "sha256:...",
-        "buildFlags": ["exact", "canonical", "flags"]
-      },
-      {
-        "name": "libcap",
-        "version": "exact-version",
-        "sourceSha256": "sha256:...",
-        "buildFlags": ["exact", "canonical", "flags"]
-      },
-      {
-        "name": "libseccomp",
-        "version": "exact-version",
-        "sourceSha256": "sha256:...",
-        "buildFlags": ["exact", "canonical", "flags"]
-      },
-      {
-        "name": "pcre2",
-        "version": "exact-version",
-        "sourceSha256": "sha256:...",
-        "buildFlags": ["exact", "canonical", "flags"]
-      }
-    ]
+      "amd64": [
+        "ld-linux-x86-64.so.2",
+        "libatomic.so.1",
+        "libc.so.6",
+        "libcap.so.2",
+        "libgcc_s.so.1",
+        "libglib-2.0.so.0",
+        "libjson-c.so.5",
+        "libm.so.6",
+        "libpcre2-8.so.0",
+        "libseccomp.so.2"
+      ]
+    }
   },
   "targets": [
     {
@@ -183,7 +162,7 @@ Release CI собирает Linux/amd64 artifact один раз против Ub
 }
 ```
 
-Все fields обязательны, arrays canonical-sorted, unknown fields отклоняются. `goBuild.tags` намеренно оставляет libpod на `cgroupfs`, file events и `k8s-file`: tag `systemd` запрещён, потому что platformd не использует libpod journald/systemd-cgroup integration и не должен получать native dependency на libsystemd. AppArmor, libsubid, Btrfs и ZFS graph drivers также не входят в runtime profile; OpenPGP implementation не зависит от host GPGME. `staticClosure` содержит **каждый** direct и transitive non-host native library, фактически попавший хотя бы в один output; приведённые names являются текущим ожидаемым minimum, а CI отклоняет как отсутствующий node, так и лишний linked dependency. Source archive hash и effective canonical build flags обязательны для каждого node. Exact Go dependencies, включая pinned/forked libpod/containers modules, имеют единственный source of truth в `go.mod`/`go.sum`, а frontend dependencies — в `bun.lock`; они не дублируются в top-level lock. `build.lock.json` фиксирует toolchains, non-Go helpers/native dependencies, build flags, supported targets/features и external protocol revisions. Release CI проверяет фактическую сборку против lock, затем генерирует bundle manifest с output hashes и внешний signed release manifest с hash готового platformd. Build lock не хранится в SQLite, не синхронизируется runtime и отдельно не подписывается.
+Все fields обязательны, arrays canonical-sorted, unknown fields отклоняются. `goBuild.tags` намеренно оставляет libpod на `cgroupfs`, file events и `k8s-file`: tag `systemd` запрещён, потому что platformd не использует libpod journald/systemd-cgroup integration и не должен получать dependency на libsystemd. AppArmor, libsubid, Btrfs и ZFS graph drivers также не входят в runtime profile; OpenPGP implementation не зависит от host GPGME. `allowedHostSonamesByArchitecture` содержит полный union direct/transitive ELF dependencies всех outputs; CI отклоняет missing либо extra SONAME и выполняет helpers на обоих hosts. Source archive hash и effective canonical build flags обязательны для каждого helper. Exact Go dependencies, включая pinned/forked libpod/containers modules, имеют единственный source of truth в `go.mod`/`go.sum`, а frontend dependencies, включая `ghostty-web`, — в `bun.lock`; они не дублируются в top-level lock. `build.lock.json` фиксирует toolchains, non-Go helpers, build flags, host ABI, supported targets/features и external protocol revisions. Release CI проверяет фактическую сборку против lock, затем генерирует bundle manifest с output hashes и внешний signed release manifest с hash готового platformd. Build lock не хранится в SQLite, не синхронизируется runtime и отдельно не подписывается.
 
 Первый production `init` сам проверяет published release manifest/signature/checksum по §5; отдельный sidecar input operator не нужен. Старый release slot целиком не удаляется, пока он является `current` либо `previous`; binary, manifest и helpers никогда не очищаются независимо друг от друга.
 
@@ -578,6 +557,10 @@ Full-text search engine и внешний log cluster отсутствуют. П
 Собственные platformd logs пишутся только в journald и доступны в отдельном Infrastructure view; отдельного platformd structured sink/rotation нет.
 
 ## 16. Terminals
+
+Обе interactive consoles используют один frontend terminal renderer — exact `ghostty-web`, закреплённый в `bun.lock`, с однократным async WASM `init()`, `Terminal` и `FitAddon`. Отдельный xterm.js/fallback renderer отсутствует. Один общий React component lazy-load-ит Ghostty-Web, применяет platform theme, включает bounded scrollback, copy/paste и refit через `ResizeObserver`; hidden → visible transition дополнительно выполняет один frame-delayed `fit()`.
+
+Transport для host и container PTY одинаков: Access-authenticated WebSocket на admin hostname, initial bounded `cols/rows`, binary server→client output, binary client→server input и text JSON control frame только для `{type:"resize",cols,rows}`. Размер ограничен `1..1000` columns и `1..500` rows. Exact Origin, Access JWT и permission проверяются до upgrade; connection не переносится между daemon processes и не имеет replay/resume. При WebSocket close backend закрывает PTY и всю process group/session. Различается только spawn adapter: host shell §16.2 либо attached libpod exec §16.1.
 
 ### 16.1. Container terminal
 
@@ -1044,7 +1027,7 @@ Atomic `current` symlink является единственной durable relea
 
 - unit/property tests для validation, auth, digest и backup manifests;
 - init interruption tests подтверждают reuse существующего master key/SQLite, отсутствие bootstrap marker/confirmation state, допустимый повтор prompt/шагов и idempotent unit/symlink enable/start/health repair обычным `init` после crash как до, так и после complete installation configuration;
-- release pipeline test проверяет `build.lock.json` против exact Go/Bun/Rust/C Linux/amd64 toolchains, helper revisions/source hashes/build flags, полного direct/transitive static closure с source hashes, `go.mod`/`go.sum`, absence bundled glibc/loader/private shared libraries, exact host SONAME allowlist, generated bundle manifest и malformed/truncated/overflow/duplicate/ZIP64/path-traversal self-extracting ZIP cases; одни release bytes проходят privileged smoke на обоих hosts;
+- release pipeline test проверяет `build.lock.json` против exact Go/Bun/Rust/C Linux/amd64 toolchains, helper revisions/source hashes/build flags, `go.mod`/`go.sum`, absence bundled glibc/loader/private shared libraries, полный direct/transitive host SONAME allowlist, generated bundle manifest и malformed/truncated/overflow/duplicate/ZIP64/path-traversal self-extracting ZIP cases; одни release bytes проходят privileged smoke на обоих hosts;
 - backup tests подтверждают independent per-resource policies/prefixes/retention `1..100`, отсутствие SQLite remote-catalog cache, bounded paginated LIST/manifests, stateless target probe, `409 backup_target_busy` при любом remote action, exact 5-field UTC cron validation/Vixie day semantics, queue-less global oldest-due selection между control/resource candidates, collapse нескольких occurrences одного resource, отсутствие replay до daemon startup, `409` для busy manual request, отсутствие lost dirty mutation во время control upload, retry после failed control upload, полное AEAD encryption SQLite/control artifacts, ровно одну complete control generation, CLI-first control import без browser bootstrap, full restore из latest generation каждого resource и automatic empty creation ordinary Volume directories;
 - registry conformance tests для заявленного subset, exact Basic challenge без Bearer `service`/`scope`, API-version/digest/location/range/pagination headers, one-repository credential permission, fallback cross-repository mount в ordinary upload, repository-local blob layout, отсутствия SQLite blob links/cross-repository dedup и невозможности получить private layer через public repository; backup test подтверждает short paginated SQLite reads под closed metadata admission, transient encrypted manifest, отсутствие pinned WAL и cleanup exclusion до конца blob copy; admin tests покрывают list/details, tag deletion, protected child-manifest deletion, image deletion, bounded-drain repository cascade/timeout и orphan-directory cleanup после crash;
 - S3 SDK compatibility tests для fixed pre-created bucket subset и exact object/range/list/multipart/part+object ETag contracts, включая rejection другого bucket name, encrypted multipart temporary chunks, exact Complete part-number/ETag validation, `ListParts` без `ListMultipartUploads`, отсутствие product object-count cap и отсутствие cross-store payload references; ObjectStore backup tests подтверждают closed exact-store metadata admission, short paginated SQLite reads без pinned WAL, concurrent writes после enumeration, cleanup serialization, отсутствие pins/local generation pointer и potentially long atomic metadata replacement при restore;
@@ -1062,6 +1045,7 @@ Atomic `current` symlink является единственной durable relea
 - domain binding tests подтверждают отсутствие synthetic route ID/dangling route, global hostname uniqueness, SAN validation и atomic move между Services только при access к обоим projects;
 - deployment tests подтверждают stop-first/no-overlap, simplified HTTP/process readiness, restart old при failure, immutable config snapshot, fixed restart enabled Service, stop/unpublish при disable, fresh Deployment при re-enable и rollback через копирование snapshot с pin exact digest;
 - log tests подтверждают conmon native size rotation/reopen, запрет platformd rename/truncate active file, journald-only platform logs, grouping по Deployment/resource/job IDs и доступность history после recreation container с новым runtime ID;
+- terminal browser tests подтверждают один lazy-loaded Ghostty-Web renderer для host/container, binary PTY I/O, bounded resize, copy/paste, hidden-pane refit, Access/Origin rejection, passphrase gate host shell и закрытие backend process group при disconnect;
 - update tests подтверждают idle-only admission, `409 platform_busy` без cancellation, non-blocking reads/log streams, запрет новых mutations после gate, old-process graceful stop без duplicate teardown, cleanup строго до migration, rollback direct previous binary только при exact previous `PRAGMA user_version`, отказ rollback после commit, signed current-slot manifest validation и forward install previous binary после commit без открытия SQLite, отсутствие duplicate release metadata в SQLite, полный workload downtime, recreation runtime dir, reuse populated image cache после container-record purge, incompatible-cache fallback, missing image digest, crash до/после atomic `current` switch и migration commit, отсутствие pre-update SQLite backup и automatic deletion previous symlink/slot только после local/systemd readiness;
 - release-manifest tests используют RFC 8785 canonical bytes, отклоняют malformed/duplicate JSON keys, signature/hash/size/Linux/amd64/`supportedFrom` mismatch, reinstall/downgrade и подтверждают automatic cache wipe без compatibility metadata;
 - audit tests подтверждают отсутствие sensitive payloads/high-frequency protocol events и bounded automatic deletion AuditEvent старше 7 дней;
@@ -1158,7 +1142,7 @@ Release acceptance scenario:
 | V2-44 | Container logs принадлежат Deployment/resource/job ID; disposable runtime container ID в log path не используется |
 | V2-45 | Operation является только observational progress record; durable queue/resume/phase state отсутствует, а running после restart становится interrupted |
 | V2-46 | Application domain — child binding Service, keyed hostname без synthetic ID/dangling state; explicit move atomically меняет target Service |
-| V2-47 | Один `build.lock.json` фиксирует exact Linux/amd64 toolchain, helper flags и полный hashed static native closure; Go deps остаются только в go.mod/go.sum, output hashes — в bundle manifest |
+| V2-47 | Один `build.lock.json` фиксирует exact Linux/amd64 toolchain, helper source/flags и полный direct/transitive host SONAME allowlist; Go deps остаются только в go.mod/go.sum, frontend deps — в bun.lock, output hashes — в bundle manifest |
 | V2-48 | Registry UI/API просматривает repositories/images и удаляет tag, manifest либо repository; blobs удаляются только repository deletion или explicit cleanup |
 | V2-49 | MCP использует stateless JSON-response subset Streamable HTTP с exact 2025-11-25 initialize/serverInfo/header/Accept contracts, `GET/DELETE=405`, без session ID, SSE, server notifications и resumability |
 | V2-50 | Remote backup catalog не кэшируется в SQLite; UI/restore выполняют bounded paginated LIST exact prefix и читают self-describing manifests |
@@ -1167,7 +1151,7 @@ Release acceptance scenario:
 | V2-53 | Service имеет только `enabled` и image reference: tag автоматически poll-ится, digest pinned, а enabled long-running process перезапускается с fixed in-memory backoff; watch/restart/mode settings отсутствуют |
 | V2-54 | Отдельной Service config revision entity нет: Service хранит mutable desired config, Deployment — immutable launch snapshot и digest; rollback копирует snapshot в Service, pin-ит digest и создаёт новый Deployment |
 | V2-55 | Console passphrase использует одну Argon2 verification, fixed delay и global in-memory cooldown; persisted/per-subject/per-IP counters отсутствуют |
-| V2-56 | Interactive container/server PTY доступны только через Access-authenticated admin UI; API/MCP сохраняют лишь bounded non-interactive execution surfaces |
+| V2-56 | Interactive container/server PTY используют один Ghostty-Web renderer и binary WebSocket transport только через Access-authenticated admin UI; API/MCP сохраняют лишь bounded non-interactive execution surfaces |
 | V2-57 | ObjectStore использует current metadata rows и immutable payloads; backup кратко закрывает exact-store metadata admission и читает short pages без pinned WAL, затем writes продолжаются при cleanup exclusion; generation pointer/pins отсутствуют |
 | V2-58 | Backup schedule — только validated 5-field Unix cron в UTC; seconds, macros, names и configurable timezone отсутствуют |
 | V2-59 | `init` не хранит bootstrap phase/marker или подтверждение сохранения master key; interrupted init переиспользует key/SQLite, но может повторить prompt и шаги |
@@ -1176,7 +1160,7 @@ Release acceptance scenario:
 | V2-62 | Self-update manifest подписывает RFC 8785 canonical JSON одним неизменным v1 Ed25519 key и разрешает только strictly newer SemVer |
 | V2-63 | AuditEvent автоматически удаляется через 7 дней; configurable retention/export отсутствуют |
 | V2-64 | Registry cross-repository mount не поддерживается, но возвращает ordinary destination upload session для стандартного client fallback |
-| V2-65 | Один Linux/amd64 artifact тестируется byte-for-byte на Ubuntu 24.04 и Debian 13; private glibc/ELF loader/shared libraries не поставляются, а полный hashed non-host closure статически link-ится и проверяется против build lock |
+| V2-65 | Один Linux/amd64 artifact тестируется byte-for-byte на Ubuntu 24.04 и Debian 13; private glibc/ELF loader/shared libraries не поставляются, а полный host dependency graph проверяется против SONAME allowlist build lock |
 | V2-66 | Restore import atomically сохраняет supplied working BackupTarget поверх historical target/credentials, использованных только для discovery/decryption control snapshot |
 | V2-67 | Повторный ordinary `init` не меняет complete product config, но idempotently repair-ит symlink/unit и доводит service до local HTTPS readiness |
 | V2-68 | Redis backup подтверждает новый successful BGSAVE через persistence status и replaced inode, затем stream-ит один stable FD |

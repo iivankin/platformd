@@ -22,7 +22,7 @@ This checklist maps the implementation to the normative specification. A checked
 - [ ] Cloudflare Access JWT validation, JWKS bounds, CSRF, WebSocket auth, certificates, and hostname routing are complete. Evidence: auth/proxy integration suite.
 - [ ] Services, immutable Deployments, watcher polling, stop-first apply, rollback, secrets, credentials, and Volumes match the spec. Evidence: deployment/crash suite.
 - [ ] REST/OpenAPI and stateless MCP 2025-11-25 expose the same authorization boundaries and operations. Evidence: protocol conformance suite.
-- [ ] Container PTY, passphrase-protected root PTY, and token-authorized bounded root exec are complete. Evidence: terminal/exec E2E tests.
+- [ ] Ghostty-Web container PTY, passphrase-protected Ghostty-Web root PTY, and token-authorized bounded root exec are complete. Evidence: terminal/exec browser E2E tests.
 
 ## Managed data services
 
