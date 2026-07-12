@@ -40,7 +40,7 @@ type ProjectCanvas struct {
 }
 
 func (store *Store) ProjectCanvas(ctx context.Context, projectID string) (ProjectCanvas, error) {
-	project, err := store.project(ctx, projectID)
+	project, err := store.Project(ctx, projectID)
 	if err != nil {
 		return ProjectCanvas{}, err
 	}
@@ -55,7 +55,7 @@ func (store *Store) ProjectCanvas(ctx context.Context, projectID string) (Projec
 	}, nil
 }
 
-func (store *Store) project(ctx context.Context, projectID string) (ProjectSummary, error) {
+func (store *Store) Project(ctx context.Context, projectID string) (ProjectSummary, error) {
 	var project ProjectSummary
 	err := store.database.QueryRowContext(ctx, `
 SELECT p.id, p.name,
