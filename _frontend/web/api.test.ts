@@ -9,6 +9,7 @@ import {
   createService,
   detachServiceDomain,
   fetchAPITokens,
+  fetchAuditEvents,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
@@ -347,6 +348,45 @@ test("reads a validated bounded structured log window", async () => {
   ).resolves.toMatchObject({ records: [{ text: "ready" }] });
   expect(requested).toBe(
     "/api/v1/projects/project/services/service/logs?limit=25&deploymentId=deployment&contains=ready"
+  );
+});
+
+test("reads filtered paginated audit history", async () => {
+  let requested = "";
+  await expect(
+    fetchAuditEvents(
+      {
+        action: "server.exec",
+        actorKind: "token",
+        cursor: "cursor",
+        limit: 25,
+        result: "succeeded",
+      },
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            events: [
+              {
+                action: "server.exec",
+                actorId: "token",
+                actorKind: "token",
+                createdAt: 20,
+                id: "event",
+                metadata: { durationMillis: 10 },
+                result: "succeeded",
+                targetId: "host",
+                targetKind: "server",
+              },
+            ],
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ events: [{ action: "server.exec" }] });
+  expect(requested).toBe(
+    "/api/v1/audit?limit=25&action=server.exec&actorKind=token&cursor=cursor&result=succeeded"
   );
 });
 

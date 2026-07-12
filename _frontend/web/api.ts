@@ -213,6 +213,27 @@ const logWindowSchema = z.object({
 export type LogRecord = z.infer<typeof logRecordSchema>;
 export type LogWindow = z.infer<typeof logWindowSchema>;
 
+const auditEventSchema = z.object({
+  action: z.string().min(1),
+  actorId: z.string().min(1),
+  actorKind: z.enum(["access", "token", "system", "local_root"]),
+  createdAt: z.number().int().positive(),
+  id: z.string().min(1),
+  metadata: z.record(z.string(), z.unknown()),
+  requestCorrelationId: z.string().min(1).optional(),
+  result: z.enum(["succeeded", "failed"]),
+  targetId: z.string().min(1),
+  targetKind: z.string().min(1),
+});
+
+const auditPageSchema = z.object({
+  events: z.array(auditEventSchema),
+  nextCursor: z.string().min(1).optional(),
+});
+
+export type AuditEvent = z.infer<typeof auditEventSchema>;
+export type AuditPage = z.infer<typeof auditPageSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -555,6 +576,43 @@ export const fetchServiceLogs = async (
     );
   }
   return logWindowSchema.parse(await response.json());
+};
+
+export const fetchAuditEvents = async (
+  filters: {
+    action?: string;
+    actorKind?: AuditEvent["actorKind"];
+    cursor?: string;
+    limit?: number;
+    result?: AuditEvent["result"];
+  } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AuditPage> => {
+  const query = new URLSearchParams({ limit: String(filters.limit ?? 50) });
+  if (filters.action) {
+    query.set("action", filters.action);
+  }
+  if (filters.actorKind) {
+    query.set("actorKind", filters.actorKind);
+  }
+  if (filters.cursor) {
+    query.set("cursor", filters.cursor);
+  }
+  if (filters.result) {
+    query.set("result", filters.result);
+  }
+  const response = await fetcher(`/api/v1/audit?${query.toString()}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `audit history request failed with ${response.status}`
+    );
+  }
+  return auditPageSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>

@@ -29,6 +29,7 @@ type handlerConfig struct {
 	tokens           APITokenRepository
 	imageCredentials ImageCredentialRepository
 	logs             LogRepository
+	audit            AuditRepository
 	random           io.Reader
 	now              func() time.Time
 }
@@ -71,6 +72,12 @@ func WithLogs(repository LogRepository) Option {
 	}
 }
 
+func WithAudit(repository AuditRepository) Option {
+	return func(config *handlerConfig) {
+		config.audit = repository
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -98,6 +105,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.logs != nil {
 		registerLogRoutes(mux, config.logs)
+	}
+	if config.audit != nil {
+		registerAuditRoutes(mux, config.audit)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

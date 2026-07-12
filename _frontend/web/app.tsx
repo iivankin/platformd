@@ -11,6 +11,7 @@ import {
 import type { Meta } from "@/api";
 import { APITokensPage } from "@/api-tokens-page";
 import { useAppData } from "@/app-data";
+import { AuditPage } from "@/audit-page";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { LogsPage } from "@/logs-page";
@@ -192,9 +193,13 @@ export const App = () => {
               element={<LogsPage projects={data.projects} />}
               path="/logs"
             />
+            <Route element={<AuditPage />} path="/audit" />
             {globalNavigation
               .filter(
-                (item) => item.path !== "/tokens" && item.path !== "/logs"
+                (item) =>
+                  item.path !== "/tokens" &&
+                  item.path !== "/logs" &&
+                  item.path !== "/audit"
               )
               .map((item) => (
                 <Route
