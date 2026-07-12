@@ -59,12 +59,13 @@ type ContainerSpec struct {
 }
 
 type Container struct {
-	ID       string
-	Name     string
-	State    string
-	Pid      int
-	ExitCode int32
-	IPs      map[string][]string
+	ID        string
+	Name      string
+	State     string
+	Pid       int
+	ConmonPID int
+	ExitCode  int32
+	IPs       map[string][]string
 }
 
 type ExecRequest struct {

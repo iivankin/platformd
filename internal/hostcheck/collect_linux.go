@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iivankin/platformd/internal/firewall"
 	"golang.org/x/sys/unix"
 )
 
@@ -138,12 +139,7 @@ func filesystemListed(name string) (bool, error) {
 }
 
 func netfilterAvailable() bool {
-	descriptor, err := unix.Socket(unix.AF_NETLINK, unix.SOCK_RAW|unix.SOCK_CLOEXEC, unix.NETLINK_NETFILTER)
-	if err != nil {
-		return false
-	}
-	_ = unix.Close(descriptor)
-	return true
+	return firewall.New().Probe() == nil
 }
 
 func synchronizedClock(ctx context.Context) (bool, error) {
