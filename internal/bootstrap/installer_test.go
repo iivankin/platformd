@@ -52,6 +52,7 @@ func TestInstallerCreatesCompleteStateAndRepairsWithoutInputs(t *testing.T) {
 	paths := layout.FromRoots(
 		filepath.Join(root, "data"),
 		filepath.Join(root, "config"),
+		filepath.Join(root, "run"),
 		filepath.Join(root, "bin", "platformd"),
 		filepath.Join(root, "systemd", "platformd.service"),
 	)

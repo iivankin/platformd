@@ -212,6 +212,9 @@ func (e *Engine) publicContainer(container *libpod.Container) (Container, error)
 	if pid, err := container.PID(); err == nil {
 		result.Pid = pid
 	}
+	if pid, err := container.ConmonPID(); err == nil {
+		result.ConmonPID = pid
+	}
 	if exitCode, exited, err := container.ExitCode(); err == nil && exited {
 		result.ExitCode = exitCode
 	}
@@ -248,8 +251,13 @@ func (e *Engine) validateContainerSpec(spec ContainerSpec) error {
 	if spec.CPUMillicores < 0 || spec.MemoryMaxBytes < 0 {
 		return fmt.Errorf("container resource limits cannot be negative")
 	}
-	if spec.CgroupParent != "" && (!filepath.IsAbs(spec.CgroupParent) || !strings.HasPrefix(filepath.Clean(spec.CgroupParent), "/workloads/")) {
-		return fmt.Errorf("container cgroup parent must be below /workloads")
+	if spec.CgroupParent != "" {
+		if err := validateAbsolutePath("container cgroup parent", spec.CgroupParent); err != nil {
+			return err
+		}
+		if !pathWithin(spec.CgroupParent, e.config.CgroupWorkloadRoot) {
+			return fmt.Errorf("container cgroup parent must be below %s", e.config.CgroupWorkloadRoot)
+		}
 	}
 	for _, address := range spec.DNSServers {
 		if net.ParseIP(address) == nil {

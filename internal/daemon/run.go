@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/sdnotify"
 	"github.com/iivankin/platformd/internal/server"
+	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -40,7 +42,18 @@ func runDevelopment(ctx context.Context) error {
 	})
 }
 
-func runProduction(ctx context.Context, paths layout.Paths) error {
+func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
+	lock, err := singletonlock.Acquire(paths.DaemonLock, 0)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, lock.Close())
+	}()
+	cgroups, err := cgrouptree.Setup()
+	if err != nil {
+		return fmt.Errorf("configure delegated cgroups: %w", err)
+	}
 	key, err := masterkey.Load(paths.MasterKey, 0)
 	if err != nil {
 		return fmt.Errorf("load master key: %w", err)
@@ -57,6 +70,13 @@ func runProduction(ctx context.Context, paths layout.Paths) error {
 	if err != nil {
 		return err
 	}
+	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot())
+	if err != nil {
+		return err
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, runtime.Close())
+	}()
 	certificates, err := origin.Load(key, installation.OriginCertificates)
 	if err != nil {
 		return err
