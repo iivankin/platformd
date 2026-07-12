@@ -314,11 +314,15 @@ func (e *Engine) runtimeMounts(mounts []Mount) ([]buildspec.Mount, error) {
 		if info.IsDir() {
 			option = "rbind"
 		}
+		access := "rw"
+		if mount.ReadOnly {
+			access = "ro"
+		}
 		result = append(result, buildspec.Mount{
 			Destination: mount.Destination,
 			Type:        "bind",
 			Source:      resolved,
-			Options:     []string{option, "rw", "rprivate"},
+			Options:     []string{option, access, "rprivate"},
 		})
 	}
 	return result, nil

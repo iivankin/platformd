@@ -39,6 +39,7 @@ type Network struct {
 type Mount struct {
 	Source      string
 	Destination string
+	ReadOnly    bool
 }
 
 type ContainerSpec struct {

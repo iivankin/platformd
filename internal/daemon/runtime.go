@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/internaldns"
 	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/projectnetwork"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
@@ -42,6 +44,8 @@ type runtimeStack struct {
 	serviceRestarts   *servicerestart.Manager
 	serviceFailures   map[string]error
 	publishedServices map[string]bool
+	managedRedis      *managedredis.Controller
+	redisFailures     map[string]error
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
@@ -114,6 +118,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		cgroupRoot:        cgroupWorkloadRoot,
 		serviceFailures:   make(map[string]error),
 		publishedServices: make(map[string]bool),
+		redisFailures:     make(map[string]error),
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
@@ -178,25 +183,39 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 
 func (stack *runtimeStack) Close() error {
 	stack.mu.Lock()
-	defer stack.mu.Unlock()
 	if stack.closed {
+		stack.mu.Unlock()
 		return nil
 	}
 	stack.closed = true
-	if stack.serviceWatcher != nil {
-		stack.serviceWatcher.Close()
+	serviceWatcher := stack.serviceWatcher
+	serviceRestarts := stack.serviceRestarts
+	redis := stack.managedRedis
+	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
+	networks := append([]string(nil), stack.networks...)
+	engine := stack.engine
+	firewallManager := stack.firewall
+	stack.mu.Unlock()
+
+	if serviceWatcher != nil {
+		serviceWatcher.Close()
 	}
-	if stack.serviceRestarts != nil {
-		stack.serviceRestarts.Close()
+	if serviceRestarts != nil {
+		serviceRestarts.Close()
 	}
 	var failures []error
-	for index := len(stack.dnsServers) - 1; index >= 0; index-- {
-		failures = append(failures, stack.dnsServers[index].Close())
+	if redis != nil {
+		stopContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		failures = append(failures, redis.StopAll(stopContext))
+		cancel()
 	}
-	for index := len(stack.networks) - 1; index >= 0; index-- {
-		failures = append(failures, stack.engine.RemoveNetwork(stack.networks[index]))
+	for index := len(dnsServers) - 1; index >= 0; index-- {
+		failures = append(failures, dnsServers[index].Close())
 	}
-	failures = append(failures, stack.engine.Close(), stack.firewall.Clear())
+	for index := len(networks) - 1; index >= 0; index-- {
+		failures = append(failures, engine.RemoveNetwork(networks[index]))
+	}
+	failures = append(failures, engine.Close(), firewallManager.Clear())
 	return errors.Join(failures...)
 }
 
