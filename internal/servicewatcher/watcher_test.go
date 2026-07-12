@@ -134,6 +134,43 @@ func TestExponentialDelayIsBounded(t *testing.T) {
 	}
 }
 
+func TestTrackStopsWatcherAfterServicePinsDigest(t *testing.T) {
+	store := &fakeStore{service: state.ServiceDesired{
+		ID: "service", Enabled: true,
+		Snapshot: serviceconfig.Snapshot{ImageReference: "docker.io/library/alpine:latest"},
+	}}
+	deployer := &fakeDeployer{calls: make(chan string, 1)}
+	watcher, err := New(Config{
+		Store: store, Deployer: deployer,
+		IsEmbedded:             func(string) bool { return false },
+		RemoteInterval:         time.Hour,
+		RemoteMaximumBackoff:   2 * time.Hour,
+		EmbeddedRetry:          time.Second,
+		EmbeddedMaximumBackoff: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := watcher.Start(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	store.service.Snapshot.ImageReference = "docker.io/library/alpine@sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"
+	store.mu.Unlock()
+	if err := watcher.Track(ctx, "service", false); err != nil {
+		t.Fatal(err)
+	}
+	watcher.mu.Lock()
+	_, tracked := watcher.services["service"]
+	watcher.mu.Unlock()
+	if tracked {
+		t.Fatal("digest-pinned service is still tracked")
+	}
+	assertNoCall(t, deployer.calls)
+}
+
 func assertNoCall(t *testing.T, calls <-chan string) {
 	t.Helper()
 	select {

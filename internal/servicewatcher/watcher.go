@@ -52,6 +52,8 @@ type Watcher struct {
 
 type serviceLoop struct {
 	wake      chan struct{}
+	reset     chan time.Duration
+	stop      chan struct{}
 	reference string
 	embedded  bool
 }
@@ -136,6 +138,7 @@ func (watcher *Watcher) Track(ctx context.Context, serviceID string, retry bool)
 		return err
 	}
 	if !desired.Enabled || serviceconfig.IsDigestReference(desired.Snapshot.ImageReference) {
+		watcher.stopService(serviceID)
 		return nil
 	}
 	watcher.mu.Lock()
@@ -147,11 +150,13 @@ func (watcher *Watcher) Track(ctx context.Context, serviceID string, retry bool)
 		existing.reference = desired.Snapshot.ImageReference
 		existing.embedded = watcher.isEmbedded(existing.reference)
 		watcher.mu.Unlock()
+		resetDelay(existing.reset, watcher.initialDelay(existing, retry))
 		return nil
 	}
 	loop := &serviceLoop{
-		wake: make(chan struct{}, 1), reference: desired.Snapshot.ImageReference,
-		embedded: watcher.isEmbedded(desired.Snapshot.ImageReference),
+		wake: make(chan struct{}, 1), reset: make(chan time.Duration, 1), stop: make(chan struct{}),
+		reference: desired.Snapshot.ImageReference,
+		embedded:  watcher.isEmbedded(desired.Snapshot.ImageReference),
 	}
 	watcher.services[serviceID] = loop
 	runContext := watcher.ctx
@@ -190,8 +195,13 @@ func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *
 	delay := watcher.initialDelay(loop, retry)
 	failures := 0
 	for {
-		if !wait(ctx, loop.wake, delay) {
+		deploy, nextDelay, ok := waitForAction(ctx, loop.wake, loop.reset, loop.stop, delay)
+		if !ok {
 			return
+		}
+		if !deploy {
+			delay = nextDelay
+			continue
 		}
 		select {
 		case watcher.slots <- struct{}{}:
@@ -262,6 +272,16 @@ func (watcher *Watcher) remove(serviceID string, loop *serviceLoop) {
 	watcher.mu.Lock()
 	if watcher.services[serviceID] == loop {
 		delete(watcher.services, serviceID)
+	}
+	watcher.mu.Unlock()
+}
+
+func (watcher *Watcher) stopService(serviceID string) {
+	watcher.mu.Lock()
+	loop := watcher.services[serviceID]
+	if loop != nil {
+		delete(watcher.services, serviceID)
+		close(loop.stop)
 	}
 	watcher.mu.Unlock()
 }

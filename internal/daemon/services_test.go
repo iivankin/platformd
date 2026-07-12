@@ -1,0 +1,97 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/state"
+)
+
+type fakeServiceRuntime struct {
+	deployErr   error
+	deployForce []bool
+	trackRetry  []bool
+	failures    []error
+}
+
+func (runtime *fakeServiceRuntime) DeployService(_ context.Context, _ string, force bool) error {
+	runtime.deployForce = append(runtime.deployForce, force)
+	return runtime.deployErr
+}
+
+func (runtime *fakeServiceRuntime) TrackService(_ context.Context, _ string, retry bool) error {
+	runtime.trackRetry = append(runtime.trackRetry, retry)
+	return nil
+}
+
+func (runtime *fakeServiceRuntime) recordServiceFailure(_ string, err error) {
+	runtime.failures = append(runtime.failures, err)
+}
+
+func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFailure(t *testing.T) {
+	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(context.Background(), state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &fakeServiceRuntime{}
+	repository := liveServiceRepository{store: store, runtime: runtime}
+	created, err := repository.CreateService(context.Background(), state.CreateService{
+		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
+		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine:latest"},
+		AuditEventID: "service-audit", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.deployForce) != 1 || runtime.deployForce[0] {
+		t.Fatalf("create force calls = %v", runtime.deployForce)
+	}
+	if _, err := repository.UpdateService(context.Background(), state.UpdateServiceInput{
+		ID: created.ID, ProjectID: created.ProjectID, Enabled: false, Snapshot: created.Snapshot,
+		ExpectedUpdatedMillis: created.UpdatedAtMillis,
+		AuditEventID:          "update-audit", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.deployForce) != 2 || runtime.deployForce[1] {
+		t.Fatalf("update force calls = %v", runtime.deployForce)
+	}
+
+	current, err := store.DesiredService(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateService(context.Background(), state.UpdateServiceInput{
+		ID: created.ID, ProjectID: created.ProjectID, Enabled: true, Snapshot: current.Snapshot,
+		ExpectedUpdatedMillis: current.UpdatedAtMillis,
+		AuditEventID:          "enable-audit", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	current, err = store.DesiredService(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime.deployErr = errors.New("registry unavailable")
+	_, err = repository.RedeployService(context.Background(), state.RedeployServiceInput{
+		ID: created.ID, ProjectID: created.ProjectID, ExpectedUpdatedMillis: current.UpdatedAtMillis,
+		AuditEventID: "redeploy-audit", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 5,
+	})
+	if !errors.Is(err, state.ErrServiceReconcileFailed) {
+		t.Fatalf("redeploy error = %v", err)
+	}
+	if len(runtime.deployForce) != 3 || !runtime.deployForce[2] || len(runtime.trackRetry) != 3 || !runtime.trackRetry[2] {
+		t.Fatalf("runtime calls = force %v, retry %v", runtime.deployForce, runtime.trackRetry)
+	}
+}

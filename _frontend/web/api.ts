@@ -74,10 +74,13 @@ const imageCredentialsSchema = z.array(imageCredentialSchema);
 export type ImageCredential = z.infer<typeof imageCredentialSchema>;
 
 const serviceSchema = z.object({
+  activeConfigHash: z.string().min(1).optional(),
   activeDeploymentId: z.string().min(1).optional(),
+  activeImageDigest: z.string().min(1).optional(),
   args: z.array(z.string()).optional(),
   command: z.array(z.string()).optional(),
   cpuMillicores: z.number().int().nonnegative().optional(),
+  createdAt: z.number().int().positive(),
   enabled: z.boolean(),
   environment: z.record(z.string(), z.string()),
   healthPath: z.string().optional(),
@@ -87,8 +90,18 @@ const serviceSchema = z.object({
   memoryMaxBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
   projectId: z.string().min(1),
+  secretReferences: z.array(
+    z.object({
+      environmentName: z.string().min(1),
+      secretId: z.string().min(1),
+    })
+  ),
   startupTimeoutSeconds: z.number().int().positive(),
   targetPort: z.number().int().min(1).max(65_535).optional(),
+  updatedAt: z.number().int().positive(),
+  volumeMounts: z.array(
+    z.object({ containerPath: z.string().min(1), volumeId: z.string().min(1) })
+  ),
 });
 
 export type Service = z.infer<typeof serviceSchema>;
@@ -101,6 +114,57 @@ export interface CreateServiceInput {
   name: string;
   targetPort?: number;
 }
+
+export interface UpdateServiceInput {
+  args?: string[];
+  command?: string[];
+  cpuMillicores?: number;
+  enabled: boolean;
+  environment: Record<string, string>;
+  expectedUpdatedAt: number;
+  healthPath?: string;
+  imageCredentialId?: string;
+  imageReference: string;
+  memoryMaxBytes?: number;
+  secretReferences: Service["secretReferences"];
+  startupTimeoutSeconds: number;
+  targetPort?: number;
+  volumeMounts: Service["volumeMounts"];
+}
+
+const deploymentSchema = z.object({
+  createdAt: z.number().int().positive(),
+  errorCode: z.string().optional(),
+  errorMessage: z.string().optional(),
+  finishedAt: z.number().int().positive().optional(),
+  id: z.string().min(1),
+  imageDigest: z.string().min(1),
+  serviceConfigHash: z.string().min(1),
+  serviceId: z.string().min(1),
+  snapshot: serviceSchema.pick({
+    args: true,
+    command: true,
+    cpuMillicores: true,
+    environment: true,
+    healthPath: true,
+    imageCredentialId: true,
+    imageReference: true,
+    memoryMaxBytes: true,
+    secretReferences: true,
+    startupTimeoutSeconds: true,
+    targetPort: true,
+    volumeMounts: true,
+  }),
+  status: z.enum(["failed", "interrupted", "running", "succeeded"]),
+});
+
+const deploymentPageSchema = z.object({
+  deployments: z.array(deploymentSchema),
+  nextCursor: z.string().min(1).optional(),
+});
+
+export type Deployment = z.infer<typeof deploymentSchema>;
+export type DeploymentPage = z.infer<typeof deploymentPageSchema>;
 
 type Fetcher = (
   input: RequestInfo | URL,
@@ -274,4 +338,129 @@ export const createService = async (
     );
   }
   return serviceSchema.parse(await response.json());
+};
+
+export const fetchService = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Service> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service request failed with ${response.status}`
+    );
+  }
+  return serviceSchema.parse(await response.json());
+};
+
+export const updateService = async (
+  projectID: string,
+  serviceID: string,
+  input: UpdateServiceInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Service> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service update failed with ${response.status}`
+    );
+  }
+  return serviceSchema.parse(await response.json());
+};
+
+const serviceAction = async (
+  projectID: string,
+  serviceID: string,
+  action: "redeploy" | "rollback",
+  body: Record<string, number | string>,
+  fetcher: Fetcher
+): Promise<Service> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/${action}`,
+    {
+      body: JSON.stringify(body),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service ${action} failed with ${response.status}`
+    );
+  }
+  return serviceSchema.parse(await response.json());
+};
+
+export const redeployService = (
+  projectID: string,
+  serviceID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Service> =>
+  serviceAction(
+    projectID,
+    serviceID,
+    "redeploy",
+    { expectedUpdatedAt },
+    fetcher
+  );
+
+export const rollbackService = (
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Service> =>
+  serviceAction(
+    projectID,
+    serviceID,
+    "rollback",
+    { deploymentId: deploymentID, expectedUpdatedAt },
+    fetcher
+  );
+
+export const fetchServiceDeployments = async (
+  projectID: string,
+  serviceID: string,
+  cursor?: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<DeploymentPage> => {
+  const query = new URLSearchParams({ limit: "50" });
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `deployments request failed with ${response.status}`
+    );
+  }
+  return deploymentPageSchema.parse(await response.json());
 };
