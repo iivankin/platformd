@@ -16,29 +16,32 @@ import (
 	"github.com/iivankin/platformd/internal/internaldns"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/projectnetwork"
+	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
 )
 
 type runtimeStack struct {
-	mu               sync.Mutex
-	ctx              context.Context
-	closed           bool
-	engine           *containerengine.Engine
-	firewall         *firewall.Manager
-	forwarder        *internaldns.ForwardCache
-	upstreams        []netip.AddrPort
-	firewallProjects map[string]firewall.Project
-	networks         []string
-	projectFailures  []projectnetwork.Failure
-	dnsServers       []*internaldns.Server
-	dnsZones         map[string]*internaldns.Zone
-	projectNetworks  map[string]containerengine.Network
-	paths            layout.Paths
-	cgroupRoot       string
-	deployments      *deployment.Controller
-	serviceWatcher   *servicewatcher.Watcher
-	serviceFailures  map[string]error
+	mu                sync.Mutex
+	ctx               context.Context
+	closed            bool
+	engine            *containerengine.Engine
+	firewall          *firewall.Manager
+	forwarder         *internaldns.ForwardCache
+	upstreams         []netip.AddrPort
+	firewallProjects  map[string]firewall.Project
+	networks          []string
+	projectFailures   []projectnetwork.Failure
+	dnsServers        []*internaldns.Server
+	dnsZones          map[string]*internaldns.Zone
+	projectNetworks   map[string]containerengine.Network
+	paths             layout.Paths
+	cgroupRoot        string
+	deployments       *deployment.Controller
+	serviceWatcher    *servicewatcher.Watcher
+	serviceRestarts   *servicerestart.Manager
+	serviceFailures   map[string]error
+	publishedServices map[string]bool
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
@@ -102,14 +105,15 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	}
 	stack := &runtimeStack{
 		ctx: ctx, engine: engine, firewall: manager, forwarder: forwarder,
-		upstreams:        slices.Clone(upstreams),
-		firewallProjects: make(map[string]firewall.Project),
-		projectFailures:  append(cleanupFailures, projectPlan.Failures...),
-		dnsZones:         make(map[string]*internaldns.Zone),
-		projectNetworks:  make(map[string]containerengine.Network),
-		paths:            paths,
-		cgroupRoot:       cgroupWorkloadRoot,
-		serviceFailures:  make(map[string]error),
+		upstreams:         slices.Clone(upstreams),
+		firewallProjects:  make(map[string]firewall.Project),
+		projectFailures:   append(cleanupFailures, projectPlan.Failures...),
+		dnsZones:          make(map[string]*internaldns.Zone),
+		projectNetworks:   make(map[string]containerengine.Network),
+		paths:             paths,
+		cgroupRoot:        cgroupWorkloadRoot,
+		serviceFailures:   make(map[string]error),
+		publishedServices: make(map[string]bool),
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
@@ -181,6 +185,9 @@ func (stack *runtimeStack) Close() error {
 	stack.closed = true
 	if stack.serviceWatcher != nil {
 		stack.serviceWatcher.Close()
+	}
+	if stack.serviceRestarts != nil {
+		stack.serviceRestarts.Close()
 	}
 	var failures []error
 	for index := len(stack.dnsServers) - 1; index >= 0; index-- {

@@ -28,11 +28,27 @@ const projectSchema = z.object({
 });
 
 const projectsSchema = z.array(projectSchema);
+const serviceDomainSchema = z.object({
+  createdAt: z.number().int().positive(),
+  hostname: z.string().min(1),
+  projectId: z.string().min(1).optional(),
+  projectName: z.string().min(1).optional(),
+  serviceId: z.string().min(1),
+  serviceName: z.string().min(1).optional(),
+});
+const serviceDomainsSchema = z.object({
+  domains: z.array(serviceDomainSchema),
+});
 const apiErrorSchema = z.object({
-  error: z.object({ code: z.string(), message: z.string() }),
+  error: z.object({
+    code: z.string(),
+    domain: serviceDomainSchema.optional(),
+    message: z.string(),
+  }),
 });
 
 export type Project = z.infer<typeof projectSchema>;
+export type ServiceDomain = z.infer<typeof serviceDomainSchema>;
 
 const canvasResourceSchema = z.object({
   activeDeploymentId: z.string().min(1).optional(),
@@ -171,11 +187,29 @@ type Fetcher = (
   init?: RequestInit
 ) => Promise<Response>;
 
+export class APIError extends Error {
+  readonly code: string;
+  readonly domain?: ServiceDomain;
+
+  constructor(code: string, message: string, domain?: ServiceDomain) {
+    super(message);
+    this.name = "APIError";
+    this.code = code;
+    this.domain = domain;
+  }
+}
+
 const apiError = async (response: Response, fallback: string) => {
   const parsed = apiErrorSchema.safeParse(
     await response.json().catch(() => null)
   );
-  return new Error(parsed.success ? parsed.data.error.message : fallback);
+  return parsed.success
+    ? new APIError(
+        parsed.data.error.code,
+        parsed.data.error.message,
+        parsed.data.error.domain
+      )
+    : new Error(fallback);
 };
 
 export const fetchMeta = async (
@@ -463,4 +497,68 @@ export const fetchServiceDeployments = async (
     );
   }
   return deploymentPageSchema.parse(await response.json());
+};
+
+const serviceDomainsPath = (projectID: string, serviceID: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/domains`;
+
+export const fetchServiceDomains = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceDomain[]> => {
+  const response = await fetcher(serviceDomainsPath(projectID, serviceID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service domains request failed with ${response.status}`
+    );
+  }
+  return serviceDomainsSchema.parse(await response.json()).domains;
+};
+
+export const attachServiceDomain = async (
+  projectID: string,
+  serviceID: string,
+  hostname: string,
+  move = false,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceDomain> => {
+  const response = await fetcher(serviceDomainsPath(projectID, serviceID), {
+    body: JSON.stringify({ hostname, move }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `domain attachment failed with ${response.status}`
+    );
+  }
+  return serviceDomainSchema.parse(await response.json());
+};
+
+export const detachServiceDomain = async (
+  projectID: string,
+  serviceID: string,
+  hostname: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${serviceDomainsPath(projectID, serviceID)}/${encodeURIComponent(hostname)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `domain removal failed with ${response.status}`
+    );
+  }
 };

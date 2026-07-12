@@ -12,6 +12,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgrouptree"
+	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/origin"
@@ -19,9 +20,11 @@ import (
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
+	"golang.org/x/net/netutil"
 )
 
 const shutdownTimeout = 120 * time.Second
+const maximumHTTPSConnections = 4096
 
 func Run(ctx context.Context) error {
 	if os.Getenv("PLATFORMD_DEV") == "1" {
@@ -100,6 +103,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure Cloudflare Access: %w", err)
 	}
 	tlsConfig := certificates.TLSConfig()
+	domains := &liveDomainRepository{store: store, certificates: certificates}
 	adminHandler := access.ProtectAdmin(
 		installation.AdminHostname,
 		verifier,
@@ -108,20 +112,33 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
 			server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
 			server.WithImageCredentials(imageCredentials),
+			server.WithDomains(domains),
 		),
 	)
+	ingressRouter, err := ingress.New(ingress.Config{
+		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler, Backends: runtime,
+	})
+	if err != nil {
+		return fmt.Errorf("configure HTTPS ingress: %w", err)
+	}
+	domains.router = ingressRouter
+	if err := domains.reload(ctx); err != nil {
+		return fmt.Errorf("load application domains: %w", err)
+	}
 	httpServer := &http.Server{
 		Addr:              ":443",
-		Handler:           adminHandler,
+		Handler:           ingressRouter,
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 		TLSConfig:         tlsConfig,
 	}
 
-	listener, err := tls.Listen("tcp", httpServer.Addr, tlsConfig)
+	rawListener, err := net.Listen("tcp", httpServer.Addr)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", httpServer.Addr, err)
 	}
+	listener := tls.NewListener(netutil.LimitListener(rawListener, maximumHTTPSConnections), tlsConfig)
 	defer func() { _ = sdnotify.Stopping("platformd is stopping") }()
 	return serveListener(ctx, httpServer, listener, func() error {
 		return sdnotify.Ready("platformd admin control plane is ready")
