@@ -21,9 +21,11 @@ type BackendResolver interface {
 }
 
 type Config struct {
-	AdminHostname string
-	AdminHandler  http.Handler
-	Backends      BackendResolver
+	AdminHostname      string
+	AdminHandler       http.Handler
+	AutomationHostname string
+	AutomationHandler  http.Handler
+	Backends           BackendResolver
 }
 
 type routeSnapshot struct {
@@ -31,11 +33,13 @@ type routeSnapshot struct {
 }
 
 type Router struct {
-	adminHostname string
-	adminHandler  http.Handler
-	backends      BackendResolver
-	routes        atomic.Pointer[routeSnapshot]
-	transport     *http.Transport
+	adminHostname      string
+	adminHandler       http.Handler
+	automationHostname string
+	automationHandler  http.Handler
+	backends           BackendResolver
+	routes             atomic.Pointer[routeSnapshot]
+	transport          *http.Transport
 }
 
 const maximumHeaderCount = 100
@@ -48,10 +52,25 @@ func New(config Config) (*Router, error) {
 	if config.AdminHandler == nil || config.Backends == nil {
 		return nil, errors.New("ingress requires admin handler and backend resolver")
 	}
+	var automationHostname string
+	if config.AutomationHostname != "" || config.AutomationHandler != nil {
+		if config.AutomationHostname == "" || config.AutomationHandler == nil {
+			return nil, errors.New("automation hostname and handler must be configured together")
+		}
+		automationHostname, err = publichostname.Normalize(config.AutomationHostname)
+		if err != nil {
+			return nil, err
+		}
+		if automationHostname == adminHostname {
+			return nil, errors.New("admin and automation hostnames must differ")
+		}
+	}
 	router := &Router{
-		adminHostname: adminHostname,
-		adminHandler:  config.AdminHandler,
-		backends:      config.Backends,
+		adminHostname:      adminHostname,
+		adminHandler:       config.AdminHandler,
+		automationHostname: automationHostname,
+		automationHandler:  config.AutomationHandler,
+		backends:           config.Backends,
 		transport: &http.Transport{
 			Proxy:                 nil,
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -94,6 +113,10 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}
 	if hostname == router.adminHostname {
 		router.adminHandler.ServeHTTP(response, request)
+		return
+	}
+	if hostname == router.automationHostname {
+		router.automationHandler.ServeHTTP(response, request)
 		return
 	}
 	serviceID, exists := router.routes.Load().services[hostname]

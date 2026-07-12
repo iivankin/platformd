@@ -47,6 +47,8 @@ func New(config Config) (*Authenticator, error) {
 
 func (authenticator *Authenticator) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Cache-Control", "private, no-store")
+		response.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
 		identity, retryAfter, err := authenticator.authenticate(request)
 		if retryAfter > 0 {
 			seconds := max(1, int((retryAfter+time.Second-1)/time.Second))
@@ -74,7 +76,7 @@ func (authenticator *Authenticator) authenticate(request *http.Request) (automat
 		return automation.Identity{}, 0, parseErr
 	}
 	credential, err := authenticator.store.APITokenCredential(request.Context(), publicID)
-	if err != nil || credential.RevokedAtMillis != nil || !authenticator.verifier.Verify(publicID, secret, credential.SecretHMAC) {
+	if err != nil || credential.ID != publicID || credential.RevokedAtMillis != nil || !authenticator.verifier.Verify(publicID, secret, credential.SecretHMAC) {
 		authenticator.limiter.Failed(publicID, source)
 		return automation.Identity{}, 0, errors.New("invalid API token")
 	}

@@ -46,6 +46,25 @@ func TestRouterDispatchesAdminAndRejectsHostSNIMismatch(t *testing.T) {
 	}
 }
 
+func TestRouterDispatchesExactAutomationHostname(t *testing.T) {
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		AutomationHostname: "api.example.com",
+		AutomationHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusAccepted)
+		}),
+		Backends: backendStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("api.example.com", "api.example.com"))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("automation status = %d", response.Code)
+	}
+}
+
 func TestRouterProxiesApplicationAndReplacesForwardingHeaders(t *testing.T) {
 	received := make(chan *http.Request, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
