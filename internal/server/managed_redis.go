@@ -2,10 +2,15 @@ package server
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"mime"
 	"net/http"
+	"strconv"
+	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -19,6 +24,8 @@ type ManagedRedisRepository interface {
 	Create(context.Context, managedredis.CreateInput) (managedredis.CreateResult, error)
 	Resource(context.Context, string, string) (state.ManagedRedis, error)
 	Resources(context.Context, string) ([]state.ManagedRedis, error)
+	Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error)
+	Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error)
 }
 
 type managedRedisResponse struct {
@@ -43,6 +50,128 @@ func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepos
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(repository))
+}
+
+func previewManagedRedisKey(repository ManagedRedisRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		encodedKey, present := request.URL.Query()["key"]
+		if !present || len(encodedKey) != 1 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", "one base64url key parameter is required")
+			return
+		}
+		key, err := base64.RawURLEncoding.DecodeString(encodedKey[0])
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", "key must be unpadded base64url")
+			return
+		}
+		count := 0
+		if value := request.URL.Query().Get("count"); value != "" {
+			count, err = strconv.Atoi(value)
+			if err != nil {
+				writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", "count must be an integer from 1 to 100")
+				return
+			}
+		}
+		preview, err := repository.Preview(request.Context(), request.PathValue("projectID"), request.PathValue("redisID"), managedredis.PreviewQuery{Key: key, Count: count})
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicRedisPreview(preview))
+	}
+}
+
+func scanManagedRedisKeys(repository ManagedRedisRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		query, ok := parseManagedRedisScanQuery(response, request)
+		if !ok {
+			return
+		}
+		page, err := repository.Keys(request.Context(), request.PathValue("projectID"), request.PathValue("redisID"), query)
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicKeyPage(page))
+	}
+}
+
+func parseManagedRedisScanQuery(response http.ResponseWriter, request *http.Request) (managedredis.ScanQuery, bool) {
+	query := managedredis.ScanQuery{Match: request.URL.Query().Get("match")}
+	if value := request.URL.Query().Get("cursor"); value != "" {
+		cursor, err := strconv.ParseUint(value, 10, 64)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", "cursor must be an unsigned integer")
+			return managedredis.ScanQuery{}, false
+		}
+		query.Cursor = cursor
+	}
+	if value := request.URL.Query().Get("count"); value != "" {
+		count, err := strconv.Atoi(value)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", "count must be an integer from 1 to 100")
+			return managedredis.ScanQuery{}, false
+		}
+		query.Count = count
+	}
+	return query, true
+}
+
+func publicKeyPage(page managedredis.KeyPage) map[string]any {
+	keys := make([]map[string]any, 0, len(page.Keys))
+	for _, key := range page.Keys {
+		item := map[string]any{
+			"keyBase64": base64.RawURLEncoding.EncodeToString(key.Key), "type": key.Type,
+			"sizeBytes": key.SizeBytes,
+		}
+		if text, ok := printableRedisKey(key.Key); ok {
+			item["keyText"] = text
+		}
+		if key.ExpiresInMillis != nil {
+			item["expiresInMillis"] = *key.ExpiresInMillis
+		}
+		keys = append(keys, item)
+	}
+	return map[string]any{"nextCursor": strconv.FormatUint(page.NextCursor, 10), "keys": keys}
+}
+
+func printableRedisKey(value []byte) (string, bool) {
+	if !utf8.Valid(value) {
+		return "", false
+	}
+	text := string(value)
+	if strings.IndexFunc(text, func(character rune) bool { return unicode.IsControl(character) }) >= 0 {
+		return "", false
+	}
+	return text, true
+}
+
+func publicRedisPreview(preview managedredis.Preview) map[string]any {
+	items := make([]map[string]any, 0, len(preview.Items))
+	for _, item := range preview.Items {
+		values := make([]map[string]string, 0, len(item.Values))
+		for _, value := range item.Values {
+			encoded := map[string]string{"base64": base64.RawURLEncoding.EncodeToString(value)}
+			if text, ok := printableRedisKey(value); ok {
+				encoded["text"] = text
+			}
+			values = append(values, encoded)
+		}
+		items = append(items, map[string]any{"values": values})
+	}
+	return map[string]any{
+		"type": preview.Type, "length": preview.Length,
+		"nextCursor": strconv.FormatUint(preview.NextCursor, 10),
+		"truncated":  preview.Truncated, "items": items,
+	}
 }
 
 func listManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
@@ -149,6 +278,12 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusBadGateway, "managed_redis_image_unavailable", "Unable to resolve the selected official Redis image")
 	case errors.Is(err, managedredis.ErrInvalidInput), errors.Is(err, managedimages.ErrInvalidQuery):
 		writeAPIError(response, http.StatusBadRequest, "invalid_managed_redis", err.Error())
+	case errors.Is(err, managedredis.ErrInvalidBrowserQuery):
+		writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", err.Error())
+	case errors.Is(err, managedredis.ErrNotRunning):
+		writeAPIError(response, http.StatusServiceUnavailable, "redis_not_running", "Managed Redis resource is not running")
+	case errors.Is(err, managedredis.ErrKeyNotFound):
+		writeAPIError(response, http.StatusNotFound, "redis_key_not_found", "Redis key no longer exists")
 	default:
 		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage Redis resource")
 	}

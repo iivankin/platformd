@@ -136,6 +136,14 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 	if err != nil || code != 0 || output.String() != "OK\n" {
 		t.Fatalf("SET result: code=%d output=%q err=%v", code, output.String(), err)
 	}
+	page, err := controller.ScanKeys(ctx, resource.ID, ScanQuery{Match: "platformd-*", Count: 10})
+	if err != nil || len(page.Keys) != 1 || string(page.Keys[0].Key) != "platformd-integration" || page.Keys[0].Type != "string" || page.Keys[0].SizeBytes <= 0 {
+		t.Fatalf("SCAN browser result = %+v, %v", page, err)
+	}
+	preview, err := controller.PreviewKey(ctx, resource.ID, PreviewQuery{Key: page.Keys[0].Key})
+	if err != nil || preview.Type != "string" || preview.Length != 9 || len(preview.Items) != 1 || string(preview.Items[0].Values[0]) != "persisted" {
+		t.Fatalf("value preview = %+v, %v", preview, err)
+	}
 	if err := controller.Stop(ctx, resource.ID); err != nil {
 		t.Fatal(err)
 	}

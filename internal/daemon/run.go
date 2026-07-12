@@ -160,14 +160,16 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
 			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
-			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, RedisStore: automationRepository,
+			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
+			RedisStore: automationRepository, RedisBrowser: managedRedisApplication,
 		})
 		if err != nil {
 			return err
 		}
 		mcpHandler, err := mcp.New(mcp.Config{
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
-			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
+			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
+			Redis: redisAutomation, RedisBrowser: managedRedisApplication,
 		})
 		if err != nil {
 			return err

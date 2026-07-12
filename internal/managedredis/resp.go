@@ -101,6 +101,9 @@ func (client *Client) authenticate(ctx context.Context, password string) error {
 }
 
 func (client *Client) command(ctx context.Context, arguments ...string) (response, error) {
+	if err := ctx.Err(); err != nil {
+		return response{}, err
+	}
 	if client == nil || client.connection == nil || len(arguments) == 0 || len(arguments) > maximumArrayElements {
 		return response{}, errors.New("invalid Redis command")
 	}
@@ -114,6 +117,9 @@ func (client *Client) command(ctx context.Context, arguments ...string) (respons
 
 	client.mu.Lock()
 	defer client.mu.Unlock()
+	if err := ctx.Err(); err != nil {
+		return response{}, err
+	}
 	deadline := time.Now().Add(defaultOperationTimeout)
 	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
 		deadline = contextDeadline

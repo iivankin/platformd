@@ -32,11 +32,36 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 			"/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
 			"/api/v1/projects/{projectID}/redis":                            managedRedisOperation(),
 			"/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
+			"/api/v1/projects/{projectID}/redis/{redisID}/keys":             redisKeysOperation(),
+			"/api/v1/projects/{projectID}/redis/{redisID}/preview":          redisPreviewOperation(),
 		},
 	}
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func redisKeysOperation() map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary": "Incrementally SCAN managed Redis keys with bounded read-only metadata",
+		"parameters": []map[string]any{
+			{"name": "cursor", "in": "query", "schema": map[string]any{"type": "string", "pattern": "^[0-9]+$", "default": "0"}},
+			{"name": "match", "in": "query", "schema": map[string]any{"type": "string", "maxLength": 256}},
+			{"name": "count", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 50}},
+		},
+		"responses": map[string]any{"200": map[string]string{"description": "Bounded key page"}, "400": map[string]string{"description": "Invalid browser query"}, "503": map[string]string{"description": "Redis is not running"}},
+	}}
+}
+
+func redisPreviewOperation() map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary": "Read a type-aware Redis value preview bounded to 100 elements and 64 KiB",
+		"parameters": []map[string]any{
+			{"name": "key", "in": "query", "required": true, "description": "Unpadded base64url Redis key", "schema": map[string]string{"type": "string"}},
+			{"name": "count", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+		},
+		"responses": map[string]any{"200": map[string]string{"description": "Bounded value preview"}, "400": map[string]string{"description": "Invalid browser query"}, "404": map[string]string{"description": "Key no longer exists"}, "503": map[string]string{"description": "Redis is not running"}},
+	}}
 }
 
 func managedRedisOperation() map[string]any {

@@ -44,6 +44,8 @@ type Engine interface {
 type RedisConnection interface {
 	Ping(context.Context) error
 	Save(context.Context) error
+	ScanKeys(context.Context, ScanQuery) (KeyPage, error)
+	PreviewKey(context.Context, PreviewQuery) (Preview, error)
 	Close() error
 }
 
@@ -278,6 +280,56 @@ func (controller *Controller) Status(resourceID string) (containerengine.Contain
 	}
 	container, err := controller.engine.InspectContainer(active.container.ID)
 	return container, true, err
+}
+
+func (controller *Controller) ScanKeys(ctx context.Context, resourceID string, query ScanQuery) (KeyPage, error) {
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return KeyPage{}, ErrNotRunning
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return KeyPage{}, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return KeyPage{}, err
+	}
+	addresses := container.IPs[active.network]
+	if container.State != "running" || len(addresses) != 1 {
+		return KeyPage{}, ErrNotRunning
+	}
+	connection, err := controller.dial(ctx, net.JoinHostPort(addresses[0], fmt.Sprint(Port)), password)
+	if err != nil {
+		return KeyPage{}, err
+	}
+	defer connection.Close()
+	return connection.ScanKeys(ctx, query)
+}
+
+func (controller *Controller) PreviewKey(ctx context.Context, resourceID string, query PreviewQuery) (Preview, error) {
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return Preview{}, ErrNotRunning
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return Preview{}, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return Preview{}, err
+	}
+	addresses := container.IPs[active.network]
+	if container.State != "running" || len(addresses) != 1 {
+		return Preview{}, ErrNotRunning
+	}
+	connection, err := controller.dial(ctx, net.JoinHostPort(addresses[0], fmt.Sprint(Port)), password)
+	if err != nil {
+		return Preview{}, err
+	}
+	defer connection.Close()
+	return connection.PreviewKey(ctx, query)
 }
 
 func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedRedis, imageID string, placement Placement, volume, configPath string) (containerengine.Container, error) {
