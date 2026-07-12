@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/apitoken"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
@@ -102,6 +103,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure Cloudflare Access: %w", err)
 	}
+	tokenVerifier, err := apitoken.NewVerifier(key)
+	if err != nil {
+		return err
+	}
+	apiTokens := liveAPITokenRepository{store: store, verifier: tokenVerifier}
 	tlsConfig := certificates.TLSConfig()
 	domains := &liveDomainRepository{store: store, certificates: certificates}
 	adminHandler := access.ProtectAdmin(
@@ -113,6 +119,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
 			server.WithImageCredentials(imageCredentials),
 			server.WithDomains(domains),
+			server.WithAPITokens(apiTokens),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{

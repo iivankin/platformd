@@ -50,6 +50,19 @@ const apiErrorSchema = z.object({
 export type Project = z.infer<typeof projectSchema>;
 export type ServiceDomain = z.infer<typeof serviceDomainSchema>;
 
+const apiTokenSchema = z.object({
+  createdAt: z.number().int().positive(),
+  id: z.string().min(1),
+  lastUsedAt: z.number().int().positive().optional(),
+  name: z.string().min(1),
+  projectId: z.string().min(1).optional(),
+  revokedAt: z.number().int().positive().optional(),
+  role: z.enum(["read", "admin"]),
+  token: z.string().min(1).optional(),
+});
+const apiTokensSchema = z.object({ tokens: z.array(apiTokenSchema) });
+export type APIToken = z.infer<typeof apiTokenSchema>;
+
 const canvasResourceSchema = z.object({
   activeDeploymentId: z.string().min(1).optional(),
   bucketName: z.string().optional(),
@@ -559,6 +572,64 @@ export const detachServiceDomain = async (
     throw await apiError(
       response,
       `domain removal failed with ${response.status}`
+    );
+  }
+};
+
+export const fetchAPITokens = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<APIToken[]> => {
+  const response = await fetcher("/api/v1/tokens", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `API tokens request failed with ${response.status}`
+    );
+  }
+  return apiTokensSchema.parse(await response.json()).tokens;
+};
+
+export const createAPIToken = async (
+  input: { name: string; projectId?: string; role: APIToken["role"] },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<APIToken> => {
+  const response = await fetcher("/api/v1/tokens", {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `API token creation failed with ${response.status}`
+    );
+  }
+  const token = apiTokenSchema.parse(await response.json());
+  if (!token.token) {
+    throw new Error("API token creation response omitted the one-time secret");
+  }
+  return token;
+};
+
+export const revokeAPIToken = async (
+  tokenID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `/api/v1/tokens/${encodeURIComponent(tokenID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `API token revoke failed with ${response.status}`
     );
   }
 };

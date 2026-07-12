@@ -9,6 +9,7 @@ import {
 } from "react-router";
 
 import type { Meta } from "@/api";
+import { APITokensPage } from "@/api-tokens-page";
 import { useAppData } from "@/app-data";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -182,13 +183,19 @@ export const App = () => {
               element={<ProjectCanvasPage />}
               path="/projects/:projectID"
             />
-            {globalNavigation.map((item) => (
-              <Route
-                element={<EmptySection item={item} />}
-                key={item.path}
-                path={`${item.path}/*`}
-              />
-            ))}
+            <Route
+              element={<APITokensPage projects={data.projects} />}
+              path="/tokens"
+            />
+            {globalNavigation
+              .filter((item) => item.path !== "/tokens")
+              .map((item) => (
+                <Route
+                  element={<EmptySection item={item} />}
+                  key={item.path}
+                  path={`${item.path}/*`}
+                />
+              ))}
             <Route element={<Navigate replace to="/" />} path="*" />
           </Routes>
         </div>
