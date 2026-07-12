@@ -76,6 +76,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := store.MarkInterrupted(ctx, time.Now().UnixMilli()); err != nil {
 		return err
 	}
+	auditCleanupContext, cancelAuditCleanup := context.WithCancel(ctx)
+	defer cancelAuditCleanup()
+	startAuditCleanup(auditCleanupContext, store)
 	installation, err := store.Installation(ctx)
 	if err != nil {
 		return err
@@ -170,6 +173,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithDomains(domains),
 			server.WithAPITokens(apiTokens),
 			server.WithLogs(logs),
+			server.WithAudit(store),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
