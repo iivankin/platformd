@@ -126,3 +126,46 @@ func TestAutomationAuthenticatorRejectsInvalidAndRateLimitedRequests(t *testing.
 		t.Fatalf("limited response = %d/%s, limiter=%+v", response.Code, response.Header().Get("Retry-After"), limiter)
 	}
 }
+
+func TestAutomationAuthenticatorReturnsFixedRetryAfterOnEleventhPairFailure(t *testing.T) {
+	master, err := cryptobox.ParseMasterKey(bytes.Repeat([]byte{0x51}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier, err := apitoken.NewVerifier(master)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const publicID = "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	_, goodSecret, err := apitoken.Generate(publicID, bytes.NewReader(bytes.Repeat([]byte{0x31}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	badValue, _, err := apitoken.Generate(publicID, bytes.NewReader(bytes.Repeat([]byte{0x32}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticator, err := automationauth.New(automationauth.Config{
+		Store: credentialStoreStub{token: state.APIToken{
+			ID: publicID, Role: "read", SecretHMAC: verifier.Digest(publicID, goodSecret),
+		}},
+		Verifier: verifier, Limiter: automationauth.NewInMemoryFailureLimiter(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := authenticator.Protect(http.NotFoundHandler())
+	for attempt := 1; attempt <= 11; attempt++ {
+		request := httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects", nil)
+		request.RemoteAddr = "192.0.2.9:1234"
+		request.Header.Set("Authorization", "Bearer "+badValue)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if attempt <= 10 && response.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d status = %d", attempt, response.Code)
+		}
+		if attempt == 11 && (response.Code != http.StatusTooManyRequests || response.Header().Get("Retry-After") != "60") {
+			t.Fatalf("limited attempt = %d/%s", response.Code, response.Header().Get("Retry-After"))
+		}
+	}
+}

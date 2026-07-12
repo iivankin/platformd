@@ -12,15 +12,19 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/apitoken"
+	"github.com/iivankin/platformd/internal/automationapi"
+	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/masterkey"
+	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/sdnotify"
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/version"
 	"golang.org/x/net/netutil"
 )
 
@@ -108,6 +112,35 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	apiTokens := liveAPITokenRepository{store: store, verifier: tokenVerifier}
+	var automationHostname string
+	var automationHandler http.Handler
+	if installation.AutomationHostname != nil {
+		automationHostname = *installation.AutomationHostname
+		automationRepository := liveAutomationRepository{store: store, runtime: runtime}
+		automationAPI, err := automationapi.Handler(automationapi.Config{
+			Hostname: automationHostname, Repository: automationRepository,
+		})
+		if err != nil {
+			return err
+		}
+		mcpHandler, err := mcp.New(mcp.Config{
+			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
+		})
+		if err != nil {
+			return err
+		}
+		authenticator, err := automationauth.New(automationauth.Config{
+			Store: store, Verifier: tokenVerifier,
+			Limiter: automationauth.NewInMemoryFailureLimiter(),
+		})
+		if err != nil {
+			return err
+		}
+		automationMux := http.NewServeMux()
+		automationMux.Handle("/mcp", mcpHandler)
+		automationMux.Handle("/", automationAPI)
+		automationHandler = authenticator.Protect(automationMux)
+	}
 	tlsConfig := certificates.TLSConfig()
 	domains := &liveDomainRepository{store: store, certificates: certificates}
 	adminHandler := access.ProtectAdmin(
@@ -123,7 +156,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
-		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler, Backends: runtime,
+		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
+		AutomationHostname: automationHostname, AutomationHandler: automationHandler,
+		Backends: runtime,
 	})
 	if err != nil {
 		return fmt.Errorf("configure HTTPS ingress: %w", err)

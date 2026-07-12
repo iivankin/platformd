@@ -37,6 +37,10 @@ func TestAPITokenCreateListAndRevokeKeepsSecretVerifierPrivate(t *testing.T) {
 	if created.SecretHMAC != nil {
 		t.Fatal("created API token exposed its secret verifier")
 	}
+	credential, err := store.APITokenCredential(context.Background(), "token")
+	if err != nil || !bytes.Equal(credential.SecretHMAC, bytes.Repeat([]byte{0x42}, 32)) || credential.RevokedAtMillis != nil {
+		t.Fatalf("token credential = %+v, %v", credential, err)
+	}
 	tokens, err := store.APITokens(context.Background())
 	if err != nil || len(tokens) != 1 || tokens[0].ProjectID == nil || *tokens[0].ProjectID != projectID || tokens[0].SecretHMAC != nil {
 		t.Fatalf("listed API tokens = %+v, %v", tokens, err)
@@ -46,6 +50,10 @@ func TestAPITokenCreateListAndRevokeKeepsSecretVerifierPrivate(t *testing.T) {
 		ActorEmail: "admin@example.com", RevokedAtMillis: 3,
 	}); err != nil {
 		t.Fatal(err)
+	}
+	credential, err = store.APITokenCredential(context.Background(), "token")
+	if err != nil || credential.RevokedAtMillis == nil {
+		t.Fatalf("revoked token credential = %+v, %v", credential, err)
 	}
 	if err := store.RevokeAPIToken(context.Background(), state.RevokeAPIToken{
 		ID: "token", AuditEventID: "second-revoke-audit", ActorID: "actor",
