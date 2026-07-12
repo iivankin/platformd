@@ -1,0 +1,78 @@
+package containerengine
+
+import (
+	"io"
+	"time"
+)
+
+type PullRequest struct {
+	Reference string
+	Username  string
+	Password  string
+	Refresh   bool
+}
+
+type Image struct {
+	ID      string
+	Digest  string
+	Names   []string
+	Size    int64
+	Created time.Time
+}
+
+type NetworkSpec struct {
+	Name      string
+	Interface string
+	Subnet    string
+	Gateway   string
+	Labels    map[string]string
+}
+
+type Network struct {
+	ID        string
+	Name      string
+	Interface string
+	Subnet    string
+	Gateway   string
+}
+
+type Mount struct {
+	Source      string
+	Destination string
+}
+
+type ContainerSpec struct {
+	ImageID        string
+	Name           string
+	Command        []string
+	Environment    map[string]string
+	Labels         map[string]string
+	Network        string
+	DNSServers     []string
+	Mounts         []Mount
+	LogPath        string
+	LogSizeBytes   int64
+	LogMaxFiles    uint
+	CgroupParent   string
+	CPUMillicores  int64
+	MemoryMaxBytes int64
+}
+
+type Container struct {
+	ID       string
+	Name     string
+	State    string
+	Pid      int
+	ExitCode int32
+	IPs      map[string][]string
+}
+
+type ExecRequest struct {
+	Command     []string
+	Environment map[string]string
+	User        string
+	WorkDir     string
+	Stdin       io.Reader
+	Stdout      io.Writer
+	Stderr      io.Writer
+}
