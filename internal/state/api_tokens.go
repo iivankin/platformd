@@ -63,6 +63,16 @@ FROM api_tokens ORDER BY created_at DESC, id DESC`)
 	return result, nil
 }
 
+func (store *Store) APITokenCredential(ctx context.Context, tokenID string) (APIToken, error) {
+	token, err := scanAPIToken(store.database.QueryRowContext(ctx, `
+SELECT id, name, role, project_id, secret_hmac, created_at, last_used_at, revoked_at
+FROM api_tokens WHERE id = ?`, tokenID), true)
+	if errors.Is(err, sql.ErrNoRows) {
+		return APIToken{}, ErrAPITokenNotFound
+	}
+	return token, err
+}
+
 func (store *Store) CreateAPIToken(ctx context.Context, input CreateAPIToken) (APIToken, error) {
 	token := input.APIToken
 	if token.ID == "" || input.AuditEventID == "" || input.ActorID == "" || input.ActorEmail == "" || token.CreatedAtMillis <= 0 || len(token.SecretHMAC) != sha256.Size {
