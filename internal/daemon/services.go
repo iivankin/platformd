@@ -20,7 +20,10 @@ func (repository liveServiceRepository) CreateService(ctx context.Context, input
 		// Desired state stays committed even when the first pull is temporarily
 		// unavailable; watcher/reconcile retries registry errors without inventing
 		// a durable job queue.
-		_ = repository.runtime.DeployService(ctx, created.ID, false)
+		deployErr := repository.runtime.DeployService(ctx, created.ID, false)
+		if trackErr := repository.runtime.TrackService(ctx, created.ID, deployErr != nil); trackErr != nil {
+			repository.runtime.recordServiceFailure(created.ID, trackErr)
+		}
 	}
 	return repository.store.DesiredService(ctx, created.ID)
 }

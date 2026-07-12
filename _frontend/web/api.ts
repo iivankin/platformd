@@ -35,13 +35,17 @@ const apiErrorSchema = z.object({
 export type Project = z.infer<typeof projectSchema>;
 
 const canvasResourceSchema = z.object({
+  activeDeploymentId: z.string().min(1).optional(),
   bucketName: z.string().optional(),
   enabled: z.boolean(),
   id: z.string().min(1),
+  imageDigest: z.string().min(1).optional(),
   imageReference: z.string().optional(),
   internalHostname: z.string().min(1),
   kind: z.enum(["service", "postgres", "redis", "object_store"]),
   name: z.string().min(1),
+  status: z.enum(["degraded", "disabled", "failed", "pending", "running"]),
+  statusMessage: z.string().optional(),
 });
 
 const canvasConnectionSchema = z.object({

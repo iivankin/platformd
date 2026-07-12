@@ -63,6 +63,12 @@ type ImageCredential struct {
 	Password string
 }
 
+type RuntimeStatus struct {
+	DeploymentID string
+	State        string
+	ExitCode     int32
+}
+
 type CredentialResolver interface {
 	Resolve(context.Context, state.ServiceDesired) (ImageCredential, error)
 }
@@ -300,6 +306,22 @@ func (controller *Controller) Restore(ctx context.Context, serviceID string) err
 		return fmt.Errorf("publish restored service: %w", err)
 	}
 	return nil
+}
+
+func (controller *Controller) Status(serviceID string) (RuntimeStatus, bool, error) {
+	active, ok := controller.activeContainer(serviceID)
+	if !ok {
+		return RuntimeStatus{}, false, nil
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return RuntimeStatus{DeploymentID: active.deploymentID}, true, err
+	}
+	return RuntimeStatus{
+		DeploymentID: active.deploymentID,
+		State:        container.State,
+		ExitCode:     container.ExitCode,
+	}, true, nil
 }
 
 func (controller *Controller) runDeployment(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) error {

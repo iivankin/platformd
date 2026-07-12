@@ -48,7 +48,7 @@ func TestServiceAPICommitsCanonicalDesiredConfigAndCanvasNode(t *testing.T) {
 	canvas := projectRequest(http.MethodGet, "/api/v1/projects/"+project.ID+"/canvas", "")
 	canvasResponse := httptest.NewRecorder()
 	handler.ServeHTTP(canvasResponse, canvas)
-	if canvasResponse.Code != http.StatusOK || !strings.Contains(canvasResponse.Body.String(), `"kind":"service"`) || !strings.Contains(canvasResponse.Body.String(), `"internalHostname":"api.shop.internal"`) {
+	if canvasResponse.Code != http.StatusOK || !strings.Contains(canvasResponse.Body.String(), `"kind":"service"`) || !strings.Contains(canvasResponse.Body.String(), `"internalHostname":"api.shop.internal"`) || !strings.Contains(canvasResponse.Body.String(), `"status":"disabled"`) {
 		t.Fatalf("canvas status/body = %d/%s", canvasResponse.Code, canvasResponse.Body)
 	}
 }

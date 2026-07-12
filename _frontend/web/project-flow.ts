@@ -4,12 +4,16 @@ import type { Edge, Node } from "@xyflow/react";
 import type { ProjectCanvas } from "@/api";
 
 export interface ResourceNodeData extends Record<string, unknown> {
+  activeDeploymentId?: string;
   bucketName?: string;
   enabled: boolean;
+  imageDigest?: string;
   imageReference?: string;
   internalHostname: string;
   kind: ProjectCanvas["resources"][number]["kind"];
   name: string;
+  status: ProjectCanvas["resources"][number]["status"];
+  statusMessage?: string;
 }
 
 export type ResourceFlowNode = Node<ResourceNodeData, "resource">;
@@ -19,6 +23,33 @@ const columnWidth = 320;
 const rowHeight = 156;
 const originX = 72;
 const originY = 56;
+
+export const mergeResourceNodeData = (
+  current: ResourceFlowNode[],
+  incoming: ResourceFlowNode[]
+): ResourceFlowNode[] => {
+  if (
+    current.length !== incoming.length ||
+    incoming.some(
+      (node) => !current.some((existing) => existing.id === node.id)
+    )
+  ) {
+    return incoming;
+  }
+  const currentByID = new Map(current.map((node) => [node.id, node]));
+  return incoming.map((node) => {
+    const existing = currentByID.get(node.id);
+    if (!existing) {
+      return node;
+    }
+    return {
+      ...node,
+      dragging: existing.dragging,
+      position: existing.position,
+      selected: existing.selected,
+    };
+  });
+};
 
 export const projectFlowElements = (
   canvas: ProjectCanvas
@@ -71,12 +102,16 @@ export const projectFlowElements = (
     rowsByColumn.set(column, row + 1);
     return {
       data: {
+        activeDeploymentId: resource.activeDeploymentId,
         bucketName: resource.bucketName,
         enabled: resource.enabled,
+        imageDigest: resource.imageDigest,
         imageReference: resource.imageReference,
         internalHostname: resource.internalHostname,
         kind: resource.kind,
         name: resource.name,
+        status: resource.status,
+        statusMessage: resource.statusMessage,
       },
       id: resource.id,
       position: {

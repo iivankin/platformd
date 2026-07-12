@@ -16,6 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/internaldns"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/projectnetwork"
+	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -36,6 +37,7 @@ type runtimeStack struct {
 	paths            layout.Paths
 	cgroupRoot       string
 	deployments      *deployment.Controller
+	serviceWatcher   *servicewatcher.Watcher
 	serviceFailures  map[string]error
 }
 
@@ -177,6 +179,9 @@ func (stack *runtimeStack) Close() error {
 		return nil
 	}
 	stack.closed = true
+	if stack.serviceWatcher != nil {
+		stack.serviceWatcher.Close()
+	}
 	var failures []error
 	for index := len(stack.dnsServers) - 1; index >= 0; index-- {
 		failures = append(failures, stack.dnsServers[index].Close())

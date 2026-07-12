@@ -1,7 +1,8 @@
 import { expect, test } from "bun:test";
 
 import type { ProjectCanvas } from "@/api";
-import { projectFlowElements } from "@/project-flow";
+import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
+import type { ResourceFlowNode } from "@/project-flow";
 
 test("builds deterministic canvas nodes and labeled environment edges", () => {
   const canvas: ProjectCanvas = {
@@ -30,6 +31,7 @@ test("builds deterministic canvas nodes and labeled environment edges", () => {
         internalHostname: "api.shop.internal",
         kind: "service",
         name: "api",
+        status: "running",
       },
       {
         enabled: true,
@@ -38,6 +40,7 @@ test("builds deterministic canvas nodes and labeled environment edges", () => {
         internalHostname: "database.shop.internal",
         kind: "postgres",
         name: "database",
+        status: "pending",
       },
     ],
   };
@@ -47,4 +50,38 @@ test("builds deterministic canvas nodes and labeled environment edges", () => {
     ["database", 392],
   ]);
   expect(flow.edges[0]?.label).toBe("DATABASE_URL, READ_DATABASE_URL");
+});
+
+test("refreshes status data without resetting dragged node positions", () => {
+  const current: ResourceFlowNode[] = [
+    {
+      data: {
+        enabled: true,
+        internalHostname: "api.shop.internal",
+        kind: "service" as const,
+        name: "api",
+        status: "pending" as const,
+      },
+      id: "api",
+      position: { x: 900, y: 400 },
+      selected: true,
+      type: "resource" as const,
+    },
+  ];
+  const [currentNode] = current;
+  if (!currentNode) {
+    throw new Error("test node is missing");
+  }
+  const incoming: ResourceFlowNode[] = [
+    {
+      ...currentNode,
+      data: { ...currentNode.data, status: "running" },
+      position: { x: 72, y: 56 },
+      selected: false,
+    },
+  ];
+  const merged = mergeResourceNodeData(current, incoming);
+  expect(merged[0]?.data.status).toBe("running");
+  expect(merged[0]?.position).toEqual({ x: 900, y: 400 });
+  expect(merged[0]?.selected).toBe(true);
 });
