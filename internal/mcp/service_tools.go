@@ -72,9 +72,9 @@ func mutationTargetSchema(base map[string]any, rollback bool) map[string]any {
 	return objectSchema(properties, required)
 }
 
-func isServiceMutationTool(name string) bool {
+func isAdminMutationTool(name string) bool {
 	switch name {
-	case "create_service", "update_service", "redeploy_service", "rollback_service":
+	case "create_service", "update_service", "redeploy_service", "rollback_service", "create_managed_redis":
 		return true
 	default:
 		return false

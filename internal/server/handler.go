@@ -31,6 +31,7 @@ type handlerConfig struct {
 	logs             LogRepository
 	audit            AuditRepository
 	managedImages    ManagedImageCatalog
+	managedRedis     ManagedRedisRepository
 	random           io.Reader
 	now              func() time.Time
 }
@@ -85,6 +86,12 @@ func WithManagedImages(catalog ManagedImageCatalog) Option {
 	}
 }
 
+func WithManagedRedis(repository ManagedRedisRepository) Option {
+	return func(config *handlerConfig) {
+		config.managedRedis = repository
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -118,6 +125,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.managedImages != nil {
 		registerManagedImageRoutes(mux, config.managedImages)
+	}
+	if config.managedRedis != nil {
+		registerManagedRedisRoutes(mux, config.managedRedis)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

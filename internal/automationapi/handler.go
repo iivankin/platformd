@@ -30,6 +30,8 @@ type Config struct {
 	Services   *automation.ServiceApplication
 	Logs       *automation.LogApplication
 	Images     ManagedImageCatalog
+	Redis      *automation.ManagedRedisApplication
+	RedisStore managedRedisRepository
 }
 
 func Handler(config Config) (http.Handler, error) {
@@ -50,6 +52,11 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
 	mux.HandleFunc("GET /api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
+	if config.Redis != nil && config.RedisStore != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(config.RedisStore))
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(config.RedisStore))
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(config.Redis))
+	}
 	return noStore(mux), nil
 }
 
@@ -201,6 +208,8 @@ func writeRepositoryError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusNotFound, "project_not_found", "Project not found")
 	case errors.Is(err, state.ErrServiceNotFound):
 		writeError(response, http.StatusNotFound, "service_not_found", "Service not found")
+	case errors.Is(err, state.ErrManagedRedisNotFound):
+		writeError(response, http.StatusNotFound, "redis_not_found", "Managed Redis resource not found")
 	case errors.Is(err, state.ErrDeploymentPageInvalid), errors.Is(err, state.ErrDeploymentCursorInvalid):
 		writeError(response, http.StatusBadRequest, "invalid_deployment_page", err.Error())
 	default:

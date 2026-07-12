@@ -9,7 +9,9 @@ import (
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -132,4 +134,48 @@ func (stack *runtimeStack) recordRedisFailure(resourceID string, err error) {
 	stack.mu.Lock()
 	stack.redisFailures[resourceID] = err
 	stack.mu.Unlock()
+}
+
+func (stack *runtimeStack) ResolveManagedRedisImage(ctx context.Context, tag string) (string, error) {
+	reference, err := managedimages.Reference(managedimages.Redis, tag)
+	if err != nil {
+		return "", err
+	}
+	stack.mu.Lock()
+	closed := stack.closed
+	engine := stack.engine
+	stack.mu.Unlock()
+	if closed {
+		return "", errors.New("container runtime is closed")
+	}
+	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: reference, Refresh: true})
+	if err != nil {
+		return "", err
+	}
+	if image.ID == "" || image.Digest == "" {
+		return "", errors.New("resolved managed Redis image has no ID or digest")
+	}
+	if _, err := serviceconfig.PinnedReference(reference, image.Digest); err != nil {
+		return "", err
+	}
+	return image.Digest, nil
+}
+
+func (stack *runtimeStack) StartManagedRedis(ctx context.Context, resourceID string) error {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed Redis runtime is not ready")
+	}
+	err := controller.Start(ctx, resourceID)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.redisFailures, resourceID)
+	} else {
+		stack.redisFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
 }

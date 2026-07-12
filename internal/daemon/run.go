@@ -20,6 +20,7 @@ import (
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/origin"
@@ -136,6 +137,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	managedRedisApplication, err := managedredis.NewApplication(store, runtime, key, nil, nil)
+	if err != nil {
+		return err
+	}
 	var automationHostname string
 	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
@@ -145,20 +150,24 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
+		redisAutomation, err := automation.NewManagedRedisApplication(managedRedisApplication)
+		if err != nil {
+			return err
+		}
 		logAutomation, err := automation.NewLogApplication(store, logReader)
 		if err != nil {
 			return err
 		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
 			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
-			Logs: logAutomation, Images: managedImageCatalog,
+			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, RedisStore: automationRepository,
 		})
 		if err != nil {
 			return err
 		}
 		mcpHandler, err := mcp.New(mcp.Config{
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
-			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
+			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 		})
 		if err != nil {
 			return err
@@ -190,6 +199,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithLogs(logs),
 			server.WithAudit(store),
 			server.WithManagedImages(managedImageCatalog),
+			server.WithManagedRedis(managedRedisApplication),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{

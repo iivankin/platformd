@@ -31,6 +31,14 @@ func (repository liveAutomationRepository) ServiceDeployments(ctx context.Contex
 	return repository.store.ServiceDeployments(ctx, projectID, serviceID, cursor, limit)
 }
 
+func (repository liveAutomationRepository) ManagedRedisInProject(ctx context.Context, projectID, resourceID string) (state.ManagedRedis, error) {
+	return repository.store.ManagedRedisInProject(ctx, projectID, resourceID)
+}
+
+func (repository liveAutomationRepository) ManagedRedisByProject(ctx context.Context, projectID string) ([]state.ManagedRedis, error) {
+	return repository.store.ManagedRedisByProject(ctx, projectID)
+}
+
 func (repository liveAutomationRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
 	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).CreateService(ctx, input)
 }
