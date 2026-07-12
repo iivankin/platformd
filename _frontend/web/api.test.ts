@@ -3,10 +3,12 @@ import { expect, test } from "bun:test";
 import {
   APIError,
   attachServiceDomain,
+  createAPIToken,
   createProject,
   createImageCredential,
   createService,
   detachServiceDomain,
+  fetchAPITokens,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
@@ -16,6 +18,7 @@ import {
   fetchProjectCanvas,
   fetchProjects,
   redeployService,
+  revokeAPIToken,
   rollbackService,
   updateService,
 } from "@/api";
@@ -385,4 +388,45 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
   ).catch((error: unknown) => error);
   expect(conflict).toBeInstanceOf(APIError);
   expect((conflict as APIError).domain).toEqual(domain);
+});
+
+test("creates and revokes one-time API tokens", async () => {
+  const token = {
+    createdAt: 1,
+    id: "token-id",
+    name: "deploy-bot",
+    projectId: "project",
+    role: "admin" as const,
+  };
+  await expect(
+    fetchAPITokens(undefined, () =>
+      Promise.resolve(Response.json({ tokens: [token] }))
+    )
+  ).resolves.toEqual([token]);
+
+  let createBody = "";
+  await expect(
+    createAPIToken(
+      { name: token.name, projectId: token.projectId, role: token.role },
+      (_input, init) => {
+        createBody = init?.body?.toString() ?? "";
+        return Promise.resolve(
+          Response.json({ ...token, token: "ptk_token-id_secret" })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ token: "ptk_token-id_secret" });
+  expect(JSON.parse(createBody)).toEqual({
+    name: token.name,
+    projectId: token.projectId,
+    role: token.role,
+  });
+
+  let revokeURL = "";
+  await revokeAPIToken("token/with slash", (input, init) => {
+    revokeURL = input.toString();
+    expect(init?.method).toBe("DELETE");
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
+  expect(revokeURL).toBe("/api/v1/tokens/token%2Fwith%20slash");
 });
