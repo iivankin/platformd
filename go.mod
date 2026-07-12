@@ -7,9 +7,11 @@ require (
 	github.com/google/nftables v0.3.0
 	github.com/mattn/go-sqlite3 v1.14.47
 	github.com/moby/sys/mountinfo v0.7.2
+	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/runtime-spec v1.2.1
 	github.com/vishvananda/netlink v1.3.1
 	go.podman.io/common v0.67.1
+	go.podman.io/image/v5 v5.39.2
 	go.podman.io/storage v1.62.0
 	golang.org/x/crypto v0.54.0
 	golang.org/x/net v0.56.0
@@ -104,7 +106,6 @@ require (
 	github.com/morikuni/aec v1.0.0 // indirect
 	github.com/nxadm/tail v1.4.11 // indirect
 	github.com/opencontainers/cgroups v0.0.5 // indirect
-	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
 	github.com/opencontainers/runc v1.3.4 // indirect
 	github.com/opencontainers/runtime-tools v0.9.1-0.20250523060157-0ea5ed0382a2 // indirect
@@ -145,7 +146,6 @@ require (
 	go.opentelemetry.io/otel v1.36.0 // indirect
 	go.opentelemetry.io/otel/metric v1.36.0 // indirect
 	go.opentelemetry.io/otel/trace v1.36.0 // indirect
-	go.podman.io/image/v5 v5.39.2 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/mod v0.37.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
