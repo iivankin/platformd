@@ -185,3 +185,31 @@ SELECT r.id FROM managed_redis r WHERE r.project_id = ? ORDER BY r.name, r.id`, 
 	}
 	return resources, nil
 }
+
+func (store *Store) ManagedRedisResources(ctx context.Context) ([]ManagedRedis, error) {
+	rows, err := store.database.QueryContext(ctx, `SELECT id FROM managed_redis ORDER BY id`)
+	if err != nil {
+		return nil, fmt.Errorf("list all managed Redis resources: %w", err)
+	}
+	defer rows.Close()
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan managed Redis resource ID: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate managed Redis resource IDs: %w", err)
+	}
+	resources := make([]ManagedRedis, 0, len(ids))
+	for _, id := range ids {
+		resource, err := store.ManagedRedis(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		resources = append(resources, resource)
+	}
+	return resources, nil
+}

@@ -5,7 +5,6 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"unicode/utf8"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
 )
@@ -35,8 +34,8 @@ func SealPassword(master cryptobox.MasterKey, resourceID, password string) ([]by
 	if resourceID == "" {
 		return nil, errors.New("managed Redis resource ID is empty")
 	}
-	if password == "" || !utf8.ValidString(password) {
-		return nil, errors.New("managed Redis password must be valid non-empty UTF-8")
+	if !validPassword(password) {
+		return nil, errors.New("managed Redis password is not in the generated format")
 	}
 	box, err := cryptobox.NewBox(master, []byte(resourceID), encryptionDomain)
 	if err != nil {
@@ -58,7 +57,7 @@ func OpenPassword(master cryptobox.MasterKey, resourceID string, encrypted []byt
 		return "", err
 	}
 	defer clear(plaintext)
-	if len(plaintext) == 0 || !utf8.Valid(plaintext) {
+	if !validPassword(string(plaintext)) {
 		return "", errors.New("decrypted managed Redis password is invalid")
 	}
 	return string(plaintext), nil
@@ -66,4 +65,17 @@ func OpenPassword(master cryptobox.MasterKey, resourceID string, encrypted []byt
 
 func passwordAdditionalData(resourceID string) []byte {
 	return []byte(resourceID + ":password")
+}
+
+func validPassword(value string) bool {
+	if len(value) != base64.RawURLEncoding.EncodedLen(passwordBytes) {
+		return false
+	}
+	for _, character := range value {
+		if (character < 'a' || character > 'z') && (character < 'A' || character > 'Z') &&
+			(character < '0' || character > '9') && character != '_' && character != '-' {
+			return false
+		}
+	}
+	return true
 }

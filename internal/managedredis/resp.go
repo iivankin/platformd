@@ -71,12 +71,20 @@ func (client *Client) Close() error {
 }
 
 func (client *Client) Ping(ctx context.Context) error {
-	value, err := client.command(ctx, "PING")
+	return client.expectOK(ctx, "PONG", "PING")
+}
+
+func (client *Client) Save(ctx context.Context) error {
+	return client.expectOK(ctx, "OK", "SAVE")
+}
+
+func (client *Client) expectOK(ctx context.Context, expected string, command ...string) error {
+	value, err := client.command(ctx, command...)
 	if err != nil {
 		return err
 	}
-	if value.kind != responseString || value.text != "PONG" {
-		return fmt.Errorf("unexpected Redis PING response")
+	if value.kind != responseString || value.text != expected {
+		return fmt.Errorf("unexpected Redis %s response", command[0])
 	}
 	return nil
 }

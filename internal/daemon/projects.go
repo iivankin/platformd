@@ -22,15 +22,17 @@ func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, proje
 	}
 	for index := range canvas.Resources {
 		resource := &canvas.Resources[index]
-		if resource.Kind != "service" {
-			continue
+		switch resource.Kind {
+		case "service":
+			runtimeStatus, runtimeMessage := repository.runtime.ServiceStatus(resource.ID, resource.Enabled)
+			if (runtimeStatus == "pending" && resource.Status == "failed") ||
+				(runtimeStatus == "running" && resource.Status == "degraded") {
+				continue
+			}
+			resource.Status, resource.StatusMessage = runtimeStatus, runtimeMessage
+		case "redis":
+			resource.Status, resource.StatusMessage = repository.runtime.RedisStatus(resource.ID)
 		}
-		runtimeStatus, runtimeMessage := repository.runtime.ServiceStatus(resource.ID, resource.Enabled)
-		if (runtimeStatus == "pending" && resource.Status == "failed") ||
-			(runtimeStatus == "running" && resource.Status == "degraded") {
-			continue
-		}
-		resource.Status, resource.StatusMessage = runtimeStatus, runtimeMessage
 	}
 	return canvas, nil
 }

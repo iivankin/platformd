@@ -97,6 +97,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
 	imageCredentials := liveImageCredentialRepository{store: store, master: key}
+	if err := runtime.ConfigureManagedRedis(ctx, store, key); err != nil {
+		return fmt.Errorf("configure managed Redis: %w", err)
+	}
 	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
