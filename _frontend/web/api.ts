@@ -9,6 +9,24 @@ const metaSchema = z.object({
 
 export type Meta = z.infer<typeof metaSchema>;
 
+const projectSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  objectStoreCount: z.number().int().nonnegative(),
+  postgresCount: z.number().int().nonnegative(),
+  redisCount: z.number().int().nonnegative(),
+  serviceCount: z.number().int().nonnegative(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+const projectsSchema = z.array(projectSchema);
+const apiErrorSchema = z.object({
+  error: z.object({ code: z.string(), message: z.string() }),
+});
+
+export type Project = z.infer<typeof projectSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -28,4 +46,49 @@ export const fetchMeta = async (
   }
 
   return metaSchema.parse(await response.json());
+};
+
+const apiError = async (response: Response, fallback: string) => {
+  const parsed = apiErrorSchema.safeParse(
+    await response.json().catch(() => null)
+  );
+  return new Error(parsed.success ? parsed.data.error.message : fallback);
+};
+
+export const fetchProjects = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Project[]> => {
+  const response = await fetcher("/api/v1/projects", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `projects request failed with ${response.status}`
+    );
+  }
+  return projectsSchema.parse(await response.json());
+};
+
+export const createProject = async (
+  name: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Project> => {
+  const response = await fetcher("/api/v1/projects", {
+    body: JSON.stringify({ name }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project creation failed with ${response.status}`
+    );
+  }
+  return projectSchema.parse(await response.json());
 };

@@ -96,7 +96,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	adminHandler := access.ProtectAdmin(
 		installation.AdminHostname,
 		verifier,
-		server.Handler(server.DefaultMeta(status(installation.RecoveryMode))),
+		server.Handler(
+			server.DefaultMeta(status(installation.RecoveryMode)),
+			server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
+		),
 	)
 	httpServer := &http.Server{
 		Addr:              ":443",

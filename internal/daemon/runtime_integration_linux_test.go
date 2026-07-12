@@ -67,6 +67,14 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		_ = first.Close()
 		t.Fatalf("unexpected project network reconcile: networks=%v failures=%v", first.networks, first.projectFailures)
 	}
+	if err := first.AddProject(state.RuntimeProject{ID: "integration-c", Name: "gamma"}); err != nil {
+		_ = first.Close()
+		t.Fatalf("live project reconcile: %v", err)
+	}
+	if len(first.projectNetworks) != 3 || first.dnsZones["integration-c"] == nil {
+		_ = first.Close()
+		t.Fatalf("live project runtime was not published: %+v", first.projectNetworks)
+	}
 	image, err := first.engine.Pull(ctx, containerengine.PullRequest{Reference: "docker.io/library/alpine:3.22"})
 	if err != nil {
 		_ = first.Close()

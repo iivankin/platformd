@@ -7,6 +7,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
+	"sync"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/firewall"
@@ -17,13 +19,19 @@ import (
 )
 
 type runtimeStack struct {
-	engine          *containerengine.Engine
-	firewall        *firewall.Manager
-	networks        []string
-	projectFailures []projectnetwork.Failure
-	dnsServers      []*internaldns.Server
-	dnsZones        map[string]*internaldns.Zone
-	projectNetworks map[string]containerengine.Network
+	mu               sync.Mutex
+	ctx              context.Context
+	closed           bool
+	engine           *containerengine.Engine
+	firewall         *firewall.Manager
+	forwarder        *internaldns.ForwardCache
+	upstreams        []netip.AddrPort
+	firewallProjects map[string]firewall.Project
+	networks         []string
+	projectFailures  []projectnetwork.Failure
+	dnsServers       []*internaldns.Server
+	dnsZones         map[string]*internaldns.Zone
+	projectNetworks  map[string]containerengine.Network
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
@@ -64,8 +72,10 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		disallowedResolvers = append(disallowedResolvers, assignment.Gateway)
 	}
 	var forwarder *internaldns.ForwardCache
+	var upstreams []netip.AddrPort
 	if len(projectPlan.Assignments) > 0 {
-		upstreams, readErr := internaldns.ReadUpstreams("/etc/resolv.conf")
+		var readErr error
+		upstreams, readErr = internaldns.ReadUpstreams("/etc/resolv.conf")
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -84,10 +94,12 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		return nil, errors.Join(err, manager.Clear())
 	}
 	stack := &runtimeStack{
-		engine: engine, firewall: manager,
-		projectFailures: append(cleanupFailures, projectPlan.Failures...),
-		dnsZones:        make(map[string]*internaldns.Zone),
-		projectNetworks: make(map[string]containerengine.Network),
+		ctx: ctx, engine: engine, firewall: manager, forwarder: forwarder,
+		upstreams:        slices.Clone(upstreams),
+		firewallProjects: make(map[string]firewall.Project),
+		projectFailures:  append(cleanupFailures, projectPlan.Failures...),
+		dnsZones:         make(map[string]*internaldns.Zone),
+		projectNetworks:  make(map[string]containerengine.Network),
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
@@ -142,6 +154,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 			Subnet: assignment.Subnet, Gateway: assignment.Gateway,
 			ObjectStoreEnabled: objectStores[assignment.ProjectID],
 		})
+		stack.firewallProjects[assignment.ProjectID] = firewallProjects[len(firewallProjects)-1]
 	}
 	if err := manager.Apply(firewallProjects); err != nil {
 		return nil, errors.Join(err, stack.Close())
@@ -150,6 +163,12 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 }
 
 func (stack *runtimeStack) Close() error {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if stack.closed {
+		return nil
+	}
+	stack.closed = true
 	var failures []error
 	for index := len(stack.dnsServers) - 1; index >= 0; index-- {
 		failures = append(failures, stack.dnsServers[index].Close())
@@ -159,6 +178,128 @@ func (stack *runtimeStack) Close() error {
 	}
 	failures = append(failures, stack.engine.Close(), stack.firewall.Clear())
 	return errors.Join(failures...)
+}
+
+func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if stack.closed {
+		return errors.New("container runtime is closed")
+	}
+	if _, exists := stack.projectNetworks[project.ID]; exists {
+		return nil
+	}
+	if err := projectnetwork.RemoveBridge(projectnetwork.BridgeName(project.ID)); err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	occupied, err := projectnetwork.OccupiedPrefixes()
+	if err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	for _, current := range stack.firewallProjects {
+		occupied = append(occupied, current.Subnet)
+	}
+	plan, err := projectnetwork.Plan([]projectnetwork.Project{{ID: project.ID, Name: project.Name}}, occupied)
+	if err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	if len(plan.Failures) != 0 {
+		stack.projectFailures = append(stack.projectFailures, plan.Failures...)
+		return plan.Failures[0].Err
+	}
+	if len(plan.Assignments) != 1 {
+		return errors.New("project network planner returned no assignment")
+	}
+	assignment := plan.Assignments[0]
+	if err := stack.ensureForwarder(assignment.Gateway); err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	network, err := stack.engine.CreateNetwork(containerengine.NetworkSpec{
+		Name: assignment.NetworkName, Interface: assignment.Bridge,
+		Subnet: assignment.Subnet.String(), Gateway: assignment.Gateway.String(),
+		Labels: map[string]string{
+			"io.platformd.owner": "project", "io.platformd.project-id": project.ID,
+		},
+	})
+	if err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	if network.Interface != assignment.Bridge || network.Subnet != assignment.Subnet.String() || network.Gateway != assignment.Gateway.String() {
+		_ = stack.engine.RemoveNetwork(network.Name)
+		err := fmt.Errorf("network inspect differs from requested topology: %+v", network)
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	zone, err := internaldns.NewZone(nil)
+	if err != nil {
+		_ = stack.engine.RemoveNetwork(network.Name)
+		return err
+	}
+	view, err := internaldns.NewView(zone, stack.forwarder)
+	if err != nil {
+		_ = stack.engine.RemoveNetwork(network.Name)
+		return err
+	}
+	dnsServer, err := internaldns.Start(stack.ctx, internaldns.ServerConfig{
+		Address: assignment.Gateway, Port: firewall.DNSPort, FreeBind: true, View: view,
+	})
+	if err != nil {
+		_ = stack.engine.RemoveNetwork(network.Name)
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	firewallProject := firewall.Project{
+		ID: project.ID, Bridge: network.Interface, Subnet: assignment.Subnet,
+		Gateway: assignment.Gateway, ObjectStoreEnabled: project.ObjectStoreEnabled,
+	}
+	candidate := make([]firewall.Project, 0, len(stack.firewallProjects)+1)
+	for _, current := range stack.firewallProjects {
+		candidate = append(candidate, current)
+	}
+	candidate = append(candidate, firewallProject)
+	if err := stack.firewall.Apply(candidate); err != nil {
+		_ = dnsServer.Close()
+		_ = stack.engine.RemoveNetwork(network.Name)
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	stack.networks = append(stack.networks, network.Name)
+	stack.dnsServers = append(stack.dnsServers, dnsServer)
+	stack.dnsZones[project.ID] = zone
+	stack.projectNetworks[project.ID] = network
+	stack.firewallProjects[project.ID] = firewallProject
+	return nil
+}
+
+func (stack *runtimeStack) ensureForwarder(gateway netip.Addr) error {
+	for _, upstream := range stack.upstreams {
+		if upstream.Addr().Unmap() == gateway {
+			return fmt.Errorf("upstream DNS address %s conflicts with project gateway", gateway)
+		}
+	}
+	if stack.forwarder != nil {
+		return nil
+	}
+	upstreams, err := internaldns.ReadUpstreams("/etc/resolv.conf")
+	if err != nil {
+		return err
+	}
+	forwarder, err := internaldns.NewForwardCache(upstreams, []netip.Addr{gateway})
+	if err != nil {
+		return err
+	}
+	stack.upstreams = upstreams
+	stack.forwarder = forwarder
+	return nil
+}
+
+func (stack *runtimeStack) recordProjectFailure(projectID string, err error) {
+	stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: projectID, Err: err})
 }
 
 func resetTransientDirectory(path string) error {
