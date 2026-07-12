@@ -208,6 +208,10 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	if store.service.ActiveDeploymentID != "deployment-1" || !slices.Contains(publisher.events, "publish:service:"+oldContainerID) {
 		t.Fatalf("initial publication = %+v / %+v", store.service, publisher.events)
 	}
+	runtimeStatus, active, err := controller.Status("service")
+	if err != nil || !active || runtimeStatus.State != "running" || runtimeStatus.DeploymentID != "deployment-1" {
+		t.Fatalf("runtime status = %+v, active=%t, error=%v", runtimeStatus, active, err)
+	}
 
 	store.service.Snapshot.Environment = map[string]string{"REVISION": "2"}
 	probeFails = true

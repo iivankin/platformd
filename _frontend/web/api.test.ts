@@ -120,6 +120,7 @@ test("validates the project canvas and encodes its project ID", async () => {
               internalHostname: "api.shop.internal",
               kind: "service",
               name: "api",
+              status: "running",
             },
           ],
         })

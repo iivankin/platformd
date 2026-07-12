@@ -13,14 +13,16 @@ import { useParams } from "react-router";
 import { fetchImageCredentials, fetchProjectCanvas } from "@/api";
 import type { ImageCredential, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
-import { projectFlowElements } from "@/project-flow";
+import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
 import type { ResourceFlowEdge, ResourceFlowNode } from "@/project-flow";
+import { ResourceDetailPanel } from "@/resource-detail-panel";
 import { ResourceNode } from "@/resource-node";
 import { ServiceCreatePanel } from "@/service-create-panel";
 
 const nodeTypes = { resource: ResourceNode };
 const emptyNodes: ResourceFlowNode[] = [];
 const emptyEdges: ResourceFlowEdge[] = [];
+const statusRefreshMilliseconds = 5000;
 
 export const ProjectCanvasPage = () => {
   const { projectID = "" } = useParams();
@@ -28,14 +30,17 @@ export const ProjectCanvasPage = () => {
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<ImageCredential[]>([]);
   const [createOpen, setCreateOpen] = useState(false);
+  const [selectedNodeID, setSelectedNodeID] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [nodes, setNodes, onNodesChange] =
     useNodesState<ResourceFlowNode>(emptyNodes);
   const [edges, setEdges, onEdgesChange] =
     useEdgesState<ResourceFlowEdge>(emptyEdges);
+  const selectedNode = nodes.find((node) => node.id === selectedNodeID);
 
   useEffect(() => {
     const controller = new AbortController();
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
         const [loaded, loadedCredentials] = await Promise.all([
@@ -44,7 +49,7 @@ export const ProjectCanvasPage = () => {
         ]);
         const flow = projectFlowElements(loaded);
         setCanvas(loaded);
-        setNodes(flow.nodes);
+        setNodes((current) => mergeResourceNodeData(current, flow.nodes));
         setEdges(flow.edges);
         setCredentials(loadedCredentials);
         setError(null);
@@ -60,10 +65,22 @@ export const ProjectCanvasPage = () => {
             ? loadError.message
             : "Unable to load project canvas"
         );
+      } finally {
+        if (!controller.signal.aborted) {
+          refreshTimer = setTimeout(
+            () => void load(),
+            statusRefreshMilliseconds
+          );
+        }
       }
     };
     void load();
-    return () => controller.abort();
+    return () => {
+      controller.abort();
+      if (refreshTimer) {
+        clearTimeout(refreshTimer);
+      }
+    };
   }, [projectID, refreshVersion, setEdges, setNodes]);
 
   return (
@@ -101,6 +118,12 @@ export const ProjectCanvasPage = () => {
             projectID={projectID}
           />
         ) : null}
+        {!createOpen && selectedNode ? (
+          <ResourceDetailPanel
+            data={selectedNode.data}
+            onClose={() => setSelectedNodeID(null)}
+          />
+        ) : null}
         {canvas && canvas.resources.length === 0 ? (
           <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center text-center">
             <div className="max-w-sm">
@@ -127,7 +150,9 @@ export const ProjectCanvasPage = () => {
           nodes={nodes}
           nodesConnectable={false}
           onEdgesChange={onEdgesChange}
+          onNodeClick={(_event, node) => setSelectedNodeID(node.id)}
           onNodesChange={onNodesChange}
+          onPaneClick={() => setSelectedNodeID(null)}
           onlyRenderVisibleElements
           panOnScroll
           proOptions={{ hideAttribution: true }}

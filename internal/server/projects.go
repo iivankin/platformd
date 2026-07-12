@@ -49,6 +49,10 @@ type projectCanvasResource struct {
 	ImageReference   string `json:"imageReference,omitempty"`
 	BucketName       string `json:"bucketName,omitempty"`
 	Enabled          bool   `json:"enabled"`
+	Status           string `json:"status"`
+	StatusMessage    string `json:"statusMessage,omitempty"`
+	ActiveDeployment string `json:"activeDeploymentId,omitempty"`
+	ImageDigest      string `json:"imageDigest,omitempty"`
 }
 
 type projectCanvasConnection struct {
@@ -84,7 +88,9 @@ func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
 				ID: resource.ID, Kind: resource.Kind, Name: resource.Name,
 				InternalHostname: resource.InternalHostname,
 				ImageReference:   resource.ImageReference, BucketName: resource.BucketName,
-				Enabled: resource.Enabled,
+				Enabled: resource.Enabled, Status: resource.Status,
+				StatusMessage: resource.StatusMessage, ActiveDeployment: resource.ActiveDeployment,
+				ImageDigest: resource.ImageDigest,
 			})
 		}
 		connections := make([]projectCanvasConnection, 0, len(canvas.Connections))

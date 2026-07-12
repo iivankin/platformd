@@ -16,7 +16,23 @@ func (repository liveProjectRepository) Projects(ctx context.Context) ([]state.P
 }
 
 func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, projectID string) (state.ProjectCanvas, error) {
-	return repository.store.ProjectCanvas(ctx, projectID)
+	canvas, err := repository.store.ProjectCanvas(ctx, projectID)
+	if err != nil {
+		return state.ProjectCanvas{}, err
+	}
+	for index := range canvas.Resources {
+		resource := &canvas.Resources[index]
+		if resource.Kind != "service" {
+			continue
+		}
+		runtimeStatus, runtimeMessage := repository.runtime.ServiceStatus(resource.ID, resource.Enabled)
+		if (runtimeStatus == "pending" && resource.Status == "failed") ||
+			(runtimeStatus == "running" && resource.Status == "degraded") {
+			continue
+		}
+		resource.Status, resource.StatusMessage = runtimeStatus, runtimeMessage
+	}
+	return canvas, nil
 }
 
 func (repository liveProjectRepository) CreateProject(ctx context.Context, input state.CreateProject) (state.ProjectSummary, error) {

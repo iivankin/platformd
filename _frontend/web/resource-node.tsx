@@ -16,6 +16,14 @@ const resourceKinds: Record<
   service: { icon: Server, label: "Service" },
 };
 
+const statusStyles: Record<ResourceFlowNode["data"]["status"], string> = {
+  degraded: "bg-amber-500",
+  disabled: "bg-muted-foreground",
+  failed: "bg-destructive",
+  pending: "bg-sky-500",
+  running: "bg-emerald-500",
+};
+
 const ResourceNodeComponent = ({
   data,
   selected,
@@ -44,12 +52,8 @@ const ResourceNodeComponent = ({
           {data.name}
         </span>
         <span
-          className={
-            data.enabled
-              ? "size-1.5 bg-emerald-500"
-              : "size-1.5 bg-muted-foreground"
-          }
-          title={data.enabled ? "Enabled" : "Disabled"}
+          className={`size-1.5 ${statusStyles[data.status]}`}
+          title={data.statusMessage || data.status}
         />
       </div>
       <div className="px-3 py-2.5">
@@ -58,6 +62,9 @@ const ResourceNodeComponent = ({
         </p>
         <p className="mt-1.5 truncate text-[9px] text-muted-foreground">
           {detail}
+        </p>
+        <p className="mt-1 truncate text-[9px] text-muted-foreground capitalize">
+          {data.status}
         </p>
       </div>
       <Handle

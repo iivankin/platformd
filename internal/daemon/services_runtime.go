@@ -9,6 +9,8 @@ import (
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/imagecredential"
+	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -58,6 +60,58 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 	return nil
 }
 
+func (stack *runtimeStack) ConfigureServiceWatcher(ctx context.Context, store *state.Store, embeddedRegistryHost string) error {
+	watcher, err := servicewatcher.New(servicewatcher.Config{
+		Store: store, Deployer: stack,
+		IsEmbedded: func(reference string) bool {
+			if embeddedRegistryHost == "" {
+				return false
+			}
+			host, hostErr := imagecredential.HostForReference(reference)
+			return hostErr == nil && host == embeddedRegistryHost
+		},
+	})
+	if err != nil {
+		return err
+	}
+	if err := watcher.Start(ctx, stack.hasServiceFailure); err != nil {
+		return err
+	}
+	stack.mu.Lock()
+	if stack.closed {
+		stack.mu.Unlock()
+		return errors.New("container runtime is closed")
+	}
+	stack.serviceWatcher = watcher
+	stack.mu.Unlock()
+	return nil
+}
+
+func (stack *runtimeStack) TrackService(ctx context.Context, serviceID string, retry bool) error {
+	stack.mu.Lock()
+	watcher := stack.serviceWatcher
+	stack.mu.Unlock()
+	if watcher == nil {
+		return errors.New("service watcher is not configured")
+	}
+	return watcher.Track(ctx, serviceID, retry)
+}
+
+func (stack *runtimeStack) NotifyEmbeddedImage(imageReference string) {
+	stack.mu.Lock()
+	watcher := stack.serviceWatcher
+	stack.mu.Unlock()
+	if watcher != nil {
+		watcher.NotifyEmbedded(imageReference)
+	}
+}
+
+func (stack *runtimeStack) hasServiceFailure(serviceID string) bool {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	return stack.serviceFailures[serviceID] != nil
+}
+
 func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, force bool) error {
 	stack.mu.Lock()
 	controller := stack.deployments
@@ -78,6 +132,53 @@ func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, 
 	}
 	stack.mu.Unlock()
 	return err
+}
+
+func (stack *runtimeStack) ServiceStatus(serviceID string, enabled bool) (string, string) {
+	if !enabled {
+		return "disabled", ""
+	}
+	stack.mu.Lock()
+	controller := stack.deployments
+	failure := stack.serviceFailures[serviceID]
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return classifyServiceStatus(false, deployment.RuntimeStatus{}, false, nil, failure)
+	}
+	runtimeStatus, active, err := controller.Status(serviceID)
+	return classifyServiceStatus(true, runtimeStatus, active, err, failure)
+}
+
+func classifyServiceStatus(runtimeReady bool, runtimeStatus deployment.RuntimeStatus, active bool, inspectErr, failure error) (string, string) {
+	if !runtimeReady {
+		if failure != nil {
+			return "failed", failure.Error()
+		}
+		return "pending", "Runtime is not ready"
+	}
+	if inspectErr != nil {
+		if failure != nil {
+			return "failed", failure.Error()
+		}
+		return "failed", inspectErr.Error()
+	}
+	if active && runtimeStatus.State == "running" {
+		if failure != nil {
+			return "degraded", failure.Error()
+		}
+		return "running", ""
+	}
+	if active {
+		if failure != nil {
+			return "failed", failure.Error()
+		}
+		return "failed", fmt.Sprintf("Container is %s (exit code %d)", runtimeStatus.State, runtimeStatus.ExitCode)
+	}
+	if failure != nil {
+		return "failed", failure.Error()
+	}
+	return "pending", "Waiting for the first successful deployment"
 }
 
 func (stack *runtimeStack) servicePlacement(service state.ServiceDesired) (deployment.Placement, error) {

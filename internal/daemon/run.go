@@ -85,6 +85,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
+	if err := runtime.ConfigureServiceWatcher(ctx, store, ""); err != nil {
+		return fmt.Errorf("configure service image watcher: %w", err)
+	}
 	certificates, err := origin.Load(key, installation.OriginCertificates)
 	if err != nil {
 		return err

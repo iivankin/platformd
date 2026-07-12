@@ -21,6 +21,8 @@ VALUES
   ('api', 'project', 'api', 'example/api:latest', '{"DATABASE_URL":"postgres://owner@db.shop.internal:5432/app","CACHE_HOST":"cache"}', 1, 1),
   ('worker', 'project', 'worker', 'example/worker:latest', '{"API_URL":"http://api:8080","UNRELATED":"postgres://remote.example/app"}', 1, 1),
   ('postgres-service', 'project', 'postgres', 'example/postgres-proxy:latest', '{}', 1, 1);
+INSERT INTO deployments(id, service_id, image_digest, service_config_hash, snapshot_json, status, error_code, error_message, created_at, finished_at)
+VALUES ('failed-deployment', 'worker', 'sha256:worker', 'config', '{}', 'failed', 'readiness_failed', 'worker health check failed', 2, 3);
 INSERT INTO managed_postgres(id, project_id, name, image_tag, image_digest, volume_id, database_name, owner_username, owner_password_encrypted, bootstrap_password_encrypted, created_at, updated_at)
 VALUES ('db', 'project', 'db', '17', 'sha256:db', 'db-volume', 'app', 'owner', x'01', x'02', 1, 1);
 INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_id, password_encrypted, created_at, updated_at)
@@ -34,6 +36,11 @@ VALUES ('cache', 'project', 'cache', '8', 'sha256:cache', 'cache-volume', x'01',
 	}
 	if len(canvas.Resources) != 5 {
 		t.Fatalf("resources = %d, want 5", len(canvas.Resources))
+	}
+	for _, resource := range canvas.Resources {
+		if resource.ID == "worker" && (resource.Status != "failed" || resource.StatusMessage != "worker health check failed") {
+			t.Fatalf("worker status/message = %q/%q", resource.Status, resource.StatusMessage)
+		}
 	}
 	want := []CanvasConnection{
 		{SourceID: "api", TargetID: "cache", EnvironmentNames: []string{"CACHE_HOST"}},
