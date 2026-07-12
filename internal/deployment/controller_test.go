@@ -2,6 +2,7 @@ package deployment
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -53,14 +54,31 @@ func (store *fakeStore) LatestFailedDeployment(_ context.Context, _, configHash,
 	return store.failed[configHash+":"+imageDigest], nil
 }
 
+func (store *fakeStore) Deployment(_ context.Context, deploymentID string) (state.DeploymentRecord, error) {
+	deployment, ok := store.deployments[deploymentID]
+	if !ok {
+		return state.DeploymentRecord{}, errors.New("deployment not found")
+	}
+	var snapshot serviceconfig.Snapshot
+	if err := json.Unmarshal(deployment.SnapshotJSON, &snapshot); err != nil {
+		return state.DeploymentRecord{}, err
+	}
+	return state.DeploymentRecord{
+		ID: deployment.ID, ServiceID: deployment.ServiceID, ImageDigest: deployment.ImageDigest,
+		ConfigHash: deployment.ConfigHash, Snapshot: snapshot, Status: "succeeded",
+	}, nil
+}
+
 type fakeEngine struct {
 	events     []string
 	created    []containerengine.ContainerSpec
+	pulls      []containerengine.PullRequest
 	containers map[string]containerengine.Container
 }
 
-func (engine *fakeEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
+func (engine *fakeEngine) Pull(_ context.Context, request containerengine.PullRequest) (containerengine.Image, error) {
 	engine.events = append(engine.events, "pull")
+	engine.pulls = append(engine.pulls, request)
 	return containerengine.Image{
 		ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68",
 	}, nil
@@ -109,6 +127,12 @@ func (engine *fakeEngine) InspectContainer(containerID string) (containerengine.
 
 type fakePublisher struct {
 	events []string
+}
+
+type credentialResolverFunc func(context.Context, state.ServiceDesired) (ImageCredential, error)
+
+func (resolver credentialResolverFunc) Resolve(ctx context.Context, service state.ServiceDesired) (ImageCredential, error) {
+	return resolver(ctx, service)
 }
 
 func (publisher *fakePublisher) Publish(service state.ServiceDesired, container containerengine.Container) error {
@@ -201,6 +225,78 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	}
 	if err := controller.Deploy(context.Background(), "service", false); !errors.Is(err, ErrBlockedPair) {
 		t.Fatalf("blocked retry error = %v", err)
+	}
+}
+
+func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.T) {
+	port := 8080
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: serviceconfig.Snapshot{
+				ImageReference: "registry.example.com/acme/api:latest", ImageCredentialID: "credential",
+				TargetPort: &port, HealthPath: "/healthz", StartupTimeoutSeconds: 1,
+			},
+		},
+		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
+	}
+	httpClient := &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
+	})}
+	placement := func(state.ServiceDesired) (Placement, error) {
+		return Placement{
+			NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
+			DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
+		}, nil
+	}
+	credentials := credentialResolverFunc(func(context.Context, state.ServiceDesired) (ImageCredential, error) {
+		return ImageCredential{Username: "robot", Password: "secret"}, nil
+	})
+	firstEngine := &fakeEngine{containers: make(map[string]containerengine.Container)}
+	firstPublisher := &fakePublisher{}
+	identifiers := []string{"deployment", "first-attempt"}
+	identifierIndex := 0
+	first, err := New(Config{
+		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Placement: placement,
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
+		NewID: func(time.Time) (string, error) {
+			value := identifiers[identifierIndex]
+			identifierIndex++
+			return value, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatal(err)
+	}
+	pointer := store.service.ActiveDeploymentID
+
+	restoredEngine := &fakeEngine{containers: make(map[string]containerengine.Container)}
+	restoredPublisher := &fakePublisher{}
+	restored, err := New(Config{
+		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Placement: placement,
+		LogRoot: filepath.Join(t.TempDir(), "restored-logs"), VolumeRoot: filepath.Join(t.TempDir(), "restored-volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
+		NewID: func(time.Time) (string, error) { return "restored-attempt", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.Restore(context.Background(), "service"); err != nil {
+		t.Fatal(err)
+	}
+	active, ok := restored.activeContainer("service")
+	if !ok || active.deploymentID != pointer || store.service.ActiveDeploymentID != pointer {
+		t.Fatalf("restored active/pointer = %+v/%q, want %q", active, store.service.ActiveDeploymentID, pointer)
+	}
+	if len(restoredEngine.created) != 1 || restoredEngine.created[0].Name != "platformd-service-"+pointer {
+		t.Fatalf("restored container specs = %+v", restoredEngine.created)
+	}
+	if len(restoredEngine.pulls) != 1 || restoredEngine.pulls[0].Username != "robot" || restoredEngine.pulls[0].Password != "secret" {
+		t.Fatalf("restored pull authentication = %+v", restoredEngine.pulls)
 	}
 }
 

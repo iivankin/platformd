@@ -52,6 +52,17 @@ CREATE TABLE registry_credentials (
   UNIQUE (repository_id, name)
 ) STRICT;
 
+CREATE TABLE image_registry_credentials (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  registry_host TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password_encrypted BLOB NOT NULL,
+  created_at INTEGER NOT NULL,
+  UNIQUE (project_id, name)
+) STRICT;
+
 CREATE TABLE secrets (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -66,7 +77,7 @@ CREATE TABLE services (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
   image_reference TEXT NOT NULL,
-  registry_credential_id TEXT REFERENCES registry_credentials(id) ON DELETE RESTRICT,
+  image_credential_id TEXT REFERENCES image_registry_credentials(id) ON DELETE RESTRICT,
   command_json TEXT CHECK (command_json IS NULL OR json_valid(command_json)),
   args_json TEXT CHECK (args_json IS NULL OR json_valid(args_json)),
   environment_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(environment_json)),

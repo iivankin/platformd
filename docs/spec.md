@@ -355,6 +355,7 @@ Normal Registry/S3 payload write использует один protocol внут
 - Volume;
 - Secret;
 - RegistryRepository и RegistryCredential;
+- project-scoped ImageRegistryCredential для private remote OCI registries;
 - ObjectStore и S3Credential;
 - ManagedPostgres;
 - ManagedRedis;
@@ -413,7 +414,7 @@ Rules используют inspected bridge names/subnets/gateways, публик
 Service содержит:
 
 - project и name;
-- OCI image reference с registry credential reference;
+- OCI image reference с optional project-scoped ImageRegistryCredential reference только для private remote registry;
 - command/args override;
 - environment и secret references;
 - optional HTTP target port и domains; domain требует target port;
@@ -428,7 +429,9 @@ Platformd поддерживает OCI/Docker manifests для host architecture
 
 Runtime-affecting изменение enabled Service — image reference/credential, command/args, environment/secrets, target port, health settings, limits или volumes — создаёт новый Deployment с текущим resolved digest. Domain binding меняет только routing и не пересоздаёт container. Mutation `enabled=false` одной SQLite transaction очищает `activeDeploymentId` и live publication; reconcile останавливает runtime. Service, domain bindings, volumes и Deployment history сохраняются. При повторном enable platformd заново resolve-ит tag либо использует pinned digest и создаёт новый Deployment.
 
-Secret value и RegistryCredential authentication material immutable. Rotation всегда создаёт новый internal ID, одной Service mutation заменяет reference в mutable desired config и при enabled Service создаёт новый Deployment. `serviceConfigHash` включает immutable reference IDs. Значения шифруются master key, показываются только при создании и не возвращаются позднее. Delete отклоняется, пока ID referenced текущим Service config либо active Deployment; historical Deployment может сохранить уже удалённый reference, и его rollback тогда явно возвращает `dependency_missing`, никогда не подставляя более новое значение. Platformd намеренно не включает secret values в свои logs, config diff или terminal audit metadata; application может сама напечатать полученный secret в stdout, и надёжная автоматическая redaction этого не обещается.
+Secret value и ImageRegistryCredential authentication material immutable. ImageRegistryCredential принадлежит одному Project, содержит canonical registry `host[:port]`, username и зашифрованный master key password; credential можно выбрать только для image reference с тем же registry host. Rotation всегда создаёт новый internal ID, одной Service mutation заменяет reference в mutable desired config и при enabled Service создаёт новый Deployment. `serviceConfigHash` включает immutable reference IDs. Значения шифруются master key, password принимается только при создании и не возвращается позднее. Delete отклоняется, пока ID referenced текущим Service config либо active Deployment; historical Deployment может сохранить уже удалённый reference, и его rollback тогда явно возвращает `dependency_missing`, никогда не подставляя более новое значение. Platformd намеренно не включает secret/password values в свои logs, config diff или terminal audit metadata; application может сама напечатать полученный secret в stdout, и надёжная автоматическая redaction этого не обещается.
+
+Managed RegistryCredential из §20 является отдельным HMAC-only robot token для внешних OCI clients и никогда не используется Service как recoverable pull password. При pull image из собственного embedded registry platformd авторизует repository internally в том же process и не проходит public Basic flow. Public remote image не требует credential; private remote image использует только ImageRegistryCredential. Произвольные host Docker/Podman auth files и global credential stores не читаются.
 
 При запуске referenced secret неизбежно существует plaintext в process environment либо root-only temporary file и может присутствовать в private libpod runtime config. Это принимается в trusted-team model; runtime dir имеет mode `0700`, не backup-ится и удаляется при rebuild. Platformd сам не пишет secret values в audit/error logs.
 
@@ -454,7 +457,7 @@ Platformd не строит Dockerfile и не клонирует Git repositori
 
 В v1 service имеет ровно одну desired replica.
 
-Deployment immutable хранит exact image digest и полный snapshot настроек, необходимых для запуска: image source reference и registry credential reference, command/args, environment и secret references, target port, health settings, CPU/memory limits и volume mounts. `enabled`, domain bindings, Service identity и `activeDeploymentId` остаются Service-level state и в snapshot не входят. Runtime container всегда создаётся из snapshot конкретного Deployment, поэтому более новый mutable Service config не меняет уже active либо failed Deployment задним числом.
+Deployment immutable хранит exact image digest и полный snapshot настроек, необходимых для запуска: image source reference и optional ImageRegistryCredential reference, command/args, environment и secret references, target port, health settings, CPU/memory limits и volume mounts. `enabled`, domain bindings, Service identity и `activeDeploymentId` остаются Service-level state и в snapshot не входят. Runtime container всегда создаётся из snapshot конкретного Deployment, поэтому более новый mutable Service config не меняет уже active либо failed Deployment задним числом.
 
 Все deployments используют один stop-first workflow независимо от volumes. Initial deployment/re-enable следует тем же шагам с отсутствующим old container и `activeDeploymentId=null`:
 
@@ -564,7 +567,7 @@ Conmon пишет stdout/stderr каждого container в приватный s
 - удаляет старые segments по retention, default 7 days;
 - не блокирует workload при медленном browser client.
 
-Для container logs используется только conmon `k8s-file` с pinned revision, поддерживающей native `--log-size-max`, `--log-rotate` и `--log-max-files`. Conmon единолично закрывает, переименовывает и переоткрывает active attempt file при достижении fixed segment size; platformd никогда не rename/truncate-ит открытый conmon file descriptor. Platformd удаляет только закрытые rotated segments и полностью закрытые attempt logs по 7-day retention/global disk budget. Собственный второй rotation protocol отсутствует.
+Для container logs используется только conmon `k8s-file` с pinned revision, поддерживающей native `--log-size-max`, `--log-rotate` и `--log-max-files`. Каждый runtime attempt имеет fixed максимум три segment по 10 MiB. Conmon единолично закрывает, переименовывает и переоткрывает active attempt file при достижении лимита; platformd никогда не rename/truncate-ит открытый conmon file descriptor. Platformd удаляет только закрытые rotated segments и полностью закрытые attempt logs по 7-day retention/global disk budget. Собственный второй rotation protocol отсутствует.
 
 Log ownership основан только на product IDs. Application attempts группируются под Deployment ID, PostgreSQL/Redis containers — под managed resource ID, short-lived jobs — под их Backup либо observational Operation ID. Пересоздание runtime container создаёт новый random attempt segment под тем же owner; container ID остаётся inspect-only и для поиска старых logs не нужен.
 
@@ -657,6 +660,8 @@ Registry реализован внутри platformd и обслуживаетс
 - repository-local content-addressed blob storage; cross-repository deduplication отсутствует.
 
 Push всегда требует HTTP Basic с generated robot token. Basic username содержит random public credential ID, password — 256-bit secret; SQLite выполняет один indexed lookup и constant-time HMAC verification с per-ID/source rate limit. Каждый RegistryCredential принадлежит ровно одному repository и имеет fixed `pull` либо `pull+push` permission; multi-repository scopes отсутствуют. Каждый upload request заново авторизуется и сверяет upload session repository. Private repository требует auth для pull. Для repository можно включить anonymous public pull. Secret показывается один раз.
+
+Эти RegistryCredential rows намеренно содержат только password HMAC и не являются Service image credentials. Внутренний pull platformd из embedded repository проверяет repository desired state напрямую и читает тот же repository payload store без synthetic robot token, loopback password либо сохранения recoverable копии external robot secret.
 
 Blob `GET/HEAD` авторизуется для exact requested repository и читает digest только из его `registry/<repository-id>/blobs/sha256/`. Private layer физически отсутствует в directory unrelated public repository, поэтому global reachability authorization и cross-repository blob links не нужны.
 
@@ -1173,7 +1178,7 @@ Release acceptance scenario:
 | V2-57 | ObjectStore использует current metadata rows и immutable payloads; backup кратко закрывает exact-store metadata admission и читает short pages без pinned WAL, затем writes продолжаются при cleanup exclusion; generation pointer/pins отсутствуют |
 | V2-58 | Backup schedule — только validated 5-field Unix cron в UTC; seconds, macros, names и configurable timezone отсутствуют |
 | V2-59 | `init` не хранит bootstrap phase/marker или подтверждение сохранения master key; interrupted init переиспользует key/SQLite, но может повторить prompt и шаги |
-| V2-60 | Secret/RegistryCredential payload immutable; RegistryCredential принадлежит одному repository, rotation создаёт новый ID, а rollback с отсутствующей historical dependency завершается явно |
+| V2-60 | Secret/ImageRegistryCredential payload immutable; project-scoped ImageRegistryCredential хранит encrypted remote password и exact registry host, managed RegistryCredential остаётся HMAC-only repository robot token, а rollback с отсутствующей historical dependency завершается явно |
 | V2-61 | systemd использует `DelegateSubgroup=control`; platformd/conmon и каждый workload находятся в разных cgroup leaves |
 | V2-62 | Self-update manifest подписывает RFC 8785 canonical JSON одним неизменным v1 Ed25519 key и разрешает только strictly newer SemVer |
 | V2-63 | AuditEvent автоматически удаляется через 7 дней; configurable retention/export отсутствуют |

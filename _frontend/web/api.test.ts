@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 
 import {
   createProject,
+  createImageCredential,
+  createService,
+  fetchImageCredentials,
   fetchIdentity,
   fetchMeta,
   fetchProjectCanvas,
@@ -125,4 +128,83 @@ test("validates the project canvas and encodes its project ID", async () => {
   );
   expect(requestURL).toBe("/api/v1/projects/project%2Fwith%20slash/canvas");
   expect(canvas.connections[0]?.environmentNames).toEqual(["DATABASE_URL"]);
+});
+
+test("creates remote image credentials without changing the JSON fields", async () => {
+  let requestInit: RequestInit | undefined;
+  const credential = await createImageCredential(
+    "project",
+    {
+      name: "production",
+      password: "secret",
+      registryHost: "registry.example.com",
+      username: "robot",
+    },
+    (_input, init) => {
+      requestInit = init;
+      return Promise.resolve(
+        Response.json(
+          {
+            createdAt: 1,
+            id: "credential",
+            name: "production",
+            registryHost: "registry.example.com",
+            username: "robot",
+          },
+          { status: 201 }
+        )
+      );
+    }
+  );
+  expect(credential.id).toBe("credential");
+  expect(requestInit?.body).toBe(
+    '{"name":"production","password":"secret","registryHost":"registry.example.com","username":"robot"}'
+  );
+});
+
+test("lists credentials and creates a service", async () => {
+  const credential = {
+    createdAt: 1,
+    id: "credential",
+    name: "production",
+    registryHost: "registry.example.com",
+    username: "robot",
+  };
+  await expect(
+    fetchImageCredentials("project", undefined, () =>
+      Promise.resolve(Response.json([credential]))
+    )
+  ).resolves.toEqual([credential]);
+  let requestInit: RequestInit | undefined;
+  const service = await createService(
+    "project",
+    {
+      environment: { APP_ENV: "production" },
+      imageCredentialId: "credential",
+      imageReference: "registry.example.com/acme/api:latest",
+      name: "api",
+      targetPort: 8080,
+    },
+    (_input, init) => {
+      requestInit = init;
+      return Promise.resolve(
+        Response.json(
+          {
+            enabled: true,
+            environment: { APP_ENV: "production" },
+            id: "service",
+            imageCredentialId: "credential",
+            imageReference: "registry.example.com/acme/api:latest",
+            name: "api",
+            projectId: "project",
+            startupTimeoutSeconds: 60,
+            targetPort: 8080,
+          },
+          { status: 201 }
+        )
+      );
+    }
+  );
+  expect(service.id).toBe("service");
+  expect(requestInit?.method).toBe("POST");
 });

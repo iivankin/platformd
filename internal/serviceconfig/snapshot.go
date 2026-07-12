@@ -38,7 +38,7 @@ type VolumeMount struct {
 
 type Snapshot struct {
 	ImageReference        string            `json:"imageReference"`
-	RegistryCredentialID  string            `json:"registryCredentialId,omitempty"`
+	ImageCredentialID     string            `json:"imageCredentialId,omitempty"`
 	Command               []string          `json:"command,omitempty"`
 	Args                  []string          `json:"args,omitempty"`
 	Environment           map[string]string `json:"environment"`
@@ -141,8 +141,8 @@ func IsDigestReference(imageReference string) bool {
 }
 
 func validateSnapshot(snapshot Snapshot) error {
-	if snapshot.RegistryCredentialID != "" && strings.ContainsRune(snapshot.RegistryCredentialID, '\x00') {
-		return errors.New("registry credential ID contains NUL")
+	if snapshot.ImageCredentialID != "" && strings.ContainsRune(snapshot.ImageCredentialID, '\x00') {
+		return errors.New("image credential ID contains NUL")
 	}
 	if err := validateProcess(snapshot.Command, snapshot.Args); err != nil {
 		return err
