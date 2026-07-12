@@ -81,6 +81,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	defer func() {
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
+	imageCredentials := liveImageCredentialRepository{store: store, master: key}
+	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials); err != nil {
+		return fmt.Errorf("configure service deployments: %w", err)
+	}
 	certificates, err := origin.Load(key, installation.OriginCertificates)
 	if err != nil {
 		return err
@@ -99,6 +103,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.Handler(
 			server.DefaultMeta(status(installation.RecoveryMode)),
 			server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
+			server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
+			server.WithImageCredentials(imageCredentials),
 		),
 	)
 	httpServer := &http.Server{

@@ -23,9 +23,11 @@ type Meta struct {
 }
 
 type handlerConfig struct {
-	projects ProjectRepository
-	random   io.Reader
-	now      func() time.Time
+	projects         ProjectRepository
+	services         ServiceRepository
+	imageCredentials ImageCredentialRepository
+	random           io.Reader
+	now              func() time.Time
 }
 
 type Option func(*handlerConfig)
@@ -33,6 +35,18 @@ type Option func(*handlerConfig)
 func WithProjects(repository ProjectRepository) Option {
 	return func(config *handlerConfig) {
 		config.projects = repository
+	}
+}
+
+func WithImageCredentials(repository ImageCredentialRepository) Option {
+	return func(config *handlerConfig) {
+		config.imageCredentials = repository
+	}
+}
+
+func WithServices(repository ServiceRepository) Option {
+	return func(config *handlerConfig) {
+		config.services = repository
 	}
 }
 
@@ -48,6 +62,12 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	mux.HandleFunc("GET /api/v1/me", handleIdentity)
 	if config.projects != nil {
 		registerProjectRoutes(mux, config)
+	}
+	if config.imageCredentials != nil {
+		registerImageCredentialRoutes(mux, config)
+	}
+	if config.services != nil {
+		registerServiceRoutes(mux, config)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

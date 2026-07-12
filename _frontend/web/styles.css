@@ -2,6 +2,7 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/jetbrains-mono";
+@import "@xyflow/react/dist/style.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -162,8 +163,35 @@
   animation: enter-row 180ms ease-out both;
 }
 
-.project-canvas {
-  background-color: var(--background);
-  background-image: radial-gradient(var(--border) 0.75px, transparent 0.75px);
-  background-size: 16px 16px;
+.react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.react-flow__controls-button {
+  border-color: var(--border);
+  background: var(--background);
+  color: var(--muted-foreground);
+}
+
+.react-flow__controls-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.react-flow__edge-path {
+  stroke: var(--muted-foreground);
+  stroke-width: 1.25;
+}
+
+.react-flow__edge-text {
+  fill: var(--muted-foreground);
+  font-size: 9px;
+}
+
+.react-flow__edge-textbg {
+  fill: var(--background);
+  fill-opacity: 0.92;
 }

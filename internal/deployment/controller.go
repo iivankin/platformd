@@ -34,6 +34,7 @@ type Store interface {
 	ActivateDeployment(context.Context, string, string, string, int64) error
 	FailDeployment(context.Context, string, string, string, int64) error
 	LatestFailedDeployment(context.Context, string, string, string) (bool, error)
+	Deployment(context.Context, string) (state.DeploymentRecord, error)
 }
 
 type Engine interface {
@@ -57,10 +58,20 @@ type Publisher interface {
 	Withdraw(state.ServiceDesired) error
 }
 
+type ImageCredential struct {
+	Username string
+	Password string
+}
+
+type CredentialResolver interface {
+	Resolve(context.Context, state.ServiceDesired) (ImageCredential, error)
+}
+
 type Config struct {
 	Store        Store
 	Engine       Engine
 	Publisher    Publisher
+	Credentials  CredentialResolver
 	Placement    func(state.ServiceDesired) (Placement, error)
 	LogRoot      string
 	VolumeRoot   string
@@ -80,6 +91,7 @@ type Controller struct {
 	store        Store
 	engine       Engine
 	publisher    Publisher
+	credentials  CredentialResolver
 	placement    func(state.ServiceDesired) (Placement, error)
 	logRoot      string
 	volumeRoot   string
@@ -129,7 +141,7 @@ func New(config Config) (*Controller, error) {
 		}
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher,
+		store: config.Store, engine: config.Engine, publisher: config.Publisher, credentials: config.Credentials,
 		placement: config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
 		now: now, newID: newID, httpClient: httpClient,
@@ -154,12 +166,21 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 		return err
 	}
 	desired.Snapshot = normalized
-	if normalized.RegistryCredentialID != "" {
-		return errors.New("registry credential resolution is not configured")
+	credential := ImageCredential{}
+	if normalized.ImageCredentialID != "" {
+		if controller.credentials == nil {
+			return errors.New("image credential resolution is not configured")
+		}
+		credential, err = controller.credentials.Resolve(ctx, desired)
+		if err != nil {
+			return fmt.Errorf("resolve image credential: %w", err)
+		}
 	}
 
 	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{
 		Reference: normalized.ImageReference,
+		Username:  credential.Username,
+		Password:  credential.Password,
 		Refresh:   !serviceconfig.IsDigestReference(normalized.ImageReference),
 	})
 	if err != nil {
@@ -216,40 +237,73 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 	return controller.runDeployment(ctx, desired, deploymentID, image.ID)
 }
 
-func (controller *Controller) runDeployment(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) error {
-	placement, err := controller.placement(desired)
+func (controller *Controller) Restore(ctx context.Context, serviceID string) error {
+	lock := controller.serviceLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	desired, err := controller.store.DesiredService(ctx, serviceID)
 	if err != nil {
-		return controller.fail(deploymentID, "placement_failed", err)
+		return err
 	}
-	attemptID, err := controller.newID(controller.now())
+	if !desired.Enabled || desired.ActiveDeploymentID == "" {
+		return nil
+	}
+	activeDeployment, err := controller.store.Deployment(ctx, desired.ActiveDeploymentID)
 	if err != nil {
-		return controller.fail(deploymentID, "attempt_id_failed", err)
+		return fmt.Errorf("load active deployment: %w", err)
 	}
-	logPath := filepath.Join(controller.logRoot, "services", desired.ID, deploymentID, attemptID+".log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return controller.fail(deploymentID, "log_directory_failed", err)
+	desired.Snapshot = activeDeployment.Snapshot
+	credential := ImageCredential{}
+	if desired.Snapshot.ImageCredentialID != "" {
+		if controller.credentials == nil {
+			return errors.New("image credential resolution is not configured")
+		}
+		credential, err = controller.credentials.Resolve(ctx, desired)
+		if err != nil {
+			return fmt.Errorf("resolve active image credential: %w", err)
+		}
 	}
-	mounts := make([]containerengine.Mount, 0, len(desired.Snapshot.VolumeMounts))
-	for _, mount := range desired.Snapshot.VolumeMounts {
-		mounts = append(mounts, containerengine.Mount{
-			Source:      filepath.Join(controller.volumeRoot, desired.ProjectID, mount.VolumeID),
-			Destination: mount.ContainerPath,
-		})
+	pinnedReference, err := serviceconfig.PinnedReference(desired.Snapshot.ImageReference, activeDeployment.ImageDigest)
+	if err != nil {
+		return err
 	}
-	candidate, err := controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
-		ImageID: imageID, Name: "platformd-service-" + deploymentID,
-		Entrypoint: desired.Snapshot.Command, Command: desired.Snapshot.Args,
-		Environment: desired.Snapshot.Environment,
-		Labels: map[string]string{
-			"io.platformd.owner": "service", "io.platformd.project-id": desired.ProjectID,
-			"io.platformd.service-id": desired.ID, "io.platformd.deployment-id": deploymentID,
-		},
-		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
-		DNSSearch: []string{placement.DNSSearch}, Mounts: mounts,
-		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
-		CgroupParent:  placement.CgroupParent,
-		CPUMillicores: desired.Snapshot.CPUMillicores, MemoryMaxBytes: desired.Snapshot.MemoryMaxBytes,
+	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{
+		Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
 	})
+	if err != nil {
+		return fmt.Errorf("pull active service image: %w", err)
+	}
+	if image.Digest != activeDeployment.ImageDigest {
+		return fmt.Errorf("active image digest = %s, want %s", image.Digest, activeDeployment.ImageDigest)
+	}
+	container, placement, err := controller.createRuntimeContainer(ctx, desired, activeDeployment.ID, image.ID)
+	if err != nil {
+		return err
+	}
+	remove := true
+	defer func() {
+		if remove {
+			_ = controller.engine.RemoveContainer(context.Background(), container.ID, true)
+		}
+	}()
+	if err := controller.engine.StartContainer(ctx, container.ID); err != nil {
+		return fmt.Errorf("start active service container: %w", err)
+	}
+	ready, err := controller.waitReady(ctx, desired, container.ID, placement.NetworkName)
+	if err != nil {
+		return fmt.Errorf("restore active service readiness: %w", err)
+	}
+	controller.setActive(desired.ID, activeContainer{deploymentID: activeDeployment.ID, container: ready})
+	remove = false
+	if err := controller.publisher.Publish(desired, ready); err != nil {
+		return fmt.Errorf("publish restored service: %w", err)
+	}
+	return nil
+}
+
+func (controller *Controller) runDeployment(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) error {
+	candidate, placement, err := controller.createRuntimeContainer(ctx, desired, deploymentID, imageID)
 	if err != nil {
 		return controller.fail(deploymentID, "candidate_create_failed", err)
 	}
@@ -295,6 +349,46 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 		_ = controller.engine.RemoveContainer(context.Background(), old.container.ID, true)
 	}
 	return nil
+}
+
+func (controller *Controller) createRuntimeContainer(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) (containerengine.Container, Placement, error) {
+	placement, err := controller.placement(desired)
+	if err != nil {
+		return containerengine.Container{}, Placement{}, fmt.Errorf("place service runtime: %w", err)
+	}
+	attemptID, err := controller.newID(controller.now())
+	if err != nil {
+		return containerengine.Container{}, Placement{}, fmt.Errorf("allocate runtime attempt ID: %w", err)
+	}
+	logPath := filepath.Join(controller.logRoot, "services", desired.ID, deploymentID, attemptID+".log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return containerengine.Container{}, Placement{}, fmt.Errorf("create service log directory: %w", err)
+	}
+	mounts := make([]containerengine.Mount, 0, len(desired.Snapshot.VolumeMounts))
+	for _, mount := range desired.Snapshot.VolumeMounts {
+		mounts = append(mounts, containerengine.Mount{
+			Source:      filepath.Join(controller.volumeRoot, desired.ProjectID, mount.VolumeID),
+			Destination: mount.ContainerPath,
+		})
+	}
+	container, err := controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
+		ImageID: imageID, Name: "platformd-service-" + deploymentID,
+		Entrypoint: desired.Snapshot.Command, Command: desired.Snapshot.Args,
+		Environment: desired.Snapshot.Environment,
+		Labels: map[string]string{
+			"io.platformd.owner": "service", "io.platformd.project-id": desired.ProjectID,
+			"io.platformd.service-id": desired.ID, "io.platformd.deployment-id": deploymentID,
+		},
+		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
+		DNSSearch: []string{placement.DNSSearch}, Mounts: mounts,
+		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
+		CgroupParent:  placement.CgroupParent,
+		CPUMillicores: desired.Snapshot.CPUMillicores, MemoryMaxBytes: desired.Snapshot.MemoryMaxBytes,
+	})
+	if err != nil {
+		return containerengine.Container{}, Placement{}, err
+	}
+	return container, placement, nil
 }
 
 func (controller *Controller) waitReady(ctx context.Context, desired state.ServiceDesired, containerID, networkName string) (containerengine.Container, error) {

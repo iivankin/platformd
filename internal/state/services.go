@@ -7,11 +7,16 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/iivankin/platformd/internal/imagecredential"
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
-var ErrResourceNameConflict = errors.New("resource name already exists in project")
+var (
+	ErrResourceNameConflict        = errors.New("resource name already exists in project")
+	ErrImageCredentialNotFound     = errors.New("image registry credential not found in project")
+	ErrImageCredentialHostMismatch = errors.New("image registry credential host does not match image")
+)
 
 type ServiceDesired struct {
 	ID                 string
@@ -78,12 +83,23 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		} else if exists {
 			return ErrResourceNameConflict
 		}
-		if snapshot.RegistryCredentialID != "" {
+		if snapshot.ImageCredentialID != "" {
 			var credentialID string
-			if err := transaction.QueryRowContext(ctx, "SELECT id FROM registry_credentials WHERE id = ?", snapshot.RegistryCredentialID).Scan(&credentialID); errors.Is(err, sql.ErrNoRows) {
-				return errors.New("registry credential does not exist")
+			var credentialProjectID string
+			var credentialHost string
+			if err := transaction.QueryRowContext(ctx, "SELECT id, project_id, registry_host FROM image_registry_credentials WHERE id = ?", snapshot.ImageCredentialID).Scan(&credentialID, &credentialProjectID, &credentialHost); errors.Is(err, sql.ErrNoRows) {
+				return ErrImageCredentialNotFound
 			} else if err != nil {
-				return fmt.Errorf("load registry credential: %w", err)
+				return fmt.Errorf("load image registry credential: %w", err)
+			} else if credentialProjectID != input.ProjectID {
+				return ErrImageCredentialNotFound
+			}
+			imageHost, err := imagecredential.HostForReference(snapshot.ImageReference)
+			if err != nil {
+				return err
+			}
+			if credentialHost != imageHost {
+				return fmt.Errorf("%w: credential is for %s, image uses %s", ErrImageCredentialHostMismatch, credentialHost, imageHost)
 			}
 		}
 		if len(snapshot.VolumeMounts) != 0 {
@@ -104,9 +120,9 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		if snapshot.TargetPort != nil {
 			targetPort = *snapshot.TargetPort
 		}
-		var registryCredentialID any
-		if snapshot.RegistryCredentialID != "" {
-			registryCredentialID = snapshot.RegistryCredentialID
+		var imageCredentialID any
+		if snapshot.ImageCredentialID != "" {
+			imageCredentialID = snapshot.ImageCredentialID
 		}
 		var healthPath any
 		if snapshot.HealthPath != "" {
@@ -126,11 +142,11 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO services(
-  id, project_id, name, image_reference, registry_credential_id,
+  id, project_id, name, image_reference, image_credential_id,
   command_json, args_json, environment_json, target_port, health_path,
   startup_timeout_seconds, cpu_millis, memory_bytes, enabled, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			input.ID, input.ProjectID, input.Name, snapshot.ImageReference, registryCredentialID,
+			input.ID, input.ProjectID, input.Name, snapshot.ImageReference, imageCredentialID,
 			commandJSON, argsJSON, string(environmentJSON), targetPort, healthPath,
 			snapshot.StartupTimeoutSeconds, cpuMillis, memoryBytes, enabled,
 			input.CreatedAtMillis, input.CreatedAtMillis,
@@ -171,7 +187,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var activeDeploymentID sql.NullString
 	var activeImageDigest sql.NullString
 	var activeConfigHash sql.NullString
-	var registryCredentialID sql.NullString
+	var imageCredentialID sql.NullString
 	var commandJSON sql.NullString
 	var argsJSON sql.NullString
 	var environmentJSON string
@@ -182,7 +198,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	err := store.database.QueryRowContext(ctx, `
 SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
        d.image_digest, d.service_config_hash,
-       s.image_reference, s.registry_credential_id, s.command_json, s.args_json,
+       s.image_reference, s.image_credential_id, s.command_json, s.args_json,
        s.environment_json, s.target_port, s.health_path, s.startup_timeout_seconds,
        s.cpu_millis, s.memory_bytes
 FROM services s
@@ -191,7 +207,7 @@ LEFT JOIN deployments d ON d.id = s.active_deployment_id
 WHERE s.id = ?`, serviceID).Scan(
 		&service.ID, &service.ProjectID, &service.ProjectName, &service.Name, &enabled,
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash,
-		&service.Snapshot.ImageReference, &registryCredentialID, &commandJSON, &argsJSON,
+		&service.Snapshot.ImageReference, &imageCredentialID, &commandJSON, &argsJSON,
 		&environmentJSON, &targetPort, &healthPath, &service.Snapshot.StartupTimeoutSeconds,
 		&cpuMillis, &memoryBytes,
 	)
@@ -205,7 +221,7 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveDeploymentID = activeDeploymentID.String
 	service.ActiveImageDigest = activeImageDigest.String
 	service.ActiveConfigHash = activeConfigHash.String
-	service.Snapshot.RegistryCredentialID = registryCredentialID.String
+	service.Snapshot.ImageCredentialID = imageCredentialID.String
 	service.Snapshot.HealthPath = healthPath.String
 	service.Snapshot.CPUMillicores = cpuMillis.Int64
 	service.Snapshot.MemoryMaxBytes = memoryBytes.Int64
@@ -274,6 +290,26 @@ WHERE m.service_id = ? ORDER BY m.container_path, m.volume_id`, serviceID)
 	}
 	service.Snapshot = normalized
 	return service, nil
+}
+
+func (store *Store) EnabledServiceIDs(ctx context.Context) ([]string, error) {
+	rows, err := store.database.QueryContext(ctx, "SELECT id FROM services WHERE enabled = 1 ORDER BY id")
+	if err != nil {
+		return nil, fmt.Errorf("list enabled services: %w", err)
+	}
+	defer rows.Close()
+	serviceIDs := make([]string, 0)
+	for rows.Next() {
+		var serviceID string
+		if err := rows.Scan(&serviceID); err != nil {
+			return nil, fmt.Errorf("scan enabled service: %w", err)
+		}
+		serviceIDs = append(serviceIDs, serviceID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate enabled services: %w", err)
+	}
+	return serviceIDs, nil
 }
 
 func projectResourceNameExists(ctx context.Context, transaction *sql.Tx, projectID, name string) (bool, error) {

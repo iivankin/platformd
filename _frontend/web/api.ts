@@ -58,6 +58,46 @@ const projectCanvasSchema = z.object({
 
 export type ProjectCanvas = z.infer<typeof projectCanvasSchema>;
 
+const imageCredentialSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  registryHost: z.string().min(1),
+  username: z.string().min(1),
+});
+
+const imageCredentialsSchema = z.array(imageCredentialSchema);
+export type ImageCredential = z.infer<typeof imageCredentialSchema>;
+
+const serviceSchema = z.object({
+  activeDeploymentId: z.string().min(1).optional(),
+  args: z.array(z.string()).optional(),
+  command: z.array(z.string()).optional(),
+  cpuMillicores: z.number().int().nonnegative().optional(),
+  enabled: z.boolean(),
+  environment: z.record(z.string(), z.string()),
+  healthPath: z.string().optional(),
+  id: z.string().min(1),
+  imageCredentialId: z.string().min(1).optional(),
+  imageReference: z.string().min(1),
+  memoryMaxBytes: z.number().int().nonnegative().optional(),
+  name: z.string().min(1),
+  projectId: z.string().min(1),
+  startupTimeoutSeconds: z.number().int().positive(),
+  targetPort: z.number().int().min(1).max(65_535).optional(),
+});
+
+export type Service = z.infer<typeof serviceSchema>;
+
+export interface CreateServiceInput {
+  environment: Record<string, string>;
+  healthPath?: string;
+  imageCredentialId?: string;
+  imageReference: string;
+  name: string;
+  targetPort?: number;
+}
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -157,4 +197,77 @@ export const fetchProjectCanvas = async (
     );
   }
   return projectCanvasSchema.parse(await response.json());
+};
+
+export const fetchImageCredentials = async (
+  projectID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ImageCredential[]> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/image-credentials`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `image credentials request failed with ${response.status}`
+    );
+  }
+  return imageCredentialsSchema.parse(await response.json());
+};
+
+export const createImageCredential = async (
+  projectID: string,
+  input: {
+    name: string;
+    password: string;
+    registryHost: string;
+    username: string;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ImageCredential> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/image-credentials`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `image credential creation failed with ${response.status}`
+    );
+  }
+  return imageCredentialSchema.parse(await response.json());
+};
+
+export const createService = async (
+  projectID: string,
+  input: CreateServiceInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Service> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service creation failed with ${response.status}`
+    );
+  }
+  return serviceSchema.parse(await response.json());
 };

@@ -42,6 +42,31 @@ func (zone *Zone) Replace(records map[string]netip.Addr) error {
 	return nil
 }
 
+func (zone *Zone) Set(name string, address netip.Addr) error {
+	fqdn, err := canonicalInternalName(name)
+	if err != nil {
+		return err
+	}
+	if !address.IsValid() || !address.Is4() {
+		return fmt.Errorf("internal DNS record %s requires an IPv4 address", name)
+	}
+	zone.mu.Lock()
+	zone.records[fqdn] = address.As4()
+	zone.mu.Unlock()
+	return nil
+}
+
+func (zone *Zone) Delete(name string) error {
+	fqdn, err := canonicalInternalName(name)
+	if err != nil {
+		return err
+	}
+	zone.mu.Lock()
+	delete(zone.records, fqdn)
+	zone.mu.Unlock()
+	return nil
+}
+
 func (zone *Zone) lookup(name string) ([4]byte, bool) {
 	zone.mu.RLock()
 	defer zone.mu.RUnlock()

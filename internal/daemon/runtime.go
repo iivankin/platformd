@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/internaldns"
 	"github.com/iivankin/platformd/internal/layout"
@@ -32,6 +33,10 @@ type runtimeStack struct {
 	dnsServers       []*internaldns.Server
 	dnsZones         map[string]*internaldns.Zone
 	projectNetworks  map[string]containerengine.Network
+	paths            layout.Paths
+	cgroupRoot       string
+	deployments      *deployment.Controller
+	serviceFailures  map[string]error
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
@@ -100,6 +105,9 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		projectFailures:  append(cleanupFailures, projectPlan.Failures...),
 		dnsZones:         make(map[string]*internaldns.Zone),
 		projectNetworks:  make(map[string]containerengine.Network),
+		paths:            paths,
+		cgroupRoot:       cgroupWorkloadRoot,
+		serviceFailures:  make(map[string]error),
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
