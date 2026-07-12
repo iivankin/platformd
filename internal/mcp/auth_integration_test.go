@@ -13,6 +13,7 @@ import (
 	"github.com/iivankin/platformd/internal/apitoken"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationauth"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/state"
@@ -58,7 +59,18 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mcpHandler, err := mcp.New(mcp.Config{Hostname: "api.example.com", Version: "test", Repository: store, Services: serviceAutomation})
+	logReader, err := containerlogs.NewReader(filepath.Join(t.TempDir(), "logs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	logAutomation, err := automation.NewLogApplication(store, logReader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mcpHandler, err := mcp.New(mcp.Config{
+		Hostname: "api.example.com", Version: "test", Repository: store,
+		Services: serviceAutomation, Logs: logAutomation,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -23,10 +23,11 @@ type Config struct {
 	Hostname   string
 	Repository Repository
 	Services   *automation.ServiceApplication
+	Logs       *automation.LogApplication
 }
 
 func Handler(config Config) (http.Handler, error) {
-	if config.Hostname == "" || config.Repository == nil || config.Services == nil {
+	if config.Hostname == "" || config.Repository == nil || config.Services == nil || config.Logs == nil {
 		return nil, errors.New("automation API dependencies are incomplete")
 	}
 	mux := http.NewServeMux()
@@ -37,6 +38,7 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services", listServices(config.Repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config.Repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments", listDeployments(config.Repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", readServiceLogs(config.Logs))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services", createService(config.Services))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))

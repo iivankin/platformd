@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -72,6 +73,14 @@ func readTools() []Tool {
 				"limit":     map[string]any{"type": "integer", "minimum": 1, "maximum": 100},
 			}, []string{"projectId", "serviceId"}),
 		},
+		{
+			Name: "read_service_logs", Description: "Read a bounded recent service log window with optional deployment and contains filters.",
+			InputSchema: objectSchema(map[string]any{
+				"projectId": map[string]any{"type": "string"}, "serviceId": map[string]any{"type": "string"},
+				"deploymentId": map[string]any{"type": "string"}, "contains": map[string]any{"type": "string", "maxLength": 256},
+				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": containerlogs.MaximumLimit},
+			}, []string{"projectId", "serviceId"}),
+		},
 	}
 }
 
@@ -126,6 +135,8 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.getService(request.Context(), call.Arguments, identity)
 	case "list_service_deployments":
 		output, err = handler.listDeployments(request.Context(), call.Arguments, identity)
+	case "read_service_logs":
+		output, err = handler.readServiceLogs(request.Context(), call.Arguments, identity)
 	case "create_service":
 		output, err = handler.createService(request.Context(), call.Arguments, identity)
 	case "update_service":
@@ -139,7 +150,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

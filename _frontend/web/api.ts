@@ -195,6 +195,24 @@ const deploymentPageSchema = z.object({
 export type Deployment = z.infer<typeof deploymentSchema>;
 export type DeploymentPage = z.infer<typeof deploymentPageSchema>;
 
+const logRecordSchema = z.object({
+  attemptId: z.string().min(1),
+  deploymentId: z.string().min(1),
+  partial: z.boolean().optional(),
+  stream: z.enum(["stdout", "stderr"]),
+  text: z.string(),
+  timestamp: z.iso.datetime({ offset: true }),
+  truncated: z.boolean().optional(),
+});
+
+const logWindowSchema = z.object({
+  records: z.array(logRecordSchema),
+  truncated: z.boolean(),
+});
+
+export type LogRecord = z.infer<typeof logRecordSchema>;
+export type LogWindow = z.infer<typeof logWindowSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -510,6 +528,33 @@ export const fetchServiceDeployments = async (
     );
   }
   return deploymentPageSchema.parse(await response.json());
+};
+
+export const fetchServiceLogs = async (
+  projectID: string,
+  serviceID: string,
+  filters: { contains?: string; deploymentId?: string; limit?: number } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<LogWindow> => {
+  const query = new URLSearchParams({ limit: String(filters.limit ?? 500) });
+  if (filters.deploymentId) {
+    query.set("deploymentId", filters.deploymentId);
+  }
+  if (filters.contains) {
+    query.set("contains", filters.contains);
+  }
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/logs?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service logs request failed with ${response.status}`
+    );
+  }
+  return logWindowSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>

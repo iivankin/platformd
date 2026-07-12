@@ -526,8 +526,8 @@ func WithLogRotation(maxFiles uint) CtrCreateOption {
 		if ctr.valid {
 			return define.ErrRuntimeFinalized
 		}
-		if maxFiles == 0 {
-			return fmt.Errorf("log rotation requires at least one file: %w", define.ErrInvalidArg)
+		if maxFiles < 2 {
+			return fmt.Errorf("log rotation requires an active file and at least one rotated file: %w", define.ErrInvalidArg)
 		}
 		ctr.config.LogRotate = true
 		ctr.config.LogMaxFiles = maxFiles
