@@ -48,6 +48,12 @@ type OriginCertificate struct {
 	CreatedAtMillis     int64
 }
 
+type ResetConsolePassphrase struct {
+	Verifier      string
+	AuditEventID  string
+	ResetAtMillis int64
+}
+
 func (store *Store) CreateInstallation(ctx context.Context, input InitialInstallation) error {
 	return store.Write(ctx, func(transaction *sql.Tx) error {
 		var count int
@@ -149,4 +155,40 @@ ORDER BY created_at, id`)
 		return Installation{}, fmt.Errorf("iterate Origin certificates: %w", err)
 	}
 	return installation, nil
+}
+
+func (store *Store) ResetConsolePassphrase(ctx context.Context, input ResetConsolePassphrase) error {
+	if input.Verifier == "" || input.AuditEventID == "" || input.ResetAtMillis <= 0 {
+		return errors.New("console passphrase reset input is incomplete")
+	}
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var installationID string
+		if err := transaction.QueryRowContext(ctx, "SELECT id FROM installation WHERE singleton = 1").Scan(&installationID); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotInitialized
+		} else if err != nil {
+			return fmt.Errorf("read installation for console passphrase reset: %w", err)
+		}
+		result, err := transaction.ExecContext(ctx, `
+UPDATE installation
+SET console_passphrase_phc = ?, updated_at = ?
+WHERE singleton = 1`, input.Verifier, input.ResetAtMillis)
+		if err != nil {
+			return fmt.Errorf("reset console passphrase verifier: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return fmt.Errorf("reset console passphrase changed %d installation rows: %w", changed, err)
+		}
+		_, err = transaction.ExecContext(ctx, `
+INSERT INTO audit_events(
+  id, actor_kind, actor_id, action, target_kind, target_id,
+  result, metadata_json, created_at
+) VALUES (?, 'local_root', 'init', 'installation.console_passphrase_reset', 'installation', ?, 'succeeded', '{}', ?)`,
+			input.AuditEventID, installationID, input.ResetAtMillis,
+		)
+		if err != nil {
+			return fmt.Errorf("record console passphrase reset audit: %w", err)
+		}
+		return nil
+	})
 }

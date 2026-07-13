@@ -26,6 +26,10 @@ type Input struct {
 	OriginPrivateKeyPEM  string `json:"originPrivateKeyPem"`
 }
 
+type ConsolePassphraseInput struct {
+	ConsolePassphrase string `json:"consolePassphrase"`
+}
+
 type ValidatedInput struct {
 	AdminHostname        string
 	AutomationHostname   *string
@@ -51,6 +55,28 @@ func ReadInput(reader io.Reader) (Input, error) {
 		return Input{}, errors.New("init input contains multiple JSON values")
 	}
 	return input, nil
+}
+
+func ReadConsolePassphraseInput(reader io.Reader) ([]byte, error) {
+	decoder := json.NewDecoder(io.LimitReader(reader, maximumInputBytes+1))
+	decoder.DisallowUnknownFields()
+	var input ConsolePassphraseInput
+	if err := decoder.Decode(&input); err != nil {
+		return nil, fmt.Errorf("decode console passphrase reset input: %w", err)
+	}
+	if decoder.InputOffset() > maximumInputBytes {
+		return nil, errors.New("console passphrase reset input exceeds 1 MiB")
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, errors.New("console passphrase reset input contains multiple JSON values")
+	}
+	value := []byte(input.ConsolePassphrase)
+	if len(value) == 0 || len(value) > 1024 {
+		clear(value)
+		return nil, errors.New("console passphrase must contain 1..1024 bytes")
+	}
+	return value, nil
 }
 
 func ValidateInput(input Input) (ValidatedInput, error) {

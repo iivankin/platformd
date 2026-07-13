@@ -12,7 +12,7 @@ import (
 	"github.com/iivankin/platformd/internal/disasterrestore"
 )
 
-const usage = "usage: platformd init [--input-fd <fd>] [--restore | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n"
+const usage = "usage: platformd init [--input-fd <fd>] [--restore | --reset-console-passphrase | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n"
 
 // Run dispatches the one public command and private process modes.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -82,6 +82,20 @@ func runInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		_, _ = io.WriteString(stdout, "platformd restored\n")
+		return 0
+	}
+	if options.resetConsolePassphrase {
+		provider, err := consolePassphraseProvider(options.inputFD)
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
+			return 1
+		}
+		resetter := bootstrap.ProductionConsolePassphraseResetter(provider)
+		if err := resetter.Run(ctx); err != nil {
+			_, _ = fmt.Fprintf(stderr, "platformd: reset console passphrase: %v\n", err)
+			return 1
+		}
+		_, _ = io.WriteString(stdout, "platformd console passphrase reset\n")
 		return 0
 	}
 	provider, err := bootstrapInputProvider(options.inputFD)
