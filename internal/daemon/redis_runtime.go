@@ -16,7 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func (stack *runtimeStack) ConfigureManagedRedis(ctx context.Context, store *state.Store, master cryptobox.MasterKey) error {
+func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedredis.NewController(managedredis.Config{
 		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Admission: stack.admission,
 		Password: func(resource state.ManagedRedis) (string, error) {
@@ -37,6 +37,17 @@ func (stack *runtimeStack) ConfigureManagedRedis(ctx context.Context, store *sta
 	}
 	stack.managedRedis = controller
 	stack.mu.Unlock()
+	return nil
+}
+
+func (stack *runtimeStack) ReconcileManagedRedis(ctx context.Context, store *state.Store) error {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed Redis runtime is not configured")
+	}
 	resources, err := store.ManagedRedisResources(ctx)
 	if err != nil {
 		return err
