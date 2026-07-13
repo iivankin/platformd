@@ -15,12 +15,14 @@ import {
   createService,
   detachServiceDomain,
   deleteObject,
+  deleteBackupTarget,
   deleteRegistryImage,
   deleteRegistryCredential,
   deleteRegistryRepository,
   deleteRegistryTag,
   fetchAPITokens,
   fetchAuditEvents,
+  fetchBackupTarget,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
@@ -51,6 +53,7 @@ import {
   scanManagedRedisKeys,
   setRegistryHostname,
   setRegistryRepositoryPublicPull,
+  setBackupTarget,
   updateService,
   uploadObject,
 } from "@/api";
@@ -1033,4 +1036,46 @@ test("uses the Registry settings, repository, image, and deletion contracts", as
       );
     })
   ).resolves.toMatchObject({ blobCount: 1, deleted: false });
+});
+
+test("configures the single probed backup target without returning its secret", async () => {
+  const target = {
+    accessKeyId: "remote-access",
+    bucket: "backup-bucket",
+    configured: true,
+    createdAt: 1,
+    endpoint: "https://s3.example.com",
+    prefix: "platformd/test",
+    region: "eu-central-003",
+    updatedAt: 1,
+  };
+  await expect(
+    fetchBackupTarget(undefined, () => Promise.resolve(Response.json(target)))
+  ).resolves.toEqual(target);
+
+  let requestBody = "";
+  await expect(
+    setBackupTarget(
+      {
+        accessKeyId: target.accessKeyId,
+        bucket: target.bucket,
+        endpoint: target.endpoint,
+        prefix: target.prefix,
+        region: target.region,
+        secretAccessKey: "remote-secret",
+      },
+      (_input, init) => {
+        requestBody = init?.body?.toString() ?? "";
+        return Promise.resolve(Response.json(target));
+      }
+    )
+  ).resolves.toEqual(target);
+  expect(JSON.parse(requestBody)).toMatchObject({
+    secretAccessKey: "remote-secret",
+  });
+
+  await deleteBackupTarget((_input, init) => {
+    expect(init?.method).toBe("DELETE");
+    return Promise.resolve(new Response(null, { status: 204 }));
+  });
 });

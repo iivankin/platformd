@@ -538,6 +538,28 @@ export interface CreateRegistryRepositoryInput {
   publicPull: boolean;
 }
 
+const backupTargetSchema = z.object({
+  accessKeyId: z.string().min(1).optional(),
+  bucket: z.string().min(1).optional(),
+  configured: z.boolean(),
+  createdAt: z.number().int().positive().optional(),
+  endpoint: z.string().min(1).optional(),
+  prefix: z.string().optional(),
+  region: z.string().min(1).optional(),
+  updatedAt: z.number().int().positive().optional(),
+});
+
+export type BackupTarget = z.infer<typeof backupTargetSchema>;
+
+export interface SetBackupTargetInput {
+  accessKeyId: string;
+  bucket: string;
+  endpoint: string;
+  prefix: string;
+  region: string;
+  secretAccessKey: string;
+}
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -1287,6 +1309,55 @@ export const deleteObject = async (
 
 const registryRepositoryPath = (repositoryID?: string) =>
   `/api/v1/registry/repositories${repositoryID ? `/${encodeURIComponent(repositoryID)}` : ""}`;
+
+export const fetchBackupTarget = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupTarget> => {
+  const response = await fetcher("/api/v1/backups/target", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup target request failed with ${response.status}`
+    );
+  }
+  return backupTargetSchema.parse(await response.json());
+};
+
+export const setBackupTarget = async (
+  input: SetBackupTargetInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupTarget> => {
+  const response = await fetcher("/api/v1/backups/target", {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup target update failed with ${response.status}`
+    );
+  }
+  return backupTargetSchema.parse(await response.json());
+};
+
+export const deleteBackupTarget = async (
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher("/api/v1/backups/target", {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup target deletion failed with ${response.status}`
+    );
+  }
+};
 
 export const fetchRegistrySettings = async (
   signal?: AbortSignal,
