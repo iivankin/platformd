@@ -423,6 +423,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	publicRegistryHandler, err := newAvailabilityHandler(registryHandler, !installation.RecoveryMode)
+	if err != nil {
+		return err
+	}
+	publicObjectStoreHandler, err := newAvailabilityHandler(objectStoreHandler, !installation.RecoveryMode)
+	if err != nil {
+		return err
+	}
 	verifier, err := access.New(access.Config{
 		TeamDomain: installation.AccessTeamDomain,
 		Audience:   installation.AccessAudience,
@@ -550,8 +558,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
 		AutomationHostname: automationHostname, AutomationHandler: automationHandler,
-		RegistryHostname: registryHostname, RegistryHandler: registryHandler,
-		ObjectStoreHandler: objectStoreHandler,
+		RegistryHostname: registryHostname, RegistryHandler: publicRegistryHandler,
+		ObjectStoreHandler: publicObjectStoreHandler,
 		Backends:           runtime,
 	})
 	if err != nil {
