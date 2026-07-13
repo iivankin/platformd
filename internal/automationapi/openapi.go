@@ -13,9 +13,11 @@ type openAPIFeatures struct {
 	managedResources bool
 	databaseVersions bool
 	volumes          bool
+	registry         bool
 }
 
 func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
+	schemas := serviceMutationSchemas()
 	paths := map[string]any{
 		"/api/v1/me":                                                    readOperation("Read current token identity"),
 		"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
@@ -60,6 +62,12 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		paths["/api/v1/projects/{projectID}/services/{serviceID}/volumes"] = volumeCollectionOperation()
 		paths["/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}"] = volumeDeleteOperation()
 	}
+	if features.registry {
+		addRegistryPaths(paths)
+		for name, schema := range registryMutationSchemas() {
+			schemas[name] = schema
+		}
+	}
 	document := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -71,7 +79,7 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 			"securitySchemes": map[string]any{
 				"bearerAuth": map[string]string{"type": "http", "scheme": "bearer"},
 			},
-			"schemas": serviceMutationSchemas(),
+			"schemas": schemas,
 		},
 		"paths": paths,
 	}

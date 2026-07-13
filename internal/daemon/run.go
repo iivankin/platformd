@@ -510,10 +510,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 			RedisStore: automationRepository, Postgres: postgresAutomation,
 			PostgresStore: automationRepository, ObjectStores: objectStoreApplication,
-			Managed:   managedResourceAutomation,
-			Versions:  databaseVersions,
-			Volumes:   volumeAutomation,
-			Admission: mutationAdmission,
+			Managed:          managedResourceAutomation,
+			Versions:         databaseVersions,
+			Volumes:          volumeAutomation,
+			Registry:         registryApplication,
+			RegistrySettings: registrySettings,
+			Admission:        mutationAdmission,
 		})
 		if err != nil {
 			return err
