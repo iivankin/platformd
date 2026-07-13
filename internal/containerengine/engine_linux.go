@@ -21,6 +21,7 @@ var runtimeSingleton struct {
 type Engine struct {
 	runtime *libpod.Runtime
 	config  Config
+	logs    logActivity
 
 	closeOnce sync.Once
 	closeErr  error

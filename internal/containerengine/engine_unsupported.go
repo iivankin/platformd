@@ -4,7 +4,9 @@ package containerengine
 
 import "context"
 
-type Engine struct{}
+type Engine struct {
+	logs logActivity
+}
 
 func Open(context.Context, Config) (*Engine, error) {
 	return nil, ErrUnsupported
