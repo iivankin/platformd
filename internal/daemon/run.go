@@ -442,6 +442,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
+		managedResourceAutomation, err := automation.NewManagedResourceApplication(automationRepository)
+		if err != nil {
+			return err
+		}
 		logAutomation, err := automation.NewLogApplication(store, logReader)
 		if err != nil {
 			return err
@@ -451,6 +455,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 			RedisStore: automationRepository, Postgres: postgresAutomation,
 			PostgresStore: automationRepository,
+			Managed:       managedResourceAutomation,
 			Admission:     mutationAdmission,
 		})
 		if err != nil {
@@ -459,7 +464,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		mcpHandler, err := mcp.New(mcp.Config{
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
 			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
-			Redis: redisAutomation, Postgres: postgresAutomation,
+			Redis: redisAutomation, Postgres: postgresAutomation, Managed: managedResourceAutomation,
 			Admission: mutationAdmission,
 		})
 		if err != nil {
