@@ -52,6 +52,7 @@ type handlerConfig struct {
 	admission          *admission.Gate
 	selfUpdater        SelfUpdater
 	afterUpdate        func()
+	recovery           RecoveryRepository
 	random             io.Reader
 	now                func() time.Time
 }
@@ -176,6 +177,12 @@ func WithSelfUpdate(updater SelfUpdater, afterCommit func()) Option {
 	}
 }
 
+func WithRecovery(repository RecoveryRepository) Option {
+	return func(config *handlerConfig) {
+		config.recovery = repository
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -243,6 +250,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.selfUpdater != nil && config.afterUpdate != nil {
 		registerSelfUpdateRoute(mux, config.selfUpdater, config.afterUpdate)
+	}
+	if config.recovery != nil {
+		registerRecoveryRoutes(mux, config.recovery)
 	}
 	mux.Handle("/", static)
 	var handler http.Handler = mux

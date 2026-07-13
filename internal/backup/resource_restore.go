@@ -70,6 +70,7 @@ type ResourceRestoreServiceConfig struct {
 	Random        io.Reader
 	Now           func() time.Time
 	OnError       func(error)
+	OnSuccess     func(ResourceRestoreRequest)
 }
 
 type ResourceRestoreService struct{ config ResourceRestoreServiceConfig }
@@ -95,6 +96,9 @@ func NewResourceRestoreService(config ResourceRestoreServiceConfig) (*ResourceRe
 	}
 	if config.OnError == nil {
 		config.OnError = func(error) {}
+	}
+	if config.OnSuccess == nil {
+		config.OnSuccess = func(ResourceRestoreRequest) {}
 	}
 	return &ResourceRestoreService{config: config}, nil
 }
@@ -228,7 +232,9 @@ func (service *ResourceRestoreService) execute(
 	}
 	if counted.read != reader.Envelope().PlaintextSize {
 		cause = errors.New("resource restorer did not consume the complete generation")
+		return
 	}
+	service.config.OnSuccess(request)
 }
 
 func (service *ResourceRestoreService) progress(operationID, progress string) {

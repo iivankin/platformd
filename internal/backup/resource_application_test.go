@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,12 +11,6 @@ import (
 	"github.com/iivankin/platformd/internal/remotes3"
 	"github.com/iivankin/platformd/internal/state"
 )
-
-type manualRunnerNoop struct{}
-
-func (manualRunnerNoop) TryRunNow(context.Context, string, string, int) (state.BackupRecord, error) {
-	return state.BackupRecord{}, nil
-}
 
 func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t *testing.T) {
 	t.Parallel()
@@ -49,7 +44,7 @@ func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t
 		os.RemoveAll(built.WorkDirectory)
 	}
 	application, err := NewResourceApplication(ResourceApplicationConfig{
-		Store: store, Worker: manualRunnerNoop{}, Target: target, TargetGate: targetGate, Master: master,
+		Store: store, Target: target, TargetGate: targetGate, Master: master,
 		RemoteFactory: func(remotes3.Config) (ControlRemote, error) { return remote, nil },
 	})
 	if err != nil {
@@ -65,6 +60,9 @@ func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t
 	}
 	if rows != 0 {
 		t.Fatalf("remote generation list was cached in SQLite; rows = %d", rows)
+	}
+	if _, err := application.RunNow(ctx, "redis", "redis-1"); !errors.Is(err, ErrResourceRunner) {
+		t.Fatalf("run without worker error = %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "work"))
 	if err == nil && len(entries) != 0 {

@@ -270,6 +270,24 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	var disasterRecoveryProgress *recoveryProgress
+	if installation.RecoveryMode {
+		disasterRecoveryProgress = newRecoveryProgress()
+	}
+	restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
+		Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+		Admission: mutationAdmission, Master: key,
+		Restorers: resourceRestorers(runtime, registryApplication, objectStoreApplication),
+		OnError:   func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
+		OnSuccess: func(request backup.ResourceRestoreRequest) {
+			if disasterRecoveryProgress != nil {
+				disasterRecoveryProgress.markManual(request)
+			}
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("configure resource restore jobs: %w", err)
+	}
 	var backupResources *backup.ResourceApplication
 	if !installation.RecoveryMode {
 		resourceJob, err := backup.NewResourceJob(backup.ResourceJobConfig{
@@ -299,79 +317,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		})
 		if err != nil {
 			return fmt.Errorf("configure resource backup jobs: %w", err)
-		}
-		restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
-			Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
-			Admission: mutationAdmission, Master: key,
-			Restorers: map[string]backup.ResourceRestorer{
-				"postgres": backup.ResourceRestorerFunc(func(
-					restoreContext context.Context,
-					request backup.ResourceRestoreRequest,
-				) error {
-					if request.Options.Mode != "replace" || !request.Options.DestructiveConfirmed ||
-						request.Options.NewResourceName != "" {
-						return errors.New("managed PostgreSQL restore requires confirmed replace mode")
-					}
-					return runtime.RestoreManagedPostgres(
-						restoreContext, request.ResourceID, request.Source.Reader,
-						managedpostgres.Actor{
-							Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
-						},
-					)
-				}),
-				"redis": backup.ResourceRestorerFunc(func(
-					restoreContext context.Context,
-					request backup.ResourceRestoreRequest,
-				) error {
-					if request.Options.Mode != "replace" || !request.Options.DestructiveConfirmed ||
-						request.Options.NewResourceName != "" {
-						return errors.New("managed Redis restore requires confirmed replace mode")
-					}
-					return runtime.RestoreManagedRedis(
-						restoreContext, request.ResourceID, request.Source.Reader,
-						managedredis.Actor{
-							Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
-						},
-					)
-				}),
-				"object_store": backup.ResourceRestorerFunc(func(
-					restoreContext context.Context,
-					request backup.ResourceRestoreRequest,
-				) error {
-					metadata, err := io.ReadAll(request.Source.Reader)
-					if err != nil {
-						return err
-					}
-					_, err = objectStoreApplication.RestoreSnapshot(restoreContext, objectstore.RestoreInput{
-						StoreID: request.ResourceID, Metadata: metadata,
-						ValidateAttachments: func(attachments []objectstore.BackupAttachment) error {
-							descriptors := make([]backup.ResourceAttachment, len(attachments))
-							for index, attachment := range attachments {
-								descriptors[index] = backup.ResourceAttachment{
-									Index: attachment.Index, Size: attachment.Size, SHA256: attachment.SHA256,
-								}
-							}
-							return backup.ValidateResourceAttachments(request.Source.Envelope, descriptors)
-						},
-						OpenAttachment: func(
-							_ context.Context,
-							attachment objectstore.BackupAttachment,
-						) (io.ReadCloser, error) {
-							return request.Source.OpenAttachment(backup.ResourceAttachment{
-								Index: attachment.Index, Size: attachment.Size, SHA256: attachment.SHA256,
-							})
-						},
-						Actor: objectstore.Actor{
-							Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
-						},
-					})
-					return err
-				}),
-			},
-			OnError: func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
-		})
-		if err != nil {
-			return fmt.Errorf("configure resource restore jobs: %w", err)
 		}
 		backupWorker, err := backup.NewScheduledWorker(backup.WorkerConfig{
 			Dirty: dirtyControl, Control: controlJob, Store: store, Resources: resourceJob,
@@ -404,6 +349,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return targetErr
 		} else if configured {
 			dirtyControl.Mark(time.Now())
+		}
+	} else {
+		backupResources, err = backup.NewResourceApplication(backup.ResourceApplicationConfig{
+			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+			Master: key, Restores: restoreService,
+		})
+		if err != nil {
+			return fmt.Errorf("configure recovery backup application: %w", err)
 		}
 	}
 	objectStoreHandler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
@@ -526,35 +479,46 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	tlsConfig := certificates.TLSConfig()
 	domains := &liveDomainRepository{store: store, certificates: certificates}
-	adminHandler := access.ProtectAdmin(
-		installation.AdminHostname,
-		verifier,
-		server.Handler(
-			server.DefaultMeta(status(installation.RecoveryMode)),
-			server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
-			server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
-			server.WithImageCredentials(imageCredentials),
-			server.WithDomains(domains),
-			server.WithAPITokens(apiTokens),
-			server.WithLogs(installation.AdminHostname, logs),
-			server.WithAudit(store),
-			server.WithManagedImages(managedImageCatalog),
-			server.WithManagedRedis(managedRedisApplication),
-			server.WithManagedPostgres(managedPostgresApplication),
-			server.WithObjectStores(objectStoreApplication),
-			server.WithRegistry(registryApplication, registrySettings),
-			server.WithBackupTargets(backupTargets),
-			server.WithBackupResources(backupResources),
-			server.WithContainerConsole(installation.AdminHostname, containerConsole),
-			server.WithServerTerminalAuth(serverTerminalAuth),
-			server.WithDiskPressure(pressure),
-			server.WithAdmission(mutationAdmission),
-			server.WithSelfUpdate(platformUpdater, func() {
-				updateCommitted.Store(true)
-				cancelDaemon()
-			}),
-		),
+	var recoveryRepository server.RecoveryRepository
+	if disasterRecoveryProgress != nil {
+		recoveryRepository = &liveRecoveryRepository{store: store, progress: disasterRecoveryProgress}
+	}
+	adminApplicationHandler := server.Handler(
+		server.DefaultMeta(status(installation.RecoveryMode)),
+		server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
+		server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
+		server.WithImageCredentials(imageCredentials),
+		server.WithDomains(domains),
+		server.WithAPITokens(apiTokens),
+		server.WithLogs(installation.AdminHostname, logs),
+		server.WithAudit(store),
+		server.WithManagedImages(managedImageCatalog),
+		server.WithManagedRedis(managedRedisApplication),
+		server.WithManagedPostgres(managedPostgresApplication),
+		server.WithObjectStores(objectStoreApplication),
+		server.WithRegistry(registryApplication, registrySettings),
+		server.WithBackupTargets(backupTargets),
+		server.WithBackupResources(backupResources),
+		server.WithContainerConsole(installation.AdminHostname, containerConsole),
+		server.WithServerTerminalAuth(serverTerminalAuth),
+		server.WithDiskPressure(pressure),
+		server.WithAdmission(mutationAdmission),
+		server.WithSelfUpdate(platformUpdater, func() {
+			updateCommitted.Store(true)
+			cancelDaemon()
+		}),
+		server.WithRecovery(recoveryRepository),
 	)
+	if installation.RecoveryMode {
+		adminApplicationHandler = recoveryAdminHandler{target: adminApplicationHandler}
+	}
+	adminHandler := access.ProtectAdmin(installation.AdminHostname, verifier, adminApplicationHandler)
+	if installation.RecoveryMode && automationHandler != nil {
+		automationHandler, err = newAvailabilityHandler(automationHandler, false)
+		if err != nil {
+			return err
+		}
+	}
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
 		AutomationHostname: automationHostname, AutomationHandler: automationHandler,
@@ -574,6 +538,18 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if !installation.RecoveryMode {
 		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
 			return fmt.Errorf("load object store domains: %w", err)
+		}
+	}
+	var disasterRecovery recoveryAttempt
+	if installation.RecoveryMode {
+		disasterRecovery, err = newRecoveryAttempt(recoveryConfig{
+			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+			Admission: mutationAdmission, Master: key,
+			Installation: installation, Runtime: runtime, Registry: registryApplication,
+			ObjectStore: objectStoreApplication, Progress: disasterRecoveryProgress,
+		})
+		if err != nil {
+			return fmt.Errorf("configure automatic disaster recovery: %w", err)
 		}
 	}
 	httpServer := &http.Server{
@@ -597,6 +573,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		if err := bootstrap.FinalizeSuccessfulUpdate(paths, releasePublicKey, 0); err != nil {
 			log.Printf("release readiness cleanup failed: %v", err)
+		}
+		if installation.RecoveryMode {
+			startRecoveryLoop(ctx, disasterRecovery, disasterRecoveryProgress, cancelDaemon)
 		}
 		return nil
 	})

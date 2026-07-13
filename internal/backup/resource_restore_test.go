@@ -30,6 +30,7 @@ func TestResourceRestoreServiceReturnsRunningOperationAndFinishesAsynchronously(
 	}
 	os.RemoveAll(built.WorkDirectory)
 	restored := make(chan []byte, 1)
+	succeeded := make(chan ResourceRestoreRequest, 1)
 	service, err := NewResourceRestoreService(ResourceRestoreServiceConfig{
 		Context: ctx, Store: store, Target: target, TargetGate: targetGate,
 		Admission: admission.New(), Master: master,
@@ -44,6 +45,7 @@ func TestResourceRestoreServiceReturnsRunningOperationAndFinishesAsynchronously(
 		},
 		RemoteFactory: func(remotes3.Config) (ControlRemote, error) { return remote, nil },
 		Now:           func() time.Time { return time.Unix(50, 0) },
+		OnSuccess:     func(request ResourceRestoreRequest) { succeeded <- request },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -67,6 +69,14 @@ func TestResourceRestoreServiceReturnsRunningOperationAndFinishesAsynchronously(
 	if finished.Status != "succeeded" || finished.Progress != "complete" {
 		t.Fatalf("finished operation = %+v", finished)
 	}
+	select {
+	case request := <-succeeded:
+		if request.GenerationID != "generation-1" || request.ResourceID != "redis-1" {
+			t.Fatalf("success callback request = %+v", request)
+		}
+	default:
+		t.Fatal("successful restore callback was not called")
+	}
 }
 
 func TestResourceRestoreServiceFailsIfRestorerDoesNotConsumeGeneration(t *testing.T) {
@@ -83,6 +93,7 @@ func TestResourceRestoreServiceFailsIfRestorerDoesNotConsumeGeneration(t *testin
 		t.Fatal(err)
 	}
 	os.RemoveAll(built.WorkDirectory)
+	succeeded := make(chan struct{}, 1)
 	service, err := NewResourceRestoreService(ResourceRestoreServiceConfig{
 		Context: ctx, Store: store, Target: target, TargetGate: targetGate,
 		Admission: admission.New(), Master: master,
@@ -95,6 +106,7 @@ func TestResourceRestoreServiceFailsIfRestorerDoesNotConsumeGeneration(t *testin
 		},
 		RemoteFactory: func(remotes3.Config) (ControlRemote, error) { return remote, nil },
 		Now:           func() time.Time { return time.Unix(70, 0) },
+		OnSuccess:     func(ResourceRestoreRequest) { succeeded <- struct{}{} },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -109,6 +121,11 @@ func TestResourceRestoreServiceFailsIfRestorerDoesNotConsumeGeneration(t *testin
 	finished := waitForOperation(t, store, operation.ID)
 	if finished.Status != "failed" || finished.ErrorCode != "postgres_restore_failed" {
 		t.Fatalf("failed operation = %+v", finished)
+	}
+	select {
+	case <-succeeded:
+		t.Fatal("partial restore called success callback")
+	default:
 	}
 }
 
