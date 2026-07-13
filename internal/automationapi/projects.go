@@ -51,7 +51,19 @@ func requireUnboundAdmin(response http.ResponseWriter, request *http.Request) (a
 		return automation.Identity{}, false
 	}
 	if identity.ProjectID != nil {
-		writeError(response, http.StatusForbidden, "unbound_admin_required", "Project creation requires an unbound admin token")
+		writeError(response, http.StatusForbidden, "unbound_admin_required", "This operation requires an unbound admin token")
+		return automation.Identity{}, false
+	}
+	return identity, true
+}
+
+func requireUnboundIdentity(response http.ResponseWriter, request *http.Request) (automation.Identity, bool) {
+	identity, ok := requireIdentity(response, request)
+	if !ok {
+		return automation.Identity{}, false
+	}
+	if identity.ProjectID != nil {
+		writeError(response, http.StatusForbidden, "unbound_token_required", "This installation-wide resource requires an unbound token")
 		return automation.Identity{}, false
 	}
 	return identity, true
