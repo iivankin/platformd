@@ -47,11 +47,33 @@ FROM audit_events WHERE id = 'restore-audit'`).Scan(&action, &requestID, &metada
 		metadata != `{"actorEmail":"user@example.com","previousVolumeId":"old-volume","volumeId":"new-volume"}` {
 		t.Fatalf("restore audit = %q %q %s", action, requestID, metadata)
 	}
+	if err := store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
+		ResourceID: "redis", ExpectedVolumeID: "new-volume", VolumeID: "recovery-volume",
+		Action: "redis.restore", AuditEventID: "recovery-audit", ActorKind: "system",
+		ActorID: "disaster_restore", UpdatedAtMillis: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var actorKind, actorID string
+	if err := store.QueryRowContext(ctx, `
+SELECT actor_kind, actor_id FROM audit_events WHERE id = 'recovery-audit'`).Scan(&actorKind, &actorID); err != nil {
+		t.Fatal(err)
+	}
+	if actorKind != "system" || actorID != "disaster_restore" {
+		t.Fatalf("recovery actor = %q/%q", actorKind, actorID)
+	}
+	if err := store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
+		ResourceID: "redis", ExpectedVolumeID: "recovery-volume", VolumeID: "forbidden-volume",
+		Action: "redis.version_change", AuditEventID: "forbidden-audit", ActorKind: "system",
+		ActorID: "disaster_restore", UpdatedAtMillis: 5,
+	}); err == nil {
+		t.Fatal("system actor was allowed to perform a version change")
+	}
 
 	err = store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
 		ResourceID: "redis", ExpectedVolumeID: "old-volume", VolumeID: "other-volume",
 		Action: "redis.restore", AuditEventID: "stale-audit", ActorKind: "token",
-		ActorID: "token", UpdatedAtMillis: 4,
+		ActorID: "token", UpdatedAtMillis: 6,
 	})
 	if err == nil || !strings.Contains(err.Error(), "changed concurrently") {
 		t.Fatalf("stale switch error = %v", err)

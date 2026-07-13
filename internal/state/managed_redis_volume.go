@@ -30,7 +30,7 @@ func (store *Store) SwitchManagedRedisVolume(
 		(input.Action != "redis.restore" && input.Action != "redis.version_change") {
 		return errors.New("switch managed Redis volume input is invalid")
 	}
-	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
+	if err := validateManagedVolumeSwitchActor(input.Action, input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
 		return err
 	}
 	metadataFields := map[string]any{

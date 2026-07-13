@@ -178,13 +178,14 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 	fixture := newPostgresRestoreFixture(t, nil)
 	dump := []byte("PGDMP-custom-format")
 	if err := fixture.controller.RestoreReplace(context.Background(), "postgres-id", bytes.NewReader(dump), Actor{
-		Kind: "access", ID: "user", Email: "user@example.com",
+		Kind: "system", ID: "disaster_restore",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	if fixture.store.resource.VolumeID != "new-volume" || fixture.store.switchInput.Action != "postgres.restore" ||
-		fixture.store.switchInput.AuditEventID != "audit-id" || fixture.store.switchInput.RequestCorrelationID != "correlation-id" {
+		fixture.store.switchInput.AuditEventID != "audit-id" || fixture.store.switchInput.RequestCorrelationID != "correlation-id" ||
+		fixture.store.switchInput.ActorKind != "system" || fixture.store.switchInput.ActorID != "disaster_restore" {
 		t.Fatalf("volume switch = %+v, resource = %+v", fixture.store.switchInput, fixture.store.resource)
 	}
 	if !bytes.Equal(fixture.engine.execPayload, dump) {

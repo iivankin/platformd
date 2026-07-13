@@ -26,8 +26,7 @@ func (controller *Controller) RestoreReplace(
 	if ctx == nil || !safePathComponent(resourceID) || rdb == nil {
 		return errors.New("managed Redis restore input is invalid")
 	}
-	if actor.ID == "" || (actor.Kind != "access" && actor.Kind != "token") ||
-		(actor.Kind == "access" && actor.Email == "") || (actor.Kind == "token" && actor.Email != "") {
+	if !validRestoreActor(actor) {
 		return errors.New("managed Redis restore actor is invalid")
 	}
 	lock := controller.resourceLock(resourceID)
@@ -140,6 +139,20 @@ func (controller *Controller) RestoreReplace(
 	publishErr := controller.publisher.PublishRedis(switched, candidateContainer)
 	cleanupErr := controller.removeReplacedRuntime(ctx, oldRuntime, oldRunning, resource)
 	return errors.Join(publishErr, cleanupErr)
+}
+
+func validRestoreActor(actor Actor) bool {
+	if actor.ID == "" {
+		return false
+	}
+	switch actor.Kind {
+	case "access":
+		return actor.Email != ""
+	case "token", "system":
+		return actor.Email == ""
+	default:
+		return false
+	}
 }
 
 func (controller *Controller) restoreIdentifiers(timestamp time.Time) ([4]string, error) {

@@ -130,13 +130,14 @@ func TestRestoreReplacePublishesValidatedCandidateAndDeletesOldVolume(t *testing
 	fixture := newRestoreFixture(t, nil)
 	backup := []byte("REDIS0011-restored-rdb")
 	if err := fixture.controller.RestoreReplace(context.Background(), "redis-id", bytes.NewReader(backup), Actor{
-		Kind: "access", ID: "user", Email: "user@example.com",
+		Kind: "system", ID: "disaster_restore",
 	}); err != nil {
 		t.Fatal(err)
 	}
 
 	if fixture.store.resource.VolumeID != "new-volume" || fixture.store.switchInput.Action != "redis.restore" ||
-		fixture.store.switchInput.AuditEventID != "audit-id" || fixture.store.switchInput.RequestCorrelationID != "correlation-id" {
+		fixture.store.switchInput.AuditEventID != "audit-id" || fixture.store.switchInput.RequestCorrelationID != "correlation-id" ||
+		fixture.store.switchInput.ActorKind != "system" || fixture.store.switchInput.ActorID != "disaster_restore" {
 		t.Fatalf("volume switch = %+v, resource = %+v", fixture.store.switchInput, fixture.store.resource)
 	}
 	newRDB, err := os.ReadFile(filepath.Join(fixture.volumeRoot, "project-id", "new-volume", "dump.rdb"))
