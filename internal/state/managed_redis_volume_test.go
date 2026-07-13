@@ -10,13 +10,16 @@ import (
 
 func TestSwitchManagedRedisVolumeIsAtomicAndOptimistic(t *testing.T) {
 	t.Parallel()
+	const initialDigest = "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4"
+	const targetDigest = "sha256:4b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a5"
+	const rejectedDigest = "sha256:5b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a6"
 	store := openStore(t)
 	defer store.Close()
 	ctx := context.Background()
 	createManagedRedisTestProject(t, store)
 	if _, err := store.CreateManagedRedis(ctx, state.CreateManagedRedis{
 		ID: "redis", ProjectID: "project", Name: "cache", ImageTag: "7.4",
-		ImageDigest: "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4",
+		ImageDigest: initialDigest,
 		VolumeID:    "old-volume", PasswordEncrypted: []byte("sealed"), AuditEventID: "create-audit",
 		ActorKind: "token", ActorID: "token", CreatedAtMillis: 2,
 	}); err != nil {
@@ -48,9 +51,32 @@ FROM audit_events WHERE id = 'restore-audit'`).Scan(&action, &requestID, &metada
 		t.Fatalf("restore audit = %q %q %s", action, requestID, metadata)
 	}
 	if err := store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
-		ResourceID: "redis", ExpectedVolumeID: "new-volume", VolumeID: "recovery-volume",
+		ResourceID: "redis", ExpectedVolumeID: "new-volume", VolumeID: "version-volume",
+		ExpectedImageTag: "7.4", ExpectedImageDigest: initialDigest,
+		ImageTag: "8", ImageDigest: targetDigest,
+		Action: "redis.version_change", AuditEventID: "version-audit", ActorKind: "token",
+		ActorID: "token", RequestCorrelationID: "version-request", UpdatedAtMillis: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resource, err = store.ManagedRedis(ctx, "redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resource.VolumeID != "version-volume" || resource.ImageTag != "8" || resource.ImageDigest != targetDigest || resource.UpdatedAtMillis != 4 {
+		t.Fatalf("version-switched managed Redis = %+v", resource)
+	}
+	if err := store.QueryRowContext(ctx, `SELECT metadata_json FROM audit_events WHERE id = 'version-audit'`).Scan(&metadata); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(metadata, `"previousImageTag":"7.4"`) || !strings.Contains(metadata, `"imageTag":"8"`) ||
+		!strings.Contains(metadata, targetDigest) {
+		t.Fatalf("version audit metadata = %s", metadata)
+	}
+	if err := store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
+		ResourceID: "redis", ExpectedVolumeID: "version-volume", VolumeID: "recovery-volume",
 		Action: "redis.restore", AuditEventID: "recovery-audit", ActorKind: "system",
-		ActorID: "disaster_restore", UpdatedAtMillis: 4,
+		ActorID: "disaster_restore", UpdatedAtMillis: 5,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -64,8 +90,10 @@ SELECT actor_kind, actor_id FROM audit_events WHERE id = 'recovery-audit'`).Scan
 	}
 	if err := store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
 		ResourceID: "redis", ExpectedVolumeID: "recovery-volume", VolumeID: "forbidden-volume",
+		ExpectedImageTag: "8", ExpectedImageDigest: targetDigest,
+		ImageTag: "9", ImageDigest: rejectedDigest,
 		Action: "redis.version_change", AuditEventID: "forbidden-audit", ActorKind: "system",
-		ActorID: "disaster_restore", UpdatedAtMillis: 5,
+		ActorID: "disaster_restore", UpdatedAtMillis: 6,
 	}); err == nil {
 		t.Fatal("system actor was allowed to perform a version change")
 	}
@@ -73,7 +101,7 @@ SELECT actor_kind, actor_id FROM audit_events WHERE id = 'recovery-audit'`).Scan
 	err = store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{
 		ResourceID: "redis", ExpectedVolumeID: "old-volume", VolumeID: "other-volume",
 		Action: "redis.restore", AuditEventID: "stale-audit", ActorKind: "token",
-		ActorID: "token", UpdatedAtMillis: 6,
+		ActorID: "token", UpdatedAtMillis: 7,
 	})
 	if err == nil || !strings.Contains(err.Error(), "changed concurrently") {
 		t.Fatalf("stale switch error = %v", err)
