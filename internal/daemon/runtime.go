@@ -274,7 +274,7 @@ func (stack *runtimeStack) ReleaseForUpdate() error {
 	for index := len(dnsServers) - 1; index >= 0; index-- {
 		failures = append(failures, dnsServers[index].Close())
 	}
-	failures = append(failures, engine.Close())
+	failures = append(failures, engine.CloseForUpdate())
 	return errors.Join(failures...)
 }
 

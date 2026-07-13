@@ -4,6 +4,7 @@ package containerengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -109,8 +110,27 @@ func Open(ctx context.Context, config Config) (*Engine, error) {
 }
 
 func (e *Engine) Close() error {
+	return e.close(false)
+}
+
+// CloseForUpdate releases the private store after workloads have stopped but
+// while their disposable container records are intentionally retained for the
+// next release's startup cleanup. Force is required here because stopped
+// containers may still have mounted root filesystems.
+func (e *Engine) CloseForUpdate() error {
+	return e.close(true)
+}
+
+func (e *Engine) close(force bool) error {
 	e.closeOnce.Do(func() {
-		e.closeErr = e.runtime.Shutdown(false)
+		e.closeErr = e.runtime.Shutdown(force)
+		// containers/storage reports ErrLayerUsedByContainer whenever forced
+		// shutdown encountered a mount, including after it successfully
+		// unmounted every layer. That is the expected update handoff state;
+		// any actual unmount failure is returned as a different error.
+		if force && errors.Is(e.closeErr, storage.ErrLayerUsedByContainer) {
+			e.closeErr = nil
+		}
 		runtimeSingleton.Lock()
 		runtimeSingleton.open = false
 		runtimeSingleton.Unlock()

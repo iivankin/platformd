@@ -279,8 +279,15 @@ func TestPrepareStoragePurgesContainersAndKeepsImages(t *testing.T) {
 	if code, err := engine.WaitContainer(ctx, container.ID); err != nil {
 		t.Fatalf("cleanup stopped container: code=%d err=%v", code, err)
 	}
-	if err := engine.Close(); err != nil {
-		t.Fatalf("close interrupted runtime: %v", err)
+	containerRecord, err := engine.runtime.GetContainer(container.ID)
+	if err != nil {
+		t.Fatalf("load stopped container: %v", err)
+	}
+	if _, err := containerRecord.Mount(); err != nil {
+		t.Fatalf("mount stopped container rootfs: %v", err)
+	}
+	if err := engine.CloseForUpdate(); err != nil {
+		t.Fatalf("close interrupted runtime with a mounted rootfs: %v", err)
 	}
 
 	cleanup, err := PrepareStorage(ctx, config)

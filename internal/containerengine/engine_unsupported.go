@@ -15,3 +15,7 @@ func Open(context.Context, Config) (*Engine, error) {
 func (e *Engine) Close() error {
 	return nil
 }
+
+func (e *Engine) CloseForUpdate() error {
+	return nil
+}
