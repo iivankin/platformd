@@ -23,6 +23,7 @@ import {
   fetchAPITokens,
   fetchAuditEvents,
   fetchBackupTarget,
+  fetchBackupGenerations,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
@@ -36,6 +37,7 @@ import {
   fetchManagedPostgres,
   fetchManagedRedis,
   fetchMeta,
+  fetchOperation,
   fetchObjects,
   fetchObjectStore,
   fetchProjectCanvas,
@@ -45,6 +47,7 @@ import {
   fetchRegistryCredentials,
   fetchRegistryRepositories,
   fetchRegistrySettings,
+  fetchRecoveryStatus,
   mutateManagedRedis,
   objectDownloadURL,
   previewObject,
@@ -57,6 +60,8 @@ import {
   setRegistryHostname,
   setRegistryRepositoryPublicPull,
   setBackupTarget,
+  restoreBackupGeneration,
+  retryRecovery,
   updateService,
   uploadObject,
 } from "@/api";
@@ -1133,5 +1138,93 @@ test("configures the single probed backup target without returning its secret", 
   await deleteBackupTarget((_input, init) => {
     expect(init?.method).toBe("DELETE");
     return Promise.resolve(new Response(null, { status: 204 }));
+  });
+});
+
+test("lists recovery generations and starts an explicitly destructive replacement", async () => {
+  const generation = {
+    completedAt: 42,
+    generationId: "generation-1",
+    plaintextSize: 100,
+    remoteSize: 120,
+  };
+  await expect(
+    fetchBackupGenerations("postgres", "database/one", undefined, (input) => {
+      expect(input.toString()).toBe(
+        "/api/v1/backups/resources/postgres/database%2Fone/generations"
+      );
+      return Promise.resolve(Response.json({ generations: [generation] }));
+    })
+  ).resolves.toEqual([generation]);
+
+  const operation = {
+    id: "operation-1",
+    kind: "postgres_restore",
+    progress: "starting",
+    startedAt: 43,
+    status: "running" as const,
+    targetId: "database/one",
+  };
+  let restoreBody = "";
+  await expect(
+    restoreBackupGeneration(
+      "postgres",
+      "database/one",
+      generation.generationId,
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/backups/resources/postgres/database%2Fone/restore"
+        );
+        restoreBody = init?.body?.toString() ?? "";
+        return Promise.resolve(Response.json(operation, { status: 202 }));
+      }
+    )
+  ).resolves.toEqual(operation);
+  expect(JSON.parse(restoreBody)).toEqual({
+    destructiveConfirmed: true,
+    generationId: generation.generationId,
+    mode: "replace",
+  });
+});
+
+test("polls recovery and observational operation status then requests a retry", async () => {
+  const resource = {
+    generationId: "generation-1",
+    resourceId: "redis-1",
+    resourceKind: "redis" as const,
+    sourceCompletedAt: 42,
+    status: "restored" as const,
+  };
+  await expect(
+    fetchRecoveryStatus(undefined, (input) => {
+      expect(input.toString()).toBe("/api/v1/recovery");
+      return Promise.resolve(
+        Response.json({ lastError: "postgres failed", resources: [resource] })
+      );
+    })
+  ).resolves.toEqual({
+    lastError: "postgres failed",
+    resources: [resource],
+  });
+
+  await expect(
+    fetchOperation("operation/one", undefined, (input) => {
+      expect(input.toString()).toBe("/api/v1/operations/operation%2Fone");
+      return Promise.resolve(
+        Response.json({
+          finishedAt: 44,
+          id: "operation/one",
+          kind: "redis_restore",
+          startedAt: 43,
+          status: "succeeded",
+          targetId: "redis-1",
+        })
+      );
+    })
+  ).resolves.toMatchObject({ status: "succeeded" });
+
+  await retryRecovery((_input, init) => {
+    expect(init?.method).toBe("POST");
+    return Promise.resolve(new Response(null, { status: 202 }));
   });
 });

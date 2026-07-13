@@ -599,6 +599,55 @@ export interface SetBackupTargetInput {
   secretAccessKey: string;
 }
 
+const backupGenerationSchema = z.object({
+  completedAt: z.number().int().positive(),
+  generationId: z.string().min(1),
+  plaintextSize: z.number().int().nonnegative(),
+  remoteSize: z.number().int().nonnegative(),
+});
+
+const backupGenerationsSchema = z.object({
+  generations: z.array(backupGenerationSchema),
+});
+
+const operationSchema = z.object({
+  errorCode: z.string().optional(),
+  errorMessage: z.string().optional(),
+  finishedAt: z.number().int().positive().optional(),
+  id: z.string().min(1),
+  kind: z.string().min(1),
+  progress: z.string().optional(),
+  startedAt: z.number().int().positive(),
+  status: z.enum(["failed", "interrupted", "running", "succeeded"]),
+  targetId: z.string().min(1),
+});
+
+const recoveryResourceKindSchema = z.enum([
+  "object_store",
+  "postgres",
+  "redis",
+  "registry",
+]);
+
+const recoveryResourceSchema = z.object({
+  generationId: z.string().min(1).optional(),
+  resourceId: z.string().min(1),
+  resourceKind: recoveryResourceKindSchema,
+  sourceCompletedAt: z.number().int().positive().optional(),
+  status: z.enum(["empty", "pending", "restored"]),
+});
+
+const recoveryStatusSchema = z.object({
+  lastError: z.string().optional(),
+  resources: z.array(recoveryResourceSchema),
+});
+
+export type BackupGeneration = z.infer<typeof backupGenerationSchema>;
+export type Operation = z.infer<typeof operationSchema>;
+export type RecoveryResource = z.infer<typeof recoveryResourceSchema>;
+export type RecoveryResourceKind = z.infer<typeof recoveryResourceKindSchema>;
+export type RecoveryStatus = z.infer<typeof recoveryStatusSchema>;
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -1446,6 +1495,107 @@ export const deleteBackupTarget = async (
     throw await apiError(
       response,
       `Backup target deletion failed with ${response.status}`
+    );
+  }
+};
+
+const backupResourcePath = (kind: RecoveryResourceKind, resourceID: string) =>
+  `/api/v1/backups/resources/${encodeURIComponent(kind)}/${encodeURIComponent(resourceID)}`;
+
+export const fetchBackupGenerations = async (
+  kind: RecoveryResourceKind,
+  resourceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupGeneration[]> => {
+  const response = await fetcher(
+    `${backupResourcePath(kind, resourceID)}/generations`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup generation request failed with ${response.status}`
+    );
+  }
+  return backupGenerationsSchema.parse(await response.json()).generations;
+};
+
+export const restoreBackupGeneration = async (
+  kind: RecoveryResourceKind,
+  resourceID: string,
+  generationID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Operation> => {
+  const response = await fetcher(
+    `${backupResourcePath(kind, resourceID)}/restore`,
+    {
+      body: JSON.stringify({
+        destructiveConfirmed: true,
+        generationId: generationID,
+        mode: "replace",
+      }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup restore request failed with ${response.status}`
+    );
+  }
+  return operationSchema.parse(await response.json());
+};
+
+export const fetchOperation = async (
+  operationID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Operation> => {
+  const response = await fetcher(
+    `/api/v1/operations/${encodeURIComponent(operationID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Operation request failed with ${response.status}`
+    );
+  }
+  return operationSchema.parse(await response.json());
+};
+
+export const fetchRecoveryStatus = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RecoveryStatus> => {
+  const response = await fetcher("/api/v1/recovery", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Recovery status request failed with ${response.status}`
+    );
+  }
+  return recoveryStatusSchema.parse(await response.json());
+};
+
+export const retryRecovery = async (
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher("/api/v1/recovery/retry", {
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Recovery retry failed with ${response.status}`
     );
   }
 };
