@@ -12,6 +12,7 @@ import type { FormEvent } from "react";
 
 import { deleteBackupTarget, fetchBackupTarget, setBackupTarget } from "@/api";
 import type { BackupTarget, SetBackupTargetInput } from "@/api";
+import { BackupResources } from "@/backup-resources";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
@@ -44,26 +45,11 @@ const canDeleteTarget = (
   confirmation: string
 ) => !busy && target.configured && confirmation === target.bucket;
 
-const ResourcePolicies = ({ visible }: { visible: boolean }) => {
+const ResourceBackups = ({ visible }: { visible: boolean }) => {
   if (!visible) {
     return null;
   }
-  return (
-    <section className="border-b border-border">
-      <div className="flex items-center gap-3 px-5 py-4">
-        <div>
-          <h2 className="text-[10px] font-medium">Resource policies</h2>
-          <p className="mt-1 text-[9px] text-muted-foreground">
-            Schedule, retention, generations, and restore belong to each exact
-            PostgreSQL, Redis, Registry, or Object Store resource.
-          </p>
-        </div>
-        <span className="ml-auto font-mono text-[9px] text-muted-foreground">
-          UTC · 5-field cron · retention 1–100
-        </span>
-      </div>
-    </section>
-  );
+  return <BackupResources />;
 };
 
 export const BackupsPage = ({
@@ -387,7 +373,7 @@ export const BackupsPage = ({
         )}
       </section>
 
-      <ResourcePolicies visible={!targetOnly} />
+      <ResourceBackups visible={!targetOnly} />
 
       {target.configured ? (
         <section className="border-b border-destructive/25 bg-destructive/5 px-5 py-4">

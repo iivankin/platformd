@@ -22,6 +22,8 @@ import {
   deleteRegistryTag,
   fetchAPITokens,
   fetchAuditEvents,
+  fetchBackupHistory,
+  fetchBackupPolicies,
   fetchBackupTarget,
   fetchBackupGenerations,
   fetchService,
@@ -56,10 +58,12 @@ import {
   redeployService,
   revokeAPIToken,
   rollbackService,
+  runBackupNow,
   scanManagedRedisKeys,
   setRegistryHostname,
   setRegistryRepositoryPublicPull,
   setBackupTarget,
+  setBackupPolicy,
   restoreBackupGeneration,
   retryRecovery,
   updateService,
@@ -1139,6 +1143,77 @@ test("configures the single probed backup target without returning its secret", 
     expect(init?.method).toBe("DELETE");
     return Promise.resolve(new Response(null, { status: 204 }));
   });
+});
+
+test("manages one exact resource backup policy and run history", async () => {
+  const policy = {
+    cron: "0 3 * * *",
+    enabled: true,
+    resourceId: "database/one",
+    resourceKind: "postgres" as const,
+    retentionCount: 7,
+  };
+  await expect(
+    fetchBackupPolicies(undefined, (input) => {
+      expect(input.toString()).toBe("/api/v1/backups/resources");
+      return Promise.resolve(Response.json({ policies: [policy] }));
+    })
+  ).resolves.toEqual([policy]);
+
+  let policyBody = "";
+  await expect(
+    setBackupPolicy(
+      policy.resourceKind,
+      policy.resourceId,
+      {
+        cron: policy.cron,
+        enabled: policy.enabled,
+        retentionCount: policy.retentionCount,
+      },
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/backups/resources/postgres/database%2Fone/policy"
+        );
+        policyBody = init?.body?.toString() ?? "";
+        return Promise.resolve(Response.json(policy));
+      }
+    )
+  ).resolves.toEqual(policy);
+  expect(JSON.parse(policyBody)).toEqual({
+    cron: policy.cron,
+    enabled: true,
+    retentionCount: 7,
+  });
+
+  const record = {
+    id: "backup-1",
+    resourceId: policy.resourceId,
+    resourceKind: policy.resourceKind,
+    startedAt: 43,
+    status: "running" as const,
+  };
+  await expect(
+    runBackupNow(policy.resourceKind, policy.resourceId, (input, init) => {
+      expect(input.toString()).toBe(
+        "/api/v1/backups/resources/postgres/database%2Fone/run"
+      );
+      expect(init?.method).toBe("POST");
+      return Promise.resolve(Response.json(record, { status: 202 }));
+    })
+  ).resolves.toEqual(record);
+  await expect(
+    fetchBackupHistory(
+      policy.resourceKind,
+      policy.resourceId,
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/backups/resources/postgres/database%2Fone/history?limit=50"
+        );
+        return Promise.resolve(Response.json({ backups: [record] }));
+      }
+    )
+  ).resolves.toEqual([record]);
 });
 
 test("lists recovery generations and starts an explicitly destructive replacement", async () => {
