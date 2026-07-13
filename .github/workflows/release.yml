@@ -137,6 +137,38 @@ jobs:
           go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
           python3 -m zipfile -t dist/platformd-linux-amd64
 
+      - name: Verify the same release bytes on Debian 13
+        run: |
+          rm -rf dist/debian-13-smoke
+          mkdir -p dist/debian-13-smoke
+          python3 -m zipfile -e dist/platformd-linux-amd64 dist/debian-13-smoke
+          chmod 0755 \
+            dist/debian-13-smoke/runtime/catatonit \
+            dist/debian-13-smoke/runtime/conmon \
+            dist/debian-13-smoke/runtime/crun \
+            dist/debian-13-smoke/runtime/netavark
+          docker run --rm --platform linux/amd64 \
+            --volume "$PWD/dist:/release:ro" \
+            debian:13-slim@sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1 \
+            sh -ceu '
+              apt-get update
+              apt-get install --yes --no-install-recommends \
+                libcap2 \
+                libgcc-s1 \
+                libglib2.0-0t64 \
+                libjson-c5 \
+                libseccomp2
+              ! command -v nft
+              ! command -v iptables
+              for helper in catatonit conmon crun netavark; do
+                env -i LC_ALL=C LANG=C "/release/debian-13-smoke/runtime/$helper" --version >/dev/null
+              done
+              status=0
+              /release/platformd-linux-amd64 >/tmp/platformd-output 2>&1 || status=$?
+              test "$status" -eq 2
+              grep -Fq "usage: platformd init" /tmp/platformd-output
+            '
+
       - name: Sign release manifest
         env:
           RELEASE_PRIVATE_KEY_B64: ${{ secrets.PLATFORMD_RELEASE_PRIVATE_KEY_B64 }}
