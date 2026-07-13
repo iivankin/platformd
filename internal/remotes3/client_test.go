@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -145,6 +146,42 @@ func TestCapabilityProbeUsesSignedPutHeadGetListAndDelete(t *testing.T) {
 	if methods[http.MethodGet] < 2 {
 		t.Fatalf("probe GET count = %d, want object GET and LIST", methods[http.MethodGet])
 	}
+}
+
+func TestPutLeavesCallerReaderOpen(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = io.Copy(io.Discard, request.Body)
+		response.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	client, err := New(Config{
+		Endpoint: server.URL, Region: "us-east-1", Bucket: "test-bucket",
+		AccessKeyID: remoteTestAccessKey, SecretAccessKey: remoteTestSecret,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte("caller-owned payload")
+	reader := &closeTrackingReader{Reader: bytes.NewReader(payload)}
+	checksum := sha256.Sum256(payload)
+	if err := client.Put(context.Background(), "owned", reader, int64(len(payload)), hex.EncodeToString(checksum[:])); err != nil {
+		t.Fatal(err)
+	}
+	if reader.closed.Load() {
+		t.Fatal("Put closed its caller-owned reader")
+	}
+}
+
+type closeTrackingReader struct {
+	io.Reader
+	closed atomic.Bool
+}
+
+func (reader *closeTrackingReader) Close() error {
+	reader.closed.Store(true)
+	return nil
 }
 
 func TestConfigurationAndObjectInputsAreStrict(t *testing.T) {

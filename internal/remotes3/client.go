@@ -309,7 +309,12 @@ func (client *Client) request(ctx context.Context, method, key string, query url
 	value.Path = joinURLPath(client.endpoint.Path, client.bucket, key)
 	value.RawPath = ""
 	value.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(ctx, method, value.String(), body)
+	requestBody := body
+	if body != nil {
+		// net/http closes Request.Body; wrap the caller-owned reader so Put does not take ownership of it.
+		requestBody = io.NopCloser(body)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, value.String(), requestBody)
 	if err != nil {
 		return nil, err
 	}
