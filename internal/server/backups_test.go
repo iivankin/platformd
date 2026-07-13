@@ -131,10 +131,12 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	application, err := backup.NewResourceApplication(store, manualBackupRunner{record: state.BackupRecord{
-		ID: "backup", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
-		Status: "running", StartedAtMillis: 20,
-	}}, bytes.NewReader(serverSequenceBytes(100)), func() time.Time { return time.UnixMilli(10) })
+	application, err := backup.NewResourceApplication(backup.ResourceApplicationConfig{
+		Store: store, Worker: manualBackupRunner{record: state.BackupRecord{
+			ID: "backup", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
+			Status: "running", StartedAtMillis: 20,
+		}}, Random: bytes.NewReader(serverSequenceBytes(100)), Now: func() time.Time { return time.UnixMilli(10) },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

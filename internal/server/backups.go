@@ -46,6 +46,13 @@ type backupRecordResponse struct {
 	FinishedAt          *int64 `json:"finishedAt,omitempty"`
 }
 
+type backupGenerationResponse struct {
+	GenerationID  string `json:"generationId"`
+	PlaintextSize int64  `json:"plaintextSize"`
+	RemoteSize    int64  `json:"remoteSize"`
+	CompletedAt   int64  `json:"completedAt"`
+}
+
 func registerBackupTargetRoutes(mux *http.ServeMux, application *backup.TargetApplication) {
 	mux.HandleFunc("GET /api/v1/backups/target", getBackupTarget(application))
 	mux.HandleFunc("PUT /api/v1/backups/target", setBackupTarget(application))
@@ -58,6 +65,29 @@ func registerBackupResourceRoutes(mux *http.ServeMux, application *backup.Resour
 	mux.HandleFunc("PUT /api/v1/backups/resources/{kind}/{resourceID}/policy", setBackupPolicy(application))
 	mux.HandleFunc("POST /api/v1/backups/resources/{kind}/{resourceID}/run", runBackupNow(application))
 	mux.HandleFunc("GET /api/v1/backups/resources/{kind}/{resourceID}/history", getBackupHistory(application))
+	mux.HandleFunc("GET /api/v1/backups/resources/{kind}/{resourceID}/generations", getBackupGenerations(application))
+}
+
+func getBackupGenerations(application *backup.ResourceApplication) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		generations, err := application.Generations(
+			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"),
+		)
+		if writeBackupResourceError(response, err) {
+			return
+		}
+		result := make([]backupGenerationResponse, len(generations))
+		for index, generation := range generations {
+			result[index] = backupGenerationResponse{
+				GenerationID: generation.GenerationID, PlaintextSize: generation.PlaintextSize,
+				RemoteSize: generation.RemoteSize, CompletedAt: generation.CompletedAtMillis,
+			}
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"generations": result})
+	}
 }
 
 func listBackupPolicies(application *backup.ResourceApplication) http.HandlerFunc {

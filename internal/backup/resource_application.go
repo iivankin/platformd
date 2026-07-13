@@ -7,7 +7,9 @@ import (
 	"io"
 	"time"
 
+	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/id"
+	"github.com/iivankin/platformd/internal/remotes3"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -23,10 +25,25 @@ type ManualRunner interface {
 }
 
 type ResourceApplication struct {
-	store  ResourceApplicationStore
-	worker ManualRunner
-	random io.Reader
-	now    func() time.Time
+	store         ResourceApplicationStore
+	worker        ManualRunner
+	target        *TargetApplication
+	targetGate    *Gate
+	master        cryptobox.MasterKey
+	remoteFactory ControlRemoteFactory
+	random        io.Reader
+	now           func() time.Time
+}
+
+type ResourceApplicationConfig struct {
+	Store         ResourceApplicationStore
+	Worker        ManualRunner
+	Target        *TargetApplication
+	TargetGate    *Gate
+	Master        cryptobox.MasterKey
+	RemoteFactory ControlRemoteFactory
+	Random        io.Reader
+	Now           func() time.Time
 }
 
 type PolicyInput struct {
@@ -43,22 +60,55 @@ type PolicyResult struct {
 	RequestID string
 }
 
-func NewResourceApplication(
-	store ResourceApplicationStore,
-	worker ManualRunner,
-	random io.Reader,
-	now func() time.Time,
-) (*ResourceApplication, error) {
-	if store == nil || worker == nil {
+func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplication, error) {
+	if config.Store == nil || config.Worker == nil || (config.Target == nil) != (config.TargetGate == nil) {
 		return nil, errors.New("resource backup application dependencies are incomplete")
 	}
-	if random == nil {
-		random = rand.Reader
+	if config.RemoteFactory == nil {
+		config.RemoteFactory = func(config remotes3.Config) (ControlRemote, error) { return remotes3.New(config) }
 	}
-	if now == nil {
-		now = time.Now
+	if config.Random == nil {
+		config.Random = rand.Reader
 	}
-	return &ResourceApplication{store: store, worker: worker, random: random, now: now}, nil
+	if config.Now == nil {
+		config.Now = time.Now
+	}
+	return &ResourceApplication{
+		store: config.Store, worker: config.Worker, target: config.Target, targetGate: config.TargetGate,
+		master: config.Master, remoteFactory: config.RemoteFactory, random: config.Random, now: config.Now,
+	}, nil
+}
+
+func (application *ResourceApplication) Generations(
+	ctx context.Context,
+	kind, resourceID string,
+) ([]ResourceCompletion, error) {
+	if _, err := application.store.BackupPolicy(ctx, kind, resourceID); err != nil {
+		return nil, err
+	}
+	if application.target == nil || application.targetGate == nil {
+		return nil, errors.New("resource backup remote access is not configured")
+	}
+	release, acquired := application.targetGate.TryAcquire()
+	if !acquired {
+		return nil, ErrTargetBusy
+	}
+	defer release()
+	target, err := application.target.RuntimeTarget(ctx)
+	if errors.Is(err, state.ErrBackupTargetNotFound) {
+		return nil, ErrResourceTargetMissing
+	}
+	if err != nil {
+		return nil, err
+	}
+	remote, err := application.remoteFactory(remotes3.Config{
+		Endpoint: target.Endpoint, Region: target.Region, Bucket: target.Bucket, Prefix: target.Prefix,
+		AccessKeyID: target.AccessKeyID, SecretAccessKey: target.SecretAccessKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return ListResourceGenerations(ctx, remote, kind, resourceID)
 }
 
 func (application *ResourceApplication) Policies(ctx context.Context) ([]state.BackupPolicy, error) {
