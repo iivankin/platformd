@@ -279,7 +279,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
-		backupResources, err = backup.NewResourceApplication(store, backupWorker, nil, nil)
+		backupResources, err = backup.NewResourceApplication(backup.ResourceApplicationConfig{
+			Store: store, Worker: backupWorker, Target: backupTargets,
+			TargetGate: backupTargetGate, Master: key,
+		})
 		if err != nil {
 			return fmt.Errorf("configure resource backup application: %w", err)
 		}
