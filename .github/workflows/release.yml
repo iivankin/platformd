@@ -167,6 +167,11 @@ jobs:
 
       - name: Verify managed runtimes and privileged host operations
         run: |
+          sudo rm -rf /var/lib/platformd/releases/current
+          sudo mkdir -p /var/lib/platformd/releases/current
+          sudo cp -a dist/runtime /var/lib/platformd/releases/current/runtime
+          trap 'sudo rm -rf /var/lib/platformd/releases/current' EXIT
+
           integration_tags="containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration"
           for package in managedpostgres managedredis daemon registry rootexec hostterminal; do
             go test -c \
