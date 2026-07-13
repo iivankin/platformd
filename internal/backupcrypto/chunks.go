@@ -16,6 +16,7 @@ import (
 
 const (
 	ResourceKeyDomain = "platformd/backup/v1"
+	ControlKeyDomain  = "platformd/backup/control/v1"
 	DefaultChunkSize  = 8 << 20
 )
 
@@ -37,10 +38,18 @@ type ResourceCipher struct {
 }
 
 func NewResourceCipher(master cryptobox.MasterKey, resourceID string) (*ResourceCipher, error) {
+	return newCipher(master, resourceID, ResourceKeyDomain)
+}
+
+func NewControlCipher(master cryptobox.MasterKey, installationID string) (*ResourceCipher, error) {
+	return newCipher(master, installationID, ControlKeyDomain)
+}
+
+func newCipher(master cryptobox.MasterKey, resourceID, domain string) (*ResourceCipher, error) {
 	if resourceID == "" {
 		return nil, errors.New("backup resource ID is empty")
 	}
-	box, err := cryptobox.NewBox(master, []byte(resourceID), ResourceKeyDomain)
+	box, err := cryptobox.NewBox(master, []byte(resourceID), domain)
 	if err != nil {
 		return nil, err
 	}

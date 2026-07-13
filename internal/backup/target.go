@@ -197,7 +197,7 @@ func (application *TargetApplication) SetTarget(ctx context.Context, input Targe
 	if err != nil {
 		return TargetResult{}, err
 	}
-	encrypted, err := sealTargetSecret(application.master, installation.ID, canonical.SecretAccessKey)
+	encrypted, err := SealTargetSecret(application.master, installation.ID, canonical.SecretAccessKey)
 	if err != nil {
 		return TargetResult{}, err
 	}
@@ -266,7 +266,7 @@ func validateActor(actor Actor) error {
 	return nil
 }
 
-func sealTargetSecret(master cryptobox.MasterKey, installationID, secret string) ([]byte, error) {
+func SealTargetSecret(master cryptobox.MasterKey, installationID, secret string) ([]byte, error) {
 	if installationID == "" || secret == "" {
 		return nil, errors.New("backup target secret input is incomplete")
 	}

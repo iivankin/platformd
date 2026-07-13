@@ -78,3 +78,25 @@ func TestChunkIdentityAndCiphertextAreAuthenticated(t *testing.T) {
 		t.Fatal("backup chunk was accepted for another generation")
 	}
 }
+
+func TestControlCipherIsDomainSeparatedFromResourceCipher(t *testing.T) {
+	t.Parallel()
+	master := cryptobox.MasterKey{1, 2, 3, 4}
+	control, err := NewControlCipher(master, "installation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, err := NewResourceCipher(master, "installation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, chunk, err := control.SealChunk(
+		"generation", 0, []byte("sqlite image"), bytes.NewReader(bytes.Repeat([]byte{7}, 24)),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := resource.OpenChunk("generation", chunk, sealed); err == nil {
+		t.Fatal("control chunk opened with the resource backup domain")
+	}
+}
