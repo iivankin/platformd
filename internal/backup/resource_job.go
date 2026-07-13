@@ -21,11 +21,19 @@ var (
 )
 
 type ResourceExport struct {
-	Reader io.ReadCloser
+	Reader          io.ReadCloser
+	AttachmentPaths []string
+	Release         func()
 }
 
 type ResourceExporter interface {
 	Export(context.Context, string) (ResourceExport, error)
+}
+
+type ResourceExporterFunc func(context.Context, string) (ResourceExport, error)
+
+func (exporter ResourceExporterFunc) Export(ctx context.Context, resourceID string) (ResourceExport, error) {
+	return exporter(ctx, resourceID)
 }
 
 type ResourceJobConfig struct {
@@ -72,6 +80,26 @@ func (job *ResourceJob) RunResource(
 	scheduledOccurrenceMillis *int64,
 	retentionCount int,
 ) (state.BackupRecord, error) {
+	return job.runResource(ctx, resourceKind, resourceID, scheduledOccurrenceMillis, retentionCount, nil)
+}
+
+func (job *ResourceJob) RunResourceStarted(
+	ctx context.Context,
+	resourceKind, resourceID string,
+	scheduledOccurrenceMillis *int64,
+	retentionCount int,
+	onStarted func(state.BackupRecord),
+) (state.BackupRecord, error) {
+	return job.runResource(ctx, resourceKind, resourceID, scheduledOccurrenceMillis, retentionCount, onStarted)
+}
+
+func (job *ResourceJob) runResource(
+	ctx context.Context,
+	resourceKind, resourceID string,
+	scheduledOccurrenceMillis *int64,
+	retentionCount int,
+	onStarted func(state.BackupRecord),
+) (state.BackupRecord, error) {
 	if !validBackupResourceKind(resourceKind) || !validControlIdentifier(resourceID) || retentionCount < 1 || retentionCount > 100 ||
 		(scheduledOccurrenceMillis != nil && *scheduledOccurrenceMillis <= 0) {
 		return state.BackupRecord{}, errors.New("resource backup request is invalid")
@@ -116,17 +144,30 @@ func (job *ResourceJob) RunResource(
 	}); err != nil {
 		return state.BackupRecord{}, err
 	}
+	if onStarted != nil {
+		onStarted(state.BackupRecord{
+			ID: backupID, ResourceKind: resourceKind, ResourceID: resourceID,
+			ScheduledOccurrenceMillis: scheduledOccurrenceMillis, GenerationID: generationID,
+			Status: "running", StartedAtMillis: startedAt.UnixMilli(),
+		})
+	}
 	exported, err := exporter.Export(ctx, resourceID)
 	if err != nil {
 		return job.fail(ctx, backupID, resourceKind, err)
 	}
 	if exported.Reader == nil {
+		if exported.Release != nil {
+			exported.Release()
+		}
 		return job.fail(ctx, backupID, resourceKind, errors.New("resource exporter returned nil reader"))
+	}
+	if exported.Release != nil {
+		defer exported.Release()
 	}
 	built, buildErr := BuildResource(ctx, ResourceBuildConfig{
 		Master: job.config.Master, ResourceKind: resourceKind, ResourceID: resourceID,
 		GenerationID: generationID, WorkRoot: job.config.WorkRoot, CreatedAt: startedAt,
-		Random: job.config.Random,
+		Random: job.config.Random, AttachmentPaths: exported.AttachmentPaths,
 	}, exported.Reader)
 	closeErr := exported.Reader.Close()
 	if buildErr != nil || closeErr != nil {

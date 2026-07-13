@@ -25,6 +25,15 @@ func (successfulBackupProbe) Probe(context.Context) error {
 	return nil
 }
 
+type manualBackupRunner struct {
+	record state.BackupRecord
+	err    error
+}
+
+func (runner manualBackupRunner) TryRunNow(context.Context, string, string, int) (state.BackupRecord, error) {
+	return runner.record, runner.err
+}
+
 func TestBackupTargetAccessOnlyAPIProbesAndNeverReturnsSecret(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -97,6 +106,68 @@ func TestBackupTargetAccessOnlyAPIProbesAndNeverReturnsSecret(t *testing.T) {
 	handler.ServeHTTP(deleteResponse, deleteRequest)
 	if deleteResponse.Code != http.StatusNoContent {
 		t.Fatalf("delete target = %d/%s", deleteResponse.Code, deleteResponse.Body)
+	}
+}
+
+func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(ctx, state.CreateProject{
+		ID: "project", Name: "demo", AuditEventID: "project-audit",
+		ActorID: "user", ActorEmail: "user@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateManagedRedis(ctx, state.CreateManagedRedis{
+		ID: "redis", ProjectID: "project", Name: "cache", ImageTag: "7.4",
+		ImageDigest: "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4",
+		VolumeID:    "volume", PasswordEncrypted: []byte("sealed"), AuditEventID: "redis-audit",
+		ActorKind: "access", ActorID: "user", ActorEmail: "user@example.com", CreatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	application, err := backup.NewResourceApplication(store, manualBackupRunner{record: state.BackupRecord{
+		ID: "backup", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
+		Status: "running", StartedAtMillis: 20,
+	}}, bytes.NewReader(serverSequenceBytes(100)), func() time.Time { return time.UnixMilli(10) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := server.Handler(server.DefaultMeta("ready"), server.WithBackupResources(application))
+	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, raw)
+	put := projectRequest(http.MethodPut, "/api/v1/backups/resources/redis/redis/policy", `{
+  "enabled":true,
+  "cron":" 5 */2 * * 1-5 ",
+  "retentionCount":12
+}`)
+	put.Header.Set("Origin", "https://admin.example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, put)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cron":"5 */2 * * 1-5"`) ||
+		!strings.Contains(response.Body.String(), `"retentionCount":12`) || response.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("set backup policy = %d/%s headers=%v", response.Code, response.Body, response.Header())
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/backups/resources", ""))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resourceId":"redis"`) {
+		t.Fatalf("list backup policies = %d/%s", response.Code, response.Body)
+	}
+	run := projectRequest(http.MethodPost, "/api/v1/backups/resources/redis/redis/run", "")
+	run.Header.Set("Origin", "https://admin.example.com")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, run)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"status":"running"`) {
+		t.Fatalf("run backup now = %d/%s", response.Code, response.Body)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/backups/resources/redis/redis/history?limit=50", ""))
+	if response.Code != http.StatusOK || response.Body.String() != "{\"backups\":[]}\n" {
+		t.Fatalf("backup history = %d/%s", response.Code, response.Body)
 	}
 }
 

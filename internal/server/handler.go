@@ -43,6 +43,7 @@ type handlerConfig struct {
 	registry         *registry.Application
 	registrySettings RegistrySettings
 	backupTargets    *backup.TargetApplication
+	backupResources  *backup.ResourceApplication
 	containerConsole ContainerConsole
 	adminHostname    string
 	diskPressure     DiskPressure
@@ -135,6 +136,12 @@ func WithBackupTargets(application *backup.TargetApplication) Option {
 	}
 }
 
+func WithBackupResources(application *backup.ResourceApplication) Option {
+	return func(config *handlerConfig) {
+		config.backupResources = application
+	}
+}
+
 func WithContainerConsole(hostname string, application ContainerConsole) Option {
 	return func(config *handlerConfig) {
 		config.adminHostname = hostname
@@ -211,6 +218,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.backupTargets != nil {
 		registerBackupTargetRoutes(mux, config.backupTargets)
+	}
+	if config.backupResources != nil {
+		registerBackupResourceRoutes(mux, config.backupResources)
 	}
 	if config.containerConsole != nil {
 		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole, config.admission); err != nil {

@@ -31,6 +31,11 @@ func (application *Application) Cleanup(ctx context.Context, repositoryID string
 			return CleanupResult{}, fmt.Errorf("%w: cleanup actor is incomplete", ErrInvalidInput)
 		}
 	}
+	releaseMaintenance, err := application.beginRepositoryMaintenance(repositoryID, "cleanup")
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	defer releaseMaintenance()
 	lock := application.acquireRepositoryLock(repositoryID)
 	defer application.releaseRepositoryLock(repositoryID, lock)
 	candidates, err := application.cleanupCandidates(ctx, repositoryID, application.now())

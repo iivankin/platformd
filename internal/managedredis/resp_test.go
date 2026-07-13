@@ -78,6 +78,21 @@ func TestRESPRejectsOversizedAndMalformedResponses(t *testing.T) {
 	}
 }
 
+func TestParsePersistenceStatusRequiresExactRDBFields(t *testing.T) {
+	t.Parallel()
+	status, err := parsePersistenceStatus([]byte("# Persistence\r\nrdb_bgsave_in_progress:1\r\nrdb_last_bgsave_status:ok\r\n"))
+	if err != nil || !status.BackgroundSaveInProgress || !status.LastBackgroundSaveOK {
+		t.Fatalf("persistence status = %+v, %v", status, err)
+	}
+	status, err = parsePersistenceStatus([]byte("rdb_bgsave_in_progress:0\r\nrdb_last_bgsave_status:err\r\n"))
+	if err != nil || status.BackgroundSaveInProgress || status.LastBackgroundSaveOK {
+		t.Fatalf("failed persistence status = %+v, %v", status, err)
+	}
+	if _, err := parsePersistenceStatus([]byte("rdb_bgsave_in_progress:0\r\n")); err == nil {
+		t.Fatal("missing last background-save status was accepted")
+	}
+}
+
 func readTestCommand(reader *bufio.Reader) ([]string, error) {
 	line, err := reader.ReadString('\n')
 	if err != nil {

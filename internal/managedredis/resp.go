@@ -86,6 +86,44 @@ func (client *Client) Save(ctx context.Context) error {
 	return client.expectOK(ctx, "OK", "SAVE")
 }
 
+func (client *Client) BeginBackgroundSave(ctx context.Context) error {
+	return client.expectOK(ctx, "Background saving started", "BGSAVE")
+}
+
+func (client *Client) PersistenceStatus(ctx context.Context) (PersistenceStatus, error) {
+	value, err := client.command(ctx, "INFO", "persistence")
+	if err != nil {
+		return PersistenceStatus{}, err
+	}
+	if value.kind != responseBulk {
+		return PersistenceStatus{}, errors.New("unexpected Redis INFO persistence response")
+	}
+	return parsePersistenceStatus(value.bulk)
+}
+
+func parsePersistenceStatus(value []byte) (PersistenceStatus, error) {
+	fields := make(map[string]string)
+	for _, line := range strings.Split(string(value), "\r\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, fieldValue, found := strings.Cut(line, ":")
+		if !found || key == "" || fieldValue == "" {
+			return PersistenceStatus{}, errors.New("Redis persistence INFO contains a malformed field")
+		}
+		fields[key] = fieldValue
+	}
+	inProgress, progressExists := fields["rdb_bgsave_in_progress"]
+	lastStatus, statusExists := fields["rdb_last_bgsave_status"]
+	if !progressExists || (inProgress != "0" && inProgress != "1") || !statusExists || (lastStatus != "ok" && lastStatus != "err") {
+		return PersistenceStatus{}, errors.New("Redis persistence INFO lacks required RDB status fields")
+	}
+	return PersistenceStatus{
+		BackgroundSaveInProgress: inProgress == "1",
+		LastBackgroundSaveOK:     lastStatus == "ok",
+	}, nil
+}
+
 func (client *Client) expectOK(ctx context.Context, expected string, command ...string) error {
 	value, err := client.command(ctx, command...)
 	if err != nil {

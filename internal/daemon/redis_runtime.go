@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"path"
 
@@ -46,6 +47,17 @@ func (stack *runtimeStack) ConfigureManagedRedis(ctx context.Context, store *sta
 		}
 	}
 	return nil
+}
+
+func (stack *runtimeStack) OpenManagedRedisBackup(ctx context.Context, resourceID string) (io.ReadCloser, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return nil, errors.New("managed Redis runtime is not ready")
+	}
+	return controller.OpenBackupRDB(ctx, resourceID)
 }
 
 func (stack *runtimeStack) redisPlacement(resource state.ManagedRedis) (managedredis.Placement, error) {

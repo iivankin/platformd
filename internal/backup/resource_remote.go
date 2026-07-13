@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"os"
 	"sort"
@@ -34,12 +35,33 @@ func PublishResource(ctx context.Context, remote ControlRemote, master cryptobox
 			return errors.Join(putErr, closeErr)
 		}
 	}
+	attachmentDescriptors := make([]ResourceAttachment, len(build.Attachments))
+	for index, attachment := range build.Attachments {
+		attachmentDescriptors[index] = attachment.ResourceAttachment
+	}
+	if err := ValidateResourceAttachments(build.Envelope, attachmentDescriptors); err != nil {
+		return err
+	}
+	for _, attachment := range build.Attachments {
+		file, err := os.Open(attachment.Path)
+		if err != nil {
+			return err
+		}
+		key := remote.Key(ResourceAttachmentKey(
+			build.Envelope.ResourceKind, build.Envelope.ResourceID, build.Envelope.GenerationID, attachment.Index,
+		))
+		putErr := remote.Put(ctx, key, file, attachment.Size, attachment.SHA256)
+		closeErr := file.Close()
+		if putErr != nil || closeErr != nil {
+			return errors.Join(putErr, closeErr)
+		}
+	}
 	envelopeHash := sha256.Sum256(build.EnvelopeBytes)
 	envelopeKey := remote.Key(ResourceEnvelopeKey(build.Envelope.ResourceKind, build.Envelope.ResourceID, build.Envelope.GenerationID))
 	if err := remote.Put(ctx, envelopeKey, bytes.NewReader(build.EnvelopeBytes), int64(len(build.EnvelopeBytes)), hex.EncodeToString(envelopeHash[:])); err != nil {
 		return err
 	}
-	if err := verifyPublishedResource(ctx, remote, master, build.Envelope, build.EnvelopeBytes); err != nil {
+	if err := verifyPublishedResource(ctx, remote, master, build.Envelope, build.EnvelopeBytes, attachmentDescriptors); err != nil {
 		return err
 	}
 	completionHash := sha256.Sum256(build.CompletionBytes)
@@ -55,7 +77,14 @@ func PublishResource(ctx context.Context, remote ControlRemote, master cryptobox
 	return err
 }
 
-func verifyPublishedResource(ctx context.Context, remote ControlRemote, master cryptobox.MasterKey, envelope ResourceEnvelope, expected []byte) error {
+func verifyPublishedResource(
+	ctx context.Context,
+	remote ControlRemote,
+	master cryptobox.MasterKey,
+	envelope ResourceEnvelope,
+	expected []byte,
+	attachments []ResourceAttachment,
+) error {
 	value, err := readRemoteObject(
 		ctx, remote, remote.Key(ResourceEnvelopeKey(envelope.ResourceKind, envelope.ResourceID, envelope.GenerationID)), maximumResourceEnvelopeSize,
 	)
@@ -84,6 +113,20 @@ func verifyPublishedResource(ctx context.Context, remote ControlRemote, master c
 			return fmt.Errorf("verify resource chunk %d: %w", chunk.Index, err)
 		}
 		clear(plaintext)
+	}
+	if err := ValidateResourceAttachments(decoded, attachments); err != nil {
+		return err
+	}
+	for _, attachment := range attachments {
+		reader, err := OpenResourceAttachment(ctx, remote, decoded, attachment)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(io.Discard, reader)
+		closeErr := reader.Close()
+		if copyErr != nil || closeErr != nil {
+			return errors.Join(copyErr, closeErr)
+		}
 	}
 	return nil
 }
@@ -165,6 +208,8 @@ type ResourceReader struct {
 	offset   int
 }
 
+func (reader *ResourceReader) Envelope() ResourceEnvelope { return reader.envelope }
+
 func OpenResource(ctx context.Context, remote ControlRemote, master cryptobox.MasterKey, completion ResourceCompletion) (*ResourceReader, error) {
 	if remote == nil {
 		return nil, errors.New("resource remote is nil")
@@ -223,4 +268,85 @@ func (reader *ResourceReader) Read(output []byte) (int, error) {
 	count := copy(output, reader.current[reader.offset:])
 	reader.offset += count
 	return count, nil
+}
+
+func OpenResourceAttachment(
+	ctx context.Context,
+	remote ControlRemote,
+	envelope ResourceEnvelope,
+	attachment ResourceAttachment,
+) (io.ReadCloser, error) {
+	if remote == nil || ctx == nil || attachment.Index < 0 || attachment.Size <= 0 || !validSHA256(attachment.SHA256) ||
+		attachment.Index >= envelope.AttachmentCount {
+		return nil, errors.New("resource attachment open input is invalid")
+	}
+	body, size, err := remote.Get(ctx, remote.Key(ResourceAttachmentKey(
+		envelope.ResourceKind, envelope.ResourceID, envelope.GenerationID, attachment.Index,
+	)))
+	if err != nil {
+		return nil, err
+	}
+	if size != attachment.Size {
+		return nil, errors.Join(errors.New("resource attachment remote size differs"), body.Close())
+	}
+	return &verifiedAttachmentReader{
+		ctx: ctx, body: body, remaining: attachment.Size, expectedSHA: attachment.SHA256, hash: sha256.New(),
+	}, nil
+}
+
+type verifiedAttachmentReader struct {
+	ctx         context.Context
+	body        io.ReadCloser
+	remaining   int64
+	expectedSHA string
+	hash        hash.Hash
+	verified    bool
+}
+
+func (reader *verifiedAttachmentReader) Read(output []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	if reader.verified {
+		return 0, io.EOF
+	}
+	if reader.remaining == 0 {
+		reader.verified = true
+		if hex.EncodeToString(reader.hash.Sum(nil)) != reader.expectedSHA {
+			return 0, errors.New("resource attachment checksum differs")
+		}
+		return 0, io.EOF
+	}
+	if int64(len(output)) > reader.remaining {
+		output = output[:reader.remaining]
+	}
+	count, err := reader.body.Read(output)
+	if count > 0 {
+		_, _ = reader.hash.Write(output[:count])
+		reader.remaining -= int64(count)
+	}
+	if reader.remaining == 0 {
+		reader.verified = true
+		if hex.EncodeToString(reader.hash.Sum(nil)) != reader.expectedSHA {
+			return count, errors.New("resource attachment checksum differs")
+		}
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+	}
+	if errors.Is(err, io.EOF) && reader.remaining != 0 {
+		return count, io.ErrUnexpectedEOF
+	}
+	if count == 0 && err == nil {
+		return 0, io.ErrNoProgress
+	}
+	return count, err
+}
+
+func (reader *verifiedAttachmentReader) Close() error {
+	closeErr := reader.body.Close()
+	if !reader.verified {
+		return errors.Join(errors.New("resource attachment was not fully verified"), closeErr)
+	}
+	return closeErr
 }

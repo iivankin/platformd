@@ -1,8 +1,10 @@
 package managedredis
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -79,9 +81,12 @@ func (engine *testEngine) InspectContainer(string) (containerengine.Container, e
 }
 
 type testConnection struct {
-	pinged bool
-	saved  bool
-	closed bool
+	pinged         bool
+	saved          bool
+	backgroundSave bool
+	closed         bool
+	statuses       []PersistenceStatus
+	onBackground   func() error
 }
 
 func (connection *testConnection) Ping(context.Context) error {
@@ -92,6 +97,23 @@ func (connection *testConnection) Ping(context.Context) error {
 func (connection *testConnection) Save(context.Context) error {
 	connection.saved = true
 	return nil
+}
+
+func (connection *testConnection) BeginBackgroundSave(context.Context) error {
+	connection.backgroundSave = true
+	if connection.onBackground != nil {
+		return connection.onBackground()
+	}
+	return nil
+}
+
+func (connection *testConnection) PersistenceStatus(context.Context) (PersistenceStatus, error) {
+	if len(connection.statuses) == 0 {
+		return PersistenceStatus{LastBackgroundSaveOK: true}, nil
+	}
+	status := connection.statuses[0]
+	connection.statuses = connection.statuses[1:]
+	return status, nil
 }
 
 func (*testConnection) ScanKeys(context.Context, ScanQuery) (KeyPage, error) {
@@ -252,6 +274,90 @@ func TestControllerDoesNotPublishAndRemovesFailedReadinessCandidate(t *testing.T
 	}
 	if publisher.published || !engine.removed {
 		t.Fatalf("failed candidate publication/removal = %v/%v", publisher.published, engine.removed)
+	}
+}
+
+func TestOpenBackupRDBReturnsNewStableInode(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	generatedRoot := filepath.Join(root, "generated")
+	if err := os.Mkdir(generatedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	password, err := GeneratePasswordWith(zeroReader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource := state.ManagedRedis{
+		ID: "redis-id", ProjectID: "project-id", ProjectName: "shop", Name: "cache",
+		ImageTag: "7.4", ImageDigest: testImageDigest, VolumeID: "volume-id",
+	}
+	engine := &testEngine{
+		image: containerengine.Image{ID: "image-id", Digest: testImageDigest},
+		container: containerengine.Container{
+			ID: "container-id", State: "running", IPs: map[string][]string{"network": {"10.90.0.4"}},
+		},
+	}
+	volumeRoot := filepath.Join(root, "volumes")
+	rdbPath := filepath.Join(volumeRoot, resource.ProjectID, resource.VolumeID, "dump.rdb")
+	connections := 0
+	controller, err := NewController(Config{
+		Store: testStore{resource: resource}, Engine: engine, Publisher: &testPublisher{}, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Password: func(state.ManagedRedis) (string, error) { return password, nil },
+		Placement: func(state.ManagedRedis) (Placement, error) {
+			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1")}, nil
+		},
+		Dial: func(context.Context, string, string) (RedisConnection, error) {
+			connections++
+			if connections == 1 {
+				return &testConnection{}, nil
+			}
+			return &testConnection{onBackground: func() error {
+				temporary := rdbPath + ".new"
+				if err := os.WriteFile(temporary, []byte("new-rdb"), 0o600); err != nil {
+					return err
+				}
+				return os.Rename(temporary, rdbPath)
+			}}, nil
+		},
+		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
+		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ProbePeriod: time.Millisecond,
+		NewID: func(time.Time) (string, error) { return "attempt-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Start(context.Background(), resource.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(rdbPath, []byte("old-rdb"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := controller.OpenBackupRDB(context.Background(), resource.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	payload, err := io.ReadAll(reader)
+	if err != nil || !bytes.Equal(payload, []byte("new-rdb")) {
+		t.Fatalf("backup RDB = %q, %v", payload, err)
+	}
+	if err := os.WriteFile(rdbPath+".later", []byte("later-rdb"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(rdbPath+".later", rdbPath); err != nil {
+		t.Fatal(err)
+	}
+	file, ok := reader.(*os.File)
+	if !ok {
+		t.Fatalf("backup reader type = %T", reader)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	payload, err = io.ReadAll(file)
+	if err != nil || !bytes.Equal(payload, []byte("new-rdb")) {
+		t.Fatalf("stable backup fd = %q, %v", payload, err)
 	}
 }
 

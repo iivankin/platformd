@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/iivankin/platformd/internal/state"
 )
 
 func TestDirtyTrackerKeepsFirstTimestampAndDoesNotLoseConcurrentMutation(t *testing.T) {
@@ -32,6 +34,37 @@ type controlRunnerStub struct {
 	calls   int
 	results []error
 	called  chan int
+}
+
+type resourceRunnerStub struct {
+	started chan struct{}
+	release chan struct{}
+	done    chan struct{}
+}
+
+func (runner *resourceRunnerStub) RunResource(
+	context.Context, string, string, *int64, int,
+) (state.BackupRecord, error) {
+	return state.BackupRecord{}, errors.New("unexpected scheduled resource backup")
+}
+
+func (runner *resourceRunnerStub) RunResourceStarted(
+	_ context.Context,
+	kind, resourceID string,
+	_ *int64,
+	_ int,
+	onStarted func(state.BackupRecord),
+) (state.BackupRecord, error) {
+	record := state.BackupRecord{
+		ID: "backup", ResourceKind: kind, ResourceID: resourceID,
+		GenerationID: "generation", Status: "running", StartedAtMillis: 1,
+	}
+	onStarted(record)
+	close(runner.started)
+	<-runner.release
+	record.Status = "succeeded"
+	close(runner.done)
+	return record, nil
 }
 
 func (runner *controlRunnerStub) RunControl(context.Context) error {
@@ -95,5 +128,39 @@ func TestWorkerRetriesFailureButNotMissingTargetOrPostPublishCleanup(t *testing.
 				t.Fatalf("worker shutdown = %v", err)
 			}
 		})
+	}
+}
+
+func TestWorkerAcceptsOnlyOneImmediateManualBackupWithoutQueue(t *testing.T) {
+	t.Parallel()
+	runner := &resourceRunnerStub{
+		started: make(chan struct{}), release: make(chan struct{}), done: make(chan struct{}),
+	}
+	worker, err := NewScheduledWorker(WorkerConfig{
+		Dirty: NewDirtyTracker(), Control: &controlRunnerStub{},
+		Store: scheduleStoreStub{}, Resources: runner,
+		StartedAt: time.Unix(1, 0), Now: func() time.Time { return time.Unix(2, 0) },
+		RetryDelay: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workerDone := make(chan error, 1)
+	go func() { workerDone <- worker.Run(ctx) }()
+	record, err := worker.TryRunNow(context.Background(), "redis", "redis-1", 7)
+	if err != nil || record.Status != "running" || record.ID == "" {
+		t.Fatalf("manual backup start = %+v, %v", record, err)
+	}
+	<-runner.started
+	if _, err := worker.TryRunNow(context.Background(), "postgres", "postgres-1", 7); !errors.Is(err, ErrWorkerBusy) {
+		t.Fatalf("second manual backup error = %v", err)
+	}
+	close(runner.release)
+	<-runner.done
+	cancel()
+	if err := <-workerDone; !errors.Is(err, context.Canceled) {
+		t.Fatalf("worker shutdown = %v", err)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,9 @@ type ResourceEnvelope struct {
 	CreatedAtMillis int64                `json:"createdAt"`
 	PlaintextSize   int64                `json:"plaintextSize"`
 	Chunks          []backupcrypto.Chunk `json:"chunks"`
+	AttachmentCount int                  `json:"attachmentCount"`
+	AttachmentSize  int64                `json:"attachmentSize"`
+	AttachmentRoot  string               `json:"attachmentRootSha256,omitempty"`
 }
 
 type ResourceCompletion struct {
@@ -43,13 +47,25 @@ type ResourceCompletion struct {
 }
 
 type ResourceBuildConfig struct {
-	Master       cryptobox.MasterKey
-	ResourceKind string
-	ResourceID   string
-	GenerationID string
-	WorkRoot     string
-	CreatedAt    time.Time
-	Random       io.Reader
+	Master          cryptobox.MasterKey
+	ResourceKind    string
+	ResourceID      string
+	GenerationID    string
+	WorkRoot        string
+	CreatedAt       time.Time
+	Random          io.Reader
+	AttachmentPaths []string
+}
+
+type ResourceAttachment struct {
+	Index  int
+	Size   int64
+	SHA256 string
+}
+
+type WorkResourceAttachment struct {
+	ResourceAttachment
+	Path string
 }
 
 type ResourceBuild struct {
@@ -58,6 +74,7 @@ type ResourceBuild struct {
 	Completion      ResourceCompletion
 	CompletionBytes []byte
 	Chunks          []backupcrypto.WorkChunk
+	Attachments     []WorkResourceAttachment
 	WorkDirectory   string
 }
 
@@ -104,10 +121,19 @@ func BuildResource(ctx context.Context, config ResourceBuildConfig, input io.Rea
 		}
 		remoteSize += int64(chunk.CiphertextSize)
 	}
+	attachments, attachmentSize, attachmentRoot, err := buildResourceAttachments(ctx, config.AttachmentPaths)
+	if err != nil {
+		return cleanup(err)
+	}
+	if attachmentSize > math.MaxInt64-remoteSize {
+		return cleanup(errors.New("resource backup remote size overflows"))
+	}
+	remoteSize += attachmentSize
 	envelope := ResourceEnvelope{
 		FormatVersion: ControlFormatVersion, ResourceKind: config.ResourceKind, ResourceID: config.ResourceID,
 		GenerationID: config.GenerationID, CreatedAtMillis: config.CreatedAt.UnixMilli(),
-		PlaintextSize: written, Chunks: descriptors,
+		PlaintextSize: written, Chunks: descriptors, AttachmentCount: len(attachments),
+		AttachmentSize: attachmentSize, AttachmentRoot: attachmentRoot,
 	}
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil || len(envelopeBytes) > maximumResourceEnvelopeSize {
@@ -131,7 +157,7 @@ func BuildResource(ctx context.Context, config ResourceBuildConfig, input io.Rea
 	}
 	return ResourceBuild{
 		Envelope: envelope, EnvelopeBytes: envelopeBytes, Completion: completion, CompletionBytes: completionBytes,
-		Chunks: chunks, WorkDirectory: workDirectory,
+		Chunks: chunks, Attachments: attachments, WorkDirectory: workDirectory,
 	}, nil
 }
 
@@ -150,7 +176,10 @@ func DecodeResourceEnvelope(value []byte) (ResourceEnvelope, error) {
 	}
 	if envelope.FormatVersion != ControlFormatVersion || !validBackupResourceKind(envelope.ResourceKind) ||
 		!validControlIdentifier(envelope.ResourceID) || !validControlIdentifier(envelope.GenerationID) ||
-		envelope.CreatedAtMillis <= 0 || envelope.PlaintextSize <= 0 || len(envelope.Chunks) == 0 {
+		envelope.CreatedAtMillis <= 0 || envelope.PlaintextSize <= 0 || len(envelope.Chunks) == 0 ||
+		envelope.AttachmentCount < 0 || envelope.AttachmentSize < 0 ||
+		(envelope.AttachmentCount == 0 && (envelope.AttachmentSize != 0 || envelope.AttachmentRoot != "")) ||
+		(envelope.AttachmentCount > 0 && (envelope.AttachmentSize <= 0 || !validSHA256(envelope.AttachmentRoot))) {
 		return ResourceEnvelope{}, errors.New("resource envelope fields are invalid")
 	}
 	total := int64(0)
@@ -172,6 +201,95 @@ func DecodeResourceEnvelope(value []byte) (ResourceEnvelope, error) {
 		return ResourceEnvelope{}, errors.New("resource envelope plaintext size differs from chunks")
 	}
 	return envelope, nil
+}
+
+func buildResourceAttachments(ctx context.Context, paths []string) ([]WorkResourceAttachment, int64, string, error) {
+	if len(paths) == 0 {
+		return nil, 0, "", nil
+	}
+	result := make([]WorkResourceAttachment, 0, len(paths))
+	total := int64(0)
+	root := sha256.New()
+	_, _ = io.WriteString(root, "platformd/resource-attachments/v1\x00")
+	for index, path := range paths {
+		if !filepath.IsAbs(path) || filepath.Clean(path) != path || path == string(filepath.Separator) {
+			return nil, 0, "", errors.New("resource attachment path is invalid")
+		}
+		pathInfo, err := os.Lstat(path)
+		if err != nil || !pathInfo.Mode().IsRegular() {
+			return nil, 0, "", errors.Join(err, errors.New("resource attachment path is not a regular file"))
+		}
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, 0, "", err
+		}
+		info, statErr := file.Stat()
+		if statErr != nil || !info.Mode().IsRegular() || !os.SameFile(pathInfo, info) || info.Size() <= 0 {
+			_ = file.Close()
+			return nil, 0, "", errors.Join(statErr, errors.New("resource attachment is empty or not a regular file"))
+		}
+		hash := sha256.New()
+		written, copyErr := io.Copy(hash, &contextReader{ctx: ctx, source: file})
+		closeErr := file.Close()
+		if copyErr != nil || closeErr != nil || written != info.Size() {
+			return nil, 0, "", errors.Join(copyErr, closeErr, errors.New("resource attachment size changed while hashing"))
+		}
+		if info.Size() > math.MaxInt64-total {
+			return nil, 0, "", errors.New("resource attachment total size overflows")
+		}
+		total += info.Size()
+		checksum := hex.EncodeToString(hash.Sum(nil))
+		attachment := WorkResourceAttachment{
+			ResourceAttachment: ResourceAttachment{Index: index, Size: info.Size(), SHA256: checksum}, Path: path,
+		}
+		result = append(result, attachment)
+		writeAttachmentCommitment(root, attachment.ResourceAttachment)
+	}
+	return result, total, hex.EncodeToString(root.Sum(nil)), nil
+}
+
+func ValidateResourceAttachments(envelope ResourceEnvelope, attachments []ResourceAttachment) error {
+	if envelope.AttachmentCount != len(attachments) {
+		return errors.New("resource attachment count differs from envelope")
+	}
+	if len(attachments) == 0 {
+		if envelope.AttachmentSize != 0 || envelope.AttachmentRoot != "" {
+			return errors.New("empty resource attachments differ from envelope")
+		}
+		return nil
+	}
+	root := sha256.New()
+	_, _ = io.WriteString(root, "platformd/resource-attachments/v1\x00")
+	total := int64(0)
+	for index, attachment := range attachments {
+		if attachment.Index != index || attachment.Size <= 0 || !validSHA256(attachment.SHA256) ||
+			attachment.Size > math.MaxInt64-total {
+			return errors.New("resource attachment descriptor is invalid")
+		}
+		total += attachment.Size
+		writeAttachmentCommitment(root, attachment)
+	}
+	if total != envelope.AttachmentSize || hex.EncodeToString(root.Sum(nil)) != envelope.AttachmentRoot {
+		return errors.New("resource attachment commitment differs from envelope")
+	}
+	return nil
+}
+
+func writeAttachmentCommitment(writer io.Writer, attachment ResourceAttachment) {
+	var numbers [16]byte
+	binary.BigEndian.PutUint64(numbers[:8], uint64(attachment.Index))
+	binary.BigEndian.PutUint64(numbers[8:], uint64(attachment.Size))
+	_, _ = writer.Write(numbers[:])
+	checksum, _ := hex.DecodeString(attachment.SHA256)
+	_, _ = writer.Write(checksum)
+}
+
+func validSHA256(value string) bool {
+	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func DecodeResourceCompletion(value []byte) (ResourceCompletion, error) {
@@ -229,6 +347,10 @@ func ResourceChunkKey(kind, resourceID, generationID string, index int) string {
 
 func ResourceEnvelopeKey(kind, resourceID, generationID string) string {
 	return ResourceGenerationPrefix(kind, resourceID, generationID) + "/envelope.json"
+}
+
+func ResourceAttachmentKey(kind, resourceID, generationID string, index int) string {
+	return fmt.Sprintf("%s/attachment-%08d.bin", ResourceGenerationPrefix(kind, resourceID, generationID), index)
 }
 
 func ResourceCompletionKey(kind, resourceID, generationID string) string {

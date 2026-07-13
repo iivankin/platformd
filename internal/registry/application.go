@@ -112,6 +112,8 @@ type Application struct {
 	admissions        map[string]*repositoryAdmission
 	locksMu           sync.Mutex
 	locks             map[string]*uploadLock
+	maintenanceMu     sync.Mutex
+	maintenance       map[string]string
 }
 
 type uploadLock struct {
@@ -162,6 +164,7 @@ func NewApplication(store Store, payloads *PayloadStore, master cryptobox.Master
 		repositoryLocks: make(map[string]*uploadLock),
 		admissions:      make(map[string]*repositoryAdmission),
 		locks:           make(map[string]*uploadLock),
+		maintenance:     make(map[string]string),
 	}, nil
 }
 
