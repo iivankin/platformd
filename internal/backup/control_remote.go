@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/iivankin/platformd/internal/backupcrypto"
 	"github.com/iivankin/platformd/internal/cryptobox"
@@ -36,10 +37,6 @@ func PublishControl(ctx context.Context, remote ControlRemote, master cryptobox.
 		len(build.Chunks) == 0 || len(build.Chunks) != len(build.Envelope.Chunks) || len(build.EnvelopeBytes) == 0 ||
 		len(build.CompletionBytes) == 0 {
 		return errors.New("control publication input is incomplete")
-	}
-	previous, previousExists, err := currentControlCompletion(ctx, remote)
-	if err != nil {
-		return err
 	}
 	for _, chunk := range build.Chunks {
 		file, err := os.Open(chunk.Path)
@@ -75,9 +72,35 @@ func PublishControl(ctx context.Context, remote ControlRemote, master cryptobox.
 	if _, err := DecodeControlCompletion(published); err != nil {
 		return err
 	}
-	if previousExists && previous.GenerationID != build.Completion.GenerationID {
-		if err := deleteRemotePrefix(ctx, remote, remote.Key(ControlGenerationPrefix(previous.GenerationID)+"/")); err != nil {
-			return &PublishedControlError{Err: fmt.Errorf("delete previous control generation: %w", err)}
+	if err := deleteStaleControlGenerations(ctx, remote, build.Completion.GenerationID); err != nil {
+		return &PublishedControlError{Err: fmt.Errorf("delete stale control generations: %w", err)}
+	}
+	return nil
+}
+
+func deleteStaleControlGenerations(ctx context.Context, remote ControlRemote, currentGenerationID string) error {
+	generationsPrefix := remote.Key("control/generations/")
+	currentPrefix := remote.Key(ControlGenerationPrefix(currentGenerationID) + "/")
+	continuation := ""
+	staleKeys := make([]string, 0)
+	for {
+		page, err := remote.List(ctx, generationsPrefix, continuation)
+		if err != nil {
+			return err
+		}
+		for _, object := range page.Objects {
+			if !strings.HasPrefix(object.Key, currentPrefix) {
+				staleKeys = append(staleKeys, object.Key)
+			}
+		}
+		if page.Continuation == "" {
+			break
+		}
+		continuation = page.Continuation
+	}
+	for _, key := range staleKeys {
+		if err := remote.Delete(ctx, key); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -111,19 +134,6 @@ func verifyPublishedControl(ctx context.Context, remote ControlRemote, master cr
 		clear(plaintext)
 	}
 	return nil
-}
-
-func currentControlCompletion(ctx context.Context, remote ControlRemote) (ControlCompletion, bool, error) {
-	value, err := readRemoteObject(ctx, remote, remote.Key(ControlCompletionKey()), 64<<10)
-	if err != nil {
-		var remoteErr *remotes3.RemoteError
-		if errors.As(err, &remoteErr) && remoteErr.StatusCode == 404 {
-			return ControlCompletion{}, false, nil
-		}
-		return ControlCompletion{}, false, err
-	}
-	completion, err := DecodeControlCompletion(value)
-	return completion, err == nil, err
 }
 
 func readRemoteObject(ctx context.Context, remote ControlRemote, key string, maximum int64) ([]byte, error) {

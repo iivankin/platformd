@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,10 +27,24 @@ import (
 type memoryControlRemote struct {
 	objects       map[string][]byte
 	corruptOnRead string
+	pageSize      int
 }
 
 func newMemoryControlRemote() *memoryControlRemote {
 	return &memoryControlRemote{objects: make(map[string][]byte)}
+}
+
+func currentControlCompletion(ctx context.Context, remote ControlRemote) (ControlCompletion, bool, error) {
+	value, err := readRemoteObject(ctx, remote, remote.Key(ControlCompletionKey()), 64<<10)
+	if err != nil {
+		var remoteErr *remotes3.RemoteError
+		if errors.As(err, &remoteErr) && remoteErr.StatusCode == 404 {
+			return ControlCompletion{}, false, nil
+		}
+		return ControlCompletion{}, false, err
+	}
+	completion, err := DecodeControlCompletion(value)
+	return completion, err == nil, err
 }
 
 func (*memoryControlRemote) Key(relative string) string { return "installation/" + relative }
@@ -64,22 +79,29 @@ func (remote *memoryControlRemote) Delete(_ context.Context, key string) error {
 	return nil
 }
 
-func (remote *memoryControlRemote) List(_ context.Context, prefix, _ string) (remotes3.Page, error) {
+func (remote *memoryControlRemote) List(_ context.Context, prefix, continuation string) (remotes3.Page, error) {
 	keys := make([]string, 0)
 	for key := range remote.objects {
-		if strings.HasPrefix(key, prefix) {
+		if strings.HasPrefix(key, prefix) && key > continuation {
 			keys = append(keys, key)
 		}
 	}
 	sort.Strings(keys)
-	page := remotes3.Page{Objects: make([]remotes3.Object, 0, len(keys))}
-	for _, key := range keys {
+	limit := len(keys)
+	if remote.pageSize > 0 && limit > remote.pageSize {
+		limit = remote.pageSize
+	}
+	page := remotes3.Page{Objects: make([]remotes3.Object, 0, limit)}
+	for _, key := range keys[:limit] {
 		page.Objects = append(page.Objects, remotes3.Object{Key: key, Size: int64(len(remote.objects[key]))})
+	}
+	if limit < len(keys) {
+		page.Continuation = keys[limit-1]
 	}
 	return page, nil
 }
 
-func TestPublishControlVerifiesBeforeCompletionAndDeletesPrevious(t *testing.T) {
+func TestPublishControlVerifiesBeforeCompletionAndDeletesEveryStaleGeneration(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	master := cryptobox.MasterKey{1, 2, 3}
@@ -90,6 +112,8 @@ func TestPublishControlVerifiesBeforeCompletionAndDeletesPrevious(t *testing.T) 
 	if err := PublishControl(ctx, remote, master, first); err != nil {
 		t.Fatal(err)
 	}
+	remote.objects[remote.Key(ControlGenerationPrefix("partial")+"/chunk-00000000.pdx")] = []byte("incomplete")
+	remote.pageSize = 1
 	second := controlPublicationBuild(t, master, "second", []byte("second payload"))
 	defer os.RemoveAll(second.WorkDirectory)
 	if err := PublishControl(ctx, remote, master, second); err != nil {
@@ -101,8 +125,8 @@ func TestPublishControlVerifiesBeforeCompletionAndDeletesPrevious(t *testing.T) 
 		t.Fatalf("current completion = %+v, %v, %v", completion, exists, err)
 	}
 	for key := range remote.objects {
-		if strings.Contains(key, "/first/") {
-			t.Fatalf("previous generation object survived publication: %s", key)
+		if strings.Contains(key, "/first/") || strings.Contains(key, "/partial/") {
+			t.Fatalf("stale generation object survived publication: %s", key)
 		}
 	}
 }
