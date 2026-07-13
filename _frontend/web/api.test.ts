@@ -36,6 +36,9 @@ import {
   fetchDiskPressure,
   applySelfUpdate,
   fetchManagedImageTags,
+  previewDatabaseVersion,
+  startDatabaseVersionChange,
+  fetchDatabaseVersionOperation,
   fetchManagedPostgres,
   fetchManagedRedis,
   fetchMeta,
@@ -525,6 +528,87 @@ test("reads one official managed image tag page", async () => {
   expect(requested).toBe(
     "/api/v1/managed-images/postgres/tags?page=2&pageSize=25&search=18"
   );
+});
+
+test("previews, starts, and reads a stateless managed database version change", async () => {
+  const preview = {
+    availableFreeBytes: 300,
+    currentDataBytes: 100,
+    ready: true,
+    requiredFreeBytes: 120,
+    sourceDigest: "sha256:source",
+    sourceTag: "17",
+    targetDigest: "sha256:target",
+    targetTag: "18",
+  };
+  await expect(
+    previewDatabaseVersion(
+      "postgres",
+      "project/id",
+      "postgres/id",
+      "18",
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/version-change/preview"
+        );
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          imageTag: "18",
+        });
+        return Promise.resolve(Response.json(preview));
+      }
+    )
+  ).resolves.toEqual(preview);
+
+  const operation = {
+    id: "operation/id",
+    kind: "postgres_version_change",
+    progress: "resolved_target",
+    startedAt: 1,
+    status: "running" as const,
+    targetId: "postgres/id",
+  };
+  await expect(
+    startDatabaseVersionChange(
+      "postgres",
+      "project/id",
+      "postgres/id",
+      "18",
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/version-change"
+        );
+        return Promise.resolve(
+          Response.json(
+            {
+              operation,
+              sourceDigest: preview.sourceDigest,
+              sourceTag: preview.sourceTag,
+              targetDigest: preview.targetDigest,
+              targetTag: preview.targetTag,
+            },
+            { status: 202 }
+          )
+        );
+      }
+    )
+  ).resolves.toMatchObject({ operation });
+
+  await expect(
+    fetchDatabaseVersionOperation(
+      "postgres",
+      "project/id",
+      "postgres/id",
+      "operation/id",
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/version-change/operation%2Fid"
+        );
+        return Promise.resolve(Response.json(operation));
+      }
+    )
+  ).resolves.toEqual(operation);
 });
 
 test("uses Access-only managed Redis data routes with encoded values unchanged", async () => {

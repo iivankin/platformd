@@ -37,6 +37,7 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups"] = managedResourceBackupReadOperation()
 	}
 	if features.databaseVersions {
+		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/preview"] = databaseVersionPreviewOperation()
 		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change"] = databaseVersionStartOperation()
 		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}"] = databaseVersionReadOperation()
 	}
@@ -60,6 +61,25 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	}
 }
 
+func databaseVersionPreviewOperation() map[string]any {
+	return map[string]any{"post": map[string]any{
+		"summary":    "Resolve a managed database target image and report capacity requirements without storing preview state (admin token)",
+		"parameters": managedDatabaseIdentityParameters(false),
+		"requestBody": map[string]any{
+			"required": true,
+			"content": map[string]any{"application/json": map[string]any{
+				"schema": map[string]string{"$ref": "#/components/schemas/DatabaseVersionChangeRequest"},
+			}},
+		},
+		"responses": map[string]any{
+			"200": map[string]string{"description": "Exact source/target digests, current data size, required free bytes, and current available bytes"},
+			"400": map[string]string{"description": "Invalid target tag"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"403": map[string]string{"description": "Admin role or project boundary denied"},
+		},
+	}}
+}
+
 func databaseVersionStartOperation() map[string]any {
 	return map[string]any{"post": map[string]any{
 		"summary":    "Start a new-volume managed database image change with expected downtime (admin token)",
@@ -76,6 +96,7 @@ func databaseVersionStartOperation() map[string]any {
 			"401": map[string]string{"description": "Missing or invalid Bearer token"},
 			"403": map[string]string{"description": "Admin role or project boundary denied"},
 			"409": map[string]string{"description": "Resource is busy or target digest is already active"},
+			"507": map[string]string{"description": "Insufficient free space for a second database volume"},
 		},
 	}}
 }

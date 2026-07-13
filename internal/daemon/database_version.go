@@ -30,12 +30,16 @@ func (adapter postgresVersionAdapter) Resource(
 	}
 	return databaseversion.Resource{
 		ID: resource.ID, ProjectID: resource.ProjectID,
-		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest,
+		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest, VolumeID: resource.VolumeID,
 	}, nil
 }
 
 func (adapter postgresVersionAdapter) Resolve(ctx context.Context, imageTag string) (string, error) {
 	return adapter.runtime.ResolveManagedPostgresImage(ctx, imageTag)
+}
+
+func (adapter postgresVersionAdapter) Capacity(ctx context.Context, resource databaseversion.Resource) (databaseversion.Capacity, error) {
+	return adapter.runtime.postgresVersionCapacity(ctx, resource)
 }
 
 func (adapter postgresVersionAdapter) Change(ctx context.Context, request databaseversion.ChangeRequest) error {
@@ -59,12 +63,16 @@ func (adapter redisVersionAdapter) Resource(
 	}
 	return databaseversion.Resource{
 		ID: resource.ID, ProjectID: resource.ProjectID,
-		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest,
+		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest, VolumeID: resource.VolumeID,
 	}, nil
 }
 
 func (adapter redisVersionAdapter) Resolve(ctx context.Context, imageTag string) (string, error) {
 	return adapter.runtime.ResolveManagedRedisImage(ctx, imageTag)
+}
+
+func (adapter redisVersionAdapter) Capacity(ctx context.Context, resource databaseversion.Resource) (databaseversion.Capacity, error) {
+	return adapter.runtime.redisVersionCapacity(ctx, resource)
 }
 
 func (adapter redisVersionAdapter) Change(ctx context.Context, request databaseversion.ChangeRequest) error {

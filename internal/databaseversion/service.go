@@ -22,10 +22,16 @@ const (
 )
 
 var (
-	ErrUnsupportedKind = errors.New("managed database kind is unsupported")
-	ErrResourceBusy    = errors.New("managed database already has an active lifecycle operation")
-	ErrSameDigest      = errors.New("target image digest is already active")
-	ErrInvalidInput    = errors.New("managed database version change input is invalid")
+	ErrUnsupportedKind   = errors.New("managed database kind is unsupported")
+	ErrResourceBusy      = errors.New("managed database already has an active lifecycle operation")
+	ErrSameDigest        = errors.New("target image digest is already active")
+	ErrInsufficientSpace = errors.New("managed database version change needs more free disk space")
+	ErrInvalidInput      = errors.New("managed database version change input is invalid")
+)
+
+const (
+	BlockerSameDigest        = "same_digest"
+	BlockerInsufficientSpace = "insufficient_space"
 )
 
 type Store interface {
@@ -40,6 +46,13 @@ type Resource struct {
 	ProjectID   string
 	ImageTag    string
 	ImageDigest string
+	VolumeID    string
+}
+
+type Capacity struct {
+	CurrentDataBytes  uint64
+	RequiredFreeBytes uint64
+	AvailableBytes    uint64
 }
 
 type Actor struct {
@@ -59,6 +72,7 @@ type ChangeRequest struct {
 type Adapter interface {
 	Resource(context.Context, string, string) (Resource, error)
 	Resolve(context.Context, string) (string, error)
+	Capacity(context.Context, Resource) (Capacity, error)
 	Change(context.Context, ChangeRequest) error
 }
 
@@ -84,6 +98,18 @@ type StartResult struct {
 	SourceDigest string          `json:"sourceDigest"`
 	TargetTag    string          `json:"targetTag"`
 	TargetDigest string          `json:"targetDigest"`
+}
+
+type PreviewResult struct {
+	SourceTag          string `json:"sourceTag"`
+	SourceDigest       string `json:"sourceDigest"`
+	TargetTag          string `json:"targetTag"`
+	TargetDigest       string `json:"targetDigest"`
+	CurrentDataBytes   uint64 `json:"currentDataBytes"`
+	RequiredFreeBytes  uint64 `json:"requiredFreeBytes"`
+	AvailableFreeBytes uint64 `json:"availableFreeBytes"`
+	Ready              bool   `json:"ready"`
+	Blocker            string `json:"blocker,omitempty"`
 }
 
 func New(config Config) (*Service, error) {
@@ -139,19 +165,18 @@ func (service *Service) Start(
 	if err != nil {
 		return StartResult{}, err
 	}
-	resource, err := adapter.Resource(ctx, projectID, resourceID)
+	preview, resource, err := service.preview(ctx, adapter, projectID, resourceID, imageTag)
 	if err != nil {
 		lease.Release()
 		return StartResult{}, err
 	}
-	targetDigest, err := adapter.Resolve(ctx, imageTag)
-	if err != nil {
-		lease.Release()
-		return StartResult{}, err
-	}
-	if targetDigest == resource.ImageDigest {
+	switch preview.Blocker {
+	case BlockerSameDigest:
 		lease.Release()
 		return StartResult{}, ErrSameDigest
+	case BlockerInsufficientSpace:
+		lease.Release()
+		return StartResult{}, ErrInsufficientSpace
 	}
 	startedAt := service.config.Now()
 	operationID, err := id.NewWith(startedAt, service.config.Random)
@@ -172,12 +197,71 @@ func (service *Service) Start(
 	}
 	releaseOnError = false
 	go service.execute(adapter, ChangeRequest{
-		Resource: resource, ImageTag: imageTag, ImageDigest: targetDigest, Actor: actor,
+		Resource: resource, ImageTag: preview.TargetTag, ImageDigest: preview.TargetDigest, Actor: actor,
 	}, operationID, resourceKey, lease)
 	return StartResult{
-		Operation: operation, SourceTag: resource.ImageTag, SourceDigest: resource.ImageDigest,
-		TargetTag: imageTag, TargetDigest: targetDigest,
+		Operation: operation, SourceTag: preview.SourceTag, SourceDigest: preview.SourceDigest,
+		TargetTag: preview.TargetTag, TargetDigest: preview.TargetDigest,
 	}, nil
+}
+
+func (service *Service) Preview(
+	ctx context.Context,
+	kind string,
+	projectID string,
+	resourceID string,
+	imageTag string,
+) (PreviewResult, error) {
+	adapter := service.config.Adapters[kind]
+	if adapter == nil {
+		return PreviewResult{}, ErrUnsupportedKind
+	}
+	if ctx == nil || projectID == "" || resourceID == "" || strings.TrimSpace(imageTag) == "" {
+		return PreviewResult{}, ErrInvalidInput
+	}
+	if err := service.config.Context.Err(); err != nil {
+		return PreviewResult{}, err
+	}
+	preview, _, err := service.preview(ctx, adapter, projectID, resourceID, imageTag)
+	return preview, err
+}
+
+func (service *Service) preview(
+	ctx context.Context,
+	adapter Adapter,
+	projectID string,
+	resourceID string,
+	imageTag string,
+) (PreviewResult, Resource, error) {
+	imageTag = strings.TrimSpace(imageTag)
+	resource, err := adapter.Resource(ctx, projectID, resourceID)
+	if err != nil {
+		return PreviewResult{}, Resource{}, err
+	}
+	targetDigest, err := adapter.Resolve(ctx, imageTag)
+	if err != nil {
+		return PreviewResult{}, Resource{}, err
+	}
+	capacity, err := adapter.Capacity(ctx, resource)
+	if err != nil {
+		return PreviewResult{}, Resource{}, err
+	}
+	preview := PreviewResult{
+		SourceTag: resource.ImageTag, SourceDigest: resource.ImageDigest,
+		TargetTag: imageTag, TargetDigest: targetDigest,
+		CurrentDataBytes:   capacity.CurrentDataBytes,
+		RequiredFreeBytes:  capacity.RequiredFreeBytes,
+		AvailableFreeBytes: capacity.AvailableBytes,
+		Ready:              true,
+	}
+	if targetDigest == resource.ImageDigest {
+		preview.Ready = false
+		preview.Blocker = BlockerSameDigest
+	} else if capacity.AvailableBytes < capacity.RequiredFreeBytes {
+		preview.Ready = false
+		preview.Blocker = BlockerInsufficientSpace
+	}
+	return preview, resource, nil
 }
 
 func (service *Service) Operation(
