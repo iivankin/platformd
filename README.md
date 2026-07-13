@@ -2,8 +2,6 @@
 
 `platformd` is a lightweight, single-VPS application platform distributed as one self-contained file. It embeds its control plane, HTTPS ingress, React admin UI, OCI Registry, private S3-compatible object storage, and private container runtime bundle.
 
-The implementation follows [`docs/spec.md`](docs/spec.md). The specification is authoritative when this README and implementation notes are less precise.
-
 ## Repository shape
 
 - `main.go` — public `init` dispatch and private daemon entrypoint.
