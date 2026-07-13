@@ -23,6 +23,7 @@ import (
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/bootstrap"
+	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerlogs"
@@ -92,6 +93,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	if err := prepareRuntimeHost(ctx, paths, cgroups.WorkloadRoot()); err != nil {
 		return fmt.Errorf("clean runtime before state migration: %w", err)
+	}
+	resourceUsage, err := cgroupstats.NewProduction(cgroups.WorkloadRoot())
+	if err != nil {
+		return fmt.Errorf("configure resource usage reader: %w", err)
 	}
 	key, err := masterkey.Load(paths.MasterKey, 0)
 	if err != nil {
@@ -552,6 +557,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithContainerConsole(installation.AdminHostname, containerConsole),
 		server.WithServerTerminalAuth(serverTerminalAuth),
 		server.WithDiskPressure(pressure),
+		server.WithResourceUsage(resourceUsage),
 		server.WithAdmission(mutationAdmission),
 		server.WithSelfUpdate(platformUpdater, func() {
 			updateCommitted.Store(true)

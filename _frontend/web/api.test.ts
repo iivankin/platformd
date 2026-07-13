@@ -59,6 +59,7 @@ import {
   fetchRegistryRepositories,
   fetchRegistrySettings,
   fetchRecoveryStatus,
+  fetchResourceUsage,
   mutateManagedRedis,
   objectDownloadURL,
   previewObject,
@@ -517,6 +518,28 @@ test("reads derived disk pressure without a persisted operation", async () => {
       )
     )
   ).resolves.toMatchObject({ level: "critical", reservePresent: false });
+});
+
+test("reads stateless resource cgroup usage", async () => {
+  let requested = "";
+  await expect(
+    fetchResourceUsage("service", "api/id", undefined, (input) => {
+      requested = input.toString();
+      return Promise.resolve(
+        Response.json({
+          cpuUsageMicros: 123_456,
+          hostCpuCores: 8,
+          hostMemoryBytes: 16 * 1024 ** 3,
+          memoryBytes: 64 * 1024 ** 2,
+          observedAt: 42,
+          running: true,
+        })
+      );
+    })
+  ).resolves.toMatchObject({ memoryBytes: 64 * 1024 ** 2, running: true });
+  expect(requested).toBe(
+    "/api/v1/infrastructure/resources/service/api%2Fid/usage"
+  );
 });
 
 test("reads filtered paginated audit history", async () => {

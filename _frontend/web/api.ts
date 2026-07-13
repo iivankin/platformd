@@ -271,6 +271,18 @@ const diskPressureSchema = z.object({
 
 export type DiskPressure = z.infer<typeof diskPressureSchema>;
 
+const resourceUsageSchema = z.object({
+  cpuUsageMicros: z.number().int().nonnegative(),
+  hostCpuCores: z.number().int().positive(),
+  hostMemoryBytes: z.number().int().positive(),
+  memoryBytes: z.number().int().nonnegative(),
+  observedAt: z.number().int().positive(),
+  running: z.boolean(),
+});
+
+export type ResourceUsage = z.infer<typeof resourceUsageSchema>;
+export type ResourceUsageKind = "postgres" | "redis" | "service";
+
 const selfUpdateResultSchema = z.object({
   previousVersion: z.string().min(1),
   targetVersion: z.string().min(1),
@@ -1203,6 +1215,25 @@ export const fetchDiskPressure = async (
     );
   }
   return diskPressureSchema.parse(await response.json());
+};
+
+export const fetchResourceUsage = async (
+  kind: ResourceUsageKind,
+  resourceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ResourceUsage> => {
+  const response = await fetcher(
+    `/api/v1/infrastructure/resources/${kind}/${encodeURIComponent(resourceID)}/usage`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `resource usage request failed with ${response.status}`
+    );
+  }
+  return resourceUsageSchema.parse(await response.json());
 };
 
 export const applySelfUpdate = async (

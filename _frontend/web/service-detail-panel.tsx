@@ -21,6 +21,7 @@ import { Button } from "@/components/ui/button";
 import { ContainerTerminalOverlay } from "@/container-terminal-overlay";
 import { DeploymentHistory } from "@/deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
+import { ResourceUsage } from "@/resource-usage";
 import { ServiceDomains } from "@/service-domains";
 import { ServiceVolumes } from "@/service-volumes";
 
@@ -218,6 +219,13 @@ export const ServiceDetailPanel = ({
             </p>
           ) : null}
         </section>
+
+        <ResourceUsage
+          cpuMillicores={service?.cpuMillicores}
+          kind="service"
+          memoryBytes={service?.memoryMaxBytes}
+          resourceID={serviceID}
+        />
 
         <section className="border-b border-border px-4 py-4">
           <div className="flex flex-wrap gap-2">
