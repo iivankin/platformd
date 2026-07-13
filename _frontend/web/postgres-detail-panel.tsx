@@ -6,6 +6,7 @@ import type { ManagedPostgres, PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import { DatabaseVersionChange } from "@/database-version-change";
 import type { ResourceNodeData } from "@/project-flow";
+import { ResourceBackupPanel } from "@/resource-backup-panel";
 
 interface PostgresDetailPanelProperties {
   data: ResourceNodeData;
@@ -144,6 +145,10 @@ export const PostgresDetailPanel = ({
           </p>
           <p className="mt-1 truncate">postgres:{resource?.imageTag ?? "—"}</p>
         </div>
+      </div>
+
+      <div className="max-h-[45vh] shrink-0 overflow-y-auto">
+        <ResourceBackupPanel resourceID={postgresID} resourceKind="postgres" />
       </div>
 
       {resource ? (

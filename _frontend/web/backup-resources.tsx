@@ -1,10 +1,56 @@
 import { DatabaseBackup, LoaderCircle } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import { fetchBackupPolicies } from "@/api";
 import type { BackupPolicy } from "@/api";
-import { BackupResourceRow } from "@/backup-resource-row";
+
+const resourceLabel: Record<BackupPolicy["resourceKind"], string> = {
+  object_store: "Object Store",
+  postgres: "PostgreSQL",
+  redis: "Redis",
+  registry: "Registry",
+};
+
+const nextRun = (policy: BackupPolicy) => {
+  if (!policy.nextRunAt) {
+    return "Disabled";
+  }
+  return new Date(policy.nextRunAt).toISOString().replace(".000Z", "Z");
+};
+
+const BackupResourceSummary = ({ policy }: { policy: BackupPolicy }) => (
+  <div className="grid items-center gap-3 border-b border-border px-5 py-4 last:border-b-0 md:grid-cols-[minmax(12rem,1fr)_minmax(12rem,1fr)_minmax(12rem,1fr)_minmax(9rem,0.6fr)]">
+    <div className="min-w-0">
+      <p className="text-[10px] font-medium">
+        {resourceLabel[policy.resourceKind]}
+      </p>
+      <p className="mt-1 truncate font-mono text-[9px] text-muted-foreground">
+        {policy.resourceId}
+      </p>
+    </div>
+    <div className="min-w-0">
+      <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+        Schedule
+      </p>
+      <p className="mt-1.5 truncate font-mono text-[9px]">
+        {policy.enabled ? `${policy.cron} UTC` : "Disabled"}
+      </p>
+    </div>
+    <div className="min-w-0">
+      <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+        Next run
+      </p>
+      <p className="mt-1.5 truncate font-mono text-[9px]">{nextRun(policy)}</p>
+    </div>
+    <div>
+      <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+        Retention
+      </p>
+      <p className="mt-1.5 text-[10px]">{policy.retentionCount} generations</p>
+    </div>
+  </div>
+);
 
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Unable to load backup resources";
@@ -41,17 +87,6 @@ export const BackupResources = () => {
     };
   }, []);
 
-  const updatePolicy = useCallback((updated: BackupPolicy) => {
-    setPolicies((current) =>
-      current.map((policy) =>
-        policy.resourceKind === updated.resourceKind &&
-        policy.resourceId === updated.resourceId
-          ? updated
-          : policy
-      )
-    );
-  }, []);
-
   const ordered = policies.toSorted((left, right) => {
     const kind = left.resourceKind.localeCompare(right.resourceKind);
     return kind || left.resourceId.localeCompare(right.resourceId);
@@ -69,14 +104,13 @@ export const BackupResources = () => {
     content = (
       <p className="px-5 py-5 text-[10px] text-muted-foreground">
         Create PostgreSQL, Redis, Registry, or Object Store resources to
-        configure their backups.
+        populate this backup index.
       </p>
     );
   } else {
     content = ordered.map((policy) => (
-      <BackupResourceRow
+      <BackupResourceSummary
         key={`${policy.resourceKind}:${policy.resourceId}`}
-        onPolicyUpdated={updatePolicy}
         policy={policy}
       />
     ));
@@ -89,8 +123,8 @@ export const BackupResources = () => {
         <div>
           <h2 className="text-[10px] font-medium">Resource backups</h2>
           <p className="mt-1 text-[9px] text-muted-foreground">
-            Independent UTC schedule, retention, generations, and restore for
-            every exact managed resource.
+            Read-only index of every resource policy. Manage generations and
+            restore inside the exact resource workspace.
           </p>
         </div>
         <span className="ml-auto font-mono text-[9px] text-muted-foreground">

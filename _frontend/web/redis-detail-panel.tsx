@@ -21,6 +21,7 @@ import { formatBytes, formatTTL } from "@/redis-data-utils";
 import { RedisKeyEditor } from "@/redis-key-editor";
 import { RedisNewKeyForm } from "@/redis-new-key-form";
 import { RedisPersistenceStatus } from "@/redis-persistence-status";
+import { ResourceBackupPanel } from "@/resource-backup-panel";
 
 interface RedisDetailPanelProperties {
   data: ResourceNodeData;
@@ -253,6 +254,8 @@ export const RedisDetailPanel = ({
         </section>
 
         <RedisPersistenceStatus projectID={projectID} redisID={redisID} />
+
+        <ResourceBackupPanel resourceID={redisID} resourceKind="redis" />
 
         <RedisVersionChange
           onSucceeded={refreshAfterVersionChange}

@@ -23,6 +23,7 @@ import {
   ObjectStoreUploadBar,
 } from "@/object-store-browser";
 import type { ResourceNodeData } from "@/project-flow";
+import { ResourceBackupPanel } from "@/resource-backup-panel";
 
 interface ObjectStoreDetailPanelProperties {
   data: ResourceNodeData;
@@ -235,6 +236,10 @@ export const ObjectStoreDetailPanel = ({
             {resource?.publicHostname ? "Public + internal" : "Internal only"}
           </p>
         </div>
+      </div>
+
+      <div className="max-h-[45vh] shrink-0 overflow-y-auto">
+        <ResourceBackupPanel resourceID={storeID} resourceKind="object_store" />
       </div>
 
       <ObjectStoreUploadBar
