@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -23,6 +24,10 @@ type liveLogRepository struct {
 	records  []containerlogs.Record
 	queries  int
 	revision int
+}
+
+func (*liveLogRepository) DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error) {
+	return containerlogs.DownloadResult{}, nil
 }
 
 func (repository *liveLogRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {

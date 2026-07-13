@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,7 +15,17 @@ import (
 )
 
 type logRepository struct {
-	calls int
+	calls         int
+	downloadCalls int
+	downloadQuery containerlogs.DownloadQuery
+}
+
+func (repository *logRepository) DownloadServiceLogs(_ context.Context, _ string, query containerlogs.DownloadQuery, destination io.Writer) (containerlogs.DownloadResult, error) {
+	repository.downloadCalls++
+	repository.downloadQuery = query
+	const payload = "{\"type\":\"platformd.log_export_complete\",\"records\":0,\"truncated\":false}\n"
+	written, err := io.WriteString(destination, payload)
+	return containerlogs.DownloadResult{Bytes: int64(written)}, err
 }
 
 func (repository *logRepository) ServiceLogs(context.Context, string, string, string, string, int) (containerlogs.Window, error) {
@@ -23,6 +34,33 @@ func (repository *logRepository) ServiceLogs(context.Context, string, string, st
 		Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "ready",
 		DeploymentID: "deployment", AttemptID: "attempt",
 	}}}, nil
+}
+
+func TestAdminServiceLogDownloadRequiresAccessAndBoundsRange(t *testing.T) {
+	repository := &logRepository{}
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
+	path := "/api/v1/projects/project/services/service/logs/download?from=1783843200000&to=1783846800000&deploymentId=deployment"
+	response := httptest.NewRecorder()
+	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusForbidden || repository.downloadCalls != 0 {
+		t.Fatalf("unauthenticated download = %d/%s calls=%d", response.Code, response.Body, repository.downloadCalls)
+	}
+
+	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
+	if response.Code != http.StatusOK || repository.downloadCalls != 1 || repository.downloadQuery.DeploymentID != "deployment" ||
+		response.Header().Get("Content-Type") != "application/x-ndjson; charset=utf-8" ||
+		!strings.Contains(response.Header().Get("Content-Disposition"), "platformd-service-logs.ndjson") ||
+		!strings.Contains(response.Body.String(), "log_export_complete") {
+		t.Fatalf("download = %d/%s headers=%v query=%+v", response.Code, response.Body, response.Header(), repository.downloadQuery)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs/download?from=1783843200000&to=1783933200001", ""))
+	if response.Code != http.StatusBadRequest || repository.downloadCalls != 1 {
+		t.Fatalf("overlong download = %d/%s calls=%d", response.Code, response.Body, repository.downloadCalls)
+	}
 }
 
 func (*logRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {

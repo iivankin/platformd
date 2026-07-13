@@ -1,4 +1,10 @@
-import { AlertTriangle, FileClock, RefreshCw, Search } from "lucide-react";
+import {
+  AlertTriangle,
+  Download,
+  FileClock,
+  RefreshCw,
+  Search,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { fetchProjectCanvas, parseLogStreamMessage } from "@/api";
@@ -6,10 +12,20 @@ import type { LogWindow, Project, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { applyLogStreamMessage, serviceLogSocketURL } from "@/log-stream";
+import {
+  applyLogStreamMessage,
+  serviceLogDownloadURL,
+  serviceLogSocketURL,
+} from "@/log-stream";
 
 const shortID = (value: string) => value.slice(0, 8);
 const logWindowLimit = 500;
+const maximumDownloadRangeMillis = 24 * 60 * 60 * 1000;
+
+const localDateTimeValue = (date: Date) => {
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+};
 
 export const LogsPage = ({ projects }: { projects: Project[] }) => {
   const [selectedProjectID, setSelectedProjectID] = useState("");
@@ -17,6 +33,12 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
   const [canvas, setCanvas] = useState<ProjectCanvas>();
   const [contains, setContains] = useState("");
   const [deploymentID, setDeploymentID] = useState("");
+  const [downloadFrom, setDownloadFrom] = useState(() =>
+    localDateTimeValue(new Date(Date.now() - 60 * 60 * 1000))
+  );
+  const [downloadTo, setDownloadTo] = useState(() =>
+    localDateTimeValue(new Date())
+  );
   const [window, setWindow] = useState<LogWindow>();
   const [loadingCanvas, setLoadingCanvas] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
@@ -247,6 +269,77 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
             Apply
           </Button>
         </form>
+      </section>
+
+      <section className="flex flex-wrap items-end gap-3 border-b border-border px-5 py-3">
+        <div className="mr-auto max-w-md">
+          <p className="text-[10px] font-medium">Download structured NDJSON</p>
+          <p className="mt-1 text-[9px] leading-4 text-muted-foreground">
+            Selected local-time range, at most 24 hours and 100 MiB. The file
+            ends with an explicit completion or truncation record.
+          </p>
+        </div>
+        <label
+          className="grid gap-1.5 text-[10px] text-muted-foreground"
+          htmlFor="log-download-from"
+        >
+          From
+          <Input
+            className="h-8 w-48 text-[10px]"
+            id="log-download-from"
+            onChange={(event) => setDownloadFrom(event.target.value)}
+            type="datetime-local"
+            value={downloadFrom}
+          />
+        </label>
+        <label
+          className="grid gap-1.5 text-[10px] text-muted-foreground"
+          htmlFor="log-download-to"
+        >
+          To
+          <Input
+            className="h-8 w-48 text-[10px]"
+            id="log-download-to"
+            onChange={(event) => setDownloadTo(event.target.value)}
+            type="datetime-local"
+            value={downloadTo}
+          />
+        </label>
+        <Button
+          disabled={!projectID || !serviceID}
+          onClick={() => {
+            const from = new Date(downloadFrom).getTime();
+            const to = new Date(downloadTo).getTime();
+            if (
+              !Number.isFinite(from) ||
+              !Number.isFinite(to) ||
+              to <= from ||
+              to - from > maximumDownloadRangeMillis
+            ) {
+              setError(
+                "Download range must be greater than zero and at most 24 hours"
+              );
+              return;
+            }
+            setError(undefined);
+            const link = document.createElement("a");
+            link.download = "";
+            link.href = serviceLogDownloadURL(projectID, serviceID, {
+              deploymentId: deploymentID.trim() || undefined,
+              from,
+              to,
+            });
+            document.body.append(link);
+            link.click();
+            link.remove();
+          }}
+          size="sm"
+          type="button"
+          variant="outline"
+        >
+          <Download />
+          Download
+        </Button>
       </section>
 
       <section className="grid grid-cols-3 border-b border-border text-[10px] text-muted-foreground">
