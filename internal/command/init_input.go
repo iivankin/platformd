@@ -11,6 +11,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/iivankin/platformd/internal/bootstrap"
+	"github.com/iivankin/platformd/internal/disasterrestore"
 )
 
 const maximumPromptLineBytes = 4096
@@ -34,6 +35,27 @@ func bootstrapInputProvider(inputFD int) (func() (bootstrap.ValidatedInput, erro
 		}, nil
 	}
 	return readInteractiveInput, nil
+}
+
+func restoreInputProvider(inputFD int) (func() (disasterrestore.ValidatedInput, error), error) {
+	if inputFD >= 0 {
+		if term.IsTerminal(inputFD) {
+			return nil, errors.New("--input-fd must not reference a terminal")
+		}
+		return func() (disasterrestore.ValidatedInput, error) {
+			file := os.NewFile(uintptr(inputFD), "platformd-restore-input")
+			if file == nil {
+				return disasterrestore.ValidatedInput{}, errors.New("--input-fd is invalid")
+			}
+			defer file.Close()
+			input, err := disasterrestore.ReadInput(file)
+			if err != nil {
+				return disasterrestore.ValidatedInput{}, err
+			}
+			return disasterrestore.ValidateInput(input)
+		}, nil
+	}
+	return readInteractiveRestoreInput, nil
 }
 
 func confirmRecoveryKey(recoveryKey string) error {
@@ -129,6 +151,83 @@ func readInteractiveInput() (bootstrap.ValidatedInput, error) {
 	}
 	clear(passphrase)
 	return bootstrap.ValidateInput(input)
+}
+
+func readInteractiveRestoreInput() (disasterrestore.ValidatedInput, error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, errors.New("interactive restore requires a root TTY or --input-fd")
+	}
+	defer tty.Close()
+	master, err := promptSecret(tty, "Master recovery key: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	defer clear(master)
+	endpoint, err := prompt(tty, "Remote S3 endpoint: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	region, err := prompt(tty, "Remote S3 region: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	bucket, err := prompt(tty, "Remote S3 bucket: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	prefix, err := prompt(tty, "Remote S3 prefix (empty is allowed): ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	accessKey, err := prompt(tty, "Remote S3 access key ID: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	secret, err := promptSecret(tty, "Remote S3 secret access key: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	defer clear(secret)
+	override, err := prompt(tty, "Override restored Cloudflare Access team/AUD? [y/N]: ")
+	if err != nil {
+		return disasterrestore.ValidatedInput{}, err
+	}
+	var team, audience string
+	if answer := strings.ToLower(strings.TrimSpace(override)); answer == "y" || answer == "yes" {
+		team, err = prompt(tty, "Cloudflare Access team domain override: ")
+		if err != nil {
+			return disasterrestore.ValidatedInput{}, err
+		}
+		audience, err = prompt(tty, "Cloudflare Access application AUD override: ")
+		if err != nil {
+			return disasterrestore.ValidatedInput{}, err
+		}
+	} else if answer != "" && answer != "n" && answer != "no" {
+		return disasterrestore.ValidatedInput{}, errors.New("Access override answer must be yes or no")
+	}
+	return disasterrestore.ValidateInput(disasterrestore.Input{
+		MasterRecoveryKey: string(master), Endpoint: endpoint, Region: region, Bucket: bucket, Prefix: prefix,
+		AccessKeyID: accessKey, SecretAccessKey: string(secret),
+		AccessTeamDomainOverride: team, AccessAudienceOverride: audience,
+	})
+}
+
+func promptSecret(tty *os.File, label string) ([]byte, error) {
+	if _, err := io.WriteString(tty, label); err != nil {
+		return nil, err
+	}
+	value, err := term.ReadPassword(int(tty.Fd()))
+	_, _ = io.WriteString(tty, "\n")
+	if err != nil {
+		clear(value)
+		return nil, err
+	}
+	if len(value) == 0 || len(value) > maximumPromptLineBytes {
+		clear(value)
+		return nil, errors.New("secret input size is outside bounds")
+	}
+	return value, nil
 }
 
 func prompt(tty *os.File, label string) (string, error) {

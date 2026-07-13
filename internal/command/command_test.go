@@ -37,7 +37,7 @@ func TestInitHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
 	}
-	if got := stdout.String(); got != "usage: platformd init [--input-fd <fd> | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n" {
+	if got := stdout.String(); got != "usage: platformd init [--input-fd <fd>] [--restore | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n" {
 		t.Fatalf("stdout = %q", got)
 	}
 }
@@ -48,6 +48,8 @@ func TestInitRecoveryModesAreMutuallyExclusive(t *testing.T) {
 		{"init", "--binary", "/tmp/platformd"},
 		{"init", "--rollback-update", "--install-signed-update", "/tmp/manifest"},
 		{"init", "--input-fd", "3", "--install-signed-update", "/tmp/manifest"},
+		{"init", "--restore", "--rollback-update"},
+		{"init", "--restore", "--install-signed-update", "/tmp/manifest"},
 	} {
 		var stdout bytes.Buffer
 		var stderr bytes.Buffer

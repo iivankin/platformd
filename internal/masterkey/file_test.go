@@ -78,3 +78,25 @@ func TestPartialExistingKeyIsNeverRegenerated(t *testing.T) {
 		t.Fatalf("partial key was modified: %q", value)
 	}
 }
+
+func TestRecoveryStringRoundTripAndInstallRefusesReplacement(t *testing.T) {
+	t.Parallel()
+	key, err := masterkey.ParseRecoveryString("KioqKioqKioqKioqKioqKioqKioqKioqKioqKioqKio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "config", "master.key")
+	if err := masterkey.Install(path, os.Geteuid(), key); err != nil {
+		t.Fatal(err)
+	}
+	if err := masterkey.Install(path, os.Geteuid(), key); err != nil {
+		t.Fatalf("same-key retry failed: %v", err)
+	}
+	different, err := masterkey.ParseRecoveryString("KysrKysrKysrKysrKysrKysrKysrKysrKysrKysrKys")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := masterkey.Install(path, os.Geteuid(), different); err == nil {
+		t.Fatal("existing master key was replaceable")
+	}
+}

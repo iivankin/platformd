@@ -163,6 +163,13 @@ func SwitchCurrentRelease(paths layout.Paths, version string) error {
 	return replaceSymlink(version, paths.Current)
 }
 
+func InstallEntrypoints(paths layout.Paths, expectedUID int) error {
+	if err := installLocalBinaryLink(paths); err != nil {
+		return err
+	}
+	return installSystemdUnit(paths, expectedUID)
+}
+
 // SwitchToRelease verifies both slots and publishes previous before the single
 // durable selection boundary, current. A crash before current changes leaves
 // the old daemon selected; a crash after it starts the new slot.

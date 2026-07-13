@@ -92,6 +92,56 @@ func RecoveryString(key cryptobox.MasterKey) string {
 	return base64.RawURLEncoding.EncodeToString(key[:])
 }
 
+func ParseRecoveryString(value string) (cryptobox.MasterKey, error) {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil {
+		return cryptobox.MasterKey{}, errors.New("master recovery key is invalid")
+	}
+	defer clear(decoded)
+	key, err := cryptobox.ParseMasterKey(decoded)
+	if err != nil {
+		return cryptobox.MasterKey{}, errors.New("master recovery key is invalid")
+	}
+	return key, nil
+}
+
+// Install writes a supplied recovery key exactly once. A retry after a crash
+// accepts only the same key; it never replaces an existing installation key.
+func Install(path string, expectedUID int, key cryptobox.MasterKey) error {
+	if existing, err := load(path, expectedUID); err == nil {
+		if existing != key {
+			return errors.New("existing master key differs from supplied recovery key")
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			existing, loadErr := load(path, expectedUID)
+			if loadErr == nil && existing == key {
+				return nil
+			}
+			return errors.Join(err, loadErr)
+		}
+		return err
+	}
+	_, writeErr := file.Write(key[:])
+	if writeErr == nil {
+		writeErr = file.Sync()
+	}
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		return errors.Join(writeErr, closeErr)
+	}
+	return syncDirectory(filepath.Dir(path))
+}
+
 func syncDirectory(path string) error {
 	directory, err := os.Open(path)
 	if err != nil {

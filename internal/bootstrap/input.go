@@ -58,13 +58,9 @@ func ValidateInput(input Input) (ValidatedInput, error) {
 	if err != nil {
 		return ValidatedInput{}, fmt.Errorf("admin hostname: %w", err)
 	}
-	teamDomain, err := normalizeTeamDomain(input.AccessTeamDomain)
+	teamDomain, audience, err := ValidateAccessConfiguration(input.AccessTeamDomain, input.AccessAudience)
 	if err != nil {
-		return ValidatedInput{}, fmt.Errorf("Access team domain: %w", err)
-	}
-	audience := strings.TrimSpace(input.AccessAudience)
-	if audience == "" || len(audience) > 512 {
-		return ValidatedInput{}, errors.New("Access audience must contain 1..512 bytes")
+		return ValidatedInput{}, err
 	}
 	passphrase := []byte(input.ConsolePassphrase)
 	if len(passphrase) == 0 || len(passphrase) > 1024 {
@@ -120,6 +116,18 @@ func ValidateInput(input Input) (ValidatedInput, error) {
 		OriginCertificatePEM: input.OriginCertificatePEM,
 		OriginPrivateKeyPEM:  []byte(input.OriginPrivateKeyPEM),
 	}, nil
+}
+
+func ValidateAccessConfiguration(team, audience string) (string, string, error) {
+	teamDomain, err := normalizeTeamDomain(team)
+	if err != nil {
+		return "", "", fmt.Errorf("Access team domain: %w", err)
+	}
+	audience = strings.TrimSpace(audience)
+	if audience == "" || len(audience) > 512 {
+		return "", "", errors.New("Access audience must contain 1..512 bytes")
+	}
+	return teamDomain, audience, nil
 }
 
 func normalizeTeamDomain(value string) (string, error) {

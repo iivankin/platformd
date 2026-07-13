@@ -32,3 +32,20 @@ func TestReadSchemaVersionIsReadOnlyAndDoesNotCreateMissingState(t *testing.T) {
 		t.Fatalf("schema version = %d, %v", version, err)
 	}
 }
+
+func TestInspectDatabaseChecksIntegrityWithoutMigrating(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.db")
+	store, err := state.Open(ctx, path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	inspection, err := state.InspectDatabase(ctx, path, os.Geteuid(), true)
+	if err != nil || inspection.SchemaVersion != state.SupportedSchemaVersion() {
+		t.Fatalf("database inspection = %+v, %v", inspection, err)
+	}
+}

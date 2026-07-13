@@ -214,14 +214,14 @@ func (installer Installer) repair(ctx context.Context, installation state.Instal
 	if err := installer.Services.Start(ctx); err != nil {
 		return err
 	}
-	certificatePEM, err := certificateForHostname(installation.AdminHostname, installation.OriginCertificates)
+	certificatePEM, err := CertificateForHostname(installation.AdminHostname, installation.OriginCertificates)
 	if err != nil {
 		return err
 	}
 	return installer.Services.Health(ctx, installation.AdminHostname, certificatePEM)
 }
 
-func certificateForHostname(hostname string, certificates []state.OriginCertificate) (string, error) {
+func CertificateForHostname(hostname string, certificates []state.OriginCertificate) (string, error) {
 	var wildcard string
 	for _, certificate := range certificates {
 		block, _ := pem.Decode([]byte(certificate.CertificatePEM))

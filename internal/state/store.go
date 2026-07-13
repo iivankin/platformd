@@ -86,6 +86,17 @@ func (store *Store) QueryRowContext(ctx context.Context, query string, args ...a
 	return store.database.QueryRowContext(ctx, query, args...)
 }
 
+func (store *Store) Checkpoint(ctx context.Context) error {
+	var busy, logFrames, checkpointed int
+	if err := store.database.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return fmt.Errorf("checkpoint SQLite: %w", err)
+	}
+	if busy != 0 || logFrames != checkpointed {
+		return fmt.Errorf("SQLite checkpoint incomplete: busy=%d log=%d checkpointed=%d", busy, logFrames, checkpointed)
+	}
+	return nil
+}
+
 func (store *Store) MarkInterrupted(ctx context.Context, timestampMillis int64) error {
 	return store.Write(ctx, func(transaction *sql.Tx) error {
 		statements := []string{
