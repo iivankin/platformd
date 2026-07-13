@@ -7,6 +7,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/iivankin/platformd/internal/backupcron"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/remotes3"
@@ -65,8 +66,14 @@ type PolicyInput struct {
 }
 
 type PolicyResult struct {
-	Policy    state.BackupPolicy
-	RequestID string
+	Policy          state.BackupPolicy
+	NextRunAtMillis int64
+	RequestID       string
+}
+
+type PolicyStatus struct {
+	Policy          state.BackupPolicy
+	NextRunAtMillis int64
 }
 
 func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplication, error) {
@@ -140,12 +147,21 @@ func (application *ResourceApplication) Generations(
 	return ListResourceGenerations(ctx, remote, kind, resourceID)
 }
 
-func (application *ResourceApplication) Policies(ctx context.Context) ([]state.BackupPolicy, error) {
-	return application.store.BackupPolicies(ctx)
+func (application *ResourceApplication) Policies(ctx context.Context) ([]PolicyStatus, error) {
+	policies, err := application.store.BackupPolicies(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return policyStatuses(policies, application.now())
 }
 
-func (application *ResourceApplication) Policy(ctx context.Context, kind, resourceID string) (state.BackupPolicy, error) {
-	return application.store.BackupPolicy(ctx, kind, resourceID)
+func (application *ResourceApplication) Policy(ctx context.Context, kind, resourceID string) (PolicyStatus, error) {
+	policy, err := application.store.BackupPolicy(ctx, kind, resourceID)
+	if err != nil {
+		return PolicyStatus{}, err
+	}
+	next, err := nextPolicyRun(policy, application.now())
+	return PolicyStatus{Policy: policy, NextRunAtMillis: next}, err
 }
 
 func (application *ResourceApplication) SetPolicy(ctx context.Context, input PolicyInput) (PolicyResult, error) {
@@ -153,6 +169,12 @@ func (application *ResourceApplication) SetPolicy(ctx context.Context, input Pol
 		return PolicyResult{}, err
 	}
 	timestamp := application.now()
+	nextRun, err := nextPolicyRun(state.BackupPolicy{
+		Enabled: input.Enabled, Cron: input.Cron,
+	}, timestamp)
+	if err != nil {
+		return PolicyResult{}, err
+	}
 	auditID, err := id.NewWith(timestamp, application.random)
 	if err != nil {
 		return PolicyResult{}, err
@@ -168,7 +190,34 @@ func (application *ResourceApplication) SetPolicy(ctx context.Context, input Pol
 		ActorEmail: input.Actor.Email, RequestCorrelationID: requestID,
 		UpdatedAtMillis: timestamp.UnixMilli(),
 	})
-	return PolicyResult{Policy: policy, RequestID: requestID}, err
+	return PolicyResult{Policy: policy, NextRunAtMillis: nextRun, RequestID: requestID}, err
+}
+
+func policyStatuses(policies []state.BackupPolicy, now time.Time) ([]PolicyStatus, error) {
+	result := make([]PolicyStatus, len(policies))
+	for index, policy := range policies {
+		next, err := nextPolicyRun(policy, now)
+		if err != nil {
+			return nil, err
+		}
+		result[index] = PolicyStatus{Policy: policy, NextRunAtMillis: next}
+	}
+	return result, nil
+}
+
+func nextPolicyRun(policy state.BackupPolicy, now time.Time) (int64, error) {
+	if !policy.Enabled {
+		return 0, nil
+	}
+	schedule, err := backupcron.Parse(policy.Cron)
+	if err != nil {
+		return 0, err
+	}
+	next, err := schedule.Next(now)
+	if err != nil {
+		return 0, err
+	}
+	return next.UnixMilli(), nil
 }
 
 func (application *ResourceApplication) RunNow(ctx context.Context, kind, resourceID string) (state.BackupRecord, error) {

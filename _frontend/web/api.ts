@@ -679,6 +679,7 @@ const recoveryResourceKindSchema = z.enum([
 const backupPolicySchema = z.object({
   cron: z.string().optional(),
   enabled: z.boolean(),
+  nextRunAt: z.number().int().positive().optional(),
   resourceId: z.string().min(1),
   resourceKind: recoveryResourceKindSchema,
   retentionCount: z.number().int().min(1).max(100),
@@ -1765,6 +1766,25 @@ export const fetchBackupPolicies = async (
     );
   }
   return backupPoliciesSchema.parse(await response.json()).policies;
+};
+
+export const fetchBackupPolicy = async (
+  kind: RecoveryResourceKind,
+  resourceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupPolicy> => {
+  const response = await fetcher(
+    `${backupResourcePath(kind, resourceID)}/policy`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup policy request failed with ${response.status}`
+    );
+  }
+  return backupPolicySchema.parse(await response.json());
 };
 
 export const setBackupPolicy = async (

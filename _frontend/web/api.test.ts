@@ -25,6 +25,7 @@ import {
   fetchAPITokens,
   fetchAuditEvents,
   fetchBackupHistory,
+  fetchBackupPolicy,
   fetchBackupPolicies,
   fetchBackupTarget,
   fetchBackupGenerations,
@@ -1303,6 +1304,7 @@ test("manages one exact resource backup policy and run history", async () => {
   const policy = {
     cron: "0 3 * * *",
     enabled: true,
+    nextRunAt: 1_784_000_000_000,
     resourceId: "database/one",
     resourceKind: "postgres" as const,
     retentionCount: 7,
@@ -1313,6 +1315,19 @@ test("manages one exact resource backup policy and run history", async () => {
       return Promise.resolve(Response.json({ policies: [policy] }));
     })
   ).resolves.toEqual([policy]);
+  await expect(
+    fetchBackupPolicy(
+      policy.resourceKind,
+      policy.resourceId,
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/backups/resources/postgres/database%2Fone/policy"
+        );
+        return Promise.resolve(Response.json(policy));
+      }
+    )
+  ).resolves.toEqual(policy);
 
   let policyBody = "";
   await expect(

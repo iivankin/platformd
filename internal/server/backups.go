@@ -30,6 +30,7 @@ type backupPolicyResponse struct {
 	Enabled        bool   `json:"enabled"`
 	Cron           string `json:"cron,omitempty"`
 	RetentionCount int    `json:"retentionCount"`
+	NextRunAt      int64  `json:"nextRunAt,omitempty"`
 }
 
 type backupRecordResponse struct {
@@ -220,7 +221,9 @@ func setBackupPolicy(application *backup.ResourceApplication) http.HandlerFunc {
 			return
 		}
 		response.Header().Set("X-Request-ID", result.RequestID)
-		writeJSON(response, http.StatusOK, publicBackupPolicy(result.Policy))
+		writeJSON(response, http.StatusOK, publicBackupPolicy(backup.PolicyStatus{
+			Policy: result.Policy, NextRunAtMillis: result.NextRunAtMillis,
+		}))
 	}
 }
 
@@ -271,10 +274,11 @@ func getBackupHistory(application *backup.ResourceApplication) http.HandlerFunc 
 	}
 }
 
-func publicBackupPolicy(policy state.BackupPolicy) backupPolicyResponse {
+func publicBackupPolicy(status backup.PolicyStatus) backupPolicyResponse {
+	policy := status.Policy
 	return backupPolicyResponse{
 		ResourceKind: policy.ResourceKind, ResourceID: policy.ResourceID, Enabled: policy.Enabled,
-		Cron: policy.Cron, RetentionCount: policy.RetentionCount,
+		Cron: policy.Cron, RetentionCount: policy.RetentionCount, NextRunAt: status.NextRunAtMillis,
 	}
 }
 
