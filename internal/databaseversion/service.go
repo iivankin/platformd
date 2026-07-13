@@ -25,6 +25,7 @@ var (
 	ErrUnsupportedKind   = errors.New("managed database kind is unsupported")
 	ErrResourceBusy      = errors.New("managed database already has an active lifecycle operation")
 	ErrSameDigest        = errors.New("target image digest is already active")
+	ErrTargetDigestMoved = errors.New("target image digest changed after preview")
 	ErrInsufficientSpace = errors.New("managed database version change needs more free disk space")
 	ErrInvalidInput      = errors.New("managed database version change input is invalid")
 )
@@ -139,13 +140,16 @@ func (service *Service) Start(
 	projectID string,
 	resourceID string,
 	imageTag string,
+	expectedTargetDigest string,
 	actor Actor,
 ) (StartResult, error) {
 	adapter := service.config.Adapters[kind]
 	if adapter == nil {
 		return StartResult{}, ErrUnsupportedKind
 	}
-	if ctx == nil || projectID == "" || resourceID == "" || strings.TrimSpace(imageTag) == "" || !validActor(actor) {
+	expectedTargetDigest = strings.TrimSpace(expectedTargetDigest)
+	if ctx == nil || projectID == "" || resourceID == "" || strings.TrimSpace(imageTag) == "" ||
+		expectedTargetDigest == "" || !validActor(actor) {
 		return StartResult{}, ErrInvalidInput
 	}
 	if err := service.config.Context.Err(); err != nil {
@@ -169,6 +173,10 @@ func (service *Service) Start(
 	if err != nil {
 		lease.Release()
 		return StartResult{}, err
+	}
+	if preview.TargetDigest != expectedTargetDigest {
+		lease.Release()
+		return StartResult{}, ErrTargetDigestMoved
 	}
 	switch preview.Blocker {
 	case BlockerSameDigest:

@@ -50,6 +50,7 @@ export const ProjectDetailOverlays = ({
       return (
         <PostgresDetailPanel
           data={selectedNode.data}
+          onChanged={onChanged}
           onClose={onClose}
           postgresID={selectedNode.id}
           projectID={projectID}

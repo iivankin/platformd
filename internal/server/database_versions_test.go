@@ -118,7 +118,14 @@ func TestAdminStartsAndReadsRedisVersionChange(t *testing.T) {
 		!strings.Contains(previewResponse.Body.String(), `"ready":true`) || len(store.operations) != 0 {
 		t.Fatalf("version preview = %d/%s operations=%d", previewResponse.Code, previewResponse.Body.String(), len(store.operations))
 	}
-	request := projectRequest(http.MethodPost, "/api/v1/projects/project/redis/redis/version-change", `{"imageTag":"8.0"}`)
+	stale := projectRequest(http.MethodPost, "/api/v1/projects/project/redis/redis/version-change", `{"imageTag":"8.0","expectedTargetDigest":"sha256:stale"}`)
+	stale.Header.Set("Origin", "https://admin.example.com")
+	staleResponse := httptest.NewRecorder()
+	handler.ServeHTTP(staleResponse, stale)
+	if staleResponse.Code != http.StatusConflict || !strings.Contains(staleResponse.Body.String(), `"code":"database_target_digest_changed"`) || len(store.operations) != 0 {
+		t.Fatalf("stale version start = %d/%s operations=%d", staleResponse.Code, staleResponse.Body.String(), len(store.operations))
+	}
+	request := projectRequest(http.MethodPost, "/api/v1/projects/project/redis/redis/version-change", `{"imageTag":"8.0","expectedTargetDigest":"sha256:target"}`)
 	request.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)

@@ -802,6 +802,8 @@ UI/API предоставляет explicit `Change version`/`Update image` opera
 
 До запуска UI показывает source/target tags и exact digests, current database/RDB size, необходимое free space для одновременного old + new volume и предупреждение о недоступности database. Downtime не оценивается: throughput dump/restore заранее не моделируется. Разрешён любой allowlisted official target того же engine с digest, отличным от active; semantic upgrade/downgrade platformd не классифицирует. Совместимость определяется фактическим transfer/load.
 
+Preview не создаёт durable либо in-memory server state. Он возвращает exact `targetDigest`, а последующий Apply через UI/API/MCP обязан передать `(imageTag, expectedTargetDigest)`. Start заново resolve-ит tag и при несовпадении с `expectedTargetDigest` возвращает conflict до создания Operation/volume: client выполняет новый Preview и заново показывает риск уже для нового digest. Так перемещение mutable tag между Preview и Apply не подменяет подтверждённый target и не требует preview-session row.
+
 Operation:
 
 1. Resolve-ит target tag для host architecture, проверяет allowlisted repository, Linux/architecture manifest, image availability, health source и actual host free space для второго volume; optional CPU/memory limits target наследует от resource.

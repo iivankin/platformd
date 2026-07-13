@@ -9,7 +9,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func databaseVersionProperties(withImageTag, withOperation bool) map[string]any {
+func databaseVersionProperties(withImageTag, withExpectedDigest, withOperation bool) map[string]any {
 	properties := map[string]any{
 		"projectId": map[string]any{"type": "string"},
 		"kind": map[string]any{
@@ -19,6 +19,9 @@ func databaseVersionProperties(withImageTag, withOperation bool) map[string]any 
 	}
 	if withImageTag {
 		properties["imageTag"] = map[string]any{"type": "string"}
+	}
+	if withExpectedDigest {
+		properties["expectedTargetDigest"] = map[string]any{"type": "string"}
 	}
 	if withOperation {
 		properties["operationId"] = map[string]any{"type": "string"}
@@ -30,7 +33,7 @@ func readDatabaseVersionTool() Tool {
 	return Tool{
 		Name:        "read_managed_database_version_change",
 		Description: "Read one observational PostgreSQL or Redis new-volume version-change operation in a visible project.",
-		InputSchema: objectSchema(databaseVersionProperties(false, true),
+		InputSchema: objectSchema(databaseVersionProperties(false, false, true),
 			[]string{"projectId", "kind", "resourceId", "operationId"}),
 	}
 }
@@ -38,9 +41,9 @@ func readDatabaseVersionTool() Tool {
 func startDatabaseVersionTool() Tool {
 	return Tool{
 		Name:        "start_managed_database_version_change",
-		Description: "Start a PostgreSQL or Redis image change through a new volume and direct data transfer. The database is unavailable during migration and rollback after pointer publication requires a backup. Requires an admin token.",
-		InputSchema: objectSchema(databaseVersionProperties(true, false),
-			[]string{"projectId", "kind", "resourceId", "imageTag"}),
+		Description: "Start a PostgreSQL or Redis image change through a new volume and direct data transfer, passing the exact target digest returned by preview. The database is unavailable during migration and rollback after pointer publication requires a backup. Requires an admin token.",
+		InputSchema: objectSchema(databaseVersionProperties(true, true, false),
+			[]string{"projectId", "kind", "resourceId", "imageTag", "expectedTargetDigest"}),
 	}
 }
 
@@ -48,7 +51,7 @@ func previewDatabaseVersionTool() Tool {
 	return Tool{
 		Name:        "preview_managed_database_version_change",
 		Description: "Resolve an exact target digest and report current data size and free-space requirements before a PostgreSQL or Redis version change. No preview state is stored. Requires an admin token.",
-		InputSchema: objectSchema(databaseVersionProperties(true, false),
+		InputSchema: objectSchema(databaseVersionProperties(true, false, false),
 			[]string{"projectId", "kind", "resourceId", "imageTag"}),
 	}
 }
@@ -66,7 +69,8 @@ func (handler *Handler) startDatabaseVersionChange(
 ) (any, error) {
 	var input struct {
 		databaseVersionToolIdentity
-		ImageTag string `json:"imageTag"`
+		ImageTag             string `json:"imageTag"`
+		ExpectedTargetDigest string `json:"expectedTargetDigest"`
 	}
 	if err := decodeArguments(arguments, &input); err != nil {
 		return nil, err
@@ -75,7 +79,7 @@ func (handler *Handler) startDatabaseVersionChange(
 		return nil, automation.ErrProjectBoundary
 	}
 	result, err := handler.versions.Start(
-		ctx, input.Kind, input.ProjectID, input.ResourceID, input.ImageTag,
+		ctx, input.Kind, input.ProjectID, input.ResourceID, input.ImageTag, input.ExpectedTargetDigest,
 		databaseversion.Actor{Kind: "token", ID: identity.TokenID},
 	)
 	if err != nil {

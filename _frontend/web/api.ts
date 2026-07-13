@@ -1503,12 +1503,13 @@ export const startDatabaseVersionChange = async (
   projectID: string,
   resourceID: string,
   imageTag: string,
+  expectedTargetDigest: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<DatabaseVersionStart> => {
   const response = await fetcher(
     databaseVersionPath(engine, projectID, resourceID),
     {
-      body: JSON.stringify({ imageTag }),
+      body: JSON.stringify({ expectedTargetDigest, imageTag }),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",

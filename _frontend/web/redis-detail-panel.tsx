@@ -15,6 +15,7 @@ import type {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { DatabaseVersionChange } from "@/database-version-change";
 import type { ResourceNodeData } from "@/project-flow";
 import { formatBytes, formatTTL } from "@/redis-data-utils";
 import { RedisKeyEditor } from "@/redis-key-editor";
@@ -36,6 +37,34 @@ const statusColor: Record<ResourceNodeData["status"], string> = {
   running: "bg-emerald-500",
 };
 
+interface RedisVersionChangeProperties {
+  onSucceeded: () => Promise<void>;
+  projectID: string;
+  redisID: string;
+  resource: ManagedRedis | null;
+}
+
+const RedisVersionChange = ({
+  onSucceeded,
+  projectID,
+  redisID,
+  resource,
+}: RedisVersionChangeProperties) => {
+  if (!resource) {
+    return null;
+  }
+  return (
+    <DatabaseVersionChange
+      activeDigest={resource.imageDigest}
+      activeTag={resource.imageTag}
+      engine="redis"
+      onSucceeded={onSucceeded}
+      projectID={projectID}
+      resourceID={redisID}
+    />
+  );
+};
+
 export const RedisDetailPanel = ({
   data,
   onChanged,
@@ -54,6 +83,13 @@ export const RedisDetailPanel = ({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const hasMoreKeys = cursor !== "0";
+
+  const loadResource = useCallback(
+    async (signal?: AbortSignal) => {
+      setResource(await fetchManagedRedis(projectID, redisID, signal));
+    },
+    [projectID, redisID]
+  );
 
   const loadKeys = useCallback(
     async (
@@ -77,11 +113,10 @@ export const RedisDetailPanel = ({
     const controller = new AbortController();
     const load = async () => {
       try {
-        const [loadedResource] = await Promise.all([
-          fetchManagedRedis(projectID, redisID, controller.signal),
+        await Promise.all([
+          loadResource(controller.signal),
           loadKeys({ signal: controller.signal }),
         ]);
-        setResource(loadedResource);
         setError(null);
       } catch (loadError) {
         if (
@@ -99,7 +134,12 @@ export const RedisDetailPanel = ({
     };
     void load();
     return () => controller.abort();
-  }, [loadKeys, projectID, redisID]);
+  }, [loadKeys, loadResource]);
+
+  const refreshAfterVersionChange = useCallback(async () => {
+    await Promise.all([loadResource(), loadKeys()]);
+    onChanged();
+  }, [loadKeys, loadResource, onChanged]);
 
   const selectKey = async (key: RedisKey) => {
     setSelectedKey(key);
@@ -210,6 +250,13 @@ export const RedisDetailPanel = ({
             </p>
           </div>
         </section>
+
+        <RedisVersionChange
+          onSucceeded={refreshAfterVersionChange}
+          projectID={projectID}
+          redisID={redisID}
+          resource={resource}
+        />
 
         <section className="border-b border-border px-4 py-3">
           <form
