@@ -45,6 +45,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/version"
+	"github.com/iivankin/platformd/internal/volumestore"
 	"golang.org/x/net/netutil"
 )
 
@@ -101,6 +102,20 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	defer store.Close()
 	if err := store.MarkInterrupted(ctx, time.Now().UnixMilli()); err != nil {
 		return err
+	}
+	volumeReferences, err := store.PersistentVolumeReferences(ctx)
+	if err != nil {
+		return fmt.Errorf("load persistent volume references: %w", err)
+	}
+	volumeCleanup, err := volumestore.Reconcile(ctx, paths.VolumesRoot, volumeReferences)
+	if err != nil {
+		return fmt.Errorf("reconcile persistent volumes: %w", err)
+	}
+	if volumeCleanup.Created != 0 || volumeCleanup.Removed != 0 {
+		log.Printf(
+			"persistent volume startup reconcile: created=%d removed=%d",
+			volumeCleanup.Created, volumeCleanup.Removed,
+		)
 	}
 	auditCleanupContext, cancelAuditCleanup := context.WithCancel(ctx)
 	defer cancelAuditCleanup()
