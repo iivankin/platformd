@@ -223,6 +223,49 @@ func TestPreviousBinaryRollbackIsAllowedOnlyAtItsSchemaVersion(t *testing.T) {
 	}
 }
 
+func TestSavedPreviousBinaryInstallsSignedForwardFixWithoutOpeningState(t *testing.T) {
+	t.Parallel()
+	paths, publicKey, privateKey := installedRelease(t, "1.0.0")
+	_, server := servedRelease(t, filepath.Dir(paths.DataRoot), "2.0.0", []string{"1.0.0"}, publicKey, privateKey)
+	updater, err := New(Config{
+		Paths: paths, ExpectedUID: os.Getuid(), ManifestURL: server.URL + "/latest.json",
+		PublicKey: publicKey, HTTPClient: server.Client(), Admission: admission.New(), Growth: allowGrowth{},
+		QuiesceWorkloads: func(context.Context) (ResumeWorkloads, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := updater.Apply(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	forward := buildRelease(t, filepath.Dir(paths.DataRoot), "3.0.0", "https://example.com/platformd", []string{"2.0.0"}, publicKey, privateKey)
+	manifestPath := filepath.Join(t.TempDir(), "forward.json")
+	if err := os.WriteFile(manifestPath, forward.release.ManifestBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	starts := 0
+	installer := bootstrap.SignedUpdateInstaller{
+		Paths: paths, ExpectedUID: os.Getuid(), PublicKey: publicKey,
+		Executable: filepath.Join(paths.Previous, "platformd"), ManifestSource: manifestPath,
+		BinaryPath: forward.release.ExecutablePath,
+		AcquireLock: func(string, int) (io.Closer, error) {
+			return closeFunc(func() error { return nil }), nil
+		},
+		StartService: func(context.Context) error { starts++; return nil },
+	}
+	if err := installer.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assertLink(t, paths.Current, "3.0.0")
+	assertLink(t, paths.Previous, "2.0.0")
+	if starts != 1 {
+		t.Fatalf("forward fix service starts = %d", starts)
+	}
+	if _, err := os.Lstat(paths.StateDatabase); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("forward installer opened or created SQLite: %v", err)
+	}
+}
+
 func installedRelease(t *testing.T, version string) (layout.Paths, ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	root := t.TempDir()
