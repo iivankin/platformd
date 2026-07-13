@@ -21,6 +21,7 @@ import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectsPage } from "@/projects-page";
 import { RecoveryPage } from "@/recovery-page";
 import { RegistryPage } from "@/registry-page";
+import { SettingsPage } from "@/settings-page";
 import { globalNavigation, Sidebar } from "@/sidebar";
 import type { NavigationItem } from "@/sidebar";
 
@@ -30,6 +31,8 @@ const pageDescriptions: Record<string, string> = {
   "/infrastructure": "Host, runtime, network, and disk pressure.",
   "/logs": "Deployment, managed resource, and job output.",
   "/registry": "OCI repositories, images, tags, and credentials.",
+  "/settings":
+    "Installation hostnames, Access identity, and Origin certificates.",
   "/tokens": "Scoped REST and MCP automation credentials.",
 };
 
@@ -213,6 +216,7 @@ export const App = () => {
               <Route element={<AuditPage />} path="/audit" />
               <Route element={<BackupsPage />} path="/backups" />
               <Route element={<RegistryPage />} path="/registry" />
+              <Route element={<SettingsPage />} path="/settings" />
               {globalNavigation
                 .filter(
                   (item) =>
@@ -221,7 +225,8 @@ export const App = () => {
                     item.path !== "/audit" &&
                     item.path !== "/backups" &&
                     item.path !== "/registry" &&
-                    item.path !== "/infrastructure"
+                    item.path !== "/infrastructure" &&
+                    item.path !== "/settings"
                 )
                 .map((item) => (
                   <Route

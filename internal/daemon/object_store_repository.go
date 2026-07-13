@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"sync"
 
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/origin"
@@ -14,20 +15,25 @@ type liveObjectStoreRepository struct {
 	runtime      *runtimeStack
 	certificates *origin.Selector
 	router       *ingress.Router
+	publicMu     *sync.Mutex
 }
 
 func (repository *liveObjectStoreRepository) CreateObjectStore(ctx context.Context, input state.CreateObjectStore) (state.ObjectStore, state.S3Credential, error) {
-	if input.PublicHostname != "" {
-		hostname, err := publichostname.Normalize(input.PublicHostname)
-		if err != nil {
-			return state.ObjectStore{}, state.S3Credential{}, err
+	created, credential, err := func() (state.ObjectStore, state.S3Credential, error) {
+		repository.publicMu.Lock()
+		defer repository.publicMu.Unlock()
+		if input.PublicHostname != "" {
+			hostname, err := publichostname.Normalize(input.PublicHostname)
+			if err != nil {
+				return state.ObjectStore{}, state.S3Credential{}, err
+			}
+			if !repository.certificates.Covers(hostname) {
+				return state.ObjectStore{}, state.S3Credential{}, state.ErrCertificateCoverage
+			}
+			input.PublicHostname = hostname
 		}
-		if !repository.certificates.Covers(hostname) {
-			return state.ObjectStore{}, state.S3Credential{}, state.ErrCertificateCoverage
-		}
-		input.PublicHostname = hostname
-	}
-	created, credential, err := repository.store.CreateObjectStore(ctx, input)
+		return repository.store.CreateObjectStore(ctx, input)
+	}()
 	if err != nil {
 		return state.ObjectStore{}, state.S3Credential{}, err
 	}

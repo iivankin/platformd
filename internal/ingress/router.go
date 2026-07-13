@@ -33,16 +33,16 @@ type Config struct {
 }
 
 type routeSnapshot struct {
-	services         map[string]string
-	objectStores     map[string]struct{}
-	registryHostname string
+	services           map[string]string
+	objectStores       map[string]struct{}
+	registryHostname   string
+	automationHostname string
+	automationHandler  http.Handler
 }
 
 type Router struct {
 	adminHostname      string
 	adminHandler       http.Handler
-	automationHostname string
-	automationHandler  http.Handler
 	registryHandler    http.Handler
 	objectStoreHandler http.Handler
 	backends           BackendResolver
@@ -90,8 +90,6 @@ func New(config Config) (*Router, error) {
 	router := &Router{
 		adminHostname:      adminHostname,
 		adminHandler:       config.AdminHandler,
-		automationHostname: automationHostname,
-		automationHandler:  config.AutomationHandler,
 		registryHandler:    config.RegistryHandler,
 		objectStoreHandler: config.ObjectStoreHandler,
 		backends:           config.Backends,
@@ -107,6 +105,7 @@ func New(config Config) (*Router, error) {
 	}
 	router.routes.Store(&routeSnapshot{
 		services: map[string]string{}, objectStores: map[string]struct{}{}, registryHostname: registryHostname,
+		automationHostname: automationHostname, automationHandler: config.AutomationHandler,
 	})
 	return router, nil
 }
@@ -123,6 +122,7 @@ func (router *Router) Reload(routes map[string]string) {
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
 		services: cloned, objectStores: cloneSet(current.objectStores), registryHostname: current.registryHostname,
+		automationHostname: current.automationHostname, automationHandler: current.automationHandler,
 	})
 }
 
@@ -138,6 +138,7 @@ func (router *Router) ReloadObjectStores(hostnames []string) {
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
 		services: cloneMap(current.services), objectStores: cloned, registryHostname: current.registryHostname,
+		automationHostname: current.automationHostname, automationHandler: current.automationHandler,
 	})
 }
 
@@ -152,15 +153,50 @@ func (router *Router) ReloadRegistry(hostname string) error {
 		if err != nil {
 			return err
 		}
-		if normalized == router.adminHostname || normalized == router.automationHostname {
+		if normalized == router.adminHostname {
 			return errors.New("registry hostname conflicts with a control-plane hostname")
 		}
 	}
 	router.reloadMu.Lock()
 	defer router.reloadMu.Unlock()
 	current := router.routes.Load()
+	if normalized != "" && normalized == current.automationHostname {
+		return errors.New("registry hostname conflicts with a control-plane hostname")
+	}
 	router.routes.Store(&routeSnapshot{
 		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores), registryHostname: normalized,
+		automationHostname: current.automationHostname, automationHandler: current.automationHandler,
+	})
+	return nil
+}
+
+// ReloadAutomation atomically publishes the automation hostname and the
+// hostname-specific API/MCP handler, so a request can never observe a new
+// hostname with the old handler configuration.
+func (router *Router) ReloadAutomation(hostname string, handler http.Handler) error {
+	normalized := ""
+	if hostname != "" || handler != nil {
+		if hostname == "" || handler == nil {
+			return errors.New("automation hostname and handler must be configured together")
+		}
+		var err error
+		normalized, err = publichostname.Normalize(hostname)
+		if err != nil {
+			return err
+		}
+		if normalized == router.adminHostname {
+			return errors.New("admin and automation hostnames must differ")
+		}
+	}
+	router.reloadMu.Lock()
+	defer router.reloadMu.Unlock()
+	current := router.routes.Load()
+	if normalized != "" && normalized == current.registryHostname {
+		return errors.New("automation and registry hostnames must differ")
+	}
+	router.routes.Store(&routeSnapshot{
+		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores),
+		registryHostname: current.registryHostname, automationHostname: normalized, automationHandler: handler,
 	})
 	return nil
 }
@@ -185,11 +221,11 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.adminHandler.ServeHTTP(response, request)
 		return
 	}
-	if hostname == router.automationHostname {
-		router.automationHandler.ServeHTTP(response, request)
+	routes := router.routes.Load()
+	if hostname == routes.automationHostname {
+		routes.automationHandler.ServeHTTP(response, request)
 		return
 	}
-	routes := router.routes.Load()
 	if hostname == routes.registryHostname {
 		if router.registryHandler == nil {
 			unavailable(response)

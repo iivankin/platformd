@@ -2,6 +2,11 @@ import { expect, test } from "bun:test";
 
 import {
   APIError,
+  addOriginCertificate,
+  deleteOriginCertificate,
+  fetchInstallationSettings,
+  replaceOriginCertificate,
+  setAutomationHostname,
   attachServiceDomain,
   createAPIToken,
   createObjectStore,
@@ -1564,5 +1569,65 @@ test("polls recovery and observational operation status then requests a retry", 
   await retryRecovery((_input, init) => {
     expect(init?.method).toBe("POST");
     return Promise.resolve(new Response(null, { status: 202 }));
+  });
+});
+
+test("manages live installation hostnames and write-only Origin certificates", async () => {
+  const settings = {
+    accessAudience: "audience",
+    accessTeamDomain: "team.cloudflareaccess.com",
+    adminHostname: "admin.example.com",
+    automationHostname: "api.example.com",
+    certificates: [
+      { createdAt: 42, dnsNames: ["*.example.com"], id: "certificate-1" },
+    ],
+    installationId: "installation-1",
+  };
+  await expect(
+    fetchInstallationSettings(undefined, (input, init) => {
+      expect(input.toString()).toBe("/api/v1/settings");
+      expect(init?.headers).toEqual({ Accept: "application/json" });
+      return Promise.resolve(Response.json(settings));
+    })
+  ).resolves.toEqual(settings);
+
+  await setAutomationHostname("agents.example.com", (input, init) => {
+    expect(input.toString()).toBe("/api/v1/settings/automation-hostname");
+    expect(init?.method).toBe("PUT");
+    expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+      hostname: "agents.example.com",
+    });
+    return Promise.resolve(
+      Response.json({ ...settings, automationHostname: "agents.example.com" })
+    );
+  });
+
+  const secretInput = {
+    certificatePem: "-----BEGIN CERTIFICATE-----",
+    privateKeyPem: "-----BEGIN PRIVATE KEY-----",
+  };
+  await addOriginCertificate(secretInput, (input, init) => {
+    expect(input.toString()).toBe("/api/v1/settings/origin-certificates");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body?.toString() ?? "")).toEqual(secretInput);
+    return Promise.resolve(Response.json(settings, { status: 201 }));
+  });
+  await replaceOriginCertificate(
+    "certificate/1",
+    secretInput,
+    (input, init) => {
+      expect(input.toString()).toBe(
+        "/api/v1/settings/origin-certificates/certificate%2F1"
+      );
+      expect(init?.method).toBe("PUT");
+      return Promise.resolve(Response.json(settings));
+    }
+  );
+  await deleteOriginCertificate("certificate/1", (input, init) => {
+    expect(input.toString()).toBe(
+      "/api/v1/settings/origin-certificates/certificate%2F1"
+    );
+    expect(init?.method).toBe("DELETE");
+    return Promise.resolve(Response.json(settings));
   });
 });

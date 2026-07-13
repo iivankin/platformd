@@ -22,7 +22,6 @@ func TestReadAndValidateInput(t *testing.T) {
 	certificate, privateKey := testCertificate(t, []string{"*.example.com"})
 	encoded, err := json.Marshal(bootstrap.Input{
 		AdminHostname:        "ADMIN.EXAMPLE.COM",
-		AutomationHostname:   "api.example.com",
 		AccessTeamDomain:     "team.cloudflareaccess.com",
 		AccessAudience:       "audience",
 		ConsolePassphrase:    "passphrase",
@@ -42,8 +41,8 @@ func TestReadAndValidateInput(t *testing.T) {
 	}
 	defer clear(validated.ConsolePassphrase)
 	defer clear(validated.OriginPrivateKeyPEM)
-	if validated.AdminHostname != "admin.example.com" || validated.AutomationHostname == nil || *validated.AutomationHostname != "api.example.com" {
-		t.Fatalf("validated hostnames = %s/%v", validated.AdminHostname, validated.AutomationHostname)
+	if validated.AdminHostname != "admin.example.com" {
+		t.Fatalf("validated admin hostname = %s", validated.AdminHostname)
 	}
 }
 

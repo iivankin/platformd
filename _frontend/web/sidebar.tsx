@@ -33,6 +33,7 @@ export const globalNavigation: NavigationItem[] = [
   { icon: KeyRound, label: "API Tokens", path: "/tokens" },
   { icon: Network, label: "Infrastructure", path: "/infrastructure" },
   { icon: ShieldCheck, label: "Audit", path: "/audit" },
+  { icon: Settings, label: "Settings", path: "/settings" },
 ];
 
 interface SidebarProperties {
@@ -206,12 +207,6 @@ export const Sidebar = ({
           </div>
         )}
         <div className={cn("flex items-center", collapsed && "justify-center")}>
-          {!collapsed && !recovery && (
-            <Button className="min-w-0 flex-1 justify-start" variant="ghost">
-              <Settings />
-              <span className="whitespace-nowrap">Settings</span>
-            </Button>
-          )}
           <Button
             aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
             onClick={() => onCollapsedChange(!collapsed)}

@@ -14,6 +14,7 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/databaseversion"
+	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/registry"
@@ -31,39 +32,40 @@ type Meta struct {
 }
 
 type handlerConfig struct {
-	projects           ProjectRepository
-	services           ServiceRepository
-	volumes            *volume.Application
-	domains            DomainRepository
-	tokens             APITokenRepository
-	imageCredentials   ImageCredentialRepository
-	logs               LogRepository
-	logsHostname       string
-	audit              AuditRepository
-	managedImages      ManagedImageCatalog
-	managedRedis       ManagedRedisRepository
-	managedPostgres    *managedpostgres.Application
-	objectStores       *objectstore.Application
-	registry           *registry.Application
-	registrySettings   RegistrySettings
-	backupTargets      *backup.TargetApplication
-	backupResources    *backup.ResourceApplication
-	databaseVersions   *databaseversion.Service
-	containerConsole   ContainerConsole
-	serverTerminal     HostTerminal
-	serverTerminalAuth *terminalauth.Service
-	serverTerminalIdle time.Duration
-	serverTerminalLife time.Duration
-	adminHostname      string
-	diskPressure       DiskPressure
-	resourceUsage      ResourceUsage
-	infrastructureLogs InfrastructureLogs
-	admission          *admission.Gate
-	selfUpdater        SelfUpdater
-	afterUpdate        func()
-	recovery           RecoveryRepository
-	random             io.Reader
-	now                func() time.Time
+	projects             ProjectRepository
+	services             ServiceRepository
+	volumes              *volume.Application
+	domains              DomainRepository
+	tokens               APITokenRepository
+	imageCredentials     ImageCredentialRepository
+	logs                 LogRepository
+	logsHostname         string
+	audit                AuditRepository
+	managedImages        ManagedImageCatalog
+	managedRedis         ManagedRedisRepository
+	managedPostgres      *managedpostgres.Application
+	objectStores         *objectstore.Application
+	registry             *registry.Application
+	registrySettings     RegistrySettings
+	installationSettings *installationsettings.Application
+	backupTargets        *backup.TargetApplication
+	backupResources      *backup.ResourceApplication
+	databaseVersions     *databaseversion.Service
+	containerConsole     ContainerConsole
+	serverTerminal       HostTerminal
+	serverTerminalAuth   *terminalauth.Service
+	serverTerminalIdle   time.Duration
+	serverTerminalLife   time.Duration
+	adminHostname        string
+	diskPressure         DiskPressure
+	resourceUsage        ResourceUsage
+	infrastructureLogs   InfrastructureLogs
+	admission            *admission.Gate
+	selfUpdater          SelfUpdater
+	afterUpdate          func()
+	recovery             RecoveryRepository
+	random               io.Reader
+	now                  func() time.Time
 }
 
 type Option func(*handlerConfig)
@@ -145,6 +147,12 @@ func WithRegistry(application *registry.Application, settings RegistrySettings) 
 	return func(config *handlerConfig) {
 		config.registry = application
 		config.registrySettings = settings
+	}
+}
+
+func WithInstallationSettings(application *installationsettings.Application) Option {
+	return func(config *handlerConfig) {
+		config.installationSettings = application
 	}
 }
 
@@ -275,6 +283,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.registry != nil && config.registrySettings != nil {
 		registerRegistryRoutes(mux, config)
+	}
+	if config.installationSettings != nil {
+		registerInstallationSettingsRoutes(mux, config)
 	}
 	if config.backupTargets != nil {
 		registerBackupTargetRoutes(mux, config.backupTargets)

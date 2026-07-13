@@ -2473,3 +2473,113 @@ export const revokeAPIToken = async (
     );
   }
 };
+
+const originCertificateSettingsSchema = z.object({
+  createdAt: z.number().int().positive(),
+  dnsNames: z.array(z.string().min(1)),
+  id: z.string().min(1),
+});
+
+const installationSettingsSchema = z.object({
+  accessAudience: z.string().min(1),
+  accessTeamDomain: z.string().min(1),
+  adminHostname: z.string().min(1),
+  automationHostname: z.string(),
+  certificates: z.array(originCertificateSettingsSchema),
+  installationId: z.string().min(1),
+});
+
+export type InstallationSettings = z.infer<typeof installationSettingsSchema>;
+
+const settingsPath = "/api/v1/settings";
+
+export const fetchInstallationSettings = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InstallationSettings> => {
+  const response = await fetcher(settingsPath, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Installation settings request failed with ${response.status}`
+    );
+  }
+  return installationSettingsSchema.parse(await response.json());
+};
+
+export const setAutomationHostname = async (
+  hostname: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InstallationSettings> => {
+  const response = await fetcher(`${settingsPath}/automation-hostname`, {
+    body: JSON.stringify({ hostname }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Automation hostname update failed with ${response.status}`
+    );
+  }
+  return installationSettingsSchema.parse(await response.json());
+};
+
+const originCertificatesPath = (certificateID?: string) =>
+  `${settingsPath}/origin-certificates${certificateID ? `/${encodeURIComponent(certificateID)}` : ""}`;
+
+export const addOriginCertificate = async (
+  input: { certificatePem: string; privateKeyPem: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InstallationSettings> => {
+  const response = await fetcher(originCertificatesPath(), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Origin certificate creation failed with ${response.status}`
+    );
+  }
+  return installationSettingsSchema.parse(await response.json());
+};
+
+export const replaceOriginCertificate = async (
+  certificateID: string,
+  input: { certificatePem: string; privateKeyPem: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InstallationSettings> => {
+  const response = await fetcher(originCertificatesPath(certificateID), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Origin certificate replacement failed with ${response.status}`
+    );
+  }
+  return installationSettingsSchema.parse(await response.json());
+};
+
+export const deleteOriginCertificate = async (
+  certificateID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InstallationSettings> => {
+  const response = await fetcher(originCertificatesPath(certificateID), {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Origin certificate deletion failed with ${response.status}`
+    );
+  }
+  return installationSettingsSchema.parse(await response.json());
+};

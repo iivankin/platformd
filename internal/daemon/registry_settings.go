@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/origin"
@@ -15,6 +16,7 @@ type liveRegistrySettings struct {
 	runtime      *runtimeStack
 	certificates *origin.Selector
 	router       *ingress.Router
+	publicMu     *sync.Mutex
 }
 
 func (settings *liveRegistrySettings) RegistryHostname(ctx context.Context) (string, error) {
@@ -26,6 +28,8 @@ func (settings *liveRegistrySettings) RegistryHostname(ctx context.Context) (str
 }
 
 func (settings *liveRegistrySettings) SetRegistryHostname(ctx context.Context, input state.SetRegistryHostnameInput) (*string, error) {
+	settings.publicMu.Lock()
+	defer settings.publicMu.Unlock()
 	if input.Hostname != "" {
 		hostname, err := publichostname.Normalize(input.Hostname)
 		if err != nil {
