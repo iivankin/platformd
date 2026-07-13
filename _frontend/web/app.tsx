@@ -17,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { LogsPage } from "@/logs-page";
 import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectsPage } from "@/projects-page";
+import { RegistryPage } from "@/registry-page";
 import { globalNavigation, Sidebar } from "@/sidebar";
 import type { NavigationItem } from "@/sidebar";
 
@@ -194,12 +195,14 @@ export const App = () => {
               path="/logs"
             />
             <Route element={<AuditPage />} path="/audit" />
+            <Route element={<RegistryPage />} path="/registry" />
             {globalNavigation
               .filter(
                 (item) =>
                   item.path !== "/tokens" &&
                   item.path !== "/logs" &&
-                  item.path !== "/audit"
+                  item.path !== "/audit" &&
+                  item.path !== "/registry"
               )
               .map((item) => (
                 <Route

@@ -26,13 +26,16 @@ type Config struct {
 	AdminHandler       http.Handler
 	AutomationHostname string
 	AutomationHandler  http.Handler
+	RegistryHostname   string
+	RegistryHandler    http.Handler
 	ObjectStoreHandler http.Handler
 	Backends           BackendResolver
 }
 
 type routeSnapshot struct {
-	services     map[string]string
-	objectStores map[string]struct{}
+	services         map[string]string
+	objectStores     map[string]struct{}
+	registryHostname string
 }
 
 type Router struct {
@@ -40,6 +43,7 @@ type Router struct {
 	adminHandler       http.Handler
 	automationHostname string
 	automationHandler  http.Handler
+	registryHandler    http.Handler
 	objectStoreHandler http.Handler
 	backends           BackendResolver
 	reloadMu           sync.Mutex
@@ -70,11 +74,25 @@ func New(config Config) (*Router, error) {
 			return nil, errors.New("admin and automation hostnames must differ")
 		}
 	}
+	var registryHostname string
+	if config.RegistryHostname != "" {
+		if config.RegistryHandler == nil {
+			return nil, errors.New("registry hostname requires registry handler")
+		}
+		registryHostname, err = publichostname.Normalize(config.RegistryHostname)
+		if err != nil {
+			return nil, err
+		}
+		if registryHostname == adminHostname || registryHostname == automationHostname {
+			return nil, errors.New("registry hostname must differ from admin and automation hostnames")
+		}
+	}
 	router := &Router{
 		adminHostname:      adminHostname,
 		adminHandler:       config.AdminHandler,
 		automationHostname: automationHostname,
 		automationHandler:  config.AutomationHandler,
+		registryHandler:    config.RegistryHandler,
 		objectStoreHandler: config.ObjectStoreHandler,
 		backends:           config.Backends,
 		transport: &http.Transport{
@@ -87,7 +105,9 @@ func New(config Config) (*Router, error) {
 			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}
-	router.routes.Store(&routeSnapshot{services: map[string]string{}, objectStores: map[string]struct{}{}})
+	router.routes.Store(&routeSnapshot{
+		services: map[string]string{}, objectStores: map[string]struct{}{}, registryHostname: registryHostname,
+	})
 	return router, nil
 }
 
@@ -101,7 +121,9 @@ func (router *Router) Reload(routes map[string]string) {
 		cloned[hostname] = serviceID
 	}
 	current := router.routes.Load()
-	router.routes.Store(&routeSnapshot{services: cloned, objectStores: cloneSet(current.objectStores)})
+	router.routes.Store(&routeSnapshot{
+		services: cloned, objectStores: cloneSet(current.objectStores), registryHostname: current.registryHostname,
+	})
 }
 
 // ReloadObjectStores replaces only the S3 hostname view. Service routes remain
@@ -114,7 +136,33 @@ func (router *Router) ReloadObjectStores(hostnames []string) {
 		cloned[hostname] = struct{}{}
 	}
 	current := router.routes.Load()
-	router.routes.Store(&routeSnapshot{services: cloneMap(current.services), objectStores: cloned})
+	router.routes.Store(&routeSnapshot{
+		services: cloneMap(current.services), objectStores: cloned, registryHostname: current.registryHostname,
+	})
+}
+
+func (router *Router) ReloadRegistry(hostname string) error {
+	normalized := ""
+	if hostname != "" {
+		if router.registryHandler == nil {
+			return errors.New("registry handler is not configured")
+		}
+		var err error
+		normalized, err = publichostname.Normalize(hostname)
+		if err != nil {
+			return err
+		}
+		if normalized == router.adminHostname || normalized == router.automationHostname {
+			return errors.New("registry hostname conflicts with a control-plane hostname")
+		}
+	}
+	router.reloadMu.Lock()
+	defer router.reloadMu.Unlock()
+	current := router.routes.Load()
+	router.routes.Store(&routeSnapshot{
+		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores), registryHostname: normalized,
+	})
+	return nil
 }
 
 func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -142,6 +190,14 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	routes := router.routes.Load()
+	if hostname == routes.registryHostname {
+		if router.registryHandler == nil {
+			unavailable(response)
+			return
+		}
+		router.registryHandler.ServeHTTP(response, request)
+		return
+	}
 	if _, exists := routes.objectStores[hostname]; exists {
 		if router.objectStoreHandler == nil {
 			unavailable(response)

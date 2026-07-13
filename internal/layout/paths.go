@@ -16,6 +16,7 @@ type Paths struct {
 	GeneratedRoot  string
 	LogsRoot       string
 	VolumesRoot    string
+	RegistryRoot   string
 	ObjectsRoot    string
 	BackupWorkRoot string
 	DaemonLock     string
@@ -43,6 +44,7 @@ func FromRoots(dataRoot, configRoot, runtimeRoot, localBinary, unitFile string) 
 		GeneratedRoot:  filepath.Join(runtimeRoot, "generated"),
 		LogsRoot:       filepath.Join(dataRoot, "logs"),
 		VolumesRoot:    filepath.Join(dataRoot, "volumes"),
+		RegistryRoot:   filepath.Join(dataRoot, "registry"),
 		ObjectsRoot:    filepath.Join(dataRoot, "objects"),
 		BackupWorkRoot: filepath.Join(dataRoot, "backups", "work"),
 		DaemonLock:     filepath.Join(runtimeRoot, "locks", "daemon.lock"),

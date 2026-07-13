@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 1
+	currentSchemaVersion = 2
 	writerQueueSize      = 128
 )
 
@@ -27,6 +27,9 @@ var (
 
 	//go:embed schema.sql
 	initialSchema string
+
+	//go:embed migration_2.sql
+	migration2 string
 )
 
 type Store struct {
@@ -230,7 +233,24 @@ func migrate(ctx context.Context, database *sql.DB) error {
 			return fmt.Errorf("commit initial migration: %w", err)
 		}
 		return nil
+	case 1:
+		return applyMigration(ctx, database, migration2, 2)
 	default:
 		return fmt.Errorf("unsupported SQLite schema version %d; this binary supports exactly %d", version, currentSchemaVersion)
 	}
+}
+
+func applyMigration(ctx context.Context, database *sql.DB, statements string, version int) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin schema migration %d: %w", version, err)
+	}
+	if _, err := transaction.ExecContext(ctx, statements); err != nil {
+		_ = transaction.Rollback()
+		return fmt.Errorf("apply schema migration %d: %w", version, err)
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit schema migration %d: %w", version, err)
+	}
+	return nil
 }

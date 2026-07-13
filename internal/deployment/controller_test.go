@@ -135,6 +135,34 @@ func (resolver credentialResolverFunc) Resolve(ctx context.Context, service stat
 	return resolver(ctx, service)
 }
 
+type imageSourceResolverFunc func(context.Context, string) (string, func(), bool, error)
+
+func (resolver imageSourceResolverFunc) Resolve(ctx context.Context, reference string) (string, func(), bool, error) {
+	return resolver(ctx, reference)
+}
+
+func TestEmbeddedImageSourceReplacesRemotePullAndCloses(t *testing.T) {
+	engine := &fakeEngine{containers: make(map[string]containerengine.Container)}
+	closed := false
+	controller := &Controller{
+		engine: engine,
+		imageSources: imageSourceResolverFunc(func(_ context.Context, reference string) (string, func(), bool, error) {
+			if reference != "registry.example.com/team/api:latest" {
+				t.Fatalf("source reference = %q", reference)
+			}
+			return "oci:/run/platformd/generated/pull", func() { closed = true }, true, nil
+		}),
+	}
+	if _, err := controller.pull(context.Background(), containerengine.PullRequest{
+		Reference: "registry.example.com/team/api:latest", Refresh: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !closed || len(engine.pulls) != 1 || engine.pulls[0].Reference != "oci:/run/platformd/generated/pull" || engine.pulls[0].Refresh {
+		t.Fatalf("embedded pull = closed:%t requests:%+v", closed, engine.pulls)
+	}
+}
+
 func (publisher *fakePublisher) Publish(service state.ServiceDesired, container containerengine.Container) error {
 	publisher.events = append(publisher.events, "publish:"+service.ID+":"+container.ID)
 	return nil

@@ -13,6 +13,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
+	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/ui"
 	"github.com/iivankin/platformd/internal/version"
 )
@@ -36,6 +37,8 @@ type handlerConfig struct {
 	managedRedis     ManagedRedisRepository
 	managedPostgres  *managedpostgres.Application
 	objectStores     *objectstore.Application
+	registry         *registry.Application
+	registrySettings RegistrySettings
 	random           io.Reader
 	now              func() time.Time
 }
@@ -108,6 +111,13 @@ func WithObjectStores(application *objectstore.Application) Option {
 	}
 }
 
+func WithRegistry(application *registry.Application, settings RegistrySettings) Option {
+	return func(config *handlerConfig) {
+		config.registry = application
+		config.registrySettings = settings
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -150,6 +160,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.objectStores != nil {
 		registerObjectStoreRoutes(mux, config.objectStores)
+	}
+	if config.registry != nil && config.registrySettings != nil {
+		registerRegistryRoutes(mux, config)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

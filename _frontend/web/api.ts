@@ -461,6 +461,83 @@ export interface CreateObjectStoreInput {
   publicHostname?: string;
 }
 
+const registrySettingsSchema = z.object({ hostname: z.string() });
+const registryRepositorySchema = z.object({
+  backupCron: z.string().optional(),
+  backupEnabled: z.boolean(),
+  backupRetentionCount: z.number().int().min(1).max(100),
+  blobCount: z.number().int().nonnegative(),
+  createdAt: z.number().int().positive(),
+  credentialName: z.string().min(1).optional(),
+  credentialPermission: z.enum(["pull", "pull_push"]).optional(),
+  id: z.string().min(1),
+  lastPushedAt: z.number().int().positive().optional(),
+  manifestCount: z.number().int().nonnegative(),
+  name: z.string().min(1),
+  publicPull: z.boolean(),
+  referencedBlobBytes: z.number().int().nonnegative(),
+  secret: z.string().min(1).optional(),
+  tagCount: z.number().int().nonnegative(),
+  totalBlobBytes: z.number().int().nonnegative(),
+  updatedAt: z.number().int().positive(),
+  username: z.string().min(1).optional(),
+});
+const registryRepositoriesSchema = z.object({
+  repositories: z.array(registryRepositorySchema),
+});
+const registryPlatformSchema = z.object({
+  architecture: z.string(),
+  os: z.string(),
+  variant: z.string().optional(),
+});
+const registryImageSchema = z.object({
+  blobDigests: z.array(z.string()),
+  digest: z.string().min(1),
+  manifest: z.record(z.string(), z.unknown()).optional(),
+  manifestSize: z.number().int().positive(),
+  mediaType: z.string().min(1),
+  platforms: z.array(registryPlatformSchema),
+  pushedAt: z.number().int().positive(),
+  referencedBlobBytes: z.number().int().nonnegative(),
+  tags: z.array(z.string()),
+});
+const registryImagesSchema = z.object({
+  images: z.array(registryImageSchema),
+  nextCursor: z.string(),
+});
+const registryCredentialSchema = z.object({
+  createdAt: z.number().int().positive(),
+  id: z.string().min(1),
+  lastUsedAt: z.number().int().positive().optional(),
+  name: z.string().min(1),
+  permission: z.enum(["pull", "pull_push"]),
+  secret: z.string().min(1).optional(),
+  username: z.string().min(1).optional(),
+});
+const registryCredentialsSchema = z.object({
+  credentials: z.array(registryCredentialSchema),
+});
+const registryCleanupSchema = z.object({
+  blobCount: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+  deleted: z.boolean(),
+  previewDigests: z.array(z.string()),
+  previewTruncated: z.boolean(),
+});
+
+export type RegistrySettings = z.infer<typeof registrySettingsSchema>;
+export type RegistryRepository = z.infer<typeof registryRepositorySchema>;
+export type RegistryImage = z.infer<typeof registryImageSchema>;
+export type RegistryCredential = z.infer<typeof registryCredentialSchema>;
+export type RegistryCleanup = z.infer<typeof registryCleanupSchema>;
+
+export interface CreateRegistryRepositoryInput {
+  credentialName: string;
+  credentialPermission: "pull" | "pull_push";
+  name: string;
+  publicPull: boolean;
+}
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -1206,6 +1283,280 @@ export const deleteObject = async (
       `object deletion failed with ${response.status}`
     );
   }
+};
+
+const registryRepositoryPath = (repositoryID?: string) =>
+  `/api/v1/registry/repositories${repositoryID ? `/${encodeURIComponent(repositoryID)}` : ""}`;
+
+export const fetchRegistrySettings = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistrySettings> => {
+  const response = await fetcher("/api/v1/registry", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry settings request failed with ${response.status}`
+    );
+  }
+  return registrySettingsSchema.parse(await response.json());
+};
+
+export const setRegistryHostname = async (
+  hostname: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistrySettings> => {
+  const response = await fetcher("/api/v1/registry/hostname", {
+    body: JSON.stringify({ hostname }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry hostname update failed with ${response.status}`
+    );
+  }
+  return registrySettingsSchema.parse(await response.json());
+};
+
+export const fetchRegistryRepositories = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryRepository[]> => {
+  const response = await fetcher(registryRepositoryPath(), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry repositories request failed with ${response.status}`
+    );
+  }
+  return registryRepositoriesSchema.parse(await response.json()).repositories;
+};
+
+export const createRegistryRepository = async (
+  input: CreateRegistryRepositoryInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryRepository> => {
+  const response = await fetcher(registryRepositoryPath(), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry repository creation failed with ${response.status}`
+    );
+  }
+  return registryRepositorySchema.parse(await response.json());
+};
+
+export const setRegistryRepositoryPublicPull = async (
+  repositoryID: string,
+  publicPull: boolean,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryRepository> => {
+  const response = await fetcher(
+    `${registryRepositoryPath(repositoryID)}/public-pull`,
+    {
+      body: JSON.stringify({ publicPull }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry public pull update failed with ${response.status}`
+    );
+  }
+  return registryRepositorySchema.parse(await response.json());
+};
+
+export const fetchRegistryImages = async (
+  repositoryID: string,
+  options: { after?: string; limit?: number } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+) => {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+  if (options.after) {
+    query.set("after", options.after);
+  }
+  const response = await fetcher(
+    `${registryRepositoryPath(repositoryID)}/images?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry images request failed with ${response.status}`
+    );
+  }
+  return registryImagesSchema.parse(await response.json());
+};
+
+export const fetchRegistryImage = async (
+  repositoryID: string,
+  digest: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryImage> => {
+  const response = await fetcher(
+    `${registryRepositoryPath(repositoryID)}/images/${encodeURIComponent(digest)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry image request failed with ${response.status}`
+    );
+  }
+  return registryImageSchema.parse(await response.json());
+};
+
+export const deleteRegistryTag = async (
+  repositoryID: string,
+  tag: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${registryRepositoryPath(repositoryID)}/tags/${encodeURIComponent(tag)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry tag deletion failed with ${response.status}`
+    );
+  }
+};
+
+export const deleteRegistryImage = async (
+  repositoryID: string,
+  digest: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${registryRepositoryPath(repositoryID)}/manifests/${encodeURIComponent(digest)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry image deletion failed with ${response.status}`
+    );
+  }
+};
+
+export const deleteRegistryRepository = async (
+  repositoryID: string,
+  expectedName: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(registryRepositoryPath(repositoryID), {
+    body: JSON.stringify({ expectedName }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry repository deletion failed with ${response.status}`
+    );
+  }
+};
+
+const registryCredentialsPath = (repositoryID: string, credentialID?: string) =>
+  `${registryRepositoryPath(repositoryID)}/credentials${credentialID ? `/${encodeURIComponent(credentialID)}` : ""}`;
+
+export const fetchRegistryCredentials = async (
+  repositoryID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryCredential[]> => {
+  const response = await fetcher(registryCredentialsPath(repositoryID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry credentials request failed with ${response.status}`
+    );
+  }
+  return registryCredentialsSchema.parse(await response.json()).credentials;
+};
+
+export const createRegistryCredential = async (
+  repositoryID: string,
+  input: { name: string; permission: "pull" | "pull_push" },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryCredential> => {
+  const response = await fetcher(registryCredentialsPath(repositoryID), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry credential creation failed with ${response.status}`
+    );
+  }
+  return registryCredentialSchema.parse(await response.json());
+};
+
+export const deleteRegistryCredential = async (
+  repositoryID: string,
+  credentialID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    registryCredentialsPath(repositoryID, credentialID),
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry credential deletion failed with ${response.status}`
+    );
+  }
+};
+
+export const cleanupRegistryRepository = async (
+  repositoryID: string,
+  dryRun: boolean,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RegistryCleanup> => {
+  const response = await fetcher(
+    `${registryRepositoryPath(repositoryID)}/cleanup`,
+    {
+      body: JSON.stringify({ dryRun }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Registry cleanup failed with ${response.status}`
+    );
+  }
+  return registryCleanupSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>

@@ -190,6 +190,21 @@ func (watcher *Watcher) NotifyEmbedded(imageReference string) {
 	}
 }
 
+// Reclassify applies a changed embedded-registry hostname to every tracked
+// reference without recreating watcher loops or persisting derived state.
+func (watcher *Watcher) Reclassify() {
+	watcher.mu.Lock()
+	loops := make([]*serviceLoop, 0, len(watcher.services))
+	for _, loop := range watcher.services {
+		loop.embedded = watcher.isEmbedded(loop.reference)
+		loops = append(loops, loop)
+	}
+	watcher.mu.Unlock()
+	for _, loop := range loops {
+		resetDelay(loop.reset, watcher.normalDelay(loop))
+	}
+}
+
 func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *serviceLoop, retry bool) {
 	defer watcher.remove(serviceID, loop)
 	delay := watcher.initialDelay(loop, retry)
