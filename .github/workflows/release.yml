@@ -144,6 +144,24 @@ jobs:
             dist/containerengine-integration.test \
               -test.timeout=5m \
               -test.v
+          sudo systemd-run \
+            --quiet \
+            --wait \
+            --collect \
+            --pipe \
+            --service-type=exec \
+            --unit=platformd-runtime-cgroup-integration \
+            --property=Delegate=yes \
+            --property=DelegateSubgroup=control \
+            --property=TasksMax=infinity \
+            --setenv=HOME=/root \
+            --setenv=PATH=/nonexistent \
+            --setenv=PLATFORMD_CGROUP_INTEGRATION=1 \
+            --setenv=PLATFORMD_RUNTIME_INTEGRATION=1 \
+            "$PWD/dist/containerengine-integration.test" \
+              -test.run='^TestDelegatedCgroupPlacementAndLimits$' \
+              -test.timeout=3m \
+              -test.v
 
       - name: Build self-contained release
         run: |
