@@ -177,12 +177,14 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, put)
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cron":"5 */2 * * 1-5"`) ||
-		!strings.Contains(response.Body.String(), `"retentionCount":12`) || response.Header().Get("X-Request-ID") == "" {
+		!strings.Contains(response.Body.String(), `"retentionCount":12`) ||
+		!strings.Contains(response.Body.String(), `"nextRunAt":`) || response.Header().Get("X-Request-ID") == "" {
 		t.Fatalf("set backup policy = %d/%s headers=%v", response.Code, response.Body, response.Header())
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/backups/resources", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resourceId":"redis"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"resourceId":"redis"`) ||
+		!strings.Contains(response.Body.String(), `"nextRunAt":`) {
 		t.Fatalf("list backup policies = %d/%s", response.Code, response.Body)
 	}
 	run := projectRequest(http.MethodPost, "/api/v1/backups/resources/redis/redis/run", "")

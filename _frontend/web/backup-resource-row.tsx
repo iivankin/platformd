@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   fetchBackupGenerations,
   fetchBackupHistory,
+  fetchBackupPolicy,
   runBackupNow,
   setBackupPolicy,
 } from "@/api";
@@ -65,14 +66,20 @@ export const BackupResourceRow = ({
       detailsInFlight.current = true;
       setDetailsLoading(true);
       try {
-        const [loadedHistory, loadedGenerations] = await Promise.all([
-          fetchBackupHistory(policy.resourceKind, policy.resourceId, signal),
-          fetchBackupGenerations(
-            policy.resourceKind,
-            policy.resourceId,
-            signal
-          ),
-        ]);
+        const [loadedPolicy, loadedHistory, loadedGenerations] =
+          await Promise.all([
+            fetchBackupPolicy(policy.resourceKind, policy.resourceId, signal),
+            fetchBackupHistory(policy.resourceKind, policy.resourceId, signal),
+            fetchBackupGenerations(
+              policy.resourceKind,
+              policy.resourceId,
+              signal
+            ),
+          ]);
+        setEnabled(loadedPolicy.enabled);
+        setCron(loadedPolicy.cron ?? "0 3 * * *");
+        setRetentionCount(String(loadedPolicy.retentionCount));
+        onPolicyUpdated(loadedPolicy);
         setHistory(loadedHistory);
         setGenerations(loadedGenerations);
         setDetailsLoaded(true);
@@ -92,7 +99,7 @@ export const BackupResourceRow = ({
         }
       }
     },
-    [policy.resourceId, policy.resourceKind]
+    [onPolicyUpdated, policy.resourceId, policy.resourceKind]
   );
 
   const afterRestore = useCallback(async () => {

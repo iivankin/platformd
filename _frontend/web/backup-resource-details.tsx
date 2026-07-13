@@ -35,6 +35,65 @@ const timestamp = (value?: number) =>
       })
     : "—";
 
+const duration = (record?: BackupRecord) => {
+  if (!record?.finishedAt || record.finishedAt < record.startedAt) {
+    return "—";
+  }
+  const seconds = Math.round((record.finishedAt - record.startedAt) / 1000);
+  return seconds < 60
+    ? `${seconds}s`
+    : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
+
+const BackupRunSummary = ({
+  history,
+  policy,
+}: {
+  history: BackupRecord[];
+  policy: BackupPolicy;
+}) => {
+  const lastSuccess = history.find((record) => record.status === "succeeded");
+  const lastFailure = history.find(
+    (record) => record.status === "failed" || record.status === "interrupted"
+  );
+  const next = policy.nextRunAt ? new Date(policy.nextRunAt) : undefined;
+  return (
+    <div className="grid border-b border-border text-[9px] md:grid-cols-3">
+      <div className="border-b border-border px-5 py-3 md:border-r md:border-b-0">
+        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+          Next run
+        </p>
+        <p className="mt-1">
+          {next ? next.toISOString().replace(".000Z", "Z") : "Disabled"}
+        </p>
+        <p className="mt-1 text-muted-foreground">
+          {next ? `${next.toLocaleString()} local` : "No scheduled occurrence"}
+        </p>
+      </div>
+      <div className="border-b border-border px-5 py-3 md:border-r md:border-b-0">
+        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+          Last success
+        </p>
+        <p className="mt-1">{timestamp(lastSuccess?.finishedAt)}</p>
+        <p className="mt-1 text-muted-foreground">
+          {duration(lastSuccess)} · {bytes(lastSuccess?.sizeBytes)}
+        </p>
+      </div>
+      <div className="px-5 py-3">
+        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+          Last error
+        </p>
+        <p className="mt-1 text-rose-600 dark:text-rose-300">
+          {lastFailure?.errorMessage || lastFailure?.errorCode || "—"}
+        </p>
+        <p className="mt-1 text-muted-foreground">
+          {timestamp(lastFailure?.finishedAt)}
+        </p>
+      </div>
+    </div>
+  );
+};
+
 interface BackupResourceDetailsProperties {
   busy: string;
   cron: string;
@@ -141,6 +200,8 @@ export const BackupResourceDetails = ({
         </Button>
       </div>
     </div>
+
+    <BackupRunSummary history={history} policy={policy} />
 
     <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
       <Button disabled={Boolean(busy)} onClick={onRun} size="sm">
