@@ -276,6 +276,21 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 			Admission: mutationAdmission, Master: key,
 			Restorers: map[string]backup.ResourceRestorer{
+				"postgres": backup.ResourceRestorerFunc(func(
+					restoreContext context.Context,
+					request backup.ResourceRestoreRequest,
+				) error {
+					if request.Options.Mode != "replace" || !request.Options.DestructiveConfirmed ||
+						request.Options.NewResourceName != "" {
+						return errors.New("managed PostgreSQL restore requires confirmed replace mode")
+					}
+					return runtime.RestoreManagedPostgres(
+						restoreContext, request.ResourceID, request.Source.Reader,
+						managedpostgres.Actor{
+							Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
+						},
+					)
+				}),
 				"redis": backup.ResourceRestorerFunc(func(
 					restoreContext context.Context,
 					request backup.ResourceRestoreRequest,

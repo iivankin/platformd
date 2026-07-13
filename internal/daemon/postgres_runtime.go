@@ -62,6 +62,30 @@ func (stack *runtimeStack) OpenManagedPostgresBackup(ctx context.Context, resour
 	return controller.OpenBackupDump(ctx, resourceID)
 }
 
+func (stack *runtimeStack) RestoreManagedPostgres(
+	ctx context.Context,
+	resourceID string,
+	dump io.Reader,
+	actor managedpostgres.Actor,
+) error {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed PostgreSQL runtime is not ready")
+	}
+	err := controller.RestoreReplace(ctx, resourceID, dump, actor)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.postgresFailures, resourceID)
+	} else {
+		stack.postgresFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
 func (stack *runtimeStack) postgresPlacement(resource state.ManagedPostgres) (managedpostgres.Placement, error) {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
