@@ -22,6 +22,7 @@ import { RedisKeyEditor } from "@/redis-key-editor";
 import { RedisNewKeyForm } from "@/redis-new-key-form";
 import { RedisPersistenceStatus } from "@/redis-persistence-status";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
+import { ResourceUsage } from "@/resource-usage";
 
 interface RedisDetailPanelProperties {
   data: ResourceNodeData;
@@ -66,6 +67,21 @@ const RedisVersionChange = ({
     />
   );
 };
+
+const RedisResourceUsage = ({
+  redisID,
+  resource,
+}: {
+  redisID: string;
+  resource: ManagedRedis | null;
+}) => (
+  <ResourceUsage
+    cpuMillicores={resource?.cpuMillicores}
+    kind="redis"
+    memoryBytes={resource?.memoryBytes}
+    resourceID={redisID}
+  />
+);
 
 export const RedisDetailPanel = ({
   data,
@@ -252,6 +268,8 @@ export const RedisDetailPanel = ({
             </p>
           </div>
         </section>
+
+        <RedisResourceUsage redisID={redisID} resource={resource} />
 
         <RedisPersistenceStatus projectID={projectID} redisID={redisID} />
 

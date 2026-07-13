@@ -53,6 +53,7 @@ type handlerConfig struct {
 	serverTerminalAuth *terminalauth.Service
 	adminHostname      string
 	diskPressure       DiskPressure
+	resourceUsage      ResourceUsage
 	admission          *admission.Gate
 	selfUpdater        SelfUpdater
 	afterUpdate        func()
@@ -180,6 +181,12 @@ func WithDiskPressure(pressure DiskPressure) Option {
 	}
 }
 
+func WithResourceUsage(usage ResourceUsage) Option {
+	return func(config *handlerConfig) {
+		config.resourceUsage = usage
+	}
+}
+
 func WithAdmission(gate *admission.Gate) Option {
 	return func(config *handlerConfig) {
 		config.admission = gate
@@ -267,8 +274,8 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	if config.serverTerminalAuth != nil {
 		registerServerTerminalAuthRoute(mux, config.serverTerminalAuth)
 	}
-	if config.diskPressure != nil {
-		registerInfrastructureRoutes(mux, config.diskPressure)
+	if config.diskPressure != nil || config.resourceUsage != nil {
+		registerInfrastructureRoutes(mux, config.diskPressure, config.resourceUsage)
 	}
 	if config.selfUpdater != nil && config.afterUpdate != nil {
 		registerSelfUpdateRoute(mux, config.selfUpdater, config.afterUpdate)
