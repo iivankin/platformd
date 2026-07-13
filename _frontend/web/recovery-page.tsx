@@ -11,14 +11,11 @@ import type { ReactNode } from "react";
 
 import {
   fetchBackupGenerations,
-  fetchOperation,
   fetchRecoveryStatus,
-  restoreBackupGeneration,
   retryRecovery,
 } from "@/api";
 import type {
   BackupGeneration,
-  Operation,
   RecoveryResource,
   RecoveryResourceKind,
   RecoveryStatus,
@@ -26,9 +23,9 @@ import type {
 import { BackupsPage } from "@/backups-page";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useResourceRestore } from "@/use-resource-restore";
 
 const recoveryPollMilliseconds = 2000;
-const operationPollMilliseconds = 750;
 
 const resourcePresentation: Record<RecoveryResourceKind, { label: string }> = {
   object_store: { label: "Object Store" },
@@ -74,8 +71,18 @@ const RecoveryResourceRow = ({
   const [generations, setGenerations] = useState<BackupGeneration[]>([]);
   const [generationsLoading, setGenerationsLoading] = useState(false);
   const [selected, setSelected] = useState<BackupGeneration>();
-  const [operation, setOperation] = useState<Operation>();
   const [error, setError] = useState<string>();
+
+  const afterRestore = useCallback(async () => {
+    setSelected(undefined);
+    await retryRecovery();
+    await onChanged();
+  }, [onChanged]);
+  const restore = useResourceRestore({
+    onSucceeded: afterRestore,
+    resourceID: resource.resourceId,
+    resourceKind: resource.resourceKind,
+  });
 
   useEffect(() => () => generationController.current?.abort(), []);
 
@@ -114,69 +121,6 @@ const RecoveryResourceRow = ({
     }
   };
 
-  const restore = async () => {
-    if (!selected || operation?.status === "running") {
-      return;
-    }
-    setError(undefined);
-    try {
-      setOperation(
-        await restoreBackupGeneration(
-          resource.resourceKind,
-          resource.resourceId,
-          selected.generationId
-        )
-      );
-    } catch (restoreError) {
-      setError(errorText(restoreError, "Unable to restore generation"));
-    }
-  };
-
-  useEffect(() => {
-    if (!operation || operation.status !== "running") {
-      return;
-    }
-    const controller = new AbortController();
-    let inFlight = false;
-    const poll = async () => {
-      if (inFlight) {
-        return;
-      }
-      inFlight = true;
-      try {
-        const current = await fetchOperation(operation.id, controller.signal);
-        setOperation(current);
-        if (current.status === "succeeded") {
-          setSelected(undefined);
-          await retryRecovery();
-          await onChanged();
-        } else if (current.status !== "running") {
-          setError(
-            current.errorMessage || `Restore ended as ${current.status}`
-          );
-        }
-      } catch (pollError) {
-        if (
-          !(
-            pollError instanceof DOMException && pollError.name === "AbortError"
-          )
-        ) {
-          setError(errorText(pollError, "Unable to read restore progress"));
-        }
-      } finally {
-        inFlight = false;
-      }
-    };
-    const interval = window.setInterval(
-      () => void poll(),
-      operationPollMilliseconds
-    );
-    return () => {
-      controller.abort();
-      window.clearInterval(interval);
-    };
-  }, [onChanged, operation]);
-
   const completed = resource.status !== "pending";
   let generationContent: ReactNode;
   if (generationsLoading) {
@@ -207,7 +151,7 @@ const RecoveryResourceRow = ({
           remote
         </span>
         <Button
-          disabled={operation?.status === "running"}
+          disabled={restore.restoring}
           onClick={() => setSelected(generation)}
           size="sm"
           variant="ghost"
@@ -291,7 +235,7 @@ const RecoveryResourceRow = ({
                 <span className="font-mono">{selected.generationId}</span>?
               </p>
               <Button
-                disabled={operation?.status === "running"}
+                disabled={restore.restoring}
                 onClick={() => setSelected(undefined)}
                 size="sm"
                 variant="ghost"
@@ -299,11 +243,15 @@ const RecoveryResourceRow = ({
                 Cancel
               </Button>
               <Button
-                disabled={operation?.status === "running"}
-                onClick={() => void restore()}
+                disabled={restore.restoring}
+                onClick={() => {
+                  if (selected) {
+                    void restore.start(selected.generationId);
+                  }
+                }}
                 size="sm"
               >
-                {operation?.status === "running" ? (
+                {restore.restoring ? (
                   <LoaderCircle className="animate-spin" />
                 ) : (
                   <ArchiveRestore />
@@ -312,14 +260,14 @@ const RecoveryResourceRow = ({
               </Button>
             </div>
           ) : null}
-          {operation?.status === "running" ? (
+          {restore.restoring ? (
             <p className="border-t border-border px-5 py-3 text-[9px] text-muted-foreground">
-              Restore operation · {operation.progress || "starting"}
+              Restore operation · {restore.operation?.progress || "starting"}
             </p>
           ) : null}
-          {error ? (
+          {error || restore.error ? (
             <p className="border-t border-rose-500/30 bg-rose-500/5 px-5 py-3 text-[10px] text-rose-600 dark:text-rose-300">
-              {error}
+              {error || restore.error}
             </p>
           ) : null}
         </div>

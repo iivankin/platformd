@@ -629,6 +629,34 @@ const recoveryResourceKindSchema = z.enum([
   "registry",
 ]);
 
+const backupPolicySchema = z.object({
+  cron: z.string().optional(),
+  enabled: z.boolean(),
+  resourceId: z.string().min(1),
+  resourceKind: recoveryResourceKindSchema,
+  retentionCount: z.number().int().min(1).max(100),
+});
+
+const backupPoliciesSchema = z.object({
+  policies: z.array(backupPolicySchema),
+});
+
+const backupRecordSchema = z.object({
+  errorCode: z.string().optional(),
+  errorMessage: z.string().optional(),
+  finishedAt: z.number().int().positive().optional(),
+  generationId: z.string().min(1).optional(),
+  id: z.string().min(1),
+  resourceId: z.string().min(1),
+  resourceKind: recoveryResourceKindSchema,
+  scheduledOccurrence: z.number().int().positive().optional(),
+  sizeBytes: z.number().int().nonnegative().optional(),
+  startedAt: z.number().int().positive(),
+  status: z.enum(["failed", "interrupted", "running", "succeeded"]),
+});
+
+const backupHistorySchema = z.object({ backups: z.array(backupRecordSchema) });
+
 const recoveryResourceSchema = z.object({
   generationId: z.string().min(1).optional(),
   resourceId: z.string().min(1),
@@ -643,6 +671,8 @@ const recoveryStatusSchema = z.object({
 });
 
 export type BackupGeneration = z.infer<typeof backupGenerationSchema>;
+export type BackupPolicy = z.infer<typeof backupPolicySchema>;
+export type BackupRecord = z.infer<typeof backupRecordSchema>;
 export type Operation = z.infer<typeof operationSchema>;
 export type RecoveryResource = z.infer<typeof recoveryResourceSchema>;
 export type RecoveryResourceKind = z.infer<typeof recoveryResourceKindSchema>;
@@ -1501,6 +1531,89 @@ export const deleteBackupTarget = async (
 
 const backupResourcePath = (kind: RecoveryResourceKind, resourceID: string) =>
   `/api/v1/backups/resources/${encodeURIComponent(kind)}/${encodeURIComponent(resourceID)}`;
+
+export const fetchBackupPolicies = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupPolicy[]> => {
+  const response = await fetcher("/api/v1/backups/resources", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup policy request failed with ${response.status}`
+    );
+  }
+  return backupPoliciesSchema.parse(await response.json()).policies;
+};
+
+export const setBackupPolicy = async (
+  kind: RecoveryResourceKind,
+  resourceID: string,
+  input: { cron: string; enabled: boolean; retentionCount: number },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupPolicy> => {
+  const response = await fetcher(
+    `${backupResourcePath(kind, resourceID)}/policy`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup policy update failed with ${response.status}`
+    );
+  }
+  return backupPolicySchema.parse(await response.json());
+};
+
+export const runBackupNow = async (
+  kind: RecoveryResourceKind,
+  resourceID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupRecord> => {
+  const response = await fetcher(
+    `${backupResourcePath(kind, resourceID)}/run`,
+    {
+      headers: { Accept: "application/json" },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup request failed with ${response.status}`
+    );
+  }
+  return backupRecordSchema.parse(await response.json());
+};
+
+export const fetchBackupHistory = async (
+  kind: RecoveryResourceKind,
+  resourceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupRecord[]> => {
+  const response = await fetcher(
+    `${backupResourcePath(kind, resourceID)}/history?limit=50`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup history request failed with ${response.status}`
+    );
+  }
+  return backupHistorySchema.parse(await response.json()).backups;
+};
 
 export const fetchBackupGenerations = async (
   kind: RecoveryResourceKind,
