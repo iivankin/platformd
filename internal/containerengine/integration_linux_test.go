@@ -93,6 +93,9 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create container: %v", err)
 	}
+	if _, active := engine.ActiveLogPaths()[logPath]; !active {
+		t.Fatalf("created container log %s is not protected", logPath)
+	}
 	t.Cleanup(func() { _ = engine.RemoveContainer(context.Background(), container.ID, true) })
 	if err := engine.StartContainer(ctx, container.ID); err != nil {
 		t.Fatalf("start container: %v", err)
@@ -177,6 +180,9 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	}
 	if err := engine.RemoveContainer(ctx, container.ID, false); err != nil {
 		t.Fatalf("remove container: %v", err)
+	}
+	if _, active := engine.ActiveLogPaths()[logPath]; active {
+		t.Fatalf("removed container log %s remains protected", logPath)
 	}
 	if err := engine.RemoveNetwork(network.Name); err != nil {
 		t.Fatalf("remove network: %v", err)

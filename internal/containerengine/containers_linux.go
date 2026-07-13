@@ -89,7 +89,12 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	if err != nil {
 		return Container{}, fmt.Errorf("create container: %w", err)
 	}
-	return e.publicContainer(created)
+	result, err := e.publicContainer(created)
+	if err != nil {
+		return Container{}, err
+	}
+	e.logs.set(result.ID, input.LogPath)
+	return result, nil
 }
 
 func (e *Engine) StartContainer(ctx context.Context, id string) error {
@@ -148,6 +153,7 @@ func (e *Engine) RemoveContainer(ctx context.Context, id string, force bool) err
 	if err := e.runtime.RemoveContainer(ctx, container, force, false, nil); err != nil {
 		return fmt.Errorf("remove container %s: %w", id, err)
 	}
+	e.logs.remove(id)
 	return nil
 }
 

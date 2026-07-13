@@ -169,6 +169,22 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
+	logCleaner, err := containerlogs.NewCleaner(containerlogs.CleanerConfig{
+		Root: paths.LogsRoot, Retention: containerLogRetention,
+	})
+	if err != nil {
+		return err
+	}
+	logCleanupContext, cancelLogCleanup := context.WithCancel(ctx)
+	logCleanupDone := make(chan struct{})
+	defer func() {
+		cancelLogCleanup()
+		<-logCleanupDone
+	}()
+	go func() {
+		defer close(logCleanupDone)
+		runContainerLogCleanup(logCleanupContext, logCleaner, runtime.engine.ActiveLogPaths)
+	}()
 	releasePublicKey, err := releaseconfig.PublicKey()
 	if err != nil {
 		return err
