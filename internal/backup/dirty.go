@@ -41,6 +41,12 @@ func (tracker *DirtyTracker) Take() (time.Time, bool) {
 	return since, true
 }
 
+func (tracker *DirtyTracker) Peek() (time.Time, bool) {
+	tracker.mutex.Lock()
+	defer tracker.mutex.Unlock()
+	return tracker.since, tracker.dirty
+}
+
 func (tracker *DirtyTracker) Retry(since time.Time) {
 	if since.IsZero() {
 		return

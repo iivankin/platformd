@@ -76,3 +76,42 @@ func TestCanonicalWhitespace(t *testing.T) {
 		t.Fatalf("canonical cron = %q, %v", value, err)
 	}
 }
+
+func TestPreviousOccurrenceIsStrictAndUsesVixieDaySemantics(t *testing.T) {
+	t.Parallel()
+	schedule, err := Parse("15 9 1 * 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := schedule.Previous(time.Date(2026, time.July, 14, 9, 15, 30, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, time.July, 13, 9, 15, 0, 0, time.UTC)
+	if !previous.Equal(want) {
+		t.Fatalf("previous occurrence = %s, want %s", previous, want)
+	}
+	strict, err := schedule.Previous(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strict.Before(want) || !schedule.Matches(strict) {
+		t.Fatalf("strict previous occurrence = %s", strict)
+	}
+}
+
+func TestPreviousOccurrenceCrossesMonthAndYear(t *testing.T) {
+	t.Parallel()
+	schedule, err := Parse("0 0 31 12 *")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := schedule.Previous(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2025, time.December, 31, 0, 0, 0, 0, time.UTC)
+	if !previous.Equal(want) {
+		t.Fatalf("previous occurrence = %s, want %s", previous, want)
+	}
+}
