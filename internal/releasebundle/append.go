@@ -126,6 +126,13 @@ func runtimeFiles(root string) ([]sourceFile, error) {
 		return nil, errors.New("runtime source file count is outside bounds")
 	}
 	sort.Slice(files, func(left, right int) bool { return files[left].manifest.Path < files[right].manifest.Path })
+	manifestFiles := make([]ManifestFile, len(files))
+	for index := range files {
+		manifestFiles[index] = files[index].manifest
+	}
+	if err := validateRuntimeProfile(manifestFiles); err != nil {
+		return nil, err
+	}
 	return files, nil
 }
 

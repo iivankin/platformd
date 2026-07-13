@@ -78,14 +78,17 @@ func Open(executablePath string) (*Bundle, error) {
 		return cleanup(errors.New("runtime bundle entry count is outside bounds"))
 	}
 	files := make(map[string]*zip.File, len(reader.File))
-	for _, file := range reader.File {
+	for index, file := range reader.File {
+		if index > 0 && reader.File[index-1].Name >= file.Name {
+			return cleanup(errors.New("runtime bundle entries are not strictly sorted"))
+		}
 		if !validArchivePath(file.Name) || file.FileInfo().IsDir() || !file.Mode().IsRegular() {
 			return cleanup(fmt.Errorf("runtime bundle has invalid entry %q", file.Name))
 		}
 		if file.Method != zip.Store && file.Method != zip.Deflate {
 			return cleanup(fmt.Errorf("runtime bundle entry %q uses unsupported compression", file.Name))
 		}
-		if file.Comment != "" || file.NonUTF8 || len(file.Extra) != 0 {
+		if file.Flags != 0x8 || file.Comment != "" || file.NonUTF8 || len(file.Extra) != 0 || file.ModifiedDate != 0 || file.ModifiedTime != 0 {
 			return cleanup(fmt.Errorf("runtime bundle entry %q violates the v1 ZIP profile", file.Name))
 		}
 		if _, exists := files[file.Name]; exists {
@@ -97,6 +100,9 @@ func Open(executablePath string) (*Bundle, error) {
 	if !ok {
 		return cleanup(errors.New("runtime bundle manifest is missing"))
 	}
+	if manifestEntry.CompressedSize64 > maximumManifestBytes {
+		return cleanup(errors.New("runtime bundle manifest compressed size is outside bounds"))
+	}
 	manifest, err := readManifest(manifestEntry)
 	if err != nil {
 		return cleanup(err)
@@ -105,6 +111,7 @@ func Open(executablePath string) (*Bundle, error) {
 		return cleanup(errors.New("runtime bundle contains unlisted entries"))
 	}
 	var aggregate uint64
+	var compressedAggregate uint64
 	for index, expected := range manifest.Files {
 		if index > 0 && manifest.Files[index-1].Path >= expected.Path {
 			return cleanup(errors.New("runtime bundle manifest paths are not strictly sorted"))
@@ -120,9 +127,16 @@ func Open(executablePath string) (*Bundle, error) {
 		if !ok {
 			return cleanup(fmt.Errorf("runtime bundle entry %q is missing", expected.Path))
 		}
+		if entry.CompressedSize64 > maximumAggregateBytes || compressedAggregate > maximumAggregateBytes-entry.CompressedSize64 {
+			return cleanup(errors.New("runtime bundle compressed aggregate size exceeds limit"))
+		}
+		compressedAggregate += entry.CompressedSize64
 		if entry.UncompressedSize64 != expected.Size || uint32(entry.Mode().Perm()) != expected.Mode {
 			return cleanup(fmt.Errorf("runtime bundle entry %q metadata mismatch", expected.Path))
 		}
+	}
+	if err := validateRuntimeProfile(manifest.Files); err != nil {
+		return cleanup(err)
 	}
 	return &Bundle{reader: reader, files: files, ordered: manifest.Files}, nil
 }

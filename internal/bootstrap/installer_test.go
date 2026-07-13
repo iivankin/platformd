@@ -140,9 +140,7 @@ func testVerifiedRelease(t *testing.T, root string) (bootstrap.VerifiedRelease, 
 	if err := os.Mkdir(runtimeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runtimeDirectory, "crun"), []byte("runtime"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeRuntimeProfile(t, runtimeDirectory)
 	if err := releasebundle.Append(executable, runtimeDirectory); err != nil {
 		t.Fatal(err)
 	}
@@ -177,4 +175,18 @@ func testVerifiedRelease(t *testing.T, root string) (bootstrap.VerifiedRelease, 
 		ManifestBytes:  manifestBytes,
 		PublicKey:      publicKey,
 	}, publicKey
+}
+
+func writeRuntimeProfile(t *testing.T, root string) {
+	t.Helper()
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

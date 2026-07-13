@@ -12,7 +12,7 @@ import json
 import sys
 
 lock = json.load(open(sys.argv[1], encoding="utf-8"))
-for soname in lock["nativeDependencies"]["allowedHostSonamesByArchitecture"]["amd64"]:
+for soname in lock["nativeDependencies"]["allowedDirectHostSonamesByArchitecture"]["amd64"]:
     print(soname)
 PY
 
@@ -51,10 +51,23 @@ for executable in "$@"; do
 		echo "ELF has unresolved host libraries: $executable" >&2
 		exit 1
 	fi
-	ldd "$executable" | awk '
-		/^[[:space:]]*linux-vdso/ { next }
-		/=>/ { print $1; next }
-		$1 ~ /^\// { count = split($1, parts, "/"); print parts[count] }
+	# Only DT_NEEDED entries and the ELF interpreter are properties of the
+	# shipped bytes. Transitive libraries belong to the host packages and can
+	# legitimately differ between supported distributions and security updates.
+	readelf -dW "$executable" | awk '
+		/\(NEEDED\)/ {
+			value = $NF
+			gsub(/^\[|\]$/, "", value)
+			print value
+		}
+	' >>"$temporary_dir/actual"
+	readelf -lW "$executable" | awk '
+		/Requesting program interpreter/ {
+			value = $NF
+			sub(/\]$/, "", value)
+			count = split(value, parts, "/")
+			print parts[count]
+		}
 	' >>"$temporary_dir/actual"
 done
 

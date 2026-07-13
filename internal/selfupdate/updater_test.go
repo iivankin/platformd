@@ -314,9 +314,7 @@ func buildRelease(t *testing.T, root, version, binaryURL string, supported []str
 	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runtimeRoot, "helper"), []byte("helper-"+version), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeUpdateRuntimeProfile(t, runtimeRoot, version)
 	if err := releasebundle.Append(executable, runtimeRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -340,6 +338,21 @@ func buildRelease(t *testing.T, root, version, binaryURL string, supported []str
 	return releaseFixture{
 		release: bootstrap.VerifiedRelease{ExecutablePath: executable, Manifest: manifest, ManifestBytes: manifestBytes, PublicKey: publicKey},
 		binary:  binary,
+	}
+}
+
+func writeUpdateRuntimeProfile(t *testing.T, root, version string) {
+	t.Helper()
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark"} {
+		value := []byte("#!/bin/sh\n# " + version + "\nexit 0\n")
+		if err := os.WriteFile(filepath.Join(root, name), value, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

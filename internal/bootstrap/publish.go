@@ -24,7 +24,10 @@ func PublishReleaseSlot(release VerifiedRelease, paths layout.Paths, expectedUID
 	}
 	target := filepath.Join(paths.ReleasesRoot, release.Manifest.Version)
 	if _, err := os.Lstat(target); err == nil {
-		return VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
+		if err := VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID); err != nil {
+			return err
+		}
+		return probeReleaseRuntime(target)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -45,12 +48,18 @@ func PublishReleaseSlot(release VerifiedRelease, paths layout.Paths, expectedUID
 	if err := release.ExtractRuntime(staging); err != nil {
 		return err
 	}
+	if err := probeReleaseRuntime(staging); err != nil {
+		return err
+	}
 	if err := syncDirectoryTree(staging); err != nil {
 		return err
 	}
 	if err := os.Rename(staging, target); err != nil {
 		if _, statErr := os.Lstat(target); statErr == nil {
-			return VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
+			if err := VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID); err != nil {
+				return err
+			}
+			return probeReleaseRuntime(target)
 		}
 		return fmt.Errorf("publish release slot: %w", err)
 	}

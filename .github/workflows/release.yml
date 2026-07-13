@@ -128,6 +128,12 @@ jobs:
             -ldflags "-X github.com/iivankin/platformd/internal/version.Version=$VERSION -X github.com/iivankin/platformd/internal/version.Commit=$GITHUB_SHA" \
             -o dist/platformd-linux-amd64 \
             .
+          build/verify-elf.sh \
+            dist/platformd-linux-amd64 \
+            dist/runtime/crun \
+            dist/runtime/conmon \
+            dist/runtime/netavark \
+            dist/runtime/catatonit
           go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
           python3 -m zipfile -t dist/platformd-linux-amd64
 

@@ -204,9 +204,7 @@ func restoreReleaseSlot(t *testing.T, root string) (layout.Paths, ed25519.Public
 	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runtimeRoot, "helper"), []byte("helper"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeRestoreRuntimeProfile(t, runtimeRoot)
 	if err := releasebundle.Append(executable, runtimeRoot); err != nil {
 		t.Fatal(err)
 	}
@@ -240,4 +238,18 @@ func restoreReleaseSlot(t *testing.T, root string) (layout.Paths, ed25519.Public
 		t.Fatal(err)
 	}
 	return paths, publicKey
+}
+
+func writeRestoreRuntimeProfile(t *testing.T, root string) {
+	t.Helper()
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

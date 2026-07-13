@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io/fs"
 	"os"
@@ -25,8 +26,8 @@ func TestAppendOpenVerifyAndExtract(t *testing.T) {
 	if err := os.MkdirAll(runtimeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	writeRuntimeProfile(t, runtimeDirectory)
 	writeFile(t, filepath.Join(runtimeDirectory, "crun"), []byte("runtime-binary"), 0o755)
-	writeFile(t, filepath.Join(runtimeDirectory, "seccomp.json"), []byte("{}"), 0o600)
 
 	if err := releasebundle.Append(executable, runtimeDirectory); err != nil {
 		t.Fatal(err)
@@ -68,6 +69,45 @@ func TestAppendOpenVerifyAndExtract(t *testing.T) {
 	}
 	if err := releasebundle.Append(executable, runtimeDirectory); err == nil {
 		t.Fatal("second bundle append succeeded")
+	}
+}
+
+func TestAppendRejectsIncompleteOrUnknownRuntimeProfile(t *testing.T) {
+	t.Parallel()
+
+	for name, mutate := range map[string]func(*testing.T, string){
+		"missing": func(t *testing.T, root string) {
+			t.Helper()
+			if err := os.Remove(filepath.Join(root, "netavark")); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"unknown": func(t *testing.T, root string) {
+			t.Helper()
+			writeFile(t, filepath.Join(root, "unexpected"), []byte("payload"), 0o755)
+		},
+		"wrong mode": func(t *testing.T, root string) {
+			t.Helper()
+			if err := os.Chmod(filepath.Join(root, "seccomp.json"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			executable := filepath.Join(root, "platformd")
+			writeFile(t, executable, []byte("\x7fELFplatformd"), 0o755)
+			runtimeDirectory := filepath.Join(root, "runtime")
+			if err := os.Mkdir(runtimeDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			writeRuntimeProfile(t, runtimeDirectory)
+			mutate(t, runtimeDirectory)
+			if err := releasebundle.Append(executable, runtimeDirectory); err == nil {
+				t.Fatal("invalid runtime profile was accepted")
+			}
+		})
 	}
 }
 
@@ -115,26 +155,26 @@ func TestOpenRejectsMalformedBundleProfiles(t *testing.T) {
 	validManifest := `{"formatVersion":1,"files":[{"path":"runtime/helper","mode":493,"size":7,"sha256":"` +
 		hex.EncodeToString(digest[:]) + `"}]}`
 	valid := rawBundle(t, []rawBundleEntry{
-		{name: "runtime/helper", body: payload, mode: 0o755},
 		{name: "bundle-manifest.json", body: []byte(validManifest), mode: 0o600},
+		{name: "runtime/helper", body: payload, mode: 0o755},
 	})
 
 	tests := map[string][]byte{
 		"truncated": valid[:len(valid)-1],
 		"trailing":  append(append([]byte(nil), valid...), 0),
 		"uint overflow": rawBundle(t, []rawBundleEntry{
-			{name: "runtime/helper", body: payload, mode: 0o755},
 			{name: "bundle-manifest.json", mode: 0o600, body: []byte(
 				`{"formatVersion":1,"files":[{"path":"runtime/helper","mode":493,"size":18446744073709551616,"sha256":"` +
 					hex.EncodeToString(digest[:]) + `"}]}`,
 			)},
+			{name: "runtime/helper", body: payload, mode: 0o755},
 		}),
 		"duplicate JSON key": rawBundle(t, []rawBundleEntry{
-			{name: "runtime/helper", body: payload, mode: 0o755},
 			{name: "bundle-manifest.json", mode: 0o600, body: []byte(
 				`{"formatVersion":1,"formatVersion":1,"files":[{"path":"runtime/helper","mode":493,"size":7,"sha256":"` +
 					hex.EncodeToString(digest[:]) + `"}]}`,
 			)},
+			{name: "runtime/helper", body: payload, mode: 0o755},
 		}),
 		"duplicate archive entry": rawBundle(t, []rawBundleEntry{
 			{name: "runtime/helper", body: payload, mode: 0o755},
@@ -171,10 +211,44 @@ func TestOpenRejectsMalformedBundleProfiles(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsNoncanonicalZIPMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]func([]rawBundleEntry){
+		"entry order": func(entries []rawBundleEntry) {
+			entries[0], entries[1] = entries[1], entries[0]
+		},
+		"encryption flag": func(entries []rawBundleEntry) {
+			entries[1].flags = 0x1
+		},
+		"timestamp": func(entries []rawBundleEntry) {
+			entries[1].modifiedDate = 1
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			entries := rawRuntimeProfile(t)
+			mutate(entries)
+			path := filepath.Join(t.TempDir(), "platformd")
+			writeFile(t, path, rawBundle(t, entries), 0o755)
+			bundle, err := releasebundle.Open(path)
+			if bundle != nil {
+				_ = bundle.Close()
+			}
+			if err == nil {
+				t.Fatalf("%s ZIP metadata was accepted", name)
+			}
+		})
+	}
+}
+
 type rawBundleEntry struct {
-	name string
-	body []byte
-	mode fs.FileMode
+	name         string
+	body         []byte
+	mode         fs.FileMode
+	flags        uint16
+	modifiedDate uint16
 }
 
 func rawBundle(t *testing.T, entries []rawBundleEntry) []byte {
@@ -185,6 +259,8 @@ func rawBundle(t *testing.T, entries []rawBundleEntry) []byte {
 	for _, entry := range entries {
 		header := &zip.FileHeader{Name: entry.name, Method: zip.Store}
 		header.SetMode(entry.mode)
+		header.Flags = entry.flags
+		header.ModifiedDate = entry.modifiedDate
 		writer, err := archive.CreateHeader(header)
 		if err != nil {
 			t.Fatal(err)
@@ -199,9 +275,49 @@ func rawBundle(t *testing.T, entries []rawBundleEntry) []byte {
 	return output.Bytes()
 }
 
+func rawRuntimeProfile(t *testing.T) []rawBundleEntry {
+	t.Helper()
+	entries := make([]rawBundleEntry, 0, 11)
+	manifest := releasebundle.Manifest{FormatVersion: 1}
+	add := func(name string, body []byte, mode fs.FileMode) {
+		digest := sha256.Sum256(body)
+		manifest.Files = append(manifest.Files, releasebundle.ManifestFile{
+			Path: "runtime/" + name, Mode: uint32(mode), Size: uint64(len(body)), SHA256: hex.EncodeToString(digest[:]),
+		})
+		entries = append(entries, rawBundleEntry{name: "runtime/" + name, body: body, mode: mode})
+	}
+	for _, name := range []string{"catatonit", "conmon"} {
+		add(name, []byte("runtime-"+name), 0o755)
+	}
+	add("containers.conf", []byte("{}"), 0o644)
+	add("crun", []byte("runtime-crun"), 0o755)
+	add("mounts.conf", []byte("{}"), 0o644)
+	add("netavark", []byte("runtime-netavark"), 0o755)
+	for _, name := range []string{"policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
+		add(name, []byte("{}"), 0o644)
+	}
+	manifestValue, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append([]rawBundleEntry{{name: "bundle-manifest.json", body: manifestValue, mode: 0o600}}, entries...)
+}
+
 func writeFile(t *testing.T, path string, value []byte, mode fs.FileMode) {
 	t.Helper()
 	if err := os.WriteFile(path, value, mode); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func writeRuntimeProfile(t *testing.T, root string) {
+	t.Helper()
+	executables := []string{"catatonit", "conmon", "crun", "netavark"}
+	configurations := []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"}
+	for _, name := range executables {
+		writeFile(t, filepath.Join(root, name), []byte("runtime-"+name), 0o755)
+	}
+	for _, name := range configurations {
+		writeFile(t, filepath.Join(root, name), []byte("{}"), 0o644)
 	}
 }

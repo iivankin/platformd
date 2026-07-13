@@ -29,9 +29,7 @@ func TestLoadReleaseVerifiesManifestBinaryAndBundle(t *testing.T) {
 	if err := os.Mkdir(runtimeDirectory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(runtimeDirectory, "crun"), []byte("runtime"), 0o755); err != nil {
-		t.Fatal(err)
-	}
+	writeRuntimeProfile(t, runtimeDirectory)
 	if err := releasebundle.Append(executable, runtimeDirectory); err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +73,7 @@ func TestLoadReleaseVerifiesManifestBinaryAndBundle(t *testing.T) {
 	if err := release.ExtractRuntime(extracted); err != nil {
 		t.Fatal(err)
 	}
-	if value, err := os.ReadFile(filepath.Join(extracted, "runtime", "crun")); err != nil || string(value) != "runtime" {
+	if value, err := os.ReadFile(filepath.Join(extracted, "runtime", "crun")); err != nil || string(value) != "#!/bin/sh\nexit 0\n" {
 		t.Fatalf("extracted runtime = %q, %v", value, err)
 	}
 }
