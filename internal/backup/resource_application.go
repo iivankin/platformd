@@ -13,6 +13,8 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
+var ErrResourceRunner = errors.New("resource backup runner is not configured")
+
 type ResourceApplicationStore interface {
 	BackupPolicies(context.Context) ([]state.BackupPolicy, error)
 	BackupPolicy(context.Context, string, string) (state.BackupPolicy, error)
@@ -68,7 +70,7 @@ type PolicyResult struct {
 }
 
 func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplication, error) {
-	if config.Store == nil || config.Worker == nil || (config.Target == nil) != (config.TargetGate == nil) {
+	if config.Store == nil || (config.Target == nil) != (config.TargetGate == nil) {
 		return nil, errors.New("resource backup application dependencies are incomplete")
 	}
 	if config.RemoteFactory == nil {
@@ -170,6 +172,9 @@ func (application *ResourceApplication) SetPolicy(ctx context.Context, input Pol
 }
 
 func (application *ResourceApplication) RunNow(ctx context.Context, kind, resourceID string) (state.BackupRecord, error) {
+	if application.worker == nil {
+		return state.BackupRecord{}, ErrResourceRunner
+	}
 	policy, err := application.store.BackupPolicy(ctx, kind, resourceID)
 	if err != nil {
 		return state.BackupRecord{}, err
