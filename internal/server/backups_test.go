@@ -30,6 +30,31 @@ type manualBackupRunner struct {
 	err    error
 }
 
+type restoreRunnerStub struct {
+	resourceKind string
+	resourceID   string
+	generationID string
+	options      backup.ResourceRestoreOptions
+	actor        backup.Actor
+}
+
+func (runner *restoreRunnerStub) Start(
+	_ context.Context,
+	resourceKind, resourceID, generationID string,
+	options backup.ResourceRestoreOptions,
+	actor backup.Actor,
+) (state.Operation, error) {
+	runner.resourceKind = resourceKind
+	runner.resourceID = resourceID
+	runner.generationID = generationID
+	runner.options = options
+	runner.actor = actor
+	return state.Operation{
+		ID: "operation-1", Kind: resourceKind + "_restore", TargetID: resourceID,
+		Status: "running", Progress: "opening_generation", StartedAtMillis: 30,
+	}, nil
+}
+
 func (runner manualBackupRunner) TryRunNow(context.Context, string, string, int) (state.BackupRecord, error) {
 	return runner.record, runner.err
 }
@@ -131,11 +156,12 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	restores := &restoreRunnerStub{}
 	application, err := backup.NewResourceApplication(backup.ResourceApplicationConfig{
 		Store: store, Worker: manualBackupRunner{record: state.BackupRecord{
 			ID: "backup", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
 			Status: "running", StartedAtMillis: 20,
-		}}, Random: bytes.NewReader(serverSequenceBytes(100)), Now: func() time.Time { return time.UnixMilli(10) },
+		}}, Restores: restores, Random: bytes.NewReader(serverSequenceBytes(100)), Now: func() time.Time { return time.UnixMilli(10) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -170,6 +196,31 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/backups/resources/redis/redis/history?limit=50", ""))
 	if response.Code != http.StatusOK || response.Body.String() != "{\"backups\":[]}\n" {
 		t.Fatalf("backup history = %d/%s", response.Code, response.Body)
+	}
+	restore := projectRequest(http.MethodPost, "/api/v1/backups/resources/redis/redis/restore", `{
+  "generationId":"generation-1",
+  "mode":"replace",
+  "newResourceName":"",
+  "destructiveConfirmed":true
+}`)
+	restore.Header.Set("Origin", "https://admin.example.com")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, restore)
+	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"id":"operation-1"`) ||
+		restores.resourceKind != "redis" || restores.resourceID != "redis" || restores.generationID != "generation-1" ||
+		restores.options.Mode != "replace" || !restores.options.DestructiveConfirmed || restores.actor.Email == "" {
+		t.Fatalf("restore = %d/%s runner=%+v", response.Code, response.Body, restores)
+	}
+	if err := store.BeginOperation(ctx, state.BeginOperation{
+		ID: "operation-1", Kind: "redis_restore", TargetID: "redis",
+		Progress: "restoring", StartedAtMillis: 30,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/operations/operation-1", ""))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"progress":"restoring"`) {
+		t.Fatalf("operation = %d/%s", response.Code, response.Body)
 	}
 }
 

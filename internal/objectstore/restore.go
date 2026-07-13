@@ -17,14 +17,15 @@ import (
 )
 
 type RestoreInput struct {
-	StoreID        string
-	Metadata       []byte
-	OpenAttachment BackupAttachmentOpener
-	Actor          Actor
+	StoreID             string
+	Metadata            []byte
+	ValidateAttachments func([]BackupAttachment) error
+	OpenAttachment      BackupAttachmentOpener
+	Actor               Actor
 }
 
 func (application *Application) RestoreSnapshot(ctx context.Context, input RestoreInput) (string, error) {
-	if ctx == nil || input.StoreID == "" || len(input.Metadata) == 0 || input.Actor.ID == "" ||
+	if ctx == nil || input.StoreID == "" || len(input.Metadata) == 0 || input.ValidateAttachments == nil || input.Actor.ID == "" ||
 		(input.Actor.Kind != "access" && input.Actor.Kind != "token" && input.Actor.Kind != "system") ||
 		(input.Actor.Kind == "access" && input.Actor.Email == "") ||
 		(input.Actor.Kind != "access" && input.Actor.Email != "") {
@@ -35,6 +36,9 @@ func (application *Application) RestoreSnapshot(ctx context.Context, input Resto
 	}
 	snapshot, err := decodeBackupSnapshot(input.Metadata, input.StoreID)
 	if err != nil {
+		return "", err
+	}
+	if err := input.ValidateAttachments(snapshot.Attachments); err != nil {
 		return "", err
 	}
 	releaseExclusion, err := application.beginBackupExclusion(input.StoreID)

@@ -18,15 +18,21 @@ type ResourceApplicationStore interface {
 	BackupPolicy(context.Context, string, string) (state.BackupPolicy, error)
 	SetBackupPolicy(context.Context, state.SetBackupPolicy) (state.BackupPolicy, error)
 	BackupHistory(context.Context, state.BackupHistoryQuery) ([]state.BackupRecord, error)
+	Operation(context.Context, string) (state.Operation, error)
 }
 
 type ManualRunner interface {
 	TryRunNow(context.Context, string, string, int) (state.BackupRecord, error)
 }
 
+type RestoreRunner interface {
+	Start(context.Context, string, string, string, ResourceRestoreOptions, Actor) (state.Operation, error)
+}
+
 type ResourceApplication struct {
 	store         ResourceApplicationStore
 	worker        ManualRunner
+	restores      RestoreRunner
 	target        *TargetApplication
 	targetGate    *Gate
 	master        cryptobox.MasterKey
@@ -38,6 +44,7 @@ type ResourceApplication struct {
 type ResourceApplicationConfig struct {
 	Store         ResourceApplicationStore
 	Worker        ManualRunner
+	Restores      RestoreRunner
 	Target        *TargetApplication
 	TargetGate    *Gate
 	Master        cryptobox.MasterKey
@@ -74,9 +81,29 @@ func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplicat
 		config.Now = time.Now
 	}
 	return &ResourceApplication{
-		store: config.Store, worker: config.Worker, target: config.Target, targetGate: config.TargetGate,
+		store: config.Store, worker: config.Worker, restores: config.Restores,
+		target: config.Target, targetGate: config.TargetGate,
 		master: config.Master, remoteFactory: config.RemoteFactory, random: config.Random, now: config.Now,
 	}, nil
+}
+
+func (application *ResourceApplication) Restore(
+	ctx context.Context,
+	kind, resourceID, generationID string,
+	options ResourceRestoreOptions,
+	actor Actor,
+) (state.Operation, error) {
+	if _, err := application.store.BackupPolicy(ctx, kind, resourceID); err != nil {
+		return state.Operation{}, err
+	}
+	if application.restores == nil {
+		return state.Operation{}, ErrResourceRestorer
+	}
+	return application.restores.Start(ctx, kind, resourceID, generationID, options, actor)
+}
+
+func (application *ResourceApplication) Operation(ctx context.Context, operationID string) (state.Operation, error) {
+	return application.store.Operation(ctx, operationID)
 }
 
 func (application *ResourceApplication) Generations(
