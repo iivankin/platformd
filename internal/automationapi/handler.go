@@ -82,6 +82,7 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups", readManagedResourceBackups(config.Managed))
 	}
 	if config.Versions != nil {
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/preview", previewDatabaseVersionChange(config.Versions))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change", startDatabaseVersionChange(config.Versions))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}", readDatabaseVersionChange(config.Versions))
 	}

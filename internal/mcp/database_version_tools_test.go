@@ -76,6 +76,10 @@ func (*mcpVersionAdapter) Resolve(context.Context, string) (string, error) {
 	return "sha256:target", nil
 }
 
+func (*mcpVersionAdapter) Capacity(context.Context, databaseversion.Resource) (databaseversion.Capacity, error) {
+	return databaseversion.Capacity{CurrentDataBytes: 10, RequiredFreeBytes: 20, AvailableBytes: 30}, nil
+}
+
 func (adapter *mcpVersionAdapter) Change(_ context.Context, request databaseversion.ChangeRequest) error {
 	adapter.changed <- request
 	return nil
@@ -97,6 +101,14 @@ func TestMCPStartsAndReadsDatabaseVersionChangeWithinTokenBoundary(t *testing.T)
 		tools: configuredReadTools(false, true), admission: admission.New(),
 	}
 	projectID := "project"
+	preview := callMCPTool(t, handler, automation.Identity{
+		TokenID: "admin-token", Role: "admin", ProjectID: &projectID,
+	}, `{"jsonrpc":"2.0","id":0,"method":"tools/call","params":{"name":"preview_managed_database_version_change","arguments":{"projectId":"project","kind":"redis","resourceId":"redis","imageTag":"8.0"}}}`)
+	if !strings.Contains(preview, `\"targetDigest\":\"sha256:target\"`) ||
+		!strings.Contains(preview, `\"requiredFreeBytes\":20`) || !strings.Contains(preview, `\"ready\":true`) ||
+		len(store.operations) != 0 {
+		t.Fatalf("MCP version preview = %s operations=%d", preview, len(store.operations))
+	}
 	output := callMCPTool(t, handler, automation.Identity{
 		TokenID: "admin-token", Role: "admin", ProjectID: &projectID,
 	}, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_managed_database_version_change","arguments":{"projectId":"project","kind":"redis","resourceId":"redis","imageTag":"8.0"}}}`)
@@ -118,12 +130,17 @@ func TestMCPStartsAndReadsDatabaseVersionChangeWithinTokenBoundary(t *testing.T)
 
 func TestMCPVersionMutationToolIsAdminOnly(t *testing.T) {
 	tools := configuredReadTools(false, true)
-	if !containsTool(tools, "read_managed_database_version_change") || containsTool(tools, "start_managed_database_version_change") {
+	if !containsTool(tools, "read_managed_database_version_change") ||
+		containsTool(tools, "preview_managed_database_version_change") ||
+		containsTool(tools, "start_managed_database_version_change") {
 		t.Fatalf("read tool set = %+v", tools)
 	}
 	admin := adminTools()
-	admin = append(admin, startDatabaseVersionTool())
-	if !containsTool(admin, "start_managed_database_version_change") || !isAdminMutationTool("start_managed_database_version_change") {
+	admin = append(admin, previewDatabaseVersionTool(), startDatabaseVersionTool())
+	if !containsTool(admin, "preview_managed_database_version_change") ||
+		!containsTool(admin, "start_managed_database_version_change") ||
+		!isAdminMutationTool("preview_managed_database_version_change") ||
+		!isAdminMutationTool("start_managed_database_version_change") {
 		t.Fatalf("admin tool set = %+v", admin)
 	}
 }

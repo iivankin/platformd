@@ -78,6 +78,10 @@ func (*versionAdapter) Resolve(context.Context, string) (string, error) {
 	return "sha256:target", nil
 }
 
+func (*versionAdapter) Capacity(context.Context, Resource) (Capacity, error) {
+	return Capacity{CurrentDataBytes: 40, RequiredFreeBytes: 50, AvailableBytes: 100}, nil
+}
+
 func (adapter *versionAdapter) Change(_ context.Context, request ChangeRequest) error {
 	adapter.request = request
 	close(adapter.started)
@@ -158,6 +162,52 @@ func TestServiceRejectsSameDigestBeforeCreatingOperation(t *testing.T) {
 	}
 }
 
+func TestServicePreviewReportsCapacityWithoutCreatingOperation(t *testing.T) {
+	store := &versionStore{operations: make(map[string]state.Operation)}
+	service, err := New(Config{
+		Context: context.Background(), Store: store, Admission: admission.New(),
+		Adapters: map[string]Adapter{Redis: &versionAdapter{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.Preview(context.Background(), Redis, "project", "redis", " 8.0 ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !preview.Ready || preview.Blocker != "" || preview.TargetTag != "8.0" ||
+		preview.CurrentDataBytes != 40 || preview.RequiredFreeBytes != 50 || preview.AvailableFreeBytes != 100 {
+		t.Fatalf("preview = %+v", preview)
+	}
+	if len(store.operations) != 0 {
+		t.Fatalf("preview created %d operations", len(store.operations))
+	}
+}
+
+func TestServiceRejectsInsufficientSpaceBeforeCreatingOperation(t *testing.T) {
+	store := &versionStore{operations: make(map[string]state.Operation)}
+	service, err := New(Config{
+		Context: context.Background(), Store: store, Admission: admission.New(),
+		Adapters: map[string]Adapter{Redis: insufficientCapacityAdapter{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := service.Preview(context.Background(), Redis, "project", "redis", "8.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.Ready || preview.Blocker != BlockerInsufficientSpace {
+		t.Fatalf("preview = %+v", preview)
+	}
+	_, err = service.Start(
+		context.Background(), Redis, "project", "redis", "8.0", Actor{Kind: "token", ID: "admin"},
+	)
+	if !errors.Is(err, ErrInsufficientSpace) || len(store.operations) != 0 {
+		t.Fatalf("insufficient capacity result = %v, operations=%d", err, len(store.operations))
+	}
+}
+
 type sameDigestAdapter struct{}
 
 func (sameDigestAdapter) Resource(context.Context, string, string) (Resource, error) {
@@ -168,6 +218,28 @@ func (sameDigestAdapter) Resolve(context.Context, string) (string, error) {
 	return "sha256:same", nil
 }
 
+func (sameDigestAdapter) Capacity(context.Context, Resource) (Capacity, error) {
+	return Capacity{AvailableBytes: 1}, nil
+}
+
 func (sameDigestAdapter) Change(context.Context, ChangeRequest) error {
+	return errors.New("must not run")
+}
+
+type insufficientCapacityAdapter struct{}
+
+func (insufficientCapacityAdapter) Resource(context.Context, string, string) (Resource, error) {
+	return Resource{ID: "redis", ProjectID: "project", ImageDigest: "sha256:source"}, nil
+}
+
+func (insufficientCapacityAdapter) Resolve(context.Context, string) (string, error) {
+	return "sha256:target", nil
+}
+
+func (insufficientCapacityAdapter) Capacity(context.Context, Resource) (Capacity, error) {
+	return Capacity{CurrentDataBytes: 90, RequiredFreeBytes: 100, AvailableBytes: 99}, nil
+}
+
+func (insufficientCapacityAdapter) Change(context.Context, ChangeRequest) error {
 	return errors.New("must not run")
 }

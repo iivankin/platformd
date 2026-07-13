@@ -24,6 +24,26 @@ type databaseVersionOperation struct {
 	FinishedAt   *int64 `json:"finishedAt,omitempty"`
 }
 
+func previewDatabaseVersionChange(service *databaseversion.Service) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAdminProject(response, request, request.PathValue("projectID")); !ok {
+			return
+		}
+		var body databaseVersionRequest
+		if !decodeMutationJSON(response, request, &body) {
+			return
+		}
+		preview, err := service.Preview(
+			request.Context(), request.PathValue("kind"), request.PathValue("projectID"),
+			request.PathValue("resourceID"), body.ImageTag,
+		)
+		if writeAutomationDatabaseVersionError(response, err) {
+			return
+		}
+		writeJSON(response, http.StatusOK, preview)
+	}
+}
+
 func startDatabaseVersionChange(service *databaseversion.Service) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAdminProject(response, request, request.PathValue("projectID"))
@@ -88,6 +108,8 @@ func writeAutomationDatabaseVersionError(response http.ResponseWriter, err error
 		writeError(response, http.StatusConflict, "database_busy", "Managed database already has an active lifecycle operation")
 	case errors.Is(err, databaseversion.ErrSameDigest):
 		writeError(response, http.StatusConflict, "database_image_already_active", "Selected image digest is already active")
+	case errors.Is(err, databaseversion.ErrInsufficientSpace):
+		writeError(response, http.StatusInsufficientStorage, "database_version_space_insufficient", "Managed database version change needs more free disk space")
 	case errors.Is(err, databaseversion.ErrInvalidInput), errors.Is(err, databaseversion.ErrUnsupportedKind):
 		writeError(response, http.StatusBadRequest, "invalid_database_version_change", err.Error())
 	case errors.Is(err, state.ErrManagedPostgresNotFound), errors.Is(err, state.ErrManagedRedisNotFound):

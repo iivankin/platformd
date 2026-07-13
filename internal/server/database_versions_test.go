@@ -80,6 +80,10 @@ func (*serverVersionAdapter) Resolve(context.Context, string) (string, error) {
 	return "sha256:target", nil
 }
 
+func (*serverVersionAdapter) Capacity(context.Context, databaseversion.Resource) (databaseversion.Capacity, error) {
+	return databaseversion.Capacity{CurrentDataBytes: 10, RequiredFreeBytes: 20, AvailableBytes: 30}, nil
+}
+
 func (adapter *serverVersionAdapter) Change(_ context.Context, request databaseversion.ChangeRequest) error {
 	adapter.request = request
 	if adapter.changed != nil {
@@ -104,6 +108,16 @@ func TestAdminStartsAndReadsRedisVersionChange(t *testing.T) {
 		"admin.example.com", projectVerifier{},
 		server.Handler(server.DefaultMeta("ready"), server.WithDatabaseVersions(service)),
 	)
+	previewRequest := projectRequest(http.MethodPost, "/api/v1/projects/project/redis/redis/version-change/preview", `{"imageTag":"8.0"}`)
+	previewRequest.Header.Set("Origin", "https://admin.example.com")
+	previewResponse := httptest.NewRecorder()
+	handler.ServeHTTP(previewResponse, previewRequest)
+	if previewResponse.Code != http.StatusOK ||
+		!strings.Contains(previewResponse.Body.String(), `"currentDataBytes":10`) ||
+		!strings.Contains(previewResponse.Body.String(), `"availableFreeBytes":30`) ||
+		!strings.Contains(previewResponse.Body.String(), `"ready":true`) || len(store.operations) != 0 {
+		t.Fatalf("version preview = %d/%s operations=%d", previewResponse.Code, previewResponse.Body.String(), len(store.operations))
+	}
 	request := projectRequest(http.MethodPost, "/api/v1/projects/project/redis/redis/version-change", `{"imageTag":"8.0"}`)
 	request.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()

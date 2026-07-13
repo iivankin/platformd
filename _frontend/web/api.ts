@@ -622,6 +622,27 @@ const operationSchema = z.object({
   targetId: z.string().min(1),
 });
 
+const databaseVersionPreviewSchema = z.object({
+  availableFreeBytes: z.number().int().nonnegative(),
+  blocker: z.enum(["same_digest", "insufficient_space"]).optional(),
+  currentDataBytes: z.number().int().nonnegative(),
+  ready: z.boolean(),
+  requiredFreeBytes: z.number().int().nonnegative(),
+  sourceDigest: z.string().min(1),
+  sourceTag: z.string().min(1),
+  targetDigest: z.string().min(1),
+  targetTag: z.string().min(1),
+});
+
+const databaseVersionStartSchema = databaseVersionPreviewSchema
+  .pick({
+    sourceDigest: true,
+    sourceTag: true,
+    targetDigest: true,
+    targetTag: true,
+  })
+  .extend({ operation: operationSchema });
+
 const recoveryResourceKindSchema = z.enum([
   "object_store",
   "postgres",
@@ -674,6 +695,10 @@ export type BackupGeneration = z.infer<typeof backupGenerationSchema>;
 export type BackupPolicy = z.infer<typeof backupPolicySchema>;
 export type BackupRecord = z.infer<typeof backupRecordSchema>;
 export type Operation = z.infer<typeof operationSchema>;
+export type DatabaseVersionPreview = z.infer<
+  typeof databaseVersionPreviewSchema
+>;
+export type DatabaseVersionStart = z.infer<typeof databaseVersionStartSchema>;
 export type RecoveryResource = z.infer<typeof recoveryResourceSchema>;
 export type RecoveryResourceKind = z.infer<typeof recoveryResourceKindSchema>;
 export type RecoveryStatus = z.infer<typeof recoveryStatusSchema>;
@@ -1327,6 +1352,90 @@ export const queryManagedPostgres = async (
     );
   }
   return postgresQueryResultSchema.parse(await response.json());
+};
+
+const databaseVersionPath = (
+  engine: ManagedImageEngine,
+  projectID: string,
+  resourceID: string
+) => {
+  const collection = engine === "postgres" ? "postgres" : "redis";
+  return `/api/v1/projects/${encodeURIComponent(projectID)}/${collection}/${encodeURIComponent(resourceID)}/version-change`;
+};
+
+export const previewDatabaseVersion = async (
+  engine: ManagedImageEngine,
+  projectID: string,
+  resourceID: string,
+  imageTag: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<DatabaseVersionPreview> => {
+  const response = await fetcher(
+    `${databaseVersionPath(engine, projectID, resourceID)}/preview`,
+    {
+      body: JSON.stringify({ imageTag }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Managed database version preview failed with ${response.status}`
+    );
+  }
+  return databaseVersionPreviewSchema.parse(await response.json());
+};
+
+export const startDatabaseVersionChange = async (
+  engine: ManagedImageEngine,
+  projectID: string,
+  resourceID: string,
+  imageTag: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<DatabaseVersionStart> => {
+  const response = await fetcher(
+    databaseVersionPath(engine, projectID, resourceID),
+    {
+      body: JSON.stringify({ imageTag }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Managed database version change failed with ${response.status}`
+    );
+  }
+  return databaseVersionStartSchema.parse(await response.json());
+};
+
+export const fetchDatabaseVersionOperation = async (
+  engine: ManagedImageEngine,
+  projectID: string,
+  resourceID: string,
+  operationID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Operation> => {
+  const response = await fetcher(
+    `${databaseVersionPath(engine, projectID, resourceID)}/${encodeURIComponent(operationID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Managed database version operation failed with ${response.status}`
+    );
+  }
+  return operationSchema.parse(await response.json());
 };
 
 const objectStorePath = (projectID: string, storeID?: string) =>

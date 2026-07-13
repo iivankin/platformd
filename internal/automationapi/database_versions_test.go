@@ -78,6 +78,10 @@ func (*automationVersionAdapter) Resolve(context.Context, string) (string, error
 	return "sha256:target", nil
 }
 
+func (*automationVersionAdapter) Capacity(context.Context, databaseversion.Resource) (databaseversion.Capacity, error) {
+	return databaseversion.Capacity{CurrentDataBytes: 10, RequiredFreeBytes: 20, AvailableBytes: 30}, nil
+}
+
 func (adapter *automationVersionAdapter) Change(_ context.Context, request databaseversion.ChangeRequest) error {
 	adapter.changed <- request
 	return nil
@@ -95,6 +99,21 @@ func TestAutomationStartsDatabaseVersionChangeWithinTokenBoundary(t *testing.T) 
 		t.Fatal(err)
 	}
 	projectID := "project"
+	preview := httptest.NewRequest(http.MethodPost, "/version-change/preview", strings.NewReader(`{"imageTag":"8.0"}`))
+	preview.SetPathValue("projectID", projectID)
+	preview.SetPathValue("kind", databaseversion.Redis)
+	preview.SetPathValue("resourceID", "redis")
+	preview.Header.Set("Content-Type", "application/json")
+	preview = preview.WithContext(automation.WithIdentity(preview.Context(), automation.Identity{
+		TokenID: "admin-token", Role: "admin", ProjectID: &projectID,
+	}))
+	previewResponse := httptest.NewRecorder()
+	previewDatabaseVersionChange(service).ServeHTTP(previewResponse, preview)
+	if previewResponse.Code != http.StatusOK ||
+		!strings.Contains(previewResponse.Body.String(), `"requiredFreeBytes":20`) ||
+		!strings.Contains(previewResponse.Body.String(), `"ready":true`) || len(store.operations) != 0 {
+		t.Fatalf("version preview = %d/%s operations=%d", previewResponse.Code, previewResponse.Body.String(), len(store.operations))
+	}
 	request := httptest.NewRequest(http.MethodPost, "/version-change", strings.NewReader(`{"imageTag":"8.0"}`))
 	request.SetPathValue("projectID", projectID)
 	request.SetPathValue("kind", databaseversion.Redis)
@@ -139,6 +158,7 @@ func TestAutomationOpenAPIAdvertisesDatabaseVersionRoutesOnlyWhenConfigured(t *t
 	with := httptest.NewRecorder()
 	serveOpenAPI("api.example.com", openAPIFeatures{databaseVersions: true}).ServeHTTP(with, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if !strings.Contains(with.Body.String(), "/managed-databases/{kind}/{resourceID}/version-change") ||
+		!strings.Contains(with.Body.String(), "/version-change/preview") ||
 		!strings.Contains(with.Body.String(), "DatabaseVersionChangeRequest") {
 		t.Fatalf("configured OpenAPI lacks version change: %s", with.Body.String())
 	}

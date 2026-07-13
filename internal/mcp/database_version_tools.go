@@ -44,6 +44,15 @@ func startDatabaseVersionTool() Tool {
 	}
 }
 
+func previewDatabaseVersionTool() Tool {
+	return Tool{
+		Name:        "preview_managed_database_version_change",
+		Description: "Resolve an exact target digest and report current data size and free-space requirements before a PostgreSQL or Redis version change. No preview state is stored. Requires an admin token.",
+		InputSchema: objectSchema(databaseVersionProperties(true, false),
+			[]string{"projectId", "kind", "resourceId", "imageTag"}),
+	}
+}
+
 type databaseVersionToolIdentity struct {
 	ProjectID  string `json:"projectId"`
 	Kind       string `json:"kind"`
@@ -77,6 +86,24 @@ func (handler *Handler) startDatabaseVersionChange(
 		"sourceTag": result.SourceTag, "sourceDigest": result.SourceDigest,
 		"targetTag": result.TargetTag, "targetDigest": result.TargetDigest,
 	}, nil
+}
+
+func (handler *Handler) previewDatabaseVersionChange(
+	ctx context.Context,
+	arguments json.RawMessage,
+	identity automation.Identity,
+) (any, error) {
+	var input struct {
+		databaseVersionToolIdentity
+		ImageTag string `json:"imageTag"`
+	}
+	if err := decodeArguments(arguments, &input); err != nil {
+		return nil, err
+	}
+	if !identity.AllowsProject(input.ProjectID) {
+		return nil, automation.ErrProjectBoundary
+	}
+	return handler.versions.Preview(ctx, input.Kind, input.ProjectID, input.ResourceID, input.ImageTag)
 }
 
 func (handler *Handler) readDatabaseVersionChange(

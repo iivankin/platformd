@@ -145,7 +145,7 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 			tools = append(tools, serverExecTool())
 		}
 		if handler.versions != nil {
-			tools = append(tools, startDatabaseVersionTool())
+			tools = append(tools, previewDatabaseVersionTool(), startDatabaseVersionTool())
 		}
 	}
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
@@ -210,6 +210,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.readDatabaseVersionChange(request.Context(), call.Arguments, identity)
+	case "preview_managed_database_version_change":
+		if handler.versions == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.previewDatabaseVersionChange(request.Context(), call.Arguments, identity)
 	case "create_service":
 		output, err = handler.createService(request.Context(), call.Arguments, identity)
 	case "update_service":
