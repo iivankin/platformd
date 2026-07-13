@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -25,6 +26,7 @@ const (
 	Port                = 6379
 	defaultReadyTimeout = 60 * time.Second
 	defaultProbePeriod  = 250 * time.Millisecond
+	backupSaveTimeout   = 30 * time.Minute
 	stopTimeoutSeconds  = 10
 )
 
@@ -50,10 +52,17 @@ type GrowthGate interface {
 type RedisConnection interface {
 	Ping(context.Context) error
 	Save(context.Context) error
+	BeginBackgroundSave(context.Context) error
+	PersistenceStatus(context.Context) (PersistenceStatus, error)
 	ScanKeys(context.Context, ScanQuery) (KeyPage, error)
 	PreviewKey(context.Context, PreviewQuery) (Preview, error)
 	Mutate(context.Context, Mutation) (MutationResult, error)
 	Close() error
+}
+
+type PersistenceStatus struct {
+	BackgroundSaveInProgress bool
+	LastBackgroundSaveOK     bool
 }
 
 type Placement struct {
@@ -383,6 +392,131 @@ func (controller *Controller) Status(resourceID string) (containerengine.Contain
 	}
 	container, err := controller.engine.InspectContainer(active.container.ID)
 	return container, true, err
+}
+
+// OpenBackupRDB starts a Redis background save and returns a descriptor for the
+// newly renamed dump.rdb. The resource lock is released only after opening the
+// file, so later Redis saves may replace the pathname without changing the
+// bytes read through this stable descriptor.
+func (controller *Controller) OpenBackupRDB(ctx context.Context, resourceID string) (io.ReadCloser, error) {
+	lease, err := controller.admission.Begin("redis_backup_snapshot", resourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer lease.Release()
+	lock := controller.resourceLock(resourceID)
+	lock.Lock()
+	defer lock.Unlock()
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return nil, ErrNotRunning
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return nil, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return nil, err
+	}
+	addresses := container.IPs[active.network]
+	if container.State != "running" || len(addresses) != 1 {
+		return nil, ErrNotRunning
+	}
+	connection, err := controller.dial(ctx, net.JoinHostPort(addresses[0], fmt.Sprint(Port)), password)
+	if err != nil {
+		return nil, err
+	}
+	defer connection.Close()
+	saveContext, cancel := context.WithTimeout(ctx, backupSaveTimeout)
+	defer cancel()
+	if err := controller.waitForBackgroundSave(saveContext, connection, false, nil); err != nil {
+		return nil, err
+	}
+	path := filepath.Join(controller.volumeRoot, active.resource.ProjectID, active.resource.VolumeID, "dump.rdb")
+	previous, err := os.Stat(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, err
+	}
+	if err := connection.BeginBackgroundSave(saveContext); err != nil {
+		return nil, err
+	}
+	file, err := controller.waitAndOpenBackgroundSave(saveContext, connection, path, previous)
+	if err != nil {
+		return nil, err
+	}
+	return file, nil
+}
+
+func (controller *Controller) waitAndOpenBackgroundSave(
+	ctx context.Context,
+	connection RedisConnection,
+	path string,
+	previous os.FileInfo,
+) (*os.File, error) {
+	var opened *os.File
+	err := controller.waitForBackgroundSave(ctx, connection, true, func(status PersistenceStatus) (bool, error) {
+		if status.BackgroundSaveInProgress {
+			return false, nil
+		}
+		if !status.LastBackgroundSaveOK {
+			return false, errors.New("Redis background save failed")
+		}
+		file, err := os.Open(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		info, statErr := file.Stat()
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() <= 0 {
+			_ = file.Close()
+			return false, errors.Join(statErr, errors.New("Redis backup RDB is empty or not a regular file"))
+		}
+		if previous != nil && os.SameFile(previous, info) {
+			_ = file.Close()
+			return false, nil
+		}
+		current, statErr := os.Stat(path)
+		if statErr != nil || !os.SameFile(info, current) {
+			_ = file.Close()
+			return false, statErr
+		}
+		opened = file
+		return true, nil
+	})
+	return opened, err
+}
+
+func (controller *Controller) waitForBackgroundSave(
+	ctx context.Context,
+	connection RedisConnection,
+	requireNewFile bool,
+	ready func(PersistenceStatus) (bool, error),
+) error {
+	ticker := time.NewTicker(controller.probePeriod)
+	defer ticker.Stop()
+	for {
+		status, err := connection.PersistenceStatus(ctx)
+		if err != nil {
+			return err
+		}
+		if !requireNewFile && !status.BackgroundSaveInProgress {
+			return nil
+		}
+		if ready != nil {
+			done, err := ready(status)
+			if err != nil || done {
+				return err
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (controller *Controller) ScanKeys(ctx context.Context, resourceID string, query ScanQuery) (KeyPage, error) {

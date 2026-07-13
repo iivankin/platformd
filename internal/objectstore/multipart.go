@@ -108,6 +108,12 @@ func (application *Application) CompleteMultipart(ctx context.Context, storeID, 
 	for index, part := range parts {
 		completion[index] = state.CompleteMultipartPart{PartNumber: part.PartNumber, ChecksumSHA256: part.ChecksumSHA256}
 	}
+	finishMutation, err := application.beginMetadataMutation(ctx, storeID)
+	if err != nil {
+		_ = application.payloads.Delete(storeID, payload.ID)
+		return state.ObjectMetadata{}, err
+	}
+	defer finishMutation()
 	metadata, err := application.repository.CompleteMultipartUpload(ctx, state.CompleteMultipartUpload{
 		ObjectStoreID: storeID, UploadID: uploadID, ObjectKey: objectKey, Parts: completion,
 		Payload: state.ObjectPayload{

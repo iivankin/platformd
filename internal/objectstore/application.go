@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -98,6 +99,15 @@ type Application struct {
 	master     cryptobox.MasterKey
 	random     io.Reader
 	now        func() time.Time
+	metadataMu sync.Mutex
+	metadata   map[string]*metadataAdmission
+	backups    map[string]bool
+}
+
+type metadataAdmission struct {
+	active  int
+	blocked bool
+	changed chan struct{}
 }
 
 func NewApplication(repository Repository, payloads *PayloadStore, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
@@ -110,7 +120,10 @@ func NewApplication(repository Repository, payloads *PayloadStore, master crypto
 	if now == nil {
 		now = time.Now
 	}
-	return &Application{repository: repository, payloads: payloads, master: master, random: random, now: now}, nil
+	return &Application{
+		repository: repository, payloads: payloads, master: master, random: random, now: now,
+		metadata: make(map[string]*metadataAdmission), backups: make(map[string]bool),
+	}, nil
 }
 
 func (application *Application) Create(ctx context.Context, input CreateInput) (CreateResult, error) {
@@ -220,6 +233,12 @@ func (application *Application) Put(ctx context.Context, input PutInput) (state.
 		return state.ObjectMetadata{}, ErrBadDigest
 	}
 	timestamp := application.now().UnixMilli()
+	finishMutation, err := application.beginMetadataMutation(ctx, input.StoreID)
+	if err != nil {
+		_ = application.payloads.Delete(input.StoreID, payload.ID)
+		return state.ObjectMetadata{}, err
+	}
+	defer finishMutation()
 	return application.repository.CommitObject(ctx, state.CommitObject{
 		ObjectStoreID: input.StoreID, ObjectKey: input.ObjectKey, ContentType: input.ContentType,
 		ETag: "\"" + payload.PlaintextSHA256 + "\"", CommittedAtMillis: timestamp,
@@ -295,7 +314,95 @@ func (application *Application) Delete(ctx context.Context, storeID, objectKey s
 	if err := validateObjectKey(objectKey); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
+	finishMutation, err := application.beginMetadataMutation(ctx, storeID)
+	if err != nil {
+		return err
+	}
+	defer finishMutation()
 	return application.repository.DeleteObject(ctx, storeID, objectKey)
+}
+
+func (application *Application) beginMetadataMutation(ctx context.Context, storeID string) (func(), error) {
+	application.metadataMu.Lock()
+	admission := application.metadataAdmissionLocked(storeID)
+	for admission.blocked {
+		changed := admission.changed
+		application.metadataMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
+		}
+		application.metadataMu.Lock()
+	}
+	admission.active++
+	application.metadataMu.Unlock()
+	return sync.OnceFunc(func() {
+		application.metadataMu.Lock()
+		admission.active--
+		application.signalMetadataLocked(admission)
+		application.metadataMu.Unlock()
+	}), nil
+}
+
+func (application *Application) blockMetadata(ctx context.Context, storeID string) (func(), error) {
+	application.metadataMu.Lock()
+	admission := application.metadataAdmissionLocked(storeID)
+	if admission.blocked {
+		application.metadataMu.Unlock()
+		return nil, errors.New("object store metadata is already in maintenance")
+	}
+	admission.blocked = true
+	application.signalMetadataLocked(admission)
+	for admission.active != 0 {
+		changed := admission.changed
+		application.metadataMu.Unlock()
+		select {
+		case <-ctx.Done():
+			application.metadataMu.Lock()
+			admission.blocked = false
+			application.signalMetadataLocked(admission)
+			application.metadataMu.Unlock()
+			return nil, ctx.Err()
+		case <-changed:
+		}
+		application.metadataMu.Lock()
+	}
+	application.metadataMu.Unlock()
+	return sync.OnceFunc(func() {
+		application.metadataMu.Lock()
+		admission.blocked = false
+		application.signalMetadataLocked(admission)
+		application.metadataMu.Unlock()
+	}), nil
+}
+
+func (application *Application) beginBackupExclusion(storeID string) (func(), error) {
+	application.metadataMu.Lock()
+	defer application.metadataMu.Unlock()
+	if application.backups[storeID] {
+		return nil, errors.New("object store backup is already running")
+	}
+	application.backups[storeID] = true
+	return sync.OnceFunc(func() {
+		application.metadataMu.Lock()
+		delete(application.backups, storeID)
+		application.metadataMu.Unlock()
+	}), nil
+}
+
+func (application *Application) metadataAdmissionLocked(storeID string) *metadataAdmission {
+	admission := application.metadata[storeID]
+	if admission == nil {
+		admission = &metadataAdmission{changed: make(chan struct{})}
+		application.metadata[storeID] = admission
+	}
+	return admission
+}
+
+func (application *Application) signalMetadataLocked(admission *metadataAdmission) {
+	close(admission.changed)
+	admission.changed = make(chan struct{})
 }
 
 func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {

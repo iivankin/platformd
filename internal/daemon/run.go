@@ -1,10 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -69,6 +71,7 @@ func runDevelopment(ctx context.Context) error {
 }
 
 func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
+	daemonStartedAt := time.Now()
 	ctx, cancelDaemon := context.WithCancel(ctx)
 	defer cancelDaemon()
 	var updateCommitted atomic.Bool
@@ -188,10 +191,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	var dirtyControl *backup.DirtyTracker
+	var controlJob *backup.ControlJob
 	if !installation.RecoveryMode {
-		dirtyControl := backup.NewDirtyTracker()
+		dirtyControl = backup.NewDirtyTracker()
 		store.SetControlCommitObserver(func() { dirtyControl.Mark(time.Now()) })
-		controlJob, err := backup.NewControlJob(backup.ControlJobConfig{
+		defer store.SetControlCommitObserver(nil)
+		controlJob, err = backup.NewControlJob(backup.ControlJobConfig{
 			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 			Admission: mutationAdmission, Growth: pressure, Master: key,
 			InstallationID: installation.ID, WorkRoot: paths.BackupWorkRoot, ExpectedUID: 0,
@@ -200,30 +206,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		})
 		if err != nil {
 			return fmt.Errorf("configure control backup job: %w", err)
-		}
-		backupWorker, err := backup.NewWorker(dirtyControl, controlJob, 0, func(workerErr error) {
-			log.Printf("backup worker: %v", workerErr)
-		})
-		if err != nil {
-			return err
-		}
-		workerContext, cancelWorker := context.WithCancel(ctx)
-		workerDone := make(chan struct{})
-		go func() {
-			defer close(workerDone)
-			if err := backupWorker.Run(workerContext); err != nil && !errors.Is(err, context.Canceled) {
-				log.Printf("backup worker stopped: %v", err)
-			}
-		}()
-		defer func() {
-			store.SetControlCommitObserver(nil)
-			cancelWorker()
-			<-workerDone
-		}()
-		if _, configured, targetErr := backupTargets.Target(ctx); targetErr != nil {
-			return targetErr
-		} else if configured {
-			dirtyControl.Mark(time.Now())
 		}
 	}
 	if err := runtime.ConfigureManagedPostgres(ctx, store, key); err != nil {
@@ -258,6 +240,66 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	objectStoreApplication, err := objectstore.NewApplication(objectStoreRepository, objectPayloads, key, nil, nil)
 	if err != nil {
 		return err
+	}
+	var backupResources *backup.ResourceApplication
+	if !installation.RecoveryMode {
+		resourceJob, err := backup.NewResourceJob(backup.ResourceJobConfig{
+			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+			Admission: mutationAdmission, Growth: pressure, Master: key, WorkRoot: paths.BackupWorkRoot,
+			Exporters: map[string]backup.ResourceExporter{
+				"postgres": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					reader, err := runtime.OpenManagedPostgresBackup(exportContext, resourceID)
+					return backup.ResourceExport{Reader: reader}, err
+				}),
+				"redis": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					reader, err := runtime.OpenManagedRedisBackup(exportContext, resourceID)
+					return backup.ResourceExport{Reader: reader}, err
+				}),
+				"registry": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					export, err := registryApplication.BackupSnapshot(exportContext, resourceID)
+					return backup.ResourceExport{Reader: export.Reader, Release: export.Release}, err
+				}),
+				"object_store": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					export, err := objectStoreApplication.BackupSnapshot(exportContext, resourceID)
+					return backup.ResourceExport{
+						Reader:          io.NopCloser(bytes.NewReader(export.Metadata)),
+						AttachmentPaths: export.AttachmentPaths, Release: export.Release,
+					}, err
+				}),
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("configure resource backup jobs: %w", err)
+		}
+		backupWorker, err := backup.NewScheduledWorker(backup.WorkerConfig{
+			Dirty: dirtyControl, Control: controlJob, Store: store, Resources: resourceJob,
+			StartedAt: daemonStartedAt,
+			OnError:   func(workerErr error) { log.Printf("backup worker: %v", workerErr) },
+		})
+		if err != nil {
+			return err
+		}
+		backupResources, err = backup.NewResourceApplication(store, backupWorker, nil, nil)
+		if err != nil {
+			return fmt.Errorf("configure resource backup application: %w", err)
+		}
+		workerContext, cancelWorker := context.WithCancel(ctx)
+		workerDone := make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			if err := backupWorker.Run(workerContext); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("backup worker stopped: %v", err)
+			}
+		}()
+		defer func() {
+			cancelWorker()
+			<-workerDone
+		}()
+		if _, configured, targetErr := backupTargets.Target(ctx); targetErr != nil {
+			return targetErr
+		} else if configured {
+			dirtyControl.Mark(time.Now())
+		}
 	}
 	objectStoreHandler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
 		Application: objectStoreApplication,
@@ -381,6 +423,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithObjectStores(objectStoreApplication),
 			server.WithRegistry(registryApplication, registrySettings),
 			server.WithBackupTargets(backupTargets),
+			server.WithBackupResources(backupResources),
 			server.WithContainerConsole(installation.AdminHostname, containerConsole),
 			server.WithDiskPressure(pressure),
 			server.WithAdmission(mutationAdmission),

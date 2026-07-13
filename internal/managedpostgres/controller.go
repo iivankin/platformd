@@ -1,10 +1,12 @@
 package managedpostgres
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
@@ -40,6 +42,7 @@ type Engine interface {
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	InspectContainer(string) (containerengine.Container, error)
+	ExecContainer(context.Context, string, containerengine.ExecRequest) (int, error)
 }
 
 type GrowthGate interface {
@@ -467,6 +470,83 @@ func (controller *Controller) runtimeAddress(active activeRuntime) (string, erro
 		return "", ErrNotRunning
 	}
 	return net.JoinHostPort(addresses[0], fmt.Sprint(Port)), nil
+}
+
+// OpenBackupDump streams pg_dump custom format directly from the active
+// container. The resource lock and admission lease remain held until pg_dump
+// exits or the returned reader is closed.
+func (controller *Controller) OpenBackupDump(ctx context.Context, resourceID string) (io.ReadCloser, error) {
+	lease, err := controller.admission.Begin("postgres_backup_dump", resourceID)
+	if err != nil {
+		return nil, err
+	}
+	lock := controller.resourceLock(resourceID)
+	lock.Lock()
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		lock.Unlock()
+		lease.Release()
+		return nil, ErrNotRunning
+	}
+	password, err := controller.ownerPassword(active.resource)
+	if err != nil {
+		lock.Unlock()
+		lease.Release()
+		return nil, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil || container.State != "running" {
+		lock.Unlock()
+		lease.Release()
+		return nil, errors.Join(err, ErrNotRunning)
+	}
+	dumpContext, cancel := context.WithCancel(ctx)
+	reader, writer := io.Pipe()
+	go func() {
+		defer lock.Unlock()
+		defer lease.Release()
+		defer cancel()
+		var stderr boundedDiagnostic
+		code, execErr := controller.engine.ExecContainer(dumpContext, active.container.ID, containerengine.ExecRequest{
+			Command: []string{
+				"pg_dump", "--format=custom", "--no-owner", "--no-acl",
+				"--dbname=" + active.resource.DatabaseName,
+				"--username=" + active.resource.OwnerUsername,
+			},
+			Environment: map[string]string{"PGPASSWORD": password}, Stdout: writer, Stderr: &stderr,
+		})
+		if execErr != nil || code != 0 {
+			_ = writer.CloseWithError(fmt.Errorf("pg_dump exited with code %d: %s: %w", code, stderr.String(), execErr))
+			return
+		}
+		_ = writer.Close()
+	}()
+	return &cancelReadCloser{ReadCloser: reader, cancel: cancel}, nil
+}
+
+const maximumBackupDiagnosticBytes = 64 << 10
+
+type boundedDiagnostic struct{ buffer bytes.Buffer }
+
+func (diagnostic *boundedDiagnostic) Write(value []byte) (int, error) {
+	written := len(value)
+	remaining := maximumBackupDiagnosticBytes - diagnostic.buffer.Len()
+	if remaining > 0 {
+		_, _ = diagnostic.buffer.Write(value[:min(remaining, len(value))])
+	}
+	return written, nil
+}
+
+func (diagnostic *boundedDiagnostic) String() string { return diagnostic.buffer.String() }
+
+type cancelReadCloser struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (reader *cancelReadCloser) Close() error {
+	reader.cancel()
+	return reader.ReadCloser.Close()
 }
 
 func (controller *Controller) resourceLock(resourceID string) *sync.Mutex {

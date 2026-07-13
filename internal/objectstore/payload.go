@@ -33,6 +33,12 @@ type PayloadInfo struct {
 	PlaintextSHA256 string
 }
 
+type BackupChunkInfo struct {
+	Path   string
+	Size   int64
+	SHA256 string
+}
+
 type PayloadStore struct {
 	root   string
 	master cryptobox.MasterKey
@@ -210,6 +216,40 @@ func (store *PayloadStore) Delete(storeID, payloadID string) error {
 		return errors.New("object payload delete input is invalid")
 	}
 	return os.RemoveAll(filepath.Join(store.root, storeID, "payloads", payloadID))
+}
+
+func (store *PayloadStore) BackupChunk(ctx context.Context, storeID, payloadID string, chunkIndex int) (BackupChunkInfo, error) {
+	if !safeComponent(storeID) || !safeComponent(payloadID) || chunkIndex < 0 {
+		return BackupChunkInfo{}, errors.New("object backup chunk identity is invalid")
+	}
+	path := filepath.Join(store.root, storeID, "payloads", payloadID, chunkName(chunkIndex))
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Size() <= 0 {
+		return BackupChunkInfo{}, errors.Join(err, errors.New("object backup chunk is empty or not a regular file"))
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return BackupChunkInfo{}, err
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(hash, &backupContextReader{ctx: ctx, source: file})
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil || written != pathInfo.Size() {
+		return BackupChunkInfo{}, errors.Join(copyErr, closeErr, errors.New("object backup chunk changed while hashing"))
+	}
+	return BackupChunkInfo{Path: path, Size: written, SHA256: hex.EncodeToString(hash.Sum(nil))}, nil
+}
+
+type backupContextReader struct {
+	ctx    context.Context
+	source io.Reader
+}
+
+func (reader *backupContextReader) Read(output []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return reader.source.Read(output)
 }
 
 func (store *PayloadStore) payloadRoot(storeID string) (string, error) {

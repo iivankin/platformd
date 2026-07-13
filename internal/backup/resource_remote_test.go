@@ -5,6 +5,7 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -134,6 +135,85 @@ func TestResourceRestoreRejectsDifferentMasterKey(t *testing.T) {
 	}
 	if _, err := io.ReadAll(reader); err == nil {
 		t.Fatal("resource decrypted with a different master key")
+	}
+}
+
+func TestResourceAttachmentsPublishCiphertextByteForByteAndVerifyCommitment(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	master := cryptobox.MasterKey{21, 22, 23, 24}
+	root := t.TempDir()
+	attachmentPayload := bytes.Repeat([]byte{0x91, 0x42, 0x17}, 4096)
+	attachmentPath := filepath.Join(root, "payload.chunk")
+	if err := os.WriteFile(attachmentPath, attachmentPayload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	built, err := BuildResource(ctx, ResourceBuildConfig{
+		Master: master, ResourceKind: "object_store", ResourceID: "store-1", GenerationID: "generation-1",
+		WorkRoot: filepath.Join(root, "work"), CreatedAt: time.Unix(70, 0),
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x55}, 24*4)), AttachmentPaths: []string{attachmentPath},
+	}, bytes.NewReader([]byte(`{"objects":[{"payload":"payload-1","attachment":0}]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(built.WorkDirectory)
+	remote := newMemoryControlRemote()
+	if err := PublishResource(ctx, remote, master, built); err != nil {
+		t.Fatal(err)
+	}
+	attachmentKey := remote.Key(ResourceAttachmentKey("object_store", "store-1", "generation-1", 0))
+	if !bytes.Equal(remote.objects[attachmentKey], attachmentPayload) {
+		t.Fatal("resource attachment was re-encrypted or otherwise changed")
+	}
+	reader, err := OpenResource(ctx, remote, master, built.Completion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := io.ReadAll(reader)
+	if err != nil || !bytes.Contains(metadata, []byte("payload-1")) {
+		t.Fatalf("resource metadata = %q, %v", metadata, err)
+	}
+	descriptors := []ResourceAttachment{built.Attachments[0].ResourceAttachment}
+	if err := ValidateResourceAttachments(reader.Envelope(), descriptors); err != nil {
+		t.Fatal(err)
+	}
+	attachment, err := OpenResourceAttachment(ctx, remote, reader.Envelope(), descriptors[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored, readErr := io.ReadAll(attachment)
+	closeErr := attachment.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(restored, attachmentPayload) {
+		t.Fatalf("restored attachment = %d bytes, read=%v close=%v", len(restored), readErr, closeErr)
+	}
+}
+
+func TestPublishResourceDoesNotCompleteCorruptAttachmentReadback(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := t.TempDir()
+	attachmentPath := filepath.Join(root, "payload.chunk")
+	if err := os.WriteFile(attachmentPath, []byte("already-encrypted-payload"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	master := cryptobox.MasterKey{31, 32, 33, 34}
+	built, err := BuildResource(ctx, ResourceBuildConfig{
+		Master: master, ResourceKind: "object_store", ResourceID: "store-1", GenerationID: "generation-1",
+		WorkRoot: filepath.Join(root, "work"), CreatedAt: time.Unix(80, 0),
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x66}, 24*4)), AttachmentPaths: []string{attachmentPath},
+	}, bytes.NewReader([]byte(`{"objects":[]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(built.WorkDirectory)
+	remote := newMemoryControlRemote()
+	remote.corruptOnRead = "attachment-"
+	if err := PublishResource(ctx, remote, master, built); err == nil {
+		t.Fatal("corrupt attachment read-back was accepted")
+	}
+	completionKey := remote.Key(ResourceCompletionKey("object_store", "store-1", "generation-1"))
+	if _, exists := remote.objects[completionKey]; exists {
+		t.Fatal("completion was published before attachment verification")
 	}
 }
 

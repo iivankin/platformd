@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/netip"
 	"path"
 
@@ -48,6 +49,17 @@ func (stack *runtimeStack) ConfigureManagedPostgres(ctx context.Context, store *
 		}
 	}
 	return nil
+}
+
+func (stack *runtimeStack) OpenManagedPostgresBackup(ctx context.Context, resourceID string) (io.ReadCloser, error) {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return nil, errors.New("managed PostgreSQL runtime is not ready")
+	}
+	return controller.OpenBackupDump(ctx, resourceID)
 }
 
 func (stack *runtimeStack) postgresPlacement(resource state.ManagedPostgres) (managedpostgres.Placement, error) {

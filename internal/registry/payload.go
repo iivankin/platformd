@@ -218,6 +218,18 @@ func (store *PayloadStore) OpenBlob(repositoryID, digest string) (*os.File, int6
 	return file, info.Size(), nil
 }
 
+func (store *PayloadStore) BlobPath(repositoryID, digest string) (string, int64, error) {
+	path, err := store.blobPath(repositoryID, digest)
+	if err != nil {
+		return "", 0, err
+	}
+	pathInfo, err := os.Lstat(path)
+	if err != nil || !pathInfo.Mode().IsRegular() || pathInfo.Size() < 0 {
+		return "", 0, errors.Join(err, errors.New("registry blob is not a regular file"))
+	}
+	return path, pathInfo.Size(), nil
+}
+
 func (store *PayloadStore) BlobExists(repositoryID, digest string) (bool, error) {
 	file, _, err := store.OpenBlob(repositoryID, digest)
 	if errors.Is(err, os.ErrNotExist) {

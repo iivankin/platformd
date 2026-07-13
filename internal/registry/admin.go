@@ -289,6 +289,11 @@ func (application *Application) DeleteRepository(ctx context.Context, input Dele
 	if repository.Name != input.ExpectedName {
 		return "", fmt.Errorf("%w: repository confirmation name does not match", ErrInvalidInput)
 	}
+	releaseMaintenance, err := application.beginRepositoryMaintenance(repository.ID, "delete")
+	if err != nil {
+		return "", err
+	}
+	defer releaseMaintenance()
 	finishDrain, err := application.drainRepository(ctx, repository.ID)
 	if err != nil {
 		return "", err
@@ -310,6 +315,20 @@ func (application *Application) DeleteRepository(ctx context.Context, input Dele
 		return requestID, fmt.Errorf("delete registry repository payloads: %w", err)
 	}
 	return requestID, nil
+}
+
+func (application *Application) beginRepositoryMaintenance(repositoryID, kind string) (func(), error) {
+	application.maintenanceMu.Lock()
+	defer application.maintenanceMu.Unlock()
+	if repositoryID == "" || kind == "" || application.maintenance[repositoryID] != "" {
+		return nil, ErrRepositoryBusy
+	}
+	application.maintenance[repositoryID] = kind
+	return sync.OnceFunc(func() {
+		application.maintenanceMu.Lock()
+		delete(application.maintenance, repositoryID)
+		application.maintenanceMu.Unlock()
+	}), nil
 }
 
 func (application *Application) manifestParents(ctx context.Context, repositoryID, targetDigest string) ([]string, error) {
