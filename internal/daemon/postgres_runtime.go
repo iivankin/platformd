@@ -16,7 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func (stack *runtimeStack) ConfigureManagedPostgres(ctx context.Context, store *state.Store, master cryptobox.MasterKey) error {
+func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedpostgres.NewController(managedpostgres.ControllerConfig{
 		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Admission: stack.admission,
 		OwnerPassword: func(resource state.ManagedPostgres) (string, error) {
@@ -39,6 +39,17 @@ func (stack *runtimeStack) ConfigureManagedPostgres(ctx context.Context, store *
 	}
 	stack.managedPostgres = controller
 	stack.mu.Unlock()
+	return nil
+}
+
+func (stack *runtimeStack) ReconcileManagedPostgres(ctx context.Context, store *state.Store) error {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed PostgreSQL runtime is not configured")
+	}
 	resources, err := store.ManagedPostgresResources(ctx)
 	if err != nil {
 		return err

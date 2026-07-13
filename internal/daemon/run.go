@@ -224,14 +224,25 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return fmt.Errorf("configure control backup job: %w", err)
 		}
 	}
-	if err := runtime.ConfigureManagedPostgres(ctx, store, key); err != nil {
+	if err := runtime.ConfigureManagedPostgres(store, key); err != nil {
 		return fmt.Errorf("configure managed PostgreSQL: %w", err)
 	}
-	if err := runtime.ConfigureManagedRedis(ctx, store, key); err != nil {
+	if err := runtime.ConfigureManagedRedis(store, key); err != nil {
 		return fmt.Errorf("configure managed Redis: %w", err)
 	}
 	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials, registryApplication); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
+	}
+	if !installation.RecoveryMode {
+		if err := runtime.ReconcileManagedPostgres(ctx, store); err != nil {
+			return fmt.Errorf("reconcile managed PostgreSQL: %w", err)
+		}
+		if err := runtime.ReconcileManagedRedis(ctx, store); err != nil {
+			return fmt.Errorf("reconcile managed Redis: %w", err)
+		}
+		if err := runtime.ReconcileDeployments(ctx, store); err != nil {
+			return fmt.Errorf("reconcile service deployments: %w", err)
+		}
 	}
 	containerConsole, err := containerconsole.New(containerconsole.Config{
 		Services: store, Runtime: runtime.deployments, Audit: store,
@@ -239,8 +250,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure container console: %w", err)
 	}
-	if err := runtime.ConfigureServiceWatcher(ctx, store, registryHostname); err != nil {
-		return fmt.Errorf("configure service image watcher: %w", err)
+	if !installation.RecoveryMode {
+		if err := runtime.ConfigureServiceWatcher(ctx, store, registryHostname); err != nil {
+			return fmt.Errorf("configure service image watcher: %w", err)
+		}
 	}
 	certificates, err := origin.Load(key, installation.OriginCertificates)
 	if err != nil {
@@ -401,8 +414,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	if err := runtime.ConfigureObjectStores(ctx, store, objectStoreHandler); err != nil {
-		return fmt.Errorf("configure managed S3: %w", err)
+	if !installation.RecoveryMode {
+		if err := runtime.ConfigureObjectStores(ctx, store, objectStoreHandler); err != nil {
+			return fmt.Errorf("configure managed S3: %w", err)
+		}
 	}
 	registryHandler, err := registry.NewHTTPHandler(registryApplication, automationauth.NewInMemoryFailureLimiter(), mutationAdmission)
 	if err != nil {
@@ -548,8 +563,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
 	}
-	if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
-		return fmt.Errorf("load object store domains: %w", err)
+	if !installation.RecoveryMode {
+		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
+			return fmt.Errorf("load object store domains: %w", err)
+		}
 	}
 	httpServer := &http.Server{
 		Addr:              ":443",

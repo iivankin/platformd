@@ -54,7 +54,17 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 	stack.deployments = controller
 	stack.serviceRestarts = restarts
 	stack.mu.Unlock()
+	return nil
+}
 
+func (stack *runtimeStack) ReconcileDeployments(ctx context.Context, store *state.Store) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not configured")
+	}
 	serviceIDs, err := store.EnabledServiceIDs(ctx)
 	if err != nil {
 		return err
