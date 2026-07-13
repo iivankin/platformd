@@ -117,6 +117,46 @@ func TestReconcileRemovesUnreferencedSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 }
 
+func TestRemoveRejectsProjectSymlinkAndDoesNotFollowVolumeSymlink(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "volumes")
+	mustMkdir(t, root, 0o700)
+	targetProject := filepath.Join(t.TempDir(), "project-target")
+	mustMkdir(t, filepath.Join(targetProject, "volume"), 0o700)
+	projectLink := filepath.Join(root, "linked-project")
+	if err := os.Symlink(targetProject, projectLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(root, "linked-project", "volume"); err == nil {
+		t.Fatal("project symlink was followed")
+	}
+	if _, err := os.Stat(filepath.Join(targetProject, "volume")); err != nil {
+		t.Fatalf("project symlink target was modified: %v", err)
+	}
+
+	project := filepath.Join(root, "project")
+	mustMkdir(t, project, 0o700)
+	targetVolume := filepath.Join(t.TempDir(), "volume-target")
+	mustMkdir(t, targetVolume, 0o700)
+	marker := filepath.Join(targetVolume, "marker")
+	if err := os.WriteFile(marker, []byte("safe"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	volumeLink := filepath.Join(project, "volume")
+	if err := os.Symlink(targetVolume, volumeLink); err != nil {
+		t.Fatal(err)
+	}
+	if err := Remove(root, "project", "volume"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(volumeLink); !os.IsNotExist(err) {
+		t.Fatalf("volume symlink remains: %v", err)
+	}
+	if content, err := os.ReadFile(marker); err != nil || string(content) != "safe" {
+		t.Fatalf("volume symlink target was modified: %q, %v", content, err)
+	}
+}
+
 func mustMkdir(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
 	if err := os.MkdirAll(path, mode); err != nil {
