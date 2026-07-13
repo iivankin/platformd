@@ -9,9 +9,11 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/volume"
 )
 
 type repositoryStub struct {
@@ -25,6 +27,8 @@ type repositoryStub struct {
 	serviceCalls  int
 	createCalls   int
 	created       state.CreateService
+	volumes       []state.Volume
+	volumeCreate  state.CreateVolume
 }
 
 func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -59,14 +63,35 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	volumeDomain, err := volume.New(volume.Config{
+		Repository: repository, Filesystem: mcpVolumeFilesystem{}, Images: mcpVolumeImages{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	volumes, err := automation.NewVolumeApplication(volumeDomain)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := New(Config{
 		Hostname: "api.example.com", Version: "1.2.3", Repository: repository,
-		Services: services, Logs: logs, Images: repository, Admission: admission.New(),
+		Services: services, Logs: logs, Images: repository, Volumes: volumes, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+type mcpVolumeFilesystem struct{}
+
+func (mcpVolumeFilesystem) Ensure(state.PersistentVolumeReference) error { return nil }
+func (mcpVolumeFilesystem) Remove(string, string) error                  { return nil }
+
+type mcpVolumeImages struct{}
+
+func (mcpVolumeImages) InspectImage(context.Context, string) (containerengine.Image, error) {
+	return containerengine.Image{}, nil
 }
 
 func TestMCPListsOfficialManagedImageTagsForReadToken(t *testing.T) {
@@ -110,6 +135,26 @@ func (repository *repositoryStub) Service(context.Context, string, string) (stat
 	return repository.service, nil
 }
 
+func (repository *repositoryStub) CreateVolume(_ context.Context, input state.CreateVolume) (state.Volume, error) {
+	repository.volumeCreate = input
+	repository.volumes = append(repository.volumes, input.Volume)
+	return input.Volume, nil
+}
+
+func (repository *repositoryStub) VolumesByService(context.Context, string, string) ([]state.Volume, error) {
+	return repository.volumes, nil
+}
+
+func (repository *repositoryStub) DeleteVolume(_ context.Context, input state.DeleteVolume) (state.Volume, error) {
+	for index, item := range repository.volumes {
+		if item.ID == input.VolumeID {
+			repository.volumes = append(repository.volumes[:index], repository.volumes[index+1:]...)
+			return item, nil
+		}
+	}
+	return state.Volume{}, state.ErrVolumeNotFound
+}
+
 func (repository *repositoryStub) ServiceDeployments(context.Context, string, string, string, int) (state.DeploymentPage, error) {
 	return repository.deployments, nil
 }
@@ -149,8 +194,34 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 	list = mcpRequest(`{"jsonrpc":"2.0","id":"tools","method":"tools/list","params":{}}`)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, list)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) || !strings.Contains(response.Body.String(), `"name":"get_service"`) || !strings.Contains(response.Body.String(), `"name":"read_service_logs"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) || !strings.Contains(response.Body.String(), `"name":"get_service"`) || !strings.Contains(response.Body.String(), `"name":"read_service_logs"`) || !strings.Contains(response.Body.String(), `"name":"list_service_volumes"`) || strings.Contains(response.Body.String(), `"name":"create_service_volume"`) {
 		t.Fatalf("tools/list response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestMCPVolumeToolsUseReadAndAdminBoundaries(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := newTestHandler(t, repository)
+
+	create := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_service_volume","arguments":{"projectId":"project","serviceId":"service","name":"data","ownerUid":1000,"ownerGid":1001}}}`), automation.Identity{TokenID: "admin", Role: "admin"})
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if strings.Contains(createResponse.Body.String(), `"isError":true`) || len(repository.volumes) != 1 || repository.volumeCreate.ActorID != "admin" {
+		t.Fatalf("create volume = %s state=%+v", createResponse.Body, repository.volumeCreate)
+	}
+
+	list := mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_service_volumes","arguments":{"projectId":"project","serviceId":"service"}}}`)
+	listResponse := httptest.NewRecorder()
+	handler.ServeHTTP(listResponse, list)
+	if strings.Contains(listResponse.Body.String(), `"isError":true`) || !strings.Contains(listResponse.Body.String(), `\"name\":\"data\"`) {
+		t.Fatalf("list volumes = %s", listResponse.Body)
+	}
+
+	deleteRequest := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"delete_service_volume","arguments":{"projectId":"project","serviceId":"service","volumeId":"`+repository.volumes[0].ID+`"}}}`), automation.Identity{TokenID: "admin", Role: "admin"})
+	deleteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResponse, deleteRequest)
+	if strings.Contains(deleteResponse.Body.String(), `"isError":true`) || len(repository.volumes) != 0 {
+		t.Fatalf("delete volume = %s", deleteResponse.Body)
 	}
 }
 

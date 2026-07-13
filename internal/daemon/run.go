@@ -46,6 +46,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/version"
+	"github.com/iivankin/platformd/internal/volume"
 	"github.com/iivankin/platformd/internal/volumestore"
 	"golang.org/x/net/netutil"
 )
@@ -267,6 +268,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure container console: %w", err)
 	}
+	volumeApplication, err := volume.New(volume.Config{
+		Repository: store, Filesystem: volume.NewLocalFilesystem(paths.VolumesRoot), Images: runtime.engine,
+		OnCleanupError: func(cleanupErr error) { log.Printf("volume cleanup: %v", cleanupErr) },
+	})
+	if err != nil {
+		return fmt.Errorf("configure ordinary volumes: %w", err)
+	}
 	if !installation.RecoveryMode {
 		if err := runtime.ConfigureServiceWatcher(ctx, store, registryHostname); err != nil {
 			return fmt.Errorf("configure service image watcher: %w", err)
@@ -474,6 +482,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
+		volumeAutomation, err := automation.NewVolumeApplication(volumeApplication)
+		if err != nil {
+			return err
+		}
 		logAutomation, err := automation.NewLogApplication(store, logReader)
 		if err != nil {
 			return err
@@ -485,6 +497,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			PostgresStore: automationRepository,
 			Managed:       managedResourceAutomation,
 			Versions:      databaseVersions,
+			Volumes:       volumeAutomation,
 			Admission:     mutationAdmission,
 		})
 		if err != nil {
@@ -494,7 +507,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
 			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
 			Redis: redisAutomation, Postgres: postgresAutomation, Managed: managedResourceAutomation,
-			Versions:  databaseVersions,
+			Versions: databaseVersions, Volumes: volumeAutomation,
 			Admission: mutationAdmission,
 		})
 		if err != nil {
@@ -522,6 +535,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.DefaultMeta(status(installation.RecoveryMode)),
 		server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
 		server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
+		server.WithVolumes(volumeApplication),
 		server.WithImageCredentials(imageCredentials),
 		server.WithDomains(domains),
 		server.WithAPITokens(apiTokens),

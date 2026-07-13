@@ -39,6 +39,7 @@ type Config struct {
 	Managed       *automation.ManagedResourceApplication
 	Versions      *databaseversion.Service
 	ServerExec    *automation.ServerExecApplication
+	Volumes       *automation.VolumeApplication
 	Admission     *admission.Gate
 }
 
@@ -49,7 +50,7 @@ func Handler(config Config) (http.Handler, error) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, openAPIFeatures{
 		serverExec: config.ServerExec != nil, managedResources: config.Managed != nil,
-		databaseVersions: config.Versions != nil,
+		databaseVersions: config.Versions != nil, volumes: config.Volumes != nil,
 	}))
 	mux.HandleFunc("GET /api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
@@ -62,6 +63,11 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
+	if config.Volumes != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(config.Volumes))
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(config.Volumes))
+		mux.HandleFunc("DELETE /api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}", deleteVolume(config.Volumes))
+	}
 	mux.HandleFunc("GET /api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
 	if config.Redis != nil && config.RedisStore != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(config.RedisStore))

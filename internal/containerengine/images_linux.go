@@ -52,6 +52,7 @@ func (e *Engine) inspectImage(ctx context.Context, idOrName string) (Image, erro
 		ID:     image.ID(),
 		Digest: image.Digest().String(),
 		Names:  image.Names(),
+		User:   data.User,
 		Size:   data.Size,
 	}
 	if data.Created != nil {

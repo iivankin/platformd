@@ -5,6 +5,7 @@ import {
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
+  fetchVolumes,
   redeployService,
   rollbackService,
   updateService,
@@ -14,12 +15,14 @@ import type {
   Service,
   ServiceDomain,
   UpdateServiceInput,
+  Volume,
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { ContainerTerminalOverlay } from "@/container-terminal-overlay";
 import { DeploymentHistory } from "@/deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
 import { ServiceDomains } from "@/service-domains";
+import { ServiceVolumes } from "@/service-volumes";
 
 interface ServiceDetailPanelProperties {
   data: ResourceNodeData;
@@ -31,7 +34,8 @@ interface ServiceDetailPanelProperties {
 
 const serviceUpdate = (
   service: Service,
-  enabled: boolean
+  enabled: boolean,
+  volumeMounts: Service["volumeMounts"] = service.volumeMounts
 ): UpdateServiceInput => ({
   args: service.args,
   command: service.command,
@@ -46,7 +50,7 @@ const serviceUpdate = (
   secretReferences: service.secretReferences,
   startupTimeoutSeconds: service.startupTimeoutSeconds,
   targetPort: service.targetPort,
-  volumeMounts: service.volumeMounts,
+  volumeMounts,
 });
 
 const statusColor = (status: ResourceNodeData["status"]) => {
@@ -79,6 +83,7 @@ export const ServiceDetailPanel = ({
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [domains, setDomains] = useState<ServiceDomain[]>([]);
+  const [volumes, setVolumes] = useState<Volume[]>([]);
   const [nextCursor, setNextCursor] = useState<string>();
   const [rollbackCandidate, setRollbackCandidate] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -87,15 +92,18 @@ export const ServiceDetailPanel = ({
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
-      const [loadedService, page, loadedDomains] = await Promise.all([
-        fetchService(projectID, serviceID, signal),
-        fetchServiceDeployments(projectID, serviceID, undefined, signal),
-        fetchServiceDomains(projectID, serviceID, signal),
-      ]);
+      const [loadedService, page, loadedDomains, loadedVolumes] =
+        await Promise.all([
+          fetchService(projectID, serviceID, signal),
+          fetchServiceDeployments(projectID, serviceID, undefined, signal),
+          fetchServiceDomains(projectID, serviceID, signal),
+          fetchVolumes(projectID, serviceID, signal),
+        ]);
       setService(loadedService);
       setDeployments(page.deployments);
       setNextCursor(page.nextCursor);
       setDomains(loadedDomains);
+      setVolumes(loadedVolumes);
       setError(null);
     },
     [projectID, serviceID]
@@ -124,9 +132,12 @@ export const ServiceDetailPanel = ({
     return () => controller.abort();
   }, [load]);
 
-  const apply = async (name: string, action: () => Promise<Service>) => {
+  const apply = async (
+    name: string,
+    action: () => Promise<Service>
+  ): Promise<boolean> => {
     if (busy) {
-      return;
+      return false;
     }
     setBusy(name);
     setError(null);
@@ -137,12 +148,14 @@ export const ServiceDetailPanel = ({
       setNextCursor(page.nextCursor);
       setRollbackCandidate(undefined);
       onChanged();
+      return true;
     } catch (actionError) {
       setError(
         actionError instanceof Error
           ? actionError.message
           : `Unable to ${name} service`
       );
+      return false;
     } finally {
       setBusy(undefined);
     }
@@ -281,6 +294,25 @@ export const ServiceDetailPanel = ({
             />
           </dl>
         </section>
+
+        {service ? (
+          <ServiceVolumes
+            onMountsChange={(mounts) =>
+              apply("update volume mounts", () =>
+                updateService(
+                  projectID,
+                  serviceID,
+                  serviceUpdate(service, service.enabled, mounts)
+                )
+              )
+            }
+            onVolumesChange={setVolumes}
+            projectID={projectID}
+            service={service}
+            serviceID={serviceID}
+            volumes={volumes}
+          />
+        ) : null}
 
         <ServiceDomains
           domains={domains}

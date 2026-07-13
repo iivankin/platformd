@@ -13,6 +13,7 @@ import {
   createRegistryCredential,
   cleanupRegistryRepository,
   createService,
+  createVolume,
   detachServiceDomain,
   deleteObject,
   deleteBackupTarget,
@@ -20,6 +21,7 @@ import {
   deleteRegistryCredential,
   deleteRegistryRepository,
   deleteRegistryTag,
+  deleteVolume,
   fetchAPITokens,
   fetchAuditEvents,
   fetchBackupHistory,
@@ -31,6 +33,8 @@ import {
   fetchServiceDomains,
   fetchServiceLogs,
   fetchServiceTerminalShells,
+  fetchVolumeOwnerSuggestion,
+  fetchVolumes,
   fetchImageCredentials,
   fetchIdentity,
   fetchDiskPressure,
@@ -356,6 +360,67 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       Promise.resolve(Response.json({ ...service, updatedAt: 3 }))
     )
   ).resolves.toMatchObject({ updatedAt: 3 });
+});
+
+test("manages service-owned volumes and reads the image owner suggestion", async () => {
+  const item = {
+    createdAt: 1,
+    id: "volume/id",
+    name: "data",
+    ownerGid: 1001,
+    ownerUid: 1000,
+    projectId: "project/id",
+    serviceId: "service/id",
+  };
+  await expect(
+    fetchVolumes("project/id", "service/id", undefined, (input) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/services/service%2Fid/volumes"
+      );
+      return Promise.resolve(Response.json([item]));
+    })
+  ).resolves.toEqual([item]);
+  await expect(
+    fetchVolumeOwnerSuggestion(
+      "project/id",
+      "service/id",
+      undefined,
+      (input) => {
+        expect(input.toString()).toEndWith("/volumes/owner-suggestion");
+        return Promise.resolve(
+          Response.json({
+            exactNumeric: true,
+            imageUser: "1000:1001",
+            ownerGid: 1001,
+            ownerUid: 1000,
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ exactNumeric: true, ownerUid: 1000 });
+  await expect(
+    createVolume(
+      "project/id",
+      "service/id",
+      { name: "data", ownerGid: 1001, ownerUid: 1000 },
+      (_input, init) => {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          name: "data",
+          ownerGid: 1001,
+          ownerUid: 1000,
+        });
+        return Promise.resolve(Response.json(item, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(item);
+  await expect(
+    deleteVolume("project/id", "service/id", "volume/id", (input, init) => {
+      expect(input.toString()).toEndWith("/volumes/volume%2Fid");
+      expect(init?.method).toBe("DELETE");
+      return Promise.resolve(new Response(null, { status: 204 }));
+    })
+  ).resolves.toBeUndefined();
 });
 
 test("validates bounded deployment history pages", async () => {
