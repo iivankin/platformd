@@ -5,7 +5,26 @@ import (
 	"strconv"
 )
 
-func serveOpenAPI(hostname string) http.HandlerFunc {
+func serveOpenAPI(hostname string, serverExecEnabled bool) http.HandlerFunc {
+	paths := map[string]any{
+		"/api/v1/me":                                                    readOperation("Read current token identity"),
+		"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
+		"/api/v1/projects":                                              readOperation("List visible projects"),
+		"/api/v1/projects/{projectID}":                                  readOperation("Get one visible project"),
+		"/api/v1/projects/{projectID}/services":                         readWriteOperation("List services in one visible project", "Create a service (admin token)"),
+		"/api/v1/projects/{projectID}/services/{serviceID}":             readUpdateOperation("Get one visible service", "Update a service (admin token)"),
+		"/api/v1/projects/{projectID}/services/{serviceID}/deployments": readOperation("List bounded deployment history"),
+		"/api/v1/projects/{projectID}/services/{serviceID}/logs":        logReadOperation(),
+		"/api/v1/projects/{projectID}/services/{serviceID}/redeploy":    mutationOperation("Redeploy a service (admin token)", "ServiceRedeployRequest"),
+		"/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
+		"/api/v1/projects/{projectID}/redis":                            managedRedisOperation(),
+		"/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
+		"/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
+		"/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
+	}
+	if serverExecEnabled {
+		paths["/api/v1/server/exec"] = serverExecOperation()
+	}
 	document := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -19,26 +38,30 @@ func serveOpenAPI(hostname string) http.HandlerFunc {
 			},
 			"schemas": serviceMutationSchemas(),
 		},
-		"paths": map[string]any{
-			"/api/v1/me":                                                    readOperation("Read current token identity"),
-			"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
-			"/api/v1/projects":                                              readOperation("List visible projects"),
-			"/api/v1/projects/{projectID}":                                  readOperation("Get one visible project"),
-			"/api/v1/projects/{projectID}/services":                         readWriteOperation("List services in one visible project", "Create a service (admin token)"),
-			"/api/v1/projects/{projectID}/services/{serviceID}":             readUpdateOperation("Get one visible service", "Update a service (admin token)"),
-			"/api/v1/projects/{projectID}/services/{serviceID}/deployments": readOperation("List bounded deployment history"),
-			"/api/v1/projects/{projectID}/services/{serviceID}/logs":        logReadOperation(),
-			"/api/v1/projects/{projectID}/services/{serviceID}/redeploy":    mutationOperation("Redeploy a service (admin token)", "ServiceRedeployRequest"),
-			"/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
-			"/api/v1/projects/{projectID}/redis":                            managedRedisOperation(),
-			"/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
-			"/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
-			"/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
-		},
+		"paths": paths,
 	}
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func serverExecOperation() map[string]any {
+	return map[string]any{"post": map[string]any{
+		"summary":     "Execute one bounded non-interactive host-root command (unbound admin token only)",
+		"description": "An unbound admin token is a full root credential. Command and output are returned only in this response and are not stored in audit history.",
+		"requestBody": map[string]any{
+			"required": true,
+			"content": map[string]any{"application/json": map[string]any{
+				"schema": map[string]string{"$ref": "#/components/schemas/ServerExecRequest"},
+			}},
+		},
+		"responses": map[string]any{
+			"200": map[string]string{"description": "Bounded stdout, stderr, exit, timeout, truncation, and duration result"},
+			"400": map[string]string{"description": "Invalid command or timeout"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"403": map[string]string{"description": "Token is read-only or project-bound"},
+		},
+	}}
 }
 
 func managedPostgresOperation() map[string]any {
@@ -149,6 +172,14 @@ func serviceMutationSchemas() map[string]any {
 		},
 	}
 	return map[string]any{
+		"ServerExecRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"command"},
+			"properties": map[string]any{
+				"command":        map[string]string{"type": "string"},
+				"timeoutSeconds": map[string]any{"type": "integer", "minimum": 0},
+			},
+		},
 		"ServiceConfiguration": configuration,
 		"ServiceCreateRequest": map[string]any{
 			"type": "object", "additionalProperties": false,

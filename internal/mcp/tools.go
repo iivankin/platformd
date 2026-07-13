@@ -129,6 +129,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		if handler.postgres != nil {
 			tools = append(tools, managedPostgresAdminTool())
 		}
+		if handler.serverExec != nil && identity.ProjectID == nil {
+			tools = append(tools, serverExecTool())
+		}
 	}
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
 }
@@ -188,6 +191,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.createManagedPostgres(request.Context(), call.Arguments, identity)
+	case "server_exec":
+		if handler.serverExec == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.executeServerCommand(request.Context(), call.Arguments, identity)
 	default:
 		writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
 		return
