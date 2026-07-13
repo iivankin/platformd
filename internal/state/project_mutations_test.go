@@ -68,3 +68,26 @@ func TestCreateProjectRejectsNonDNSNameBeforeWrite(t *testing.T) {
 		t.Fatalf("invalid project was persisted: count=%d err=%v", count, err)
 	}
 }
+
+func TestCreateProjectByTokenRecordsTokenActorWithoutFakeEmail(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	input := state.CreateProjectByToken{
+		ID: "project-id", Name: "shop", AuditEventID: "audit-id",
+		ActorTokenID: "token-id", RequestCorrelationID: "request-id", CreatedAtMillis: 42,
+	}
+	if _, err := store.CreateProjectByToken(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	var actorKind, actorID, correlationID, metadata string
+	if err := store.QueryRowContext(ctx, `
+SELECT actor_kind, actor_id, request_correlation_id, metadata_json
+FROM audit_events WHERE id = ?`, input.AuditEventID).Scan(&actorKind, &actorID, &correlationID, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if actorKind != "token" || actorID != input.ActorTokenID || correlationID != input.RequestCorrelationID || metadata != `{}` {
+		t.Fatalf("token audit = %q, %q, %q, %q", actorKind, actorID, correlationID, metadata)
+	}
+}

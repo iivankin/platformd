@@ -15,6 +15,15 @@ func (repository liveAutomationRepository) Projects(ctx context.Context) ([]stat
 	return repository.store.Projects(ctx)
 }
 
+func (repository liveAutomationRepository) CreateProjectByToken(ctx context.Context, input state.CreateProjectByToken) (state.ProjectSummary, error) {
+	created, err := repository.store.CreateProjectByToken(ctx, input)
+	if err != nil {
+		return state.ProjectSummary{}, err
+	}
+	_ = repository.runtime.AddProject(state.RuntimeProject{ID: created.ID, Name: created.Name})
+	return created, nil
+}
+
 func (repository liveAutomationRepository) Project(ctx context.Context, projectID string) (state.ProjectSummary, error) {
 	return repository.store.Project(ctx, projectID)
 }

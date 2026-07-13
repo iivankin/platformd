@@ -471,6 +471,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if installation.AutomationHostname != nil {
 		automationHostname = *installation.AutomationHostname
 		automationRepository := liveAutomationRepository{store: store, runtime: runtime}
+		projectAutomation, err := automation.NewProjectApplication(automationRepository, nil, nil)
+		if err != nil {
+			return err
+		}
 		serviceAutomation, err := automation.NewServiceApplication(automationRepository, nil, nil)
 		if err != nil {
 			return err
@@ -496,14 +500,15 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return err
 		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
-			Hostname: automationHostname, Repository: automationRepository, Services: serviceAutomation,
-			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
+			Hostname: automationHostname, Repository: automationRepository, Projects: projectAutomation,
+			Services: serviceAutomation,
+			Logs:     logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 			RedisStore: automationRepository, Postgres: postgresAutomation,
-			PostgresStore: automationRepository,
-			Managed:       managedResourceAutomation,
-			Versions:      databaseVersions,
-			Volumes:       volumeAutomation,
-			Admission:     mutationAdmission,
+			PostgresStore: automationRepository, ObjectStores: objectStoreApplication,
+			Managed:   managedResourceAutomation,
+			Versions:  databaseVersions,
+			Volumes:   volumeAutomation,
+			Admission: mutationAdmission,
 		})
 		if err != nil {
 			return err

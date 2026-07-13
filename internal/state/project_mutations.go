@@ -33,6 +33,26 @@ type CreateProject struct {
 	CreatedAtMillis      int64
 }
 
+type CreateProjectByToken struct {
+	ID                   string
+	Name                 string
+	AuditEventID         string
+	ActorTokenID         string
+	RequestCorrelationID string
+	CreatedAtMillis      int64
+}
+
+type createProjectMutation struct {
+	ID                   string
+	Name                 string
+	AuditEventID         string
+	ActorKind            string
+	ActorID              string
+	ActorEmail           string
+	RequestCorrelationID string
+	CreatedAtMillis      int64
+}
+
 func (store *Store) Projects(ctx context.Context) ([]ProjectSummary, error) {
 	rows, err := store.database.QueryContext(ctx, `
 SELECT p.id, p.name,
@@ -69,10 +89,33 @@ func (store *Store) CreateProject(ctx context.Context, input CreateProject) (Pro
 	if input.ID == "" || input.AuditEventID == "" || input.ActorID == "" || input.ActorEmail == "" || input.CreatedAtMillis <= 0 {
 		return ProjectSummary{}, errors.New("create project input is incomplete")
 	}
+	return store.createProject(ctx, createProjectMutation{
+		ID: input.ID, Name: input.Name, AuditEventID: input.AuditEventID,
+		ActorKind: "access", ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+		RequestCorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
+	})
+}
+
+func (store *Store) CreateProjectByToken(ctx context.Context, input CreateProjectByToken) (ProjectSummary, error) {
+	if input.ID == "" || input.AuditEventID == "" || input.ActorTokenID == "" || input.CreatedAtMillis <= 0 {
+		return ProjectSummary{}, errors.New("create project by token input is incomplete")
+	}
+	return store.createProject(ctx, createProjectMutation{
+		ID: input.ID, Name: input.Name, AuditEventID: input.AuditEventID,
+		ActorKind: "token", ActorID: input.ActorTokenID,
+		RequestCorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
+	})
+}
+
+func (store *Store) createProject(ctx context.Context, input createProjectMutation) (ProjectSummary, error) {
 	if err := resourcename.Validate(input.Name); err != nil {
 		return ProjectSummary{}, err
 	}
-	metadata, err := json.Marshal(map[string]string{"actorEmail": input.ActorEmail})
+	metadataValues := map[string]string{}
+	if input.ActorEmail != "" {
+		metadataValues["actorEmail"] = input.ActorEmail
+	}
+	metadata, err := json.Marshal(metadataValues)
 	if err != nil {
 		return ProjectSummary{}, err
 	}
@@ -98,8 +141,8 @@ VALUES (?, ?, ?, ?)`, input.ID, input.Name, input.CreatedAtMillis, input.Created
 INSERT INTO audit_events(
   id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, 'project.create', 'project', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorID, input.ID, correlationID, string(metadata), input.CreatedAtMillis,
+) VALUES (?, ?, ?, 'project.create', 'project', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadata), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit project creation: %w", err)
 		}
