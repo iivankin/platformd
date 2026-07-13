@@ -60,6 +60,30 @@ func (stack *runtimeStack) OpenManagedRedisBackup(ctx context.Context, resourceI
 	return controller.OpenBackupRDB(ctx, resourceID)
 }
 
+func (stack *runtimeStack) RestoreManagedRedis(
+	ctx context.Context,
+	resourceID string,
+	rdb io.Reader,
+	actor managedredis.Actor,
+) error {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed Redis runtime is not ready")
+	}
+	err := controller.RestoreReplace(ctx, resourceID, rdb, actor)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.redisFailures, resourceID)
+	} else {
+		stack.redisFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
 func (stack *runtimeStack) redisPlacement(resource state.ManagedRedis) (managedredis.Placement, error) {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()

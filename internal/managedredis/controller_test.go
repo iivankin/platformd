@@ -34,6 +34,13 @@ func (store testStore) ManagedRedisResources(context.Context) ([]state.ManagedRe
 	return []state.ManagedRedis{store.resource}, nil
 }
 
+func (store testStore) SwitchManagedRedisVolume(_ context.Context, input state.SwitchManagedRedisVolume) error {
+	if input.ResourceID != store.resource.ID || input.ExpectedVolumeID != store.resource.VolumeID {
+		return errors.New("unexpected managed Redis volume switch")
+	}
+	return nil
+}
+
 type testEngine struct {
 	image       containerengine.Image
 	pullRequest containerengine.PullRequest
