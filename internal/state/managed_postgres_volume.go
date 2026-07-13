@@ -27,7 +27,7 @@ func (store *Store) SwitchManagedPostgresVolume(ctx context.Context, input Switc
 		(input.Action != "postgres.restore" && input.Action != "postgres.version_change") {
 		return errors.New("switch managed PostgreSQL volume input is invalid")
 	}
-	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
+	if err := validateManagedVolumeSwitchActor(input.Action, input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
 		return err
 	}
 	metadataFields := map[string]any{
@@ -75,4 +75,14 @@ INSERT INTO audit_events(
 		return err
 	})
 	return err
+}
+
+func validateManagedVolumeSwitchActor(action, kind, actorID, email string) error {
+	if kind == "system" {
+		if (action != "postgres.restore" && action != "redis.restore") || actorID == "" || email != "" {
+			return errors.New("system managed database restore actor is invalid")
+		}
+		return nil
+	}
+	return validateMutationActor(kind, actorID, email)
 }
