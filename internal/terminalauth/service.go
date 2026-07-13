@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,9 @@ const (
 	maximumSubjectLen = 512
 	maximumTokenLen   = 4096
 	keyDomain         = "platformd/server-terminal-token/v1"
+
+	WebSocketProtocol     = "platformd-terminal-v1"
+	WebSocketBearerPrefix = "platformd-bearer."
 )
 
 var (
@@ -164,6 +168,41 @@ func (service *Service) Verify(token, subject string) error {
 		return ErrInvalidToken
 	}
 	return nil
+}
+
+func (service *Service) VerifyWebSocketRequest(request *http.Request, subject string) error {
+	if request == nil {
+		return ErrInvalidToken
+	}
+	protocols := make([]string, 0, 2)
+	for _, value := range request.Header.Values("Sec-WebSocket-Protocol") {
+		for token := range strings.SplitSeq(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				return ErrInvalidToken
+			}
+			protocols = append(protocols, token)
+		}
+	}
+	if len(protocols) != 2 {
+		return ErrInvalidToken
+	}
+	fixedFound := false
+	bearer := ""
+	for _, protocol := range protocols {
+		switch {
+		case protocol == WebSocketProtocol && !fixedFound:
+			fixedFound = true
+		case strings.HasPrefix(protocol, WebSocketBearerPrefix) && bearer == "":
+			bearer = strings.TrimPrefix(protocol, WebSocketBearerPrefix)
+		default:
+			return ErrInvalidToken
+		}
+	}
+	if !fixedFound || bearer == "" {
+		return ErrInvalidToken
+	}
+	return service.Verify(bearer, subject)
 }
 
 func (service *Service) sign(subject string, now time.Time) (IssuedToken, error) {

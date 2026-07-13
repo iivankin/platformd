@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -178,6 +179,54 @@ func TestTransportRejectsAdmissionBeforeWebSocketUpgrade(t *testing.T) {
 		t.Fatalf("admission response = %#v, %v", response, err)
 	}
 	if openCount.Load() != 0 {
+		t.Fatalf("opener called %d times", openCount.Load())
+	}
+}
+
+func TestTransportAuthorizesAndEchoesOnlyFixedSubprotocol(t *testing.T) {
+	t.Parallel()
+
+	var openCount atomic.Int32
+	handler, err := terminaltransport.New("admin.example.com", func(context.Context, terminaltransport.OpenRequest, terminaltransport.Size) (terminaltransport.Session, error) {
+		openCount.Add(1)
+		return newFakeSession(), nil
+	}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := handler.RequireSubprotocol("platformd-terminal-v1"); err != nil {
+		t.Fatal(err)
+	}
+	handler.SetAuthorization(func(request *http.Request, identity access.Identity) error {
+		if identity.Subject != "subject" || !strings.Contains(request.Header.Get("Sec-WebSocket-Protocol"), "platformd-bearer.token") {
+			return errors.New("missing subject-bound bearer")
+		}
+		return nil
+	})
+	server := httptest.NewTLSServer(access.ProtectAdmin("admin.example.com", verifier{}, handler))
+	defer server.Close()
+
+	options := dialOptions(server, "https://admin.example.com")
+	options.Subprotocols = []string{"platformd-terminal-v1", "platformd-bearer.token"}
+	connection, response, err := websocket.Dial(context.Background(), "wss://admin.example.com/terminal?cols=80&rows=24", options)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial status %d: %v", response.StatusCode, err)
+		}
+		t.Fatal(err)
+	}
+	if connection.Subprotocol() != "platformd-terminal-v1" {
+		t.Fatalf("echoed subprotocol = %q", connection.Subprotocol())
+	}
+	_ = connection.Close(websocket.StatusNormalClosure, "done")
+
+	missingBearer := dialOptions(server, "https://admin.example.com")
+	missingBearer.Subprotocols = []string{"platformd-terminal-v1"}
+	_, response, err = websocket.Dial(context.Background(), "wss://admin.example.com/terminal?cols=80&rows=24", missingBearer)
+	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("missing bearer response = %#v, %v", response, err)
+	}
+	if openCount.Load() != 1 {
 		t.Fatalf("opener called %d times", openCount.Load())
 	}
 }
