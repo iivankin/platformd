@@ -271,6 +271,27 @@ const diskPressureSchema = z.object({
 
 export type DiskPressure = z.infer<typeof diskPressureSchema>;
 
+const infrastructureLogRecordSchema = z.object({
+  cursor: z.string().min(1),
+  identifier: z.string().optional(),
+  message: z.string(),
+  pid: z.string().optional(),
+  priority: z.number().int().min(0).max(7),
+  timestamp: z.iso.datetime({ offset: true }),
+});
+
+const infrastructureLogWindowSchema = z.object({
+  records: z.array(infrastructureLogRecordSchema),
+  truncated: z.boolean(),
+});
+
+export type InfrastructureLogRecord = z.infer<
+  typeof infrastructureLogRecordSchema
+>;
+export type InfrastructureLogWindow = z.infer<
+  typeof infrastructureLogWindowSchema
+>;
+
 const resourceUsageSchema = z.object({
   cpuUsageMicros: z.number().int().nonnegative(),
   hostCpuCores: z.number().int().positive(),
@@ -1215,6 +1236,24 @@ export const fetchDiskPressure = async (
     );
   }
   return diskPressureSchema.parse(await response.json());
+};
+
+export const fetchInfrastructureLogs = async (
+  limit = 500,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InfrastructureLogWindow> => {
+  const response = await fetcher(`/api/v1/infrastructure/logs?limit=${limit}`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `infrastructure logs request failed with ${response.status}`
+    );
+  }
+  return infrastructureLogWindowSchema.parse(await response.json());
 };
 
 export const fetchResourceUsage = async (

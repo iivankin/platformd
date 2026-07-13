@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { fetchDiskPressure } from "@/api";
 import type { DiskPressure } from "@/api";
 import { Button } from "@/components/ui/button";
+import { InfrastructureLogs } from "@/infrastructure-logs";
 import { cn } from "@/lib/utils";
 import { useSelfUpdate } from "@/use-self-update";
 
@@ -258,6 +259,8 @@ export const InfrastructurePage = () => {
           {updating ? "Waiting for restart" : "Update platform"}
         </Button>
       </section>
+
+      <InfrastructureLogs />
     </div>
   );
 };

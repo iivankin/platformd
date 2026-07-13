@@ -30,6 +30,7 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/ingress"
+	"github.com/iivankin/platformd/internal/journallogs"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
@@ -431,6 +432,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	logs := liveLogRepository{store: store, reader: logReader}
+	infrastructureLogs := journallogs.NewReader()
 	managedImageCatalog, err := managedimages.New("https://hub.docker.com", &http.Client{
 		Timeout: managedImageCatalogTimeout,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -569,6 +571,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithServerTerminalAuth(serverTerminalAuth),
 		server.WithDiskPressure(pressure),
 		server.WithResourceUsage(resourceUsage),
+		server.WithInfrastructureLogs(infrastructureLogs),
 		server.WithAdmission(mutationAdmission),
 		server.WithSelfUpdate(platformUpdater, func() {
 			updateCommitted.Store(true)
