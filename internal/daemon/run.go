@@ -43,6 +43,7 @@ import (
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/version"
 	"golang.org/x/net/netutil"
 )
@@ -411,6 +412,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	serverTerminalAuth, err := terminalauth.New(terminalauth.Config{
+		Master: key, InstallationID: installation.ID, Verifier: installation.ConsolePassphrasePHC,
+	})
+	if err != nil {
+		return fmt.Errorf("configure server terminal authentication: %w", err)
+	}
 	registrySettings := &liveRegistrySettings{store: store, runtime: runtime, certificates: certificates}
 	var automationHostname string
 	var automationHandler http.Handler
@@ -486,6 +493,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithBackupTargets(backupTargets),
 			server.WithBackupResources(backupResources),
 			server.WithContainerConsole(installation.AdminHostname, containerConsole),
+			server.WithServerTerminalAuth(serverTerminalAuth),
 			server.WithDiskPressure(pressure),
 			server.WithAdmission(mutationAdmission),
 			server.WithSelfUpdate(platformUpdater, func() {

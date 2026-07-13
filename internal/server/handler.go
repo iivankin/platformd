@@ -16,6 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/registry"
+	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/ui"
 	"github.com/iivankin/platformd/internal/version"
 )
@@ -28,30 +29,31 @@ type Meta struct {
 }
 
 type handlerConfig struct {
-	projects         ProjectRepository
-	services         ServiceRepository
-	domains          DomainRepository
-	tokens           APITokenRepository
-	imageCredentials ImageCredentialRepository
-	logs             LogRepository
-	logsHostname     string
-	audit            AuditRepository
-	managedImages    ManagedImageCatalog
-	managedRedis     ManagedRedisRepository
-	managedPostgres  *managedpostgres.Application
-	objectStores     *objectstore.Application
-	registry         *registry.Application
-	registrySettings RegistrySettings
-	backupTargets    *backup.TargetApplication
-	backupResources  *backup.ResourceApplication
-	containerConsole ContainerConsole
-	adminHostname    string
-	diskPressure     DiskPressure
-	admission        *admission.Gate
-	selfUpdater      SelfUpdater
-	afterUpdate      func()
-	random           io.Reader
-	now              func() time.Time
+	projects           ProjectRepository
+	services           ServiceRepository
+	domains            DomainRepository
+	tokens             APITokenRepository
+	imageCredentials   ImageCredentialRepository
+	logs               LogRepository
+	logsHostname       string
+	audit              AuditRepository
+	managedImages      ManagedImageCatalog
+	managedRedis       ManagedRedisRepository
+	managedPostgres    *managedpostgres.Application
+	objectStores       *objectstore.Application
+	registry           *registry.Application
+	registrySettings   RegistrySettings
+	backupTargets      *backup.TargetApplication
+	backupResources    *backup.ResourceApplication
+	containerConsole   ContainerConsole
+	serverTerminalAuth *terminalauth.Service
+	adminHostname      string
+	diskPressure       DiskPressure
+	admission          *admission.Gate
+	selfUpdater        SelfUpdater
+	afterUpdate        func()
+	random             io.Reader
+	now                func() time.Time
 }
 
 type Option func(*handlerConfig)
@@ -149,6 +151,12 @@ func WithContainerConsole(hostname string, application ContainerConsole) Option 
 	}
 }
 
+func WithServerTerminalAuth(service *terminalauth.Service) Option {
+	return func(config *handlerConfig) {
+		config.serverTerminalAuth = service
+	}
+}
+
 func WithDiskPressure(pressure DiskPressure) Option {
 	return func(config *handlerConfig) {
 		config.diskPressure = pressure
@@ -226,6 +234,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole, config.admission); err != nil {
 			panic("register container console: " + err.Error())
 		}
+	}
+	if config.serverTerminalAuth != nil {
+		registerServerTerminalAuthRoute(mux, config.serverTerminalAuth)
 	}
 	if config.diskPressure != nil {
 		registerInfrastructureRoutes(mux, config.diskPressure)
