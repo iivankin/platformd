@@ -2,6 +2,9 @@ package containerlogs
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -28,6 +31,7 @@ type segment struct {
 	attemptID    string
 	rotation     int
 	modifiedNano int64
+	sizeBytes    int64
 }
 
 func NewReader(root string) (*Reader, error) {
@@ -38,17 +42,9 @@ func NewReader(root string) (*Reader, error) {
 }
 
 func (reader *Reader) Read(ctx context.Context, query Query) (Window, error) {
-	if !productID.MatchString(query.ServiceID) || (query.DeploymentID != "" && !productID.MatchString(query.DeploymentID)) {
-		return Window{}, fmt.Errorf("%w: invalid service or deployment ID", ErrInvalidQuery)
-	}
-	if len(query.Contains) > maximumContainsBytes || strings.ContainsRune(query.Contains, '\x00') {
-		return Window{}, fmt.Errorf("%w: contains filter exceeds its limit or contains NUL", ErrInvalidQuery)
-	}
-	if query.Limit == 0 {
-		query.Limit = DefaultLimit
-	}
-	if query.Limit < 1 || query.Limit > MaximumLimit {
-		return Window{}, fmt.Errorf("%w: log limit must be between 1 and %d", ErrInvalidQuery, MaximumLimit)
+	query, err := validateQuery(query)
+	if err != nil {
+		return Window{}, err
 	}
 	segments, err := reader.segments(query)
 	if err != nil {
@@ -92,6 +88,51 @@ func (reader *Reader) Read(ctx context.Context, query Query) (Window, error) {
 	return Window{Records: records, Truncated: truncated}, nil
 }
 
+func (reader *Reader) Revision(ctx context.Context, query Query) (string, error) {
+	query, err := validateQuery(query)
+	if err != nil {
+		return "", err
+	}
+	segments, err := reader.segments(query)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	var number [8]byte
+	for _, current := range segments {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		for _, value := range []string{current.deploymentID, current.attemptID, current.path} {
+			_, _ = hash.Write([]byte(value))
+			_, _ = hash.Write([]byte{0})
+		}
+		binary.BigEndian.PutUint64(number[:], uint64(current.rotation))
+		_, _ = hash.Write(number[:])
+		binary.BigEndian.PutUint64(number[:], uint64(current.modifiedNano))
+		_, _ = hash.Write(number[:])
+		binary.BigEndian.PutUint64(number[:], uint64(current.sizeBytes))
+		_, _ = hash.Write(number[:])
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func validateQuery(query Query) (Query, error) {
+	if !productID.MatchString(query.ServiceID) || (query.DeploymentID != "" && !productID.MatchString(query.DeploymentID)) {
+		return Query{}, fmt.Errorf("%w: invalid service or deployment ID", ErrInvalidQuery)
+	}
+	if len(query.Contains) > maximumContainsBytes || strings.ContainsRune(query.Contains, '\x00') {
+		return Query{}, fmt.Errorf("%w: contains filter exceeds its limit or contains NUL", ErrInvalidQuery)
+	}
+	if query.Limit == 0 {
+		query.Limit = DefaultLimit
+	}
+	if query.Limit < 1 || query.Limit > MaximumLimit {
+		return Query{}, fmt.Errorf("%w: log limit must be between 1 and %d", ErrInvalidQuery, MaximumLimit)
+	}
+	return query, nil
+}
+
 func (reader *Reader) segments(query Query) ([]segment, error) {
 	serviceRoot := filepath.Join(reader.root, "services", query.ServiceID)
 	deployments, err := os.ReadDir(serviceRoot)
@@ -128,7 +169,7 @@ func (reader *Reader) segments(query Query) ([]segment, error) {
 			}
 			result = append(result, segment{
 				path: filepath.Join(serviceRoot, deployment.Name(), file.Name()), deploymentID: deployment.Name(),
-				attemptID: match[1], rotation: rotation, modifiedNano: info.ModTime().UnixNano(),
+				attemptID: match[1], rotation: rotation, modifiedNano: info.ModTime().UnixNano(), sizeBytes: info.Size(),
 			})
 		}
 	}

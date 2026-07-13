@@ -163,6 +163,11 @@
   animation: enter-row 180ms ease-out both;
 }
 
+.log-record {
+  content-visibility: auto;
+  contain-intrinsic-size: 0 42px;
+}
+
 .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--border);

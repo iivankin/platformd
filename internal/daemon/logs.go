@@ -20,3 +20,12 @@ func (repository liveLogRepository) ServiceLogs(ctx context.Context, projectID, 
 		ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains, Limit: limit,
 	})
 }
+
+func (repository liveLogRepository) ServiceLogRevision(ctx context.Context, projectID, serviceID, deploymentID, contains string) (string, error) {
+	if _, err := repository.store.Service(ctx, projectID, serviceID); err != nil {
+		return "", err
+	}
+	return repository.reader.Revision(ctx, containerlogs.Query{
+		ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains,
+	})
+}

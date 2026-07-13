@@ -88,6 +88,46 @@ func TestReaderRejectsTraversalAndSymlinkSegments(t *testing.T) {
 	}
 }
 
+func TestReaderRevisionChangesOnlyWithSegmentMetadata(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	directory := filepath.Join(root, "services", "service", "deployment")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "attempt.log")
+	writeLog(t, path, "2026-07-12T10:00:00Z stdout F first\n", time.Unix(1, 0))
+	reader, err := NewReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := Query{ServiceID: "service"}
+	first, err := reader.Revision(context.Background(), query)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unchanged, err := reader.Revision(context.Background(), query)
+	if err != nil || unchanged != first {
+		t.Fatalf("unchanged revision = %q, %v", unchanged, err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("2026-07-12T10:00:01Z stdout F second\n"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	changed, err := reader.Revision(context.Background(), query)
+	if err != nil || changed == first {
+		t.Fatalf("changed revision = %q, %v", changed, err)
+	}
+}
+
 func writeLog(t *testing.T, path, contents string, modified time.Time) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {

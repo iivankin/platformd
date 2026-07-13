@@ -19,6 +19,7 @@ import (
 	"github.com/containers/podman/v5/pkg/specgen/generate"
 	buildspec "github.com/opencontainers/runtime-spec/specs-go"
 	nettypes "go.podman.io/common/libnetwork/types"
+	"go.podman.io/common/pkg/resize"
 )
 
 func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Container, error) {
@@ -190,6 +191,69 @@ func (e *Engine) ExecContainer(ctx context.Context, id string, request ExecReque
 		return exitCode, fmt.Errorf("exec in container %s: %w", id, err)
 	}
 	return exitCode, nil
+}
+
+func (e *Engine) ExecTerminalContainer(ctx context.Context, id string, request TerminalExecRequest) (int, error) {
+	if len(request.Command) == 0 {
+		return -1, fmt.Errorf("terminal exec command is empty")
+	}
+	if request.Stdin == nil {
+		return -1, fmt.Errorf("terminal exec stdin is required")
+	}
+	if request.InitialSize.Cols < 1 || request.InitialSize.Rows < 1 {
+		return -1, fmt.Errorf("terminal exec initial size is invalid")
+	}
+	container, err := e.lookupContainer(id)
+	if err != nil {
+		return -1, err
+	}
+	output := writerOrDiscard(request.Output)
+	streams := &define.AttachStreams{
+		InputStream:  bufio.NewReader(request.Stdin),
+		OutputStream: output,
+		ErrorStream:  output,
+		AttachInput:  true,
+		AttachOutput: true,
+		AttachError:  true,
+	}
+	config := &libpod.ExecConfig{
+		Command:      append([]string(nil), request.Command...),
+		Environment:  cloneStrings(request.Environment),
+		User:         request.User,
+		WorkDir:      request.WorkDir,
+		Terminal:     true,
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+	}
+	resizes := make(chan resize.TerminalSize)
+	go forwardTerminalSizes(ctx, request.Resizes, resizes)
+	exitCode, err := container.ExecTerminalContext(ctx, config, streams, resize.TerminalSize{
+		Width: request.InitialSize.Cols, Height: request.InitialSize.Rows,
+	}, resizes)
+	if err != nil {
+		return exitCode, fmt.Errorf("terminal exec in container %s: %w", id, err)
+	}
+	return exitCode, nil
+}
+
+func forwardTerminalSizes(ctx context.Context, source <-chan TerminalSize, target chan<- resize.TerminalSize) {
+	defer close(target)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case size, ok := <-source:
+			if !ok {
+				return
+			}
+			select {
+			case target <- resize.TerminalSize{Width: size.Cols, Height: size.Rows}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
 }
 
 func (e *Engine) lookupContainer(id string) (*libpod.Container, error) {

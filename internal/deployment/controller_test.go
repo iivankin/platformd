@@ -125,6 +125,14 @@ func (engine *fakeEngine) InspectContainer(containerID string) (containerengine.
 	return container, nil
 }
 
+func (engine *fakeEngine) ExecTerminalContainer(context.Context, string, containerengine.TerminalExecRequest) (int, error) {
+	return 0, nil
+}
+
+func (engine *fakeEngine) ExecContainer(context.Context, string, containerengine.ExecRequest) (int, error) {
+	return 0, nil
+}
+
 type fakePublisher struct {
 	events []string
 }
