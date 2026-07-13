@@ -196,6 +196,11 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 				t.Fatalf("dial = %q/%q", address, actualPassword)
 			}
 			connection := &testConnection{}
+			if len(connections) == 1 {
+				connection.statuses = []PersistenceStatus{{
+					LastBackgroundSaveOK: true, LastSuccessfulSaveUnixSeconds: 1_700_000_000,
+				}}
+			}
 			connections = append(connections, connection)
 			return connection, nil
 		},
@@ -240,10 +245,15 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 			t.Fatalf("mode %s = %v, want %v", path, info.Mode().Perm(), mode)
 		}
 	}
+	persistence, err := controller.Persistence(context.Background(), resource.ID)
+	if err != nil || !persistence.LastBackgroundSaveOK || persistence.LastSuccessfulSaveUnixSeconds != 1_700_000_000 ||
+		len(connections) != 2 || !connections[1].closed {
+		t.Fatalf("live persistence status = %+v, %v; connections=%+v", persistence, err, connections)
+	}
 	if err := controller.Stop(context.Background(), resource.ID); err != nil {
 		t.Fatal(err)
 	}
-	if !publisher.withdrawn || !engine.stopped || !engine.removed || len(connections) != 2 || !connections[1].saved || !connections[1].closed {
+	if !publisher.withdrawn || !engine.stopped || !engine.removed || len(connections) != 3 || !connections[2].saved || !connections[2].closed {
 		t.Fatalf("graceful stop incomplete: engine=%+v publisher=%+v connections=%+v", engine, publisher, connections)
 	}
 }

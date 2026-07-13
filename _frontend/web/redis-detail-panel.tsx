@@ -20,6 +20,7 @@ import type { ResourceNodeData } from "@/project-flow";
 import { formatBytes, formatTTL } from "@/redis-data-utils";
 import { RedisKeyEditor } from "@/redis-key-editor";
 import { RedisNewKeyForm } from "@/redis-new-key-form";
+import { RedisPersistenceStatus } from "@/redis-persistence-status";
 
 interface RedisDetailPanelProperties {
   data: ResourceNodeData;
@@ -250,6 +251,8 @@ export const RedisDetailPanel = ({
             </p>
           </div>
         </section>
+
+        <RedisPersistenceStatus projectID={projectID} redisID={redisID} />
 
         <RedisVersionChange
           onSucceeded={refreshAfterVersionChange}

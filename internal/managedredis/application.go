@@ -30,6 +30,7 @@ type ApplicationStore interface {
 type ApplicationRuntime interface {
 	ResolveManagedRedisImage(context.Context, string) (string, error)
 	StartManagedRedis(context.Context, string) error
+	ManagedRedisPersistence(context.Context, string) (PersistenceStatus, error)
 	ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error)
 	PreviewManagedRedisKey(context.Context, string, PreviewQuery) (Preview, error)
 	MutateManagedRedis(context.Context, string, Mutation) (MutationResult, error)
@@ -54,6 +55,16 @@ type CreateResult struct {
 	Resource  state.ManagedRedis
 	Password  string
 	RequestID string
+}
+
+type PersistenceReport struct {
+	ObservedAtMillis             int64
+	LastSuccessfulSaveAtMillis   int64
+	ActualRPOMillis              int64
+	TargetRPOMillis              int64
+	BackgroundSaveInProgress     bool
+	LastBackgroundSaveSuccessful bool
+	NeedsAttention               bool
 }
 
 type Application struct {
@@ -137,6 +148,32 @@ func (application *Application) Resource(ctx context.Context, projectID, resourc
 
 func (application *Application) Resources(ctx context.Context, projectID string) ([]state.ManagedRedis, error) {
 	return application.store.ManagedRedisByProject(ctx, projectID)
+}
+
+func (application *Application) Persistence(ctx context.Context, projectID, resourceID string) (PersistenceReport, error) {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return PersistenceReport{}, err
+	}
+	readContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	status, err := application.runtime.ManagedRedisPersistence(readContext, resourceID)
+	if err != nil {
+		return PersistenceReport{}, err
+	}
+	observedAt := application.now()
+	lastSaveMillis := status.LastSuccessfulSaveUnixSeconds * int64(time.Second/time.Millisecond)
+	age := observedAt.UnixMilli() - lastSaveMillis
+	if age < 0 {
+		age = 0
+	}
+	target := TargetRPO.Milliseconds()
+	return PersistenceReport{
+		ObservedAtMillis: observedAt.UnixMilli(), LastSuccessfulSaveAtMillis: lastSaveMillis,
+		ActualRPOMillis: age, TargetRPOMillis: target,
+		BackgroundSaveInProgress:     status.BackgroundSaveInProgress,
+		LastBackgroundSaveSuccessful: status.LastBackgroundSaveOK,
+		NeedsAttention:               age > target || !status.LastBackgroundSaveOK,
+	}, nil
 }
 
 func (application *Application) Keys(ctx context.Context, projectID, resourceID string, query ScanQuery) (KeyPage, error) {

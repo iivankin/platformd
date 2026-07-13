@@ -345,6 +345,16 @@ const managedRedisSchema = z.object({
   updatedAt: z.number().int().positive(),
 });
 
+const managedRedisPersistenceSchema = z.object({
+  actualRpoMillis: z.number().int().nonnegative(),
+  backgroundSaveInProgress: z.boolean(),
+  lastBackgroundSaveSuccessful: z.boolean(),
+  lastSuccessfulSaveAt: z.number().int().positive(),
+  needsAttention: z.boolean(),
+  observedAt: z.number().int().positive(),
+  targetRpoMillis: z.number().int().positive(),
+});
+
 const redisKeySchema = z.object({
   expiresInMillis: z.number().int().nonnegative().optional(),
   keyBase64: z.string(),
@@ -373,6 +383,9 @@ const redisPreviewSchema = z.object({
 });
 
 export type ManagedRedis = z.infer<typeof managedRedisSchema>;
+export type ManagedRedisPersistence = z.infer<
+  typeof managedRedisPersistenceSchema
+>;
 export type RedisKey = z.infer<typeof redisKeySchema>;
 export type RedisKeyPage = z.infer<typeof redisKeyPageSchema>;
 export type RedisPreview = z.infer<typeof redisPreviewSchema>;
@@ -1315,6 +1328,25 @@ export const fetchManagedRedis = async (
     );
   }
   return managedRedisSchema.parse(await response.json());
+};
+
+export const fetchManagedRedisPersistence = async (
+  projectID: string,
+  redisID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedRedisPersistence> => {
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/persistence`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis persistence request failed with ${response.status}`
+    );
+  }
+  return managedRedisPersistenceSchema.parse(await response.json());
 };
 
 export const scanManagedRedisKeys = async (
