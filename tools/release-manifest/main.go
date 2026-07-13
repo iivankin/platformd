@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/iivankin/platformd/internal/releaseconfig"
 	"github.com/iivankin/platformd/internal/releasemanifest"
 )
 
@@ -79,6 +80,13 @@ func run(binaryPath, binaryURL, version, privateKeyPath, outputPath string, supp
 	clear(privateKey)
 	if err != nil {
 		return err
+	}
+	publicKey, err := releaseconfig.PublicKey()
+	if err != nil {
+		return err
+	}
+	if _, err := releasemanifest.ParseAndVerify(manifest, publicKey); err != nil {
+		return fmt.Errorf("verify manifest with embedded release public key: %w", err)
 	}
 	return writeAtomic(outputPath, manifest)
 }
