@@ -808,7 +808,7 @@ Operation:
 2. Берёт in-memory per-database maintenance gate, убирает её DNS record и nftables блокирует новые project connections к database endpoint, оставляя доступ только exact internal update job.
 3. Ждёт bounded drain, затем завершает оставшиеся client sessions.
 4. Создаёт new volume и isolated target без stable DNS record.
-5. PostgreSQL stream-ит `pg_dump` source напрямую в `pg_restore` target; Redis выполняет final `SAVE`, останавливает source, копирует RDB напрямую из old volume в new volume и запускает target. Backup artifact локально или в remote S3 не создаётся.
+5. PostgreSQL stream-ит `pg_dump` source напрямую в `pg_restore` target; Redis выполняет final `BGSAVE`, проверяет successful status и replacement inode, открывает stable descriptor нового RDB, останавливает source, копирует RDB напрямую в new volume и запускает target. Backup artifact локально или в remote S3 не создаётся.
 6. Выполняет engine-specific health/data checks и останавливает PostgreSQL source, если он ещё работает.
 7. Одной SQLite transaction переключает единственный active `(imageTag, imageDigest, volumeId)` pointer на target; in-memory DNS публикует прежнее stable hostname с new IP, после чего maintenance gate снимается.
 8. Old volume сразу становится unreferenced и удаляется; crash между pointer switch и удалением завершает тот же orphan cleanup при следующем startup.
