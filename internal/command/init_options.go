@@ -7,11 +7,12 @@ import (
 )
 
 type initOptions struct {
-	inputFD        int
-	restore        bool
-	rollbackUpdate bool
-	installUpdate  string
-	binaryPath     string
+	inputFD                int
+	restore                bool
+	resetConsolePassphrase bool
+	rollbackUpdate         bool
+	installUpdate          string
+	binaryPath             string
 }
 
 func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int) {
@@ -25,6 +26,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 	flags.Usage = func() { _, _ = io.WriteString(stderr, usage) }
 	flags.IntVar(&options.inputFD, "input-fd", -1, "read bounded bootstrap JSON from an inherited file descriptor")
 	flags.BoolVar(&options.restore, "restore", false, "restore an installation from its remote control backup")
+	flags.BoolVar(&options.resetConsolePassphrase, "reset-console-passphrase", false, "replace the server console passphrase verifier")
 	flags.BoolVar(&options.rollbackUpdate, "rollback-update", false, "restore the previous signed release before schema migration")
 	flags.StringVar(&options.installUpdate, "install-signed-update", "", "install a signed forward fix from a local manifest or HTTPS URL")
 	flags.StringVar(&options.binaryPath, "binary", "", "use a local binary with --install-signed-update")
@@ -39,6 +41,9 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 	if options.restore {
 		recoveryModes++
 	}
+	if options.resetConsolePassphrase {
+		recoveryModes++
+	}
 	if options.rollbackUpdate {
 		recoveryModes++
 	}
@@ -46,7 +51,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 		recoveryModes++
 	}
 	if flags.NArg() != 0 || options.inputFD < -1 || recoveryModes > 1 ||
-		(recoveryModes != 0 && !options.restore && options.inputFD != -1) ||
+		(recoveryModes != 0 && !options.restore && !options.resetConsolePassphrase && options.inputFD != -1) ||
 		(options.binaryPath != "" && options.installUpdate == "") {
 		_, _ = fmt.Fprint(stderr, usage)
 		return initOptions{}, 2

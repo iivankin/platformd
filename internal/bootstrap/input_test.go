@@ -67,6 +67,30 @@ func TestInputRejectsUnknownFieldsAndUncoveredHostname(t *testing.T) {
 	}
 }
 
+func TestReadConsolePassphraseInputIsStrictAndBounded(t *testing.T) {
+	t.Parallel()
+
+	value, err := bootstrap.ReadConsolePassphraseInput(strings.NewReader(`{"consolePassphrase":"new passphrase"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clear(value)
+	if string(value) != "new passphrase" {
+		t.Fatalf("passphrase = %q", value)
+	}
+	for _, input := range []string{
+		`{"consolePassphrase":"secret","unknown":true}`,
+		`{"consolePassphrase":"secret"} {}`,
+		`{"consolePassphrase":""}`,
+		`{"consolePassphrase":"` + strings.Repeat("x", 1025) + `"}`,
+	} {
+		if rejected, err := bootstrap.ReadConsolePassphraseInput(strings.NewReader(input)); err == nil {
+			clear(rejected)
+			t.Fatalf("invalid input was accepted: %.80q", input)
+		}
+	}
+}
+
 func testCertificate(t *testing.T, names []string) (string, string) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

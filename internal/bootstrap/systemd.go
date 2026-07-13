@@ -57,6 +57,10 @@ func (SystemdManager) Start(ctx context.Context) error {
 	return runSystemctl(ctx, "start", "platformd.service")
 }
 
+func (SystemdManager) Stop(ctx context.Context) error {
+	return runSystemctl(ctx, "stop", "platformd.service")
+}
+
 func (SystemdManager) Health(ctx context.Context, hostname, certificatePEM string) error {
 	block, _ := pem.Decode([]byte(certificatePEM))
 	if block == nil {

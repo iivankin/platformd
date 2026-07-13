@@ -58,6 +58,23 @@ func restoreInputProvider(inputFD int) (func() (disasterrestore.ValidatedInput, 
 	return readInteractiveRestoreInput, nil
 }
 
+func consolePassphraseProvider(inputFD int) (func() ([]byte, error), error) {
+	if inputFD >= 0 {
+		if term.IsTerminal(inputFD) {
+			return nil, errors.New("--input-fd must not reference a terminal")
+		}
+		return func() ([]byte, error) {
+			file := os.NewFile(uintptr(inputFD), "platformd-console-passphrase-input")
+			if file == nil {
+				return nil, errors.New("--input-fd is invalid")
+			}
+			defer file.Close()
+			return bootstrap.ReadConsolePassphraseInput(file)
+		}, nil
+	}
+	return readInteractiveConsolePassphrase, nil
+}
+
 func confirmRecoveryKey(recoveryKey string) error {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {
@@ -116,30 +133,10 @@ func readInteractiveInput() (bootstrap.ValidatedInput, error) {
 		return bootstrap.ValidatedInput{}, fmt.Errorf("read Origin private key: %w", err)
 	}
 	defer clear(privateKey)
-	if _, err := io.WriteString(tty, "Console passphrase: "); err != nil {
-		return bootstrap.ValidatedInput{}, err
-	}
-	passphrase, err := term.ReadPassword(int(tty.Fd()))
-	if _, writeErr := io.WriteString(tty, "\nConfirm console passphrase: "); err == nil && writeErr != nil {
-		err = writeErr
-	}
+	passphrase, err := promptConfirmedSecret(tty, "Console passphrase: ", "Confirm console passphrase: ")
 	if err != nil {
-		clear(passphrase)
 		return bootstrap.ValidatedInput{}, err
 	}
-	confirmation, err := term.ReadPassword(int(tty.Fd()))
-	_, _ = io.WriteString(tty, "\n")
-	if err != nil {
-		clear(passphrase)
-		clear(confirmation)
-		return bootstrap.ValidatedInput{}, err
-	}
-	if string(passphrase) != string(confirmation) {
-		clear(passphrase)
-		clear(confirmation)
-		return bootstrap.ValidatedInput{}, errors.New("console passphrases do not match")
-	}
-	clear(confirmation)
 	input := bootstrap.Input{
 		AdminHostname:        adminHostname,
 		AutomationHostname:   automationHostname,
@@ -151,6 +148,33 @@ func readInteractiveInput() (bootstrap.ValidatedInput, error) {
 	}
 	clear(passphrase)
 	return bootstrap.ValidateInput(input)
+}
+
+func readInteractiveConsolePassphrase() ([]byte, error) {
+	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+	if err != nil {
+		return nil, errors.New("console passphrase reset requires a root TTY or --input-fd")
+	}
+	defer tty.Close()
+	return promptConfirmedSecret(tty, "New console passphrase: ", "Confirm new console passphrase: ")
+}
+
+func promptConfirmedSecret(tty *os.File, label, confirmationLabel string) ([]byte, error) {
+	value, err := promptSecret(tty, label)
+	if err != nil {
+		return nil, err
+	}
+	confirmation, err := promptSecret(tty, confirmationLabel)
+	if err != nil {
+		clear(value)
+		return nil, err
+	}
+	defer clear(confirmation)
+	if string(value) != string(confirmation) {
+		clear(value)
+		return nil, errors.New("console passphrases do not match")
+	}
+	return value, nil
 }
 
 func readInteractiveRestoreInput() (disasterrestore.ValidatedInput, error) {
