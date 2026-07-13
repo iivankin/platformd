@@ -271,6 +271,49 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return fmt.Errorf("configure resource backup jobs: %w", err)
 		}
+		restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
+			Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+			Admission: mutationAdmission, Master: key,
+			Restorers: map[string]backup.ResourceRestorer{
+				"object_store": backup.ResourceRestorerFunc(func(
+					restoreContext context.Context,
+					request backup.ResourceRestoreRequest,
+				) error {
+					metadata, err := io.ReadAll(request.Source.Reader)
+					if err != nil {
+						return err
+					}
+					_, err = objectStoreApplication.RestoreSnapshot(restoreContext, objectstore.RestoreInput{
+						StoreID: request.ResourceID, Metadata: metadata,
+						ValidateAttachments: func(attachments []objectstore.BackupAttachment) error {
+							descriptors := make([]backup.ResourceAttachment, len(attachments))
+							for index, attachment := range attachments {
+								descriptors[index] = backup.ResourceAttachment{
+									Index: attachment.Index, Size: attachment.Size, SHA256: attachment.SHA256,
+								}
+							}
+							return backup.ValidateResourceAttachments(request.Source.Envelope, descriptors)
+						},
+						OpenAttachment: func(
+							_ context.Context,
+							attachment objectstore.BackupAttachment,
+						) (io.ReadCloser, error) {
+							return request.Source.OpenAttachment(backup.ResourceAttachment{
+								Index: attachment.Index, Size: attachment.Size, SHA256: attachment.SHA256,
+							})
+						},
+						Actor: objectstore.Actor{
+							Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
+						},
+					})
+					return err
+				}),
+			},
+			OnError: func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
+		})
+		if err != nil {
+			return fmt.Errorf("configure resource restore jobs: %w", err)
+		}
 		backupWorker, err := backup.NewScheduledWorker(backup.WorkerConfig{
 			Dirty: dirtyControl, Control: controlJob, Store: store, Resources: resourceJob,
 			StartedAt: daemonStartedAt,
@@ -281,7 +324,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		backupResources, err = backup.NewResourceApplication(backup.ResourceApplicationConfig{
 			Store: store, Worker: backupWorker, Target: backupTargets,
-			TargetGate: backupTargetGate, Master: key,
+			TargetGate: backupTargetGate, Master: key, Restores: restoreService,
 		})
 		if err != nil {
 			return fmt.Errorf("configure resource backup application: %w", err)

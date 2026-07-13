@@ -57,8 +57,9 @@ func TestRestoreSnapshotInstallsAuthenticatedPayloadsThenAtomicallyReplacesMetad
 
 	requestID, err := application.RestoreSnapshot(ctx, RestoreInput{
 		StoreID: storeID, Metadata: metadata,
-		OpenAttachment: attachmentOpenerForTest(attachments),
-		Actor:          Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
+		ValidateAttachments: func([]BackupAttachment) error { return nil },
+		OpenAttachment:      attachmentOpenerForTest(attachments),
+		Actor:               Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
 	})
 	if err != nil || requestID == "" {
 		t.Fatalf("restore request = %q, %v", requestID, err)
@@ -96,8 +97,9 @@ func TestRestoreSnapshotLeavesCurrentMetadataOnAttachmentFailure(t *testing.T) {
 	attachments[0][len(attachments[0])-1] ^= 0xff
 	if _, err := application.RestoreSnapshot(ctx, RestoreInput{
 		StoreID: storeID, Metadata: metadata,
-		OpenAttachment: attachmentOpenerForTest(attachments),
-		Actor:          Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
+		ValidateAttachments: func([]BackupAttachment) error { return nil },
+		OpenAttachment:      attachmentOpenerForTest(attachments),
+		Actor:               Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
 	}); err == nil {
 		t.Fatal("corrupt object backup attachment was accepted")
 	}

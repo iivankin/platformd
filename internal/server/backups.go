@@ -53,6 +53,18 @@ type backupGenerationResponse struct {
 	CompletedAt   int64  `json:"completedAt"`
 }
 
+type operationResponse struct {
+	ID           string `json:"id"`
+	Kind         string `json:"kind"`
+	TargetID     string `json:"targetId"`
+	Status       string `json:"status"`
+	Progress     string `json:"progress,omitempty"`
+	ErrorCode    string `json:"errorCode,omitempty"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	StartedAt    int64  `json:"startedAt"`
+	FinishedAt   *int64 `json:"finishedAt,omitempty"`
+}
+
 func registerBackupTargetRoutes(mux *http.ServeMux, application *backup.TargetApplication) {
 	mux.HandleFunc("GET /api/v1/backups/target", getBackupTarget(application))
 	mux.HandleFunc("PUT /api/v1/backups/target", setBackupTarget(application))
@@ -66,6 +78,69 @@ func registerBackupResourceRoutes(mux *http.ServeMux, application *backup.Resour
 	mux.HandleFunc("POST /api/v1/backups/resources/{kind}/{resourceID}/run", runBackupNow(application))
 	mux.HandleFunc("GET /api/v1/backups/resources/{kind}/{resourceID}/history", getBackupHistory(application))
 	mux.HandleFunc("GET /api/v1/backups/resources/{kind}/{resourceID}/generations", getBackupGenerations(application))
+	mux.HandleFunc("POST /api/v1/backups/resources/{kind}/{resourceID}/restore", restoreBackupGeneration(application))
+	mux.HandleFunc("GET /api/v1/operations/{operationID}", getOperation(application))
+}
+
+func restoreBackupGeneration(application *backup.ResourceApplication) http.HandlerFunc {
+	type requestBody struct {
+		GenerationID         string `json:"generationId"`
+		Mode                 string `json:"mode"`
+		NewResourceName      string `json:"newResourceName"`
+		DestructiveConfirmed bool   `json:"destructiveConfirmed"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		var body requestBody
+		if !decodeBackupJSON(response, request, &body) {
+			return
+		}
+		operation, err := application.Restore(
+			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"), body.GenerationID,
+			backup.ResourceRestoreOptions{
+				Mode: body.Mode, NewResourceName: body.NewResourceName,
+				DestructiveConfirmed: body.DestructiveConfirmed,
+			},
+			backup.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+		)
+		if writeBackupResourceError(response, err) {
+			return
+		}
+		writeJSON(response, http.StatusAccepted, publicOperation(operation))
+	}
+}
+
+func getOperation(application *backup.ResourceApplication) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		operation, err := application.Operation(request.Context(), request.PathValue("operationID"))
+		if errors.Is(err, state.ErrOperationNotFound) {
+			writeAPIError(response, http.StatusNotFound, "operation_not_found", "Operation was not found")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load operation")
+			return
+		}
+		writeJSON(response, http.StatusOK, publicOperation(operation))
+	}
+}
+
+func publicOperation(operation state.Operation) operationResponse {
+	result := operationResponse{
+		ID: operation.ID, Kind: operation.Kind, TargetID: operation.TargetID,
+		Status: operation.Status, Progress: operation.Progress, ErrorCode: operation.ErrorCode,
+		ErrorMessage: operation.ErrorMessage, StartedAt: operation.StartedAtMillis,
+	}
+	if operation.FinishedAtMillis > 0 {
+		result.FinishedAt = &operation.FinishedAtMillis
+	}
+	return result
 }
 
 func getBackupGenerations(application *backup.ResourceApplication) http.HandlerFunc {
@@ -225,6 +300,10 @@ func writeBackupResourceError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusUnprocessableEntity, "backup_target_not_found", "Backup target is not configured")
 	case errors.Is(err, backup.ErrTargetBusy):
 		writeAPIError(response, http.StatusConflict, "backup_target_busy", "Backup target is busy")
+	case errors.Is(err, backup.ErrResourceGenerationNotFound):
+		writeAPIError(response, http.StatusNotFound, "backup_generation_not_found", "Backup generation was not found")
+	case errors.Is(err, backup.ErrResourceRestorer):
+		writeAPIError(response, http.StatusUnprocessableEntity, "restore_not_available", "Restore is not available for this resource")
 	default:
 		writeAPIError(response, http.StatusBadRequest, "invalid_backup_resource", err.Error())
 	}
