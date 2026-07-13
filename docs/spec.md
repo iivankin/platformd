@@ -720,7 +720,7 @@ Platformd привязывает один S3 listener к inspected gateway IP к
 - SigV4 header authentication;
 - bounded presigned GET/HEAD/PUT URLs для internal либо configured public hostname.
 
-Поддерживаемый SigV4 profile фиксирует AWS4-HMAC-SHA256 canonical URI/query/header rules, duplicate query handling, service `s3`, configured region, clock-skew limit и `UNSIGNED-PAYLOAD` для presigned requests. Header-auth PUT поддерживает signed SHA-256 payload; AWS streaming-chunked SigV4 не поддерживается в v1 и отклоняется явно. Multipart/checksum modes публикуются в compatibility docs и проверяются AWS SDK contract tests.
+Поддерживаемый SigV4 profile фиксирует AWS4-HMAC-SHA256 canonical URI/query/header rules, duplicate query handling, service `s3`, неизменяемый region `us-east-1`, clock-skew limit и `UNSIGNED-PAYLOAD` для presigned requests. Per-store/installation region setting отсутствует; UI всегда показывает `us-east-1`. Header-auth PUT поддерживает signed SHA-256 payload; AWS streaming-chunked SigV4 не поддерживается в v1 и отклоняется явно. Multipart/checksum modes публикуются в compatibility docs и проверяются AWS SDK contract tests.
 
 Fixed v1 limits/semantics:
 

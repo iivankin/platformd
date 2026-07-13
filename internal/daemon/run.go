@@ -24,6 +24,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
+	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/sdnotify"
 	"github.com/iivankin/platformd/internal/server"
@@ -114,6 +115,27 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	certificates, err := origin.Load(key, installation.OriginCertificates)
 	if err != nil {
 		return err
+	}
+	objectPayloads, err := objectstore.NewPayloadStore(paths.ObjectsRoot, key, nil)
+	if err != nil {
+		return fmt.Errorf("configure encrypted S3 payload storage: %w", err)
+	}
+	objectStoreRepository := &liveObjectStoreRepository{
+		store: store, runtime: runtime, certificates: certificates,
+	}
+	objectStoreApplication, err := objectstore.NewApplication(objectStoreRepository, objectPayloads, key, nil, nil)
+	if err != nil {
+		return err
+	}
+	objectStoreHandler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
+		Application: objectStoreApplication,
+		LookupHost:  store.ObjectStoreByHostname,
+	})
+	if err != nil {
+		return err
+	}
+	if err := runtime.ConfigureObjectStores(ctx, store, objectStoreHandler); err != nil {
+		return fmt.Errorf("configure managed S3: %w", err)
 	}
 	verifier, err := access.New(access.Config{
 		TeamDomain: installation.AccessTeamDomain,
@@ -216,19 +238,25 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithManagedImages(managedImageCatalog),
 			server.WithManagedRedis(managedRedisApplication),
 			server.WithManagedPostgres(managedPostgresApplication),
+			server.WithObjectStores(objectStoreApplication),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
 		AutomationHostname: automationHostname, AutomationHandler: automationHandler,
-		Backends: runtime,
+		ObjectStoreHandler: objectStoreHandler,
+		Backends:           runtime,
 	})
 	if err != nil {
 		return fmt.Errorf("configure HTTPS ingress: %w", err)
 	}
 	domains.router = ingressRouter
+	objectStoreRepository.router = ingressRouter
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
+	}
+	if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
+		return fmt.Errorf("load object store domains: %w", err)
 	}
 	httpServer := &http.Server{
 		Addr:              ":443",

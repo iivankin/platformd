@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 
 interface ResourceCreatePanelProperties {
   onClose: () => void;
-  onSelect: (kind: "postgres" | "redis" | "service") => void;
+  onSelect: (kind: "postgres" | "redis" | "service" | "storage") => void;
 }
 
 const options: {
@@ -38,7 +38,7 @@ const options: {
   },
   {
     description: "Encrypted private S3-compatible object storage.",
-    enabled: false,
+    enabled: true,
     icon: HardDrive,
     kind: "storage",
     label: "Object storage",
@@ -80,7 +80,8 @@ export const ResourceCreatePanel = ({
                 if (
                   option.kind === "postgres" ||
                   option.kind === "redis" ||
-                  option.kind === "service"
+                  option.kind === "service" ||
+                  option.kind === "storage"
                 ) {
                   onSelect(option.kind);
                 }

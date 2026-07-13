@@ -65,6 +65,31 @@ func TestRouterDispatchesExactAutomationHostname(t *testing.T) {
 	}
 }
 
+func TestRouterDispatchesObjectStoreAndPreservesIndependentRouteViews(t *testing.T) {
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		ObjectStoreHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusCreated)
+		}),
+		Backends: backendStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.ReloadObjectStores([]string{"objects.example.com"})
+	router.Reload(map[string]string{"app.example.com": "service-b"})
+
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("objects.example.com", "objects.example.com"))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("object store status = %d", response.Code)
+	}
+	if router.routes.Load().services["app.example.com"] != "service-b" {
+		t.Fatalf("service routes were lost: %#v", router.routes.Load().services)
+	}
+}
+
 func TestRouterProxiesApplicationAndReplacesForwardingHeaders(t *testing.T) {
 	received := make(chan *http.Request, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

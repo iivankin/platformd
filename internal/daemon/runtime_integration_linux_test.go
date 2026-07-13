@@ -13,7 +13,9 @@ import (
 
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/projectnetwork"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -63,10 +65,12 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = first.Close() })
 	if len(first.networks) != len(projects) || len(first.projectFailures) != 0 {
 		_ = first.Close()
 		t.Fatalf("unexpected project network reconcile: networks=%v failures=%v", first.networks, first.projectFailures)
 	}
+	assertProjectObjectStore(t, ctx, first, paths)
 	if err := first.AddProject(state.RuntimeProject{ID: "integration-c", Name: "gamma"}); err != nil {
 		_ = first.Close()
 		t.Fatalf("live project reconcile: %v", err)
@@ -102,6 +106,49 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 	}
 }
 
+func assertProjectObjectStore(t *testing.T, ctx context.Context, runtime *runtimeStack, paths layout.Paths) {
+	t.Helper()
+	store, err := state.Open(ctx, paths.StateDatabase, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if _, err := store.CreateProject(ctx, state.CreateProject{
+		ID: "integration-a", Name: "alpha", AuditEventID: "object-project-audit",
+		ActorID: "integration", ActorEmail: "integration@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	master := cryptobox.MasterKey{1, 2, 3}
+	payloads, err := objectstore.NewPayloadStore(paths.ObjectsRoot, master, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := objectstore.NewApplication(store, payloads, master, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = application.Create(ctx, objectstore.CreateInput{
+		ProjectID: "integration-a", Name: "assets", BucketName: "alpha-assets",
+		Actor: objectstore.Actor{Kind: "access", ID: "integration", Email: "integration@example.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
+		Application: application, LookupHost: store.ObjectStoreByHostname,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.ConfigureObjectStores(ctx, store, handler); err != nil {
+		t.Fatal(err)
+	}
+	if status, message := runtime.ObjectStoreStatus("integration-a"); status != "running" {
+		t.Fatalf("object store status = %s: %s", status, message)
+	}
+}
+
 func assertProjectDNS(t *testing.T, ctx context.Context, runtime *runtimeStack, tree *cgrouptree.Tree, paths layout.Paths, imageID, projectID string) {
 	t.Helper()
 	network := runtime.projectNetworks[projectID]
@@ -131,7 +178,7 @@ func assertProjectDNS(t *testing.T, ctx context.Context, runtime *runtimeStack, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.dnsZones[projectID].Replace(map[string]netip.Addr{"api.alpha.internal": address}); err != nil {
+	if err := runtime.dnsZones[projectID].Set("api.alpha.internal", address); err != nil {
 		t.Fatal(err)
 	}
 	if err := projectnetwork.MarkBridge(projectID); err != nil {
@@ -148,8 +195,17 @@ func assertProjectDNS(t *testing.T, ctx context.Context, runtime *runtimeStack, 
 		}
 	}
 	assertLookup(0, "api.alpha.internal", address.String())
+	assertLookup(0, "assets.alpha.internal", network.Gateway)
 	assertLookup(1, "api.beta.internal", "")
 	assertLookup(0, "example.com", "")
+	var s3Output bytes.Buffer
+	s3Code, s3Err := runtime.engine.ExecContainer(ctx, container.ID, containerengine.ExecRequest{
+		Command: []string{"/bin/sh", "-c", "wget -S -O /dev/null http://assets.alpha.internal:9000/alpha-assets 2>&1 | grep -q '403 Forbidden'"},
+		Stdout:  &s3Output, Stderr: &s3Output,
+	})
+	if s3Err != nil || s3Code != 0 {
+		t.Fatalf("unsigned project S3 request: code=%d output=%q err=%v", s3Code, s3Output.String(), s3Err)
+	}
 	if err := runtime.engine.RemoveContainer(ctx, container.ID, true); err != nil {
 		t.Fatal(err)
 	}

@@ -4,12 +4,14 @@ import {
   APIError,
   attachServiceDomain,
   createAPIToken,
+  createObjectStore,
   createManagedRedis,
   createProject,
   createImageCredential,
   createManagedPostgres,
   createService,
   detachServiceDomain,
+  deleteObject,
   fetchAPITokens,
   fetchAuditEvents,
   fetchService,
@@ -22,9 +24,13 @@ import {
   fetchManagedPostgres,
   fetchManagedRedis,
   fetchMeta,
+  fetchObjects,
+  fetchObjectStore,
   fetchProjectCanvas,
   fetchProjects,
   mutateManagedRedis,
+  objectDownloadURL,
+  previewObject,
   previewManagedRedisKey,
   queryManagedPostgres,
   redeployService,
@@ -32,6 +38,7 @@ import {
   rollbackService,
   scanManagedRedisKeys,
   updateService,
+  uploadObject,
 } from "@/api";
 
 const invalidMetaFetcher = () =>
@@ -635,6 +642,130 @@ test("creates PostgreSQL and runs bounded SQL only through the admin client", as
   );
   expect(result.statements[0]?.commandTag).toBe("DELETE 2");
   expect(result.statements[1]?.rows[0]?.[0]?.text).toBe("1");
+});
+
+test("uses the Access-only object storage browser contract", async () => {
+  const resource = {
+    accessKey: "ps3_access",
+    backupEnabled: false,
+    backupRetentionCount: 7,
+    bucketName: "shop-assets",
+    corsOrigins: [],
+    createdAt: 1,
+    credentialPermission: "read_write" as const,
+    id: "store/id",
+    internalHostname: "assets.shop.internal",
+    name: "assets",
+    projectId: "project/id",
+    region: "us-east-1" as const,
+    secret: "shown-once",
+    updatedAt: 1,
+  };
+  await expect(
+    createObjectStore(
+      resource.projectId,
+      {
+        bucketName: resource.bucketName,
+        corsOrigins: ["https://app.example.com"],
+        name: resource.name,
+      },
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/object-stores"
+        );
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          bucketName: "shop-assets",
+          corsOrigins: ["https://app.example.com"],
+          name: "assets",
+        });
+        return Promise.resolve(Response.json(resource, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(resource);
+
+  const persisted = { ...resource, accessKey: undefined, secret: undefined };
+  await expect(
+    fetchObjectStore(resource.projectId, resource.id, undefined, (input) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/object-stores/store%2Fid"
+      );
+      return Promise.resolve(Response.json(persisted));
+    })
+  ).resolves.toEqual(persisted);
+
+  const metadata = {
+    contentType: "text/plain",
+    createdAt: 1,
+    etag: '"digest"',
+    objectKey: "docs/hello world.txt",
+    size: 5,
+    updatedAt: 2,
+  };
+  await expect(
+    fetchObjects(
+      resource.projectId,
+      resource.id,
+      { continuationToken: "cursor+/=", limit: 25, prefix: "docs/" },
+      undefined,
+      (input) => {
+        expect(input.toString()).toContain("limit=25");
+        expect(input.toString()).toContain("prefix=docs%2F");
+        expect(input.toString()).toContain("continuationToken=cursor%2B%2F%3D");
+        return Promise.resolve(
+          Response.json({ nextContinuationToken: "", objects: [metadata] })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ objects: [metadata] });
+
+  await expect(
+    previewObject(
+      resource.projectId,
+      resource.id,
+      metadata.objectKey,
+      undefined,
+      (input) => {
+        expect(input.toString()).toContain("key=docs%2Fhello+world.txt");
+        return Promise.resolve(
+          Response.json({ allowed: true, metadata, text: "hello" })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ allowed: true, text: "hello" });
+
+  const file = new Blob(["hello"], { type: "text/plain" });
+  let uploadInit: RequestInit | undefined;
+  await expect(
+    uploadObject(
+      resource.projectId,
+      resource.id,
+      metadata.objectKey,
+      file,
+      (_input, init) => {
+        uploadInit = init;
+        return Promise.resolve(Response.json(metadata, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(metadata);
+  expect(uploadInit?.method).toBe("PUT");
+  expect(uploadInit?.body).toBe(file);
+  expect(new Headers(uploadInit?.headers).get("Content-Type")).toContain(
+    "text/plain"
+  );
+
+  await deleteObject(
+    resource.projectId,
+    resource.id,
+    metadata.objectKey,
+    (input, init) => {
+      expect(input.toString()).toContain("key=docs%2Fhello+world.txt");
+      expect(init?.method).toBe("DELETE");
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+  );
+  expect(
+    objectDownloadURL(resource.projectId, resource.id, metadata.objectKey)
+  ).toContain("/objects/download?key=docs%2Fhello+world.txt");
 });
 
 test("lists, attaches, moves, and detaches exact service domains", async () => {

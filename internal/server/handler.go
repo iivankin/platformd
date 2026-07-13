@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/managedpostgres"
+	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/ui"
 	"github.com/iivankin/platformd/internal/version"
 )
@@ -34,6 +35,7 @@ type handlerConfig struct {
 	managedImages    ManagedImageCatalog
 	managedRedis     ManagedRedisRepository
 	managedPostgres  *managedpostgres.Application
+	objectStores     *objectstore.Application
 	random           io.Reader
 	now              func() time.Time
 }
@@ -100,6 +102,12 @@ func WithManagedPostgres(application *managedpostgres.Application) Option {
 	}
 }
 
+func WithObjectStores(application *objectstore.Application) Option {
+	return func(config *handlerConfig) {
+		config.objectStores = application
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -139,6 +147,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.managedPostgres != nil {
 		registerManagedPostgresRoutes(mux, config.managedPostgres)
+	}
+	if config.objectStores != nil {
+		registerObjectStoreRoutes(mux, config.objectStores)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

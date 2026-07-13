@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -25,30 +26,33 @@ import (
 )
 
 type runtimeStack struct {
-	mu                sync.Mutex
-	ctx               context.Context
-	closed            bool
-	engine            *containerengine.Engine
-	firewall          *firewall.Manager
-	forwarder         *internaldns.ForwardCache
-	upstreams         []netip.AddrPort
-	firewallProjects  map[string]firewall.Project
-	networks          []string
-	projectFailures   []projectnetwork.Failure
-	dnsServers        []*internaldns.Server
-	dnsZones          map[string]*internaldns.Zone
-	projectNetworks   map[string]containerengine.Network
-	paths             layout.Paths
-	cgroupRoot        string
-	deployments       *deployment.Controller
-	serviceWatcher    *servicewatcher.Watcher
-	serviceRestarts   *servicerestart.Manager
-	serviceFailures   map[string]error
-	publishedServices map[string]bool
-	managedRedis      *managedredis.Controller
-	redisFailures     map[string]error
-	managedPostgres   *managedpostgres.Controller
-	postgresFailures  map[string]error
+	mu                  sync.Mutex
+	ctx                 context.Context
+	closed              bool
+	engine              *containerengine.Engine
+	firewall            *firewall.Manager
+	forwarder           *internaldns.ForwardCache
+	upstreams           []netip.AddrPort
+	firewallProjects    map[string]firewall.Project
+	networks            []string
+	projectFailures     []projectnetwork.Failure
+	dnsServers          []*internaldns.Server
+	dnsZones            map[string]*internaldns.Zone
+	projectNetworks     map[string]containerengine.Network
+	paths               layout.Paths
+	cgroupRoot          string
+	deployments         *deployment.Controller
+	serviceWatcher      *servicewatcher.Watcher
+	serviceRestarts     *servicerestart.Manager
+	serviceFailures     map[string]error
+	publishedServices   map[string]bool
+	managedRedis        *managedredis.Controller
+	redisFailures       map[string]error
+	managedPostgres     *managedpostgres.Controller
+	postgresFailures    map[string]error
+	objectStoreHandler  http.Handler
+	objectStoreServers  map[string]*objectStoreServer
+	objectStoreFailures map[string]error
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
@@ -112,17 +116,19 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	}
 	stack := &runtimeStack{
 		ctx: ctx, engine: engine, firewall: manager, forwarder: forwarder,
-		upstreams:         slices.Clone(upstreams),
-		firewallProjects:  make(map[string]firewall.Project),
-		projectFailures:   append(cleanupFailures, projectPlan.Failures...),
-		dnsZones:          make(map[string]*internaldns.Zone),
-		projectNetworks:   make(map[string]containerengine.Network),
-		paths:             paths,
-		cgroupRoot:        cgroupWorkloadRoot,
-		serviceFailures:   make(map[string]error),
-		publishedServices: make(map[string]bool),
-		redisFailures:     make(map[string]error),
-		postgresFailures:  make(map[string]error),
+		upstreams:           slices.Clone(upstreams),
+		firewallProjects:    make(map[string]firewall.Project),
+		projectFailures:     append(cleanupFailures, projectPlan.Failures...),
+		dnsZones:            make(map[string]*internaldns.Zone),
+		projectNetworks:     make(map[string]containerengine.Network),
+		paths:               paths,
+		cgroupRoot:          cgroupWorkloadRoot,
+		serviceFailures:     make(map[string]error),
+		publishedServices:   make(map[string]bool),
+		redisFailures:       make(map[string]error),
+		postgresFailures:    make(map[string]error),
+		objectStoreServers:  make(map[string]*objectStoreServer),
+		objectStoreFailures: make(map[string]error),
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
@@ -196,6 +202,10 @@ func (stack *runtimeStack) Close() error {
 	serviceRestarts := stack.serviceRestarts
 	redis := stack.managedRedis
 	postgres := stack.managedPostgres
+	objectStoreServers := make([]*objectStoreServer, 0, len(stack.objectStoreServers))
+	for _, objectStoreServer := range stack.objectStoreServers {
+		objectStoreServers = append(objectStoreServers, objectStoreServer)
+	}
 	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
 	networks := append([]string(nil), stack.networks...)
 	engine := stack.engine
@@ -217,6 +227,11 @@ func (stack *runtimeStack) Close() error {
 	if postgres != nil {
 		stopContext, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		failures = append(failures, postgres.StopAll(stopContext))
+		cancel()
+	}
+	for _, objectStoreServer := range objectStoreServers {
+		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		failures = append(failures, objectStoreServer.server.Shutdown(stopContext))
 		cancel()
 	}
 	for index := len(dnsServers) - 1; index >= 0; index-- {

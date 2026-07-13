@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -25,11 +26,13 @@ type Config struct {
 	AdminHandler       http.Handler
 	AutomationHostname string
 	AutomationHandler  http.Handler
+	ObjectStoreHandler http.Handler
 	Backends           BackendResolver
 }
 
 type routeSnapshot struct {
-	services map[string]string
+	services     map[string]string
+	objectStores map[string]struct{}
 }
 
 type Router struct {
@@ -37,7 +40,9 @@ type Router struct {
 	adminHandler       http.Handler
 	automationHostname string
 	automationHandler  http.Handler
+	objectStoreHandler http.Handler
 	backends           BackendResolver
+	reloadMu           sync.Mutex
 	routes             atomic.Pointer[routeSnapshot]
 	transport          *http.Transport
 }
@@ -70,6 +75,7 @@ func New(config Config) (*Router, error) {
 		adminHandler:       config.AdminHandler,
 		automationHostname: automationHostname,
 		automationHandler:  config.AutomationHandler,
+		objectStoreHandler: config.ObjectStoreHandler,
 		backends:           config.Backends,
 		transport: &http.Transport{
 			Proxy:                 nil,
@@ -81,18 +87,34 @@ func New(config Config) (*Router, error) {
 			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}
-	router.Reload(nil)
+	router.routes.Store(&routeSnapshot{services: map[string]string{}, objectStores: map[string]struct{}{}})
 	return router, nil
 }
 
 // Reload replaces the complete immutable route view in one atomic store. A
 // request therefore sees either the old or new domain set, never a partial move.
 func (router *Router) Reload(routes map[string]string) {
+	router.reloadMu.Lock()
+	defer router.reloadMu.Unlock()
 	cloned := make(map[string]string, len(routes))
 	for hostname, serviceID := range routes {
 		cloned[hostname] = serviceID
 	}
-	router.routes.Store(&routeSnapshot{services: cloned})
+	current := router.routes.Load()
+	router.routes.Store(&routeSnapshot{services: cloned, objectStores: cloneSet(current.objectStores)})
+}
+
+// ReloadObjectStores replaces only the S3 hostname view. Service routes remain
+// unchanged, so independent resource mutations cannot accidentally erase them.
+func (router *Router) ReloadObjectStores(hostnames []string) {
+	router.reloadMu.Lock()
+	defer router.reloadMu.Unlock()
+	cloned := make(map[string]struct{}, len(hostnames))
+	for _, hostname := range hostnames {
+		cloned[hostname] = struct{}{}
+	}
+	current := router.routes.Load()
+	router.routes.Store(&routeSnapshot{services: cloneMap(current.services), objectStores: cloned})
 }
 
 func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -119,7 +141,16 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.automationHandler.ServeHTTP(response, request)
 		return
 	}
-	serviceID, exists := router.routes.Load().services[hostname]
+	routes := router.routes.Load()
+	if _, exists := routes.objectStores[hostname]; exists {
+		if router.objectStoreHandler == nil {
+			unavailable(response)
+			return
+		}
+		router.objectStoreHandler.ServeHTTP(response, request)
+		return
+	}
+	serviceID, exists := routes.services[hostname]
 	if !exists {
 		misdirected(response)
 		return
@@ -130,6 +161,22 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	router.proxy(backend, hostname).ServeHTTP(response, request)
+}
+
+func cloneMap(input map[string]string) map[string]string {
+	result := make(map[string]string, len(input))
+	for key, value := range input {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneSet(input map[string]struct{}) map[string]struct{} {
+	result := make(map[string]struct{}, len(input))
+	for key := range input {
+		result[key] = struct{}{}
+	}
+	return result
 }
 
 func countHeaders(header http.Header) int {
