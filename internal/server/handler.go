@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/registry"
@@ -39,6 +40,7 @@ type handlerConfig struct {
 	objectStores     *objectstore.Application
 	registry         *registry.Application
 	registrySettings RegistrySettings
+	backupTargets    *backup.TargetApplication
 	random           io.Reader
 	now              func() time.Time
 }
@@ -118,6 +120,12 @@ func WithRegistry(application *registry.Application, settings RegistrySettings) 
 	}
 }
 
+func WithBackupTargets(application *backup.TargetApplication) Option {
+	return func(config *handlerConfig) {
+		config.backupTargets = application
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -163,6 +171,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.registry != nil && config.registrySettings != nil {
 		registerRegistryRoutes(mux, config)
+	}
+	if config.backupTargets != nil {
+		registerBackupTargetRoutes(mux, config.backupTargets)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

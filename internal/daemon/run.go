@@ -16,6 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationapi"
 	"github.com/iivankin/platformd/internal/automationauth"
+	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/ingress"
@@ -119,6 +120,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("clean expired registry uploads: %w", err)
 	}
 	startRegistryUploadCleanup(ctx, registryApplication)
+	backupTargets, err := backup.NewTargetApplication(store, key, backup.NewGate(), nil, nil, nil)
+	if err != nil {
+		return err
+	}
 	if err := runtime.ConfigureManagedPostgres(ctx, store, key); err != nil {
 		return fmt.Errorf("configure managed PostgreSQL: %w", err)
 	}
@@ -264,6 +269,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithManagedPostgres(managedPostgresApplication),
 			server.WithObjectStores(objectStoreApplication),
 			server.WithRegistry(registryApplication, registrySettings),
+			server.WithBackupTargets(backupTargets),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
