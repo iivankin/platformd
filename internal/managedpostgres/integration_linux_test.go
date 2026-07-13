@@ -22,9 +22,16 @@ const (
 	postgresIntegrationDataRoot    = "/var/lib/platformd-managedpostgres-integration"
 	postgresIntegrationRuntimeRoot = "/run/platformd-managedpostgres-integration"
 	postgresIntegrationReleaseRoot = "/var/lib/platformd/releases/current"
-	postgresIntegrationTag         = "17.10-alpine3.23"
-	postgresIntegrationImage       = "docker.io/library/postgres@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4"
 )
+
+type postgresIntegrationProfile struct {
+	name          string
+	tag           string
+	image         string
+	interfaceName string
+	subnet        string
+	gateway       string
+}
 
 func TestMain(main *testing.M) {
 	if containerengine.InitReexec() {
@@ -63,16 +70,39 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 	if os.Getenv("PLATFORMD_MANAGED_POSTGRES_INTEGRATION") != "1" {
 		t.Skip("set PLATFORMD_MANAGED_POSTGRES_INTEGRATION=1 on an isolated delegated root host")
 	}
-	for _, root := range []string{postgresIntegrationDataRoot, postgresIntegrationRuntimeRoot} {
+	profiles := []postgresIntegrationProfile{
+		{
+			name: "pre-18", tag: "17.10-alpine3.23",
+			image:         "docker.io/library/postgres@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4",
+			interfaceName: "pdmp17", subnet: "10.89.53.0/24", gateway: "10.89.53.1",
+		},
+		{
+			name: "18-plus", tag: "18.4-alpine3.23",
+			image:         "docker.io/library/postgres@sha256:2342268e5cf8851c327dcf10fc124283448428059f9b756692b7e3302940d769",
+			interfaceName: "pdmp18", subnet: "10.89.54.0/24", gateway: "10.89.54.1",
+		},
+	}
+	for _, profile := range profiles {
+		t.Run(profile.name, func(t *testing.T) {
+			testOfficialPostgresProfile(t, profile)
+		})
+	}
+}
+
+func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfile) {
+	t.Helper()
+	dataRoot := filepath.Join(postgresIntegrationDataRoot, profile.name)
+	runtimeRoot := filepath.Join(postgresIntegrationRuntimeRoot, profile.name)
+	for _, root := range []string{dataRoot, runtimeRoot} {
 		if err := os.RemoveAll(root); err != nil {
 			t.Fatal(err)
 		}
 	}
 	t.Cleanup(func() {
-		_ = os.RemoveAll(postgresIntegrationDataRoot)
-		_ = os.RemoveAll(postgresIntegrationRuntimeRoot)
+		_ = os.RemoveAll(dataRoot)
+		_ = os.RemoveAll(runtimeRoot)
 	})
-	paths := layout.FromRoots(postgresIntegrationDataRoot, filepath.Join(postgresIntegrationDataRoot, "config"), postgresIntegrationRuntimeRoot, "/tmp/platformd", "/tmp/platformd.service")
+	paths := layout.FromRoots(dataRoot, filepath.Join(dataRoot, "config"), runtimeRoot, "/tmp/platformd", "/tmp/platformd.service")
 	paths.Current = postgresIntegrationReleaseRoot
 	for _, directory := range []string{paths.VolumesRoot, paths.LogsRoot} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -94,13 +124,13 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: postgresIntegrationImage, Refresh: true})
+	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: profile.image, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	network, err := engine.CreateNetwork(containerengine.NetworkSpec{
-		Name: "platformd-managedpostgres-integration", Interface: "pdmpi0",
-		Subnet: "10.89.53.0/24", Gateway: "10.89.53.1",
+		Name: "platformd-managedpostgres-integration-" + profile.name, Interface: profile.interfaceName,
+		Subnet: profile.subnet, Gateway: profile.gateway,
 		Labels: map[string]string{"io.platformd.test": "managed-postgres"},
 	})
 	if err != nil {
@@ -112,8 +142,8 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	resource := state.ManagedPostgres{
-		ID: "postgres-integration", ProjectID: "project-integration", ProjectName: "integration", Name: "database",
-		ImageTag: postgresIntegrationTag, ImageDigest: image.Digest, VolumeID: "postgres-volume",
+		ID: "postgres-integration-" + profile.name, ProjectID: "project-integration", ProjectName: "integration", Name: "database",
+		ImageTag: profile.tag, ImageDigest: image.Digest, VolumeID: "postgres-volume-" + profile.name,
 		DatabaseName: credentials.DatabaseName, OwnerUsername: credentials.OwnerUsername,
 	}
 	publisher := &integrationPublisher{}
@@ -124,7 +154,7 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 		Placement: func(state.ManagedPostgres) (Placement, error) {
 			return Placement{
 				NetworkName: network.Name, Gateway: netip.MustParseAddr(network.Gateway),
-				DNSSearch: "integration.internal", CgroupParent: filepath.Join(tree.WorkloadRoot(), "postgres-integration"),
+				DNSSearch: "integration.internal", CgroupParent: filepath.Join(tree.WorkloadRoot(), resource.ID),
 			}, nil
 		},
 		VolumeRoot: paths.VolumesRoot, LogRoot: paths.LogsRoot,
@@ -177,6 +207,11 @@ FROM pg_roles WHERE rolname = current_user`)
 	}
 	if publisher.published != 2 {
 		t.Fatalf("publication count = %d, want 2", publisher.published)
+	}
+	dataDirectory, err := controller.Query(ctx, resource.ID, "SHOW data_directory")
+	if err != nil || len(dataDirectory.Statements) != 1 || len(dataDirectory.Statements[0].Rows) != 1 ||
+		dataDirectory.Statements[0].Rows[0][0].Text != "/var/lib/postgresql/data/pgdata" {
+		t.Fatalf("data_directory = %+v, %v", dataDirectory, err)
 	}
 	if err := controller.Stop(ctx, resource.ID); err != nil {
 		t.Fatal(err)
