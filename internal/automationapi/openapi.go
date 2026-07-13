@@ -9,6 +9,7 @@ type openAPIFeatures struct {
 	serverExec       bool
 	managedResources bool
 	databaseVersions bool
+	volumes          bool
 }
 
 func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
@@ -41,6 +42,10 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change"] = databaseVersionStartOperation()
 		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}"] = databaseVersionReadOperation()
 	}
+	if features.volumes {
+		paths["/api/v1/projects/{projectID}/services/{serviceID}/volumes"] = volumeCollectionOperation()
+		paths["/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}"] = volumeDeleteOperation()
+	}
 	document := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -59,6 +64,25 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func volumeCollectionOperation() map[string]any {
+	operation := readOperation("List ordinary writable volumes owned by one service")
+	operation["post"] = writeMethod("Create an empty ordinary service volume (admin token)", http.StatusCreated, "VolumeCreateRequest")
+	return operation
+}
+
+func volumeDeleteOperation() map[string]any {
+	return map[string]any{"delete": map[string]any{
+		"summary": "Delete an unmounted ordinary service volume and its data (admin token)",
+		"responses": map[string]any{
+			"204": map[string]string{"description": "Volume metadata deleted; orphan-safe filesystem cleanup requested"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"403": map[string]string{"description": "Admin role or project boundary denied"},
+			"404": map[string]string{"description": "Volume not found"},
+			"409": map[string]string{"description": "Volume is still referenced"},
+		},
+	}}
 }
 
 func databaseVersionPreviewOperation() map[string]any {
@@ -298,6 +322,15 @@ func serviceMutationSchemas() map[string]any {
 		},
 	}
 	return map[string]any{
+		"VolumeCreateRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"name", "ownerUid", "ownerGid"},
+			"properties": map[string]any{
+				"name":     map[string]string{"type": "string"},
+				"ownerUid": map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
+				"ownerGid": map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
+			},
+		},
 		"DatabaseVersionChangeRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"required":   []string{"imageTag"},

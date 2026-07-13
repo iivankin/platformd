@@ -9,9 +9,11 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/volume"
 )
 
 type repositoryStub struct {
@@ -23,6 +25,8 @@ type repositoryStub struct {
 	created       state.CreateService
 	serviceCalls  int
 	service       state.ServiceDesired
+	volumes       []state.Volume
+	volumeCreate  state.CreateVolume
 }
 
 func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -60,14 +64,35 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	volumeDomain, err := volume.New(volume.Config{
+		Repository: repository, Filesystem: automationVolumeFilesystem{}, Images: automationVolumeImages{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	volumes, err := automation.NewVolumeApplication(volumeDomain)
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := Handler(Config{
 		Hostname: "api.example.com", Repository: repository, Services: services, Logs: logs, Images: repository,
-		Admission: admission.New(),
+		Volumes: volumes, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+type automationVolumeFilesystem struct{}
+
+func (automationVolumeFilesystem) Ensure(state.PersistentVolumeReference) error { return nil }
+func (automationVolumeFilesystem) Remove(string, string) error                  { return nil }
+
+type automationVolumeImages struct{}
+
+func (automationVolumeImages) InspectImage(context.Context, string) (containerengine.Image, error) {
+	return containerengine.Image{}, nil
 }
 
 func TestAutomationAPIListsOfficialManagedImageTags(t *testing.T) {
@@ -105,6 +130,26 @@ func (repository *repositoryStub) Service(_ context.Context, projectID, serviceI
 		return repository.service, nil
 	}
 	return state.ServiceDesired{}, state.ErrServiceNotFound
+}
+
+func (repository *repositoryStub) CreateVolume(_ context.Context, input state.CreateVolume) (state.Volume, error) {
+	repository.volumeCreate = input
+	repository.volumes = append(repository.volumes, input.Volume)
+	return input.Volume, nil
+}
+
+func (repository *repositoryStub) VolumesByService(context.Context, string, string) ([]state.Volume, error) {
+	return repository.volumes, nil
+}
+
+func (repository *repositoryStub) DeleteVolume(_ context.Context, input state.DeleteVolume) (state.Volume, error) {
+	for index, item := range repository.volumes {
+		if item.ID == input.VolumeID {
+			repository.volumes = append(repository.volumes[:index], repository.volumes[index+1:]...)
+			return item, nil
+		}
+	}
+	return state.Volume{}, state.ErrVolumeNotFound
 }
 
 type logReaderStub struct{}
@@ -150,8 +195,48 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || strings.Contains(response.Body.String(), `/query`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || strings.Contains(response.Body.String(), `/query`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestAutomationAPIVolumesRespectReadAndAdminRoles(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := automationHandler(t, repository)
+	path := "https://api.example.com/api/v1/projects/project/services/service/volumes"
+
+	readRequest := httptest.NewRequest(http.MethodGet, path, nil)
+	readRequest = readRequest.WithContext(automation.WithIdentity(readRequest.Context(), automation.Identity{TokenID: "read", Role: "read"}))
+	readResponse := httptest.NewRecorder()
+	handler.ServeHTTP(readResponse, readRequest)
+	if readResponse.Code != http.StatusOK || readResponse.Body.String() != "[]\n" {
+		t.Fatalf("read volumes = %d/%s", readResponse.Code, readResponse.Body)
+	}
+
+	denied := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"data","ownerUid":0,"ownerGid":0}`))
+	denied.Header.Set("Content-Type", "application/json")
+	denied = denied.WithContext(automation.WithIdentity(denied.Context(), automation.Identity{TokenID: "read", Role: "read"}))
+	deniedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deniedResponse, denied)
+	if deniedResponse.Code != http.StatusForbidden || len(repository.volumes) != 0 {
+		t.Fatalf("read create = %d/%s", deniedResponse.Code, deniedResponse.Body)
+	}
+
+	create := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"data","ownerUid":1000,"ownerGid":1001}`))
+	create.Header.Set("Content-Type", "application/json")
+	create = create.WithContext(automation.WithIdentity(create.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
+	createResponse := httptest.NewRecorder()
+	handler.ServeHTTP(createResponse, create)
+	if createResponse.Code != http.StatusCreated || len(repository.volumes) != 1 || repository.volumeCreate.ActorID != "admin" {
+		t.Fatalf("admin create = %d/%s state=%+v", createResponse.Code, createResponse.Body, repository.volumeCreate)
+	}
+
+	deleteRequest := httptest.NewRequest(http.MethodDelete, path+"/"+repository.volumes[0].ID, nil)
+	deleteRequest = deleteRequest.WithContext(automation.WithIdentity(deleteRequest.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
+	deleteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusNoContent || len(repository.volumes) != 0 {
+		t.Fatalf("admin delete = %d/%s", deleteResponse.Code, deleteResponse.Body)
 	}
 }
 

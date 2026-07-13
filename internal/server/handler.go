@@ -20,6 +20,7 @@ import (
 	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/ui"
 	"github.com/iivankin/platformd/internal/version"
+	"github.com/iivankin/platformd/internal/volume"
 )
 
 type Meta struct {
@@ -32,6 +33,7 @@ type Meta struct {
 type handlerConfig struct {
 	projects           ProjectRepository
 	services           ServiceRepository
+	volumes            *volume.Application
 	domains            DomainRepository
 	tokens             APITokenRepository
 	imageCredentials   ImageCredentialRepository
@@ -76,6 +78,12 @@ func WithImageCredentials(repository ImageCredentialRepository) Option {
 func WithServices(repository ServiceRepository) Option {
 	return func(config *handlerConfig) {
 		config.services = repository
+	}
+}
+
+func WithVolumes(application *volume.Application) Option {
+	return func(config *handlerConfig) {
+		config.volumes = application
 	}
 }
 
@@ -209,6 +217,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.services != nil {
 		registerServiceRoutes(mux, config)
+	}
+	if config.volumes != nil {
+		registerVolumeRoutes(mux, config.volumes)
 	}
 	if config.domains != nil {
 		registerServiceDomainRoutes(mux, config)

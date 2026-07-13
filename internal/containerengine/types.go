@@ -16,6 +16,7 @@ type Image struct {
 	ID      string
 	Digest  string
 	Names   []string
+	User    string
 	Size    int64
 	Created time.Time
 }

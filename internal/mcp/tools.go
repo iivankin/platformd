@@ -17,6 +17,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/volume"
 )
 
 type Repository interface {
@@ -147,6 +148,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		if handler.versions != nil {
 			tools = append(tools, previewDatabaseVersionTool(), startDatabaseVersionTool())
 		}
+		if handler.volumes != nil {
+			tools = append(tools, volumeAdminTools()...)
+		}
 	}
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
 }
@@ -186,6 +190,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.readServiceLogs(request.Context(), call.Arguments, identity)
 	case "list_managed_image_tags":
 		output, err = handler.listManagedImageTags(request.Context(), call.Arguments)
+	case "list_service_volumes":
+		if handler.volumes == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listVolumes(request.Context(), call.Arguments, identity)
 	case "list_managed_resources":
 		if handler.managed == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
@@ -224,6 +234,18 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.redeployService(request.Context(), call.Arguments, identity)
 	case "rollback_service":
 		output, err = handler.rollbackService(request.Context(), call.Arguments, identity)
+	case "create_service_volume":
+		if handler.volumes == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createVolume(request.Context(), call.Arguments, identity)
+	case "delete_service_volume":
+		if handler.volumes == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.deleteVolume(request.Context(), call.Arguments, identity)
 	case "create_managed_redis":
 		if handler.redis == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
@@ -253,7 +275,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

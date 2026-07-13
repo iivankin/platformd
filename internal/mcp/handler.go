@@ -33,6 +33,7 @@ type Handler struct {
 	managed    *automation.ManagedResourceApplication
 	versions   *databaseversion.Service
 	serverExec *automation.ServerExecApplication
+	volumes    *automation.VolumeApplication
 	tools      []Tool
 	admission  *admission.Gate
 }
@@ -49,6 +50,7 @@ type Config struct {
 	Managed    *automation.ManagedResourceApplication
 	Versions   *databaseversion.Service
 	ServerExec *automation.ServerExecApplication
+	Volumes    *automation.VolumeApplication
 	Admission  *admission.Gate
 }
 
@@ -60,11 +62,15 @@ func New(config Config) (*Handler, error) {
 	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil || config.Admission == nil {
 		return nil, errors.New("MCP handler dependencies are incomplete")
 	}
+	tools := configuredReadTools(config.Managed != nil, config.Versions != nil)
+	if config.Volumes != nil {
+		tools = append(tools, listVolumesTool())
+	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis, postgres: config.Postgres,
-		managed: config.Managed, versions: config.Versions, serverExec: config.ServerExec,
-		tools: configuredReadTools(config.Managed != nil, config.Versions != nil), admission: config.Admission,
+		managed: config.Managed, versions: config.Versions, serverExec: config.ServerExec, volumes: config.Volumes,
+		tools: tools, admission: config.Admission,
 	}, nil
 }
 
