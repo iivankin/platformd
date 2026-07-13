@@ -4,6 +4,7 @@ package managedpostgres
 
 import (
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -41,6 +42,10 @@ func (store integrationStore) ManagedPostgres(_ context.Context, resourceID stri
 
 func (store integrationStore) ManagedPostgresResources(context.Context) ([]state.ManagedPostgres, error) {
 	return []state.ManagedPostgres{store.resource}, nil
+}
+
+func (integrationStore) SwitchManagedPostgresVolume(context.Context, state.SwitchManagedPostgresVolume) error {
+	return errors.New("unexpected managed PostgreSQL volume switch in runtime profile test")
 }
 
 type integrationPublisher struct{ published int }
