@@ -6,12 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
+	"github.com/iivankin/platformd/internal/managedimages"
 )
 
 type SwitchManagedPostgresVolume struct {
 	ResourceID           string
 	ExpectedVolumeID     string
 	VolumeID             string
+	ExpectedImageTag     string
+	ExpectedImageDigest  string
+	ImageTag             string
+	ImageDigest          string
 	Action               string
 	AuditEventID         string
 	ActorKind            string
@@ -27,11 +33,29 @@ func (store *Store) SwitchManagedPostgresVolume(ctx context.Context, input Switc
 		(input.Action != "postgres.restore" && input.Action != "postgres.version_change") {
 		return errors.New("switch managed PostgreSQL volume input is invalid")
 	}
+	versionChange := input.Action == "postgres.version_change"
+	imageSwitch := managedDatabaseImageSwitch{
+		ExpectedTag: input.ExpectedImageTag, ExpectedDigest: input.ExpectedImageDigest,
+		Tag: input.ImageTag, Digest: input.ImageDigest,
+	}
+	if versionChange {
+		if err := validateManagedDatabaseImageSwitch(managedimages.PostgreSQL, imageSwitch); err != nil {
+			return err
+		}
+	} else if imageSwitch != (managedDatabaseImageSwitch{}) {
+		return errors.New("managed PostgreSQL restore cannot change the image")
+	}
 	if err := validateManagedVolumeSwitchActor(input.Action, input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
 		return err
 	}
 	metadataFields := map[string]any{
 		"previousVolumeId": input.ExpectedVolumeID, "volumeId": input.VolumeID,
+	}
+	if versionChange {
+		metadataFields["previousImageTag"] = input.ExpectedImageTag
+		metadataFields["previousImageDigest"] = input.ExpectedImageDigest
+		metadataFields["imageTag"] = input.ImageTag
+		metadataFields["imageDigest"] = input.ImageDigest
 	}
 	if input.ActorEmail != "" {
 		metadataFields["actorEmail"] = input.ActorEmail
@@ -41,13 +65,24 @@ func (store *Store) SwitchManagedPostgresVolume(ctx context.Context, input Switc
 		return err
 	}
 	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
-		result, err := transaction.ExecContext(ctx, `
+		var result sql.Result
+		if versionChange {
+			result, err = transaction.ExecContext(ctx, `
+UPDATE managed_postgres
+SET volume_id = ?, image_tag = ?, image_digest = ?, updated_at = ?
+WHERE id = ? AND volume_id = ? AND image_tag = ? AND image_digest = ?`,
+				input.VolumeID, input.ImageTag, input.ImageDigest, input.UpdatedAtMillis,
+				input.ResourceID, input.ExpectedVolumeID, input.ExpectedImageTag, input.ExpectedImageDigest,
+			)
+		} else {
+			result, err = transaction.ExecContext(ctx, `
 UPDATE managed_postgres SET volume_id = ?, updated_at = ?
 WHERE id = ? AND volume_id = ?`, input.VolumeID, input.UpdatedAtMillis,
-			input.ResourceID, input.ExpectedVolumeID,
-		)
+				input.ResourceID, input.ExpectedVolumeID,
+			)
+		}
 		if err != nil {
-			return fmt.Errorf("switch managed PostgreSQL volume: %w", err)
+			return fmt.Errorf("switch managed PostgreSQL active pointer: %w", err)
 		}
 		updated, err := result.RowsAffected()
 		if err != nil {
@@ -63,7 +98,7 @@ WHERE id = ? AND volume_id = ?`, input.VolumeID, input.UpdatedAtMillis,
 			if exists == 0 {
 				return ErrManagedPostgresNotFound
 			}
-			return errors.New("managed PostgreSQL active volume changed concurrently")
+			return errors.New("managed PostgreSQL active pointer changed concurrently")
 		}
 		_, err = transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
