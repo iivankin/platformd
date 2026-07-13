@@ -33,9 +33,11 @@ var (
 )
 
 type Store struct {
-	database *sql.DB
-	writer   *writer
-	close    sync.Once
+	database        *sql.DB
+	writer          *writer
+	close           sync.Once
+	controlObserver sync.RWMutex
+	onControlCommit func()
 }
 
 func Open(ctx context.Context, path string, expectedUID int) (*Store, error) {
@@ -80,6 +82,25 @@ func (store *Store) Close() error {
 
 func (store *Store) Write(ctx context.Context, action func(*sql.Tx) error) error {
 	return store.writer.Transaction(ctx, action)
+}
+
+func (store *Store) WriteControl(ctx context.Context, action func(*sql.Tx) error) error {
+	if err := store.Write(ctx, action); err != nil {
+		return err
+	}
+	store.controlObserver.RLock()
+	observer := store.onControlCommit
+	store.controlObserver.RUnlock()
+	if observer != nil {
+		observer()
+	}
+	return nil
+}
+
+func (store *Store) SetControlCommitObserver(observer func()) {
+	store.controlObserver.Lock()
+	store.onControlCommit = observer
+	store.controlObserver.Unlock()
 }
 
 func (store *Store) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {

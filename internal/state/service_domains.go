@@ -99,7 +99,7 @@ func (store *Store) AttachServiceDomain(ctx context.Context, input AttachService
 		return ServiceDomain{}, err
 	}
 	var route ServiceDomain
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		target, err := loadDomainTarget(ctx, transaction, input.ProjectID, input.ServiceID)
 		if err != nil {
 			return err
@@ -165,7 +165,7 @@ func (store *Store) DetachServiceDomain(ctx context.Context, input DetachService
 	if err != nil {
 		return err
 	}
-	return store.Write(ctx, func(transaction *sql.Tx) error {
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		if _, err := loadDomainTarget(ctx, transaction, input.ProjectID, input.ServiceID); err != nil {
 			return err
 		}

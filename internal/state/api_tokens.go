@@ -95,7 +95,7 @@ func (store *Store) CreateAPIToken(ctx context.Context, input CreateAPIToken) (A
 	if err != nil {
 		return APIToken{}, err
 	}
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		if token.ProjectID != nil {
 			var exists int
 			if err := transaction.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM projects WHERE id = ?)", *token.ProjectID).Scan(&exists); err != nil {
@@ -127,7 +127,7 @@ func (store *Store) RevokeAPIToken(ctx context.Context, input RevokeAPIToken) er
 	if err != nil {
 		return err
 	}
-	return store.Write(ctx, func(transaction *sql.Tx) error {
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		result, err := transaction.ExecContext(ctx, `
 UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, input.RevokedAtMillis, input.ID)
 		if err != nil {

@@ -3,6 +3,7 @@ package state_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"sync"
@@ -93,6 +94,42 @@ func TestWriterSerializesTransactions(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("project count = %d", count)
+	}
+}
+
+func TestControlObserverRunsOnlyAfterSuccessfulControlCommit(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	commits := 0
+	store.SetControlCommitObserver(func() { commits++ })
+	if err := store.Write(ctx, func(transaction *sql.Tx) error {
+		_, err := transaction.ExecContext(ctx, "INSERT INTO projects(id, name, created_at, updated_at) VALUES ('runtime', 'runtime', 1, 1)")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if commits != 0 {
+		t.Fatalf("ordinary write notified control observer %d times", commits)
+	}
+	if err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		_, err := transaction.ExecContext(ctx, "INSERT INTO projects(id, name, created_at, updated_at) VALUES ('control', 'control', 2, 2)")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if commits != 1 {
+		t.Fatalf("control commit notified observer %d times", commits)
+	}
+	if err := store.WriteControl(ctx, func(*sql.Tx) error { return errors.New("rollback") }); err == nil {
+		t.Fatal("failed control transaction succeeded")
+	}
+	if commits != 1 {
+		t.Fatalf("failed control transaction notified observer %d times", commits)
 	}
 }
 

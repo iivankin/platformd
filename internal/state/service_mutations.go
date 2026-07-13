@@ -67,7 +67,7 @@ func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput)
 		return ServiceDesired{}, err
 	}
 	updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		if err := validateServiceVersion(ctx, transaction, input.ID, input.ProjectID, input.ExpectedUpdatedMillis); err != nil {
 			return err
 		}
@@ -97,7 +97,7 @@ func (store *Store) RollbackService(ctx context.Context, input RollbackServiceIn
 		return ServiceDesired{}, err
 	}
 	updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var imageDigest string
 		var snapshotJSON string
 		var status string
@@ -158,7 +158,7 @@ func (store *Store) RedeployService(ctx context.Context, input RedeployServiceIn
 	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.CreatedAtMillis); err != nil {
 		return ServiceDesired{}, err
 	}
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var enabled int
 		var updatedAt int64
 		err := transaction.QueryRowContext(ctx, `

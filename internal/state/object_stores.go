@@ -104,7 +104,7 @@ func (store *Store) CreateObjectStore(ctx context.Context, input CreateObjectSto
 	if err != nil {
 		return ObjectStore{}, S3Credential{}, err
 	}
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var projectID string
 		if err := transaction.QueryRowContext(ctx, "SELECT id FROM projects WHERE id = ?", input.ProjectID).Scan(&projectID); errors.Is(err, sql.ErrNoRows) {
 			return ErrProjectNotFound

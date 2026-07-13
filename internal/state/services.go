@@ -78,7 +78,7 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		return ServiceDesired{}, err
 	}
 
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var projectName string
 		if err := transaction.QueryRowContext(ctx, "SELECT name FROM projects WHERE id = ?", input.ProjectID).Scan(&projectName); errors.Is(err, sql.ErrNoRows) {
 			return ErrProjectNotFound

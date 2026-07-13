@@ -72,7 +72,7 @@ func (store *Store) SetRegistryRepositoryPublicPull(ctx context.Context, input S
 	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
 		return RegistryRepository{}, err
 	}
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var name string
 		if err := transaction.QueryRowContext(ctx, "SELECT name FROM registry_repositories WHERE id = ?", input.RepositoryID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
 			return ErrRegistryRepositoryNotFound
@@ -131,7 +131,7 @@ func (store *Store) CreateRegistryRepository(ctx context.Context, input CreateRe
 	if err != nil {
 		return RegistryRepository{}, RegistryCredential{}, err
 	}
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var existing string
 		err := transaction.QueryRowContext(ctx, "SELECT id FROM registry_repositories WHERE name = ?", input.Name).Scan(&existing)
 		if err == nil {

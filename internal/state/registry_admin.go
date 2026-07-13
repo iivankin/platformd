@@ -163,7 +163,7 @@ func (store *Store) DeleteRegistryRepository(ctx context.Context, input Registry
 	if input.Reference != "" {
 		return errors.New("delete registry repository input is invalid")
 	}
-	return store.Write(ctx, func(transaction *sql.Tx) error {
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var name string
 		if err := transaction.QueryRowContext(ctx, "SELECT name FROM registry_repositories WHERE id = ?", input.RepositoryID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
 			return ErrRegistryRepositoryNotFound

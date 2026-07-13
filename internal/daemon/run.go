@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync/atomic"
 	"time"
 
@@ -182,9 +183,48 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("clean expired registry uploads: %w", err)
 	}
 	startRegistryUploadCleanup(ctx, registryApplication, mutationAdmission)
-	backupTargets, err := backup.NewTargetApplication(store, key, backup.NewGate(), nil, nil, nil)
+	backupTargetGate := backup.NewGate()
+	backupTargets, err := backup.NewTargetApplication(store, key, backupTargetGate, nil, nil, nil)
 	if err != nil {
 		return err
+	}
+	if !installation.RecoveryMode {
+		dirtyControl := backup.NewDirtyTracker()
+		store.SetControlCommitObserver(func() { dirtyControl.Mark(time.Now()) })
+		controlJob, err := backup.NewControlJob(backup.ControlJobConfig{
+			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+			Admission: mutationAdmission, Growth: pressure, Master: key,
+			InstallationID: installation.ID, WorkRoot: paths.BackupWorkRoot, ExpectedUID: 0,
+			PublicKey:   releasePublicKey,
+			ReleaseSlot: func() (string, error) { return filepath.EvalSymlinks(paths.Current) },
+		})
+		if err != nil {
+			return fmt.Errorf("configure control backup job: %w", err)
+		}
+		backupWorker, err := backup.NewWorker(dirtyControl, controlJob, 0, func(workerErr error) {
+			log.Printf("backup worker: %v", workerErr)
+		})
+		if err != nil {
+			return err
+		}
+		workerContext, cancelWorker := context.WithCancel(ctx)
+		workerDone := make(chan struct{})
+		go func() {
+			defer close(workerDone)
+			if err := backupWorker.Run(workerContext); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("backup worker stopped: %v", err)
+			}
+		}()
+		defer func() {
+			store.SetControlCommitObserver(nil)
+			cancelWorker()
+			<-workerDone
+		}()
+		if _, configured, targetErr := backupTargets.Target(ctx); targetErr != nil {
+			return targetErr
+		} else if configured {
+			dirtyControl.Mark(time.Now())
+		}
 	}
 	if err := runtime.ConfigureManagedPostgres(ctx, store, key); err != nil {
 		return fmt.Errorf("configure managed PostgreSQL: %w", err)
