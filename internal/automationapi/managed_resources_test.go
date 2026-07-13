@@ -103,13 +103,13 @@ func TestAutomationManagedResourceReadsAreProjectScopedAndSecretFree(t *testing.
 
 func TestManagedResourceOpenAPIPathsMatchFeatureConfiguration(t *testing.T) {
 	response := httptest.NewRecorder()
-	serveOpenAPI("api.example.com", false, false).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("api.example.com", openAPIFeatures{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if strings.Contains(response.Body.String(), `managed-resources`) {
 		t.Fatalf("disabled managed resource routes were advertised: %s", response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
-	serveOpenAPI("api.example.com", false, true).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("api.example.com", openAPIFeatures{managedResources: true}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if !strings.Contains(response.Body.String(), `/managed-resources`) || !strings.Contains(response.Body.String(), `/backups`) {
 		t.Fatalf("managed resource routes are absent: %s", response.Body.String())
 	}

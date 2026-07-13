@@ -54,6 +54,11 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	if len(withObjectStore.rules) != len(compiled.rules)+1 {
 		t.Fatalf("object store must add exactly one TCP listener rule: without=%d with=%d", len(compiled.rules), len(withObjectStore.rules))
 	}
+	project.BlockedDatabaseEndpoints = []DatabaseEndpoint{{Address: netip.MustParseAddr("10.80.1.4"), Port: 5432}}
+	withMaintenance := compileRuleset(TableName, []Project{project})
+	if len(withMaintenance.rules) != len(withObjectStore.rules)+1 {
+		t.Fatalf("database maintenance must add exactly one forward drop: without=%d with=%d", len(withObjectStore.rules), len(withMaintenance.rules))
+	}
 }
 
 func TestEnableIPv4ForwardingAt(t *testing.T) {

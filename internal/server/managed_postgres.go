@@ -176,6 +176,8 @@ func writeManagedPostgresError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusBadGateway, "managed_postgres_image_unavailable", "Unable to resolve the selected official PostgreSQL image")
 	case errors.Is(err, managedpostgres.ErrInvalidInput), errors.Is(err, managedpostgres.ErrInvalidQuery), errors.Is(err, managedimages.ErrInvalidQuery):
 		writeAPIError(response, http.StatusBadRequest, "invalid_managed_postgres", err.Error())
+	case errors.Is(err, managedpostgres.ErrMaintenance):
+		writeAPIError(response, http.StatusConflict, "resource_busy", "Managed PostgreSQL is in maintenance")
 	case errors.Is(err, managedpostgres.ErrNotRunning):
 		writeAPIError(response, http.StatusServiceUnavailable, "postgres_not_running", "Managed PostgreSQL resource is not running")
 	case errors.Is(err, context.DeadlineExceeded):

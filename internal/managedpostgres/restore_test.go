@@ -46,6 +46,10 @@ func (store *postgresRestoreStore) SwitchManagedPostgresVolume(_ context.Context
 		return errors.New("unexpected managed PostgreSQL volume switch")
 	}
 	store.resource.VolumeID = input.VolumeID
+	if input.Action == "postgres.version_change" {
+		store.resource.ImageTag = input.ImageTag
+		store.resource.ImageDigest = input.ImageDigest
+	}
 	store.resource.UpdatedAtMillis = input.UpdatedAtMillis
 	return nil
 }
@@ -61,6 +65,10 @@ type postgresRestoreEngine struct {
 	execPayload []byte
 	execCode    int
 	execErr     error
+	dumpRequest containerengine.ExecRequest
+	dumpPayload []byte
+	dumpCode    int
+	dumpErr     error
 }
 
 func (*postgresRestoreEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
@@ -121,6 +129,19 @@ func (engine *postgresRestoreEngine) InspectContainer(id string) (containerengin
 }
 
 func (engine *postgresRestoreEngine) ExecContainer(_ context.Context, _ string, request containerengine.ExecRequest) (int, error) {
+	if len(request.Command) > 0 && request.Command[0] == "pg_dump" {
+		engine.dumpRequest = request
+		if request.Stdout == nil {
+			return -1, errors.New("pg_dump stdout is missing")
+		}
+		if _, err := request.Stdout.Write(engine.dumpPayload); err != nil {
+			return -1, err
+		}
+		if request.Stderr != nil && engine.dumpErr != nil {
+			_, _ = io.WriteString(request.Stderr, engine.dumpErr.Error())
+		}
+		return engine.dumpCode, engine.dumpErr
+	}
 	engine.execRequest = request
 	if request.Stdin == nil {
 		return -1, errors.New("pg_restore stdin is missing")
@@ -171,6 +192,28 @@ func (publisher *postgresRestorePublisher) PublishPostgres(_ state.ManagedPostgr
 func (publisher *postgresRestorePublisher) WithdrawPostgres(resource state.ManagedPostgres) error {
 	publisher.events = append(publisher.events, "withdraw:"+resource.ID)
 	return nil
+}
+
+type recordingPostgresMaintenance struct {
+	projectID string
+	address   netip.Addr
+	port      uint16
+	released  bool
+}
+
+func (maintenance *recordingPostgresMaintenance) BlockDatabase(
+	_ context.Context,
+	projectID string,
+	address netip.Addr,
+	port uint16,
+) (func() error, error) {
+	maintenance.projectID = projectID
+	maintenance.address = address
+	maintenance.port = port
+	return func() error {
+		maintenance.released = true
+		return nil
+	}, nil
 }
 
 func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T) {
@@ -273,11 +316,12 @@ func TestPostgresRestoreReplaceRejectsFailedImportBeforeDowntime(t *testing.T) {
 }
 
 type postgresRestoreFixture struct {
-	controller *Controller
-	store      *postgresRestoreStore
-	engine     *postgresRestoreEngine
-	publisher  *postgresRestorePublisher
-	volumeRoot string
+	controller  *Controller
+	store       *postgresRestoreStore
+	engine      *postgresRestoreEngine
+	publisher   *postgresRestorePublisher
+	maintenance *recordingPostgresMaintenance
+	volumeRoot  string
 }
 
 func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFixture {
@@ -307,9 +351,10 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		},
 	}
 	publisher := &postgresRestorePublisher{}
+	maintenance := &recordingPostgresMaintenance{}
 	ids := []string{"new-volume", "runtime-id", "audit-id", "correlation-id", "attempt-id"}
 	controller, err := NewController(ControllerConfig{
-		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: maintenance, Admission: admission.New(),
 		OwnerPassword:     func(state.ManagedPostgres) (string, error) { return "owner-password", nil },
 		BootstrapPassword: func(state.ManagedPostgres) (string, error) { return "bootstrap-password", nil },
 		Placement: func(state.ManagedPostgres) (Placement, error) {
@@ -323,7 +368,8 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		},
 		VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
 		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
-		Now: func() time.Time { return time.UnixMilli(10) },
+		MaintenanceDrain: time.Nanosecond,
+		Now:              func() time.Time { return time.UnixMilli(10) },
 		NewID: func(time.Time) (string, error) {
 			if len(ids) == 0 {
 				return "", errors.New("unexpected ID allocation")
@@ -340,7 +386,7 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		resource: resource, container: engine.containers["old-container"], network: "network",
 	})
 	return postgresRestoreFixture{
-		controller: controller, store: store, engine: engine, publisher: publisher,
+		controller: controller, store: store, engine: engine, publisher: publisher, maintenance: maintenance,
 		volumeRoot: volumeRoot,
 	}
 }

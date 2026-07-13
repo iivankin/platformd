@@ -86,6 +86,17 @@ func (client *Client) Save(ctx context.Context) error {
 	return client.expectOK(ctx, "OK", "SAVE")
 }
 
+func (client *Client) KillNormalClients(ctx context.Context) error {
+	value, err := client.command(ctx, "CLIENT", "KILL", "TYPE", "normal", "SKIPME", "yes")
+	if err != nil {
+		return err
+	}
+	if value.kind != responseInteger || value.integer < 0 {
+		return errors.New("unexpected Redis CLIENT KILL response")
+	}
+	return nil
+}
+
 func (client *Client) BeginBackgroundSave(ctx context.Context) error {
 	return client.expectOK(ctx, "Background saving started", "BGSAVE")
 }

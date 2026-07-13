@@ -67,7 +67,7 @@ func TestMCPManagedResourceMetadataAndBackupsAreProjectScopedAndSecretFree(t *te
 	}
 	handler := newTestHandler(t, &repositoryStub{})
 	handler.managed = application
-	handler.tools = configuredReadTools(true)
+	handler.tools = configuredReadTools(true, false)
 
 	response := callMCPTool(t, handler, automation.Identity{TokenID: "read", Role: "read"},
 		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_managed_resources","arguments":{"projectId":"project"}}}`)

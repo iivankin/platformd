@@ -24,6 +24,7 @@ import (
 const (
 	defaultReadyTimeout = 90 * time.Second
 	defaultProbePeriod  = 250 * time.Millisecond
+	defaultDrainTimeout = 2 * time.Second
 	stopTimeoutSeconds  = 30
 )
 
@@ -46,6 +47,10 @@ type Engine interface {
 
 type GrowthGate interface {
 	PermitGrowth(context.Context) error
+}
+
+type MaintenanceGate interface {
+	BlockDatabase(context.Context, string, netip.Addr, uint16) (func() error, error)
 }
 
 type Connection interface {
@@ -72,6 +77,7 @@ type ControllerConfig struct {
 	Engine            Engine
 	Publisher         Publisher
 	Growth            GrowthGate
+	Maintenance       MaintenanceGate
 	Admission         *admission.Gate
 	OwnerPassword     func(state.ManagedPostgres) (string, error)
 	BootstrapPassword func(state.ManagedPostgres) (string, error)
@@ -83,6 +89,7 @@ type ControllerConfig struct {
 	LogMaxFiles       uint
 	ReadyTimeout      time.Duration
 	ProbePeriod       time.Duration
+	MaintenanceDrain  time.Duration
 	Now               func() time.Time
 	NewID             func(time.Time) (string, error)
 }
@@ -98,6 +105,7 @@ type Controller struct {
 	engine            Engine
 	publisher         Publisher
 	growth            GrowthGate
+	maintenance       MaintenanceGate
 	admission         *admission.Gate
 	ownerPassword     func(state.ManagedPostgres) (string, error)
 	bootstrapPassword func(state.ManagedPostgres) (string, error)
@@ -109,15 +117,17 @@ type Controller struct {
 	logMaxFiles       uint
 	readyTimeout      time.Duration
 	probePeriod       time.Duration
+	maintenanceDrain  time.Duration
 	now               func() time.Time
 	newID             func(time.Time) (string, error)
 	mu                sync.Mutex
 	locks             map[string]*sync.Mutex
 	active            map[string]activeRuntime
+	maintaining       map[string]struct{}
 }
 
 func NewController(config ControllerConfig) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Admission == nil || config.OwnerPassword == nil || config.BootstrapPassword == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Maintenance == nil || config.Admission == nil || config.OwnerPassword == nil || config.BootstrapPassword == nil || config.Placement == nil {
 		return nil, errors.New("managed PostgreSQL controller dependencies are incomplete")
 	}
 	if !safeRoot(config.VolumeRoot) || !safeRoot(config.LogRoot) || config.LogSizeBytes <= 0 || config.LogMaxFiles == 0 {
@@ -137,7 +147,11 @@ func NewController(config ControllerConfig) (*Controller, error) {
 	if probePeriod == 0 {
 		probePeriod = defaultProbePeriod
 	}
-	if readyTimeout < 0 || probePeriod < 0 {
+	maintenanceDrain := config.MaintenanceDrain
+	if maintenanceDrain == 0 {
+		maintenanceDrain = defaultDrainTimeout
+	}
+	if readyTimeout < 0 || probePeriod < 0 || maintenanceDrain < 0 {
 		return nil, errors.New("managed PostgreSQL readiness timing cannot be negative")
 	}
 	now := config.Now
@@ -149,12 +163,12 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, admission: config.Admission,
+		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		ownerPassword: config.OwnerPassword, bootstrapPassword: config.BootstrapPassword,
 		placement: config.Placement, dial: dial, volumeRoot: config.VolumeRoot,
 		logRoot: config.LogRoot, logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
-		readyTimeout: readyTimeout, probePeriod: probePeriod, now: now, newID: newID,
-		locks: make(map[string]*sync.Mutex), active: make(map[string]activeRuntime),
+		readyTimeout: readyTimeout, probePeriod: probePeriod, maintenanceDrain: maintenanceDrain, now: now, newID: newID,
+		locks: make(map[string]*sync.Mutex), active: make(map[string]activeRuntime), maintaining: make(map[string]struct{}),
 	}, nil
 }
 
@@ -344,7 +358,10 @@ func (controller *Controller) Query(ctx context.Context, resourceID, sql string)
 		return QueryResult{}, err
 	}
 	defer lease.Release()
-	active, ok := controller.activeRuntime(resourceID)
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return QueryResult{}, ErrMaintenance
+	}
 	if !ok {
 		return QueryResult{}, ErrNotRunning
 	}
@@ -562,6 +579,30 @@ func (controller *Controller) activeRuntime(resourceID string) (activeRuntime, b
 	defer controller.mu.Unlock()
 	active, ok := controller.active[resourceID]
 	return active, ok
+}
+
+func (controller *Controller) availableRuntime(resourceID string) (activeRuntime, bool, bool) {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	_, maintenance := controller.maintaining[resourceID]
+	active, exists := controller.active[resourceID]
+	return active, exists, maintenance
+}
+
+func (controller *Controller) beginMaintenance(resourceID string) bool {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if _, exists := controller.maintaining[resourceID]; exists {
+		return false
+	}
+	controller.maintaining[resourceID] = struct{}{}
+	return true
+}
+
+func (controller *Controller) endMaintenance(resourceID string) {
+	controller.mu.Lock()
+	delete(controller.maintaining, resourceID)
+	controller.mu.Unlock()
 }
 
 func (controller *Controller) setActive(resourceID string, active activeRuntime) {

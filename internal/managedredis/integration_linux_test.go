@@ -111,7 +111,7 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 	}
 	publisher := &integrationPublisher{}
 	controller, err := NewController(Config{
-		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: network.Name, Gateway: mustAddr(network.Gateway), DNSSearch: "integration.internal", CgroupParent: filepath.Join(tree.WorkloadRoot(), "redis-integration")}, nil

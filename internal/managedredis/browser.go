@@ -19,6 +19,7 @@ const (
 var (
 	ErrInvalidBrowserQuery = errors.New("invalid managed Redis browser query")
 	ErrNotRunning          = errors.New("managed Redis resource is not running")
+	ErrMaintenance         = errors.New("managed Redis resource is in maintenance")
 	ErrKeyNotFound         = errors.New("managed Redis key not found")
 )
 

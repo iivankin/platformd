@@ -47,6 +47,13 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 
 	compiled.rules = append(compiled.rules, rule(table, forward, establishedRelated()...))
 	for _, project := range projects {
+		for _, endpoint := range project.BlockedDatabaseEndpoints {
+			compiled.rules = append(compiled.rules,
+				rule(table, forward, append(matchDatabaseEndpoint(project, endpoint), verdict(expr.VerdictDrop))...),
+			)
+		}
+	}
+	for _, project := range projects {
 		expressions := append(matchInputInterface(project.Bridge), matchOutputInterface(project.Bridge)...)
 		compiled.rules = append(compiled.rules, rule(table, forward, append(expressions, verdict(expr.VerdictAccept))...))
 	}
@@ -64,6 +71,16 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 		compiled.rules = append(compiled.rules, rule(table, postrouting, append(expressions, &expr.Masq{})...))
 	}
 	return compiled
+}
+
+func matchDatabaseEndpoint(project Project, endpoint DatabaseEndpoint) []expr.Any {
+	expressions := append(matchInputInterface(project.Bridge), matchIPv4Destination(endpoint.Address)...)
+	return append(expressions,
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(endpoint.Port)},
+	)
 }
 
 func (compiled compiledRuleset) queue(connection *nftables.Conn) {

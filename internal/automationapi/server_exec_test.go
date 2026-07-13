@@ -83,13 +83,13 @@ func TestServerExecRESTRequiresUnboundAdminAndReturnsBoundedResult(t *testing.T)
 
 func TestServerExecOpenAPIPathMatchesConfiguredRoute(t *testing.T) {
 	response := httptest.NewRecorder()
-	serveOpenAPI("api.example.com", false, false).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("api.example.com", openAPIFeatures{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if strings.Contains(response.Body.String(), `"/api/v1/server/exec"`) {
 		t.Fatalf("disabled server exec was advertised: %s", response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
-	serveOpenAPI("api.example.com", true, false).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("api.example.com", openAPIFeatures{serverExec: true}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if !strings.Contains(response.Body.String(), `"/api/v1/server/exec"`) ||
 		!strings.Contains(response.Body.String(), `"ServerExecRequest"`) {
 		t.Fatalf("enabled server exec is absent from OpenAPI: %s", response.Body.String())

@@ -13,6 +13,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
+	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/registry"
@@ -45,6 +46,7 @@ type handlerConfig struct {
 	registrySettings   RegistrySettings
 	backupTargets      *backup.TargetApplication
 	backupResources    *backup.ResourceApplication
+	databaseVersions   *databaseversion.Service
 	containerConsole   ContainerConsole
 	serverTerminalAuth *terminalauth.Service
 	adminHostname      string
@@ -145,6 +147,12 @@ func WithBackupResources(application *backup.ResourceApplication) Option {
 	}
 }
 
+func WithDatabaseVersions(service *databaseversion.Service) Option {
+	return func(config *handlerConfig) {
+		config.databaseVersions = service
+	}
+}
+
 func WithContainerConsole(hostname string, application ContainerConsole) Option {
 	return func(config *handlerConfig) {
 		config.adminHostname = hostname
@@ -236,6 +244,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.backupResources != nil {
 		registerBackupResourceRoutes(mux, config.backupResources)
+	}
+	if config.databaseVersions != nil {
+		registerDatabaseVersionRoutes(mux, config.databaseVersions)
 	}
 	if config.containerConsole != nil {
 		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole, config.admission); err != nil {
