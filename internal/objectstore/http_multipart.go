@@ -136,6 +136,8 @@ func writeMultipartError(response http.ResponseWriter, err error, requestID stri
 		writeS3Error(response, http.StatusNotFound, "NoSuchUpload", "The multipart upload does not exist", requestID)
 	case errors.Is(err, ErrBadDigest):
 		writeS3Error(response, http.StatusBadRequest, "BadDigest", "Part checksum does not match", requestID)
+	case errors.Is(err, ErrMetadataMaintenance):
+		writeS3Error(response, http.StatusConflict, "OperationAborted", "Object store restore is in progress", requestID)
 	case errors.Is(err, ErrInvalidInput):
 		writeS3Error(response, http.StatusBadRequest, "InvalidPart", err.Error(), requestID)
 	default:
