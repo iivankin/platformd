@@ -23,7 +23,8 @@ const (
 	integrationDataRoot    = "/var/lib/platformd-managedredis-integration"
 	integrationRuntimeRoot = "/run/platformd-managedredis-integration"
 	integrationReleaseRoot = "/var/lib/platformd/releases/current"
-	integrationRedisTag    = "7.4.2-alpine"
+	integrationRedisTag    = "7.4.9-bookworm"
+	integrationRedisImage  = "docker.io/library/redis@sha256:b2b95679e3b46fb51864949ed25ea976fc3a6bcc00a40a1bc00d568cb2822e50"
 )
 
 func TestMain(main *testing.M) {
@@ -94,7 +95,7 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: "docker.io/library/redis:" + integrationRedisTag, Refresh: true})
+	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: integrationRedisImage, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}

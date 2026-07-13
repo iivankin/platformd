@@ -22,6 +22,8 @@ const (
 	postgresIntegrationDataRoot    = "/var/lib/platformd-managedpostgres-integration"
 	postgresIntegrationRuntimeRoot = "/run/platformd-managedpostgres-integration"
 	postgresIntegrationReleaseRoot = "/var/lib/platformd/releases/current"
+	postgresIntegrationTag         = "17.10-alpine3.23"
+	postgresIntegrationImage       = "docker.io/library/postgres@sha256:8189a1f6e40904781fc9e2612687877791d21679866db58b1de996b31fc312e4"
 )
 
 func TestMain(main *testing.M) {
@@ -92,7 +94,7 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: "docker.io/library/postgres:17", Refresh: true})
+	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: postgresIntegrationImage, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +113,7 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 	}
 	resource := state.ManagedPostgres{
 		ID: "postgres-integration", ProjectID: "project-integration", ProjectName: "integration", Name: "database",
-		ImageTag: "17", ImageDigest: image.Digest, VolumeID: "postgres-volume",
+		ImageTag: postgresIntegrationTag, ImageDigest: image.Digest, VolumeID: "postgres-volume",
 		DatabaseName: credentials.DatabaseName, OwnerUsername: credentials.OwnerUsername,
 	}
 	publisher := &integrationPublisher{}

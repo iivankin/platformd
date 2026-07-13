@@ -21,6 +21,8 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
+const daemonIntegrationImage = "docker.io/library/alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6"
+
 func TestMain(m *testing.M) {
 	if containerengine.InitReexec() {
 		return
@@ -52,7 +54,7 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 	if err := os.MkdirAll(paths.ReleasesRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink("/var/lib/platformd/releases/integration", paths.Current); err != nil {
+	if err := os.Symlink("/var/lib/platformd/releases/current", paths.Current); err != nil {
 		t.Fatal(err)
 	}
 
@@ -83,7 +85,7 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		_ = first.Close()
 		t.Fatalf("live project runtime was not published: %+v", first.projectNetworks)
 	}
-	image, err := first.engine.Pull(ctx, containerengine.PullRequest{Reference: "docker.io/library/alpine:3.22"})
+	image, err := first.engine.Pull(ctx, containerengine.PullRequest{Reference: daemonIntegrationImage})
 	if err != nil {
 		_ = first.Close()
 		t.Fatal(err)

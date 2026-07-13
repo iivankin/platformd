@@ -106,6 +106,8 @@ jobs:
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
           go test -race -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
           go vet -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
+          go test -run '^$' -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" ./...
+          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" ./internal/mcp
 
       - name: Fuzz public protocol boundaries
         run: |
@@ -160,6 +162,77 @@ jobs:
             --setenv=PLATFORMD_RUNTIME_INTEGRATION=1 \
             "$PWD/dist/containerengine-integration.test" \
               -test.run='^TestDelegatedCgroupPlacementAndLimits$' \
+              -test.timeout=3m \
+              -test.v
+
+      - name: Verify managed runtimes and privileged host operations
+        run: |
+          integration_tags="containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration"
+          for package in managedpostgres managedredis daemon registry rootexec hostterminal; do
+            go test -c \
+              -tags "$integration_tags" \
+              -o "dist/$package-integration.test" \
+              "./internal/$package"
+          done
+
+          run_delegated() {
+            local unit="$1"
+            local binary="$2"
+            local timeout="$3"
+            shift 3
+            sudo systemd-run \
+              --quiet \
+              --wait \
+              --collect \
+              --pipe \
+              --service-type=exec \
+              --unit="$unit" \
+              --property=Delegate=yes \
+              --property=DelegateSubgroup=control \
+              --property=TasksMax=infinity \
+              --setenv=HOME=/root \
+              "$@" \
+              "$PWD/$binary" \
+                -test.timeout="$timeout" \
+                -test.v
+          }
+
+          run_delegated \
+            platformd-managedpostgres-integration \
+            dist/managedpostgres-integration.test \
+            5m \
+            --setenv=PATH=/nonexistent \
+            --setenv=PLATFORMD_MANAGED_POSTGRES_INTEGRATION=1
+          run_delegated \
+            platformd-managedredis-integration \
+            dist/managedredis-integration.test \
+            5m \
+            --setenv=PATH=/nonexistent \
+            --setenv=PLATFORMD_MANAGED_REDIS_INTEGRATION=1
+          run_delegated \
+            platformd-daemon-runtime-integration \
+            dist/daemon-integration.test \
+            5m \
+            --setenv=PATH=/nonexistent \
+            --setenv=PLATFORMD_RUNTIME_INTEGRATION=1 \
+            --setenv=PLATFORMD_CGROUP_INTEGRATION=1
+          run_delegated \
+            platformd-rootexec-integration \
+            dist/rootexec-integration.test \
+            3m \
+            --setenv=PLATFORMD_ROOTEXEC_INTEGRATION=1
+          run_delegated \
+            platformd-hostterminal-integration \
+            dist/hostterminal-integration.test \
+            3m \
+            --setenv=PLATFORMD_HOST_TERMINAL_INTEGRATION=1
+
+          sudo /usr/bin/env \
+            HOME=/root \
+            PATH=/nonexistent \
+            PLATFORMD_REGISTRY_LOCAL_PULL_INTEGRATION=1 \
+            PLATFORMD_RUNTIME_ASSET_ROOT="$PWD/dist/runtime" \
+            dist/registry-integration.test \
               -test.timeout=3m \
               -test.v
 
