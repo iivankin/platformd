@@ -175,6 +175,8 @@ func (handler *HTTPHandler) putObject(response http.ResponseWriter, request *htt
 		switch {
 		case errors.Is(err, ErrBadDigest):
 			writeS3Error(response, http.StatusBadRequest, "BadDigest", "Payload checksum does not match", requestID)
+		case errors.Is(err, ErrMetadataMaintenance):
+			writeS3Error(response, http.StatusConflict, "OperationAborted", "Object store restore is in progress", requestID)
 		case errors.Is(err, ErrInvalidInput):
 			writeS3Error(response, http.StatusBadRequest, "InvalidRequest", err.Error(), requestID)
 		default:
@@ -225,6 +227,10 @@ func (handler *HTTPHandler) getObject(response http.ResponseWriter, request *htt
 
 func (handler *HTTPHandler) deleteObject(response http.ResponseWriter, request *http.Request, store state.ObjectStore, objectKey, requestID string) {
 	err := handler.application.Delete(request.Context(), store.ID, objectKey)
+	if errors.Is(err, ErrMetadataMaintenance) {
+		writeS3Error(response, http.StatusConflict, "OperationAborted", "Object store restore is in progress", requestID)
+		return
+	}
 	if err != nil && !errors.Is(err, state.ErrObjectNotFound) {
 		writeS3Error(response, http.StatusInternalServerError, "InternalError", "Unable to delete object", requestID)
 		return

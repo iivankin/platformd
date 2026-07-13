@@ -230,6 +230,91 @@ func (store *PayloadStore) BlobPath(repositoryID, digest string) (string, int64,
 	return path, pathInfo.Size(), nil
 }
 
+// InstallBackupBlob verifies the backup stream before atomically publishing it
+// at the repository-local digest path. The temporary file is deliberately not
+// reachable from registry metadata, so a failed restore cannot change the
+// currently published catalog.
+func (store *PayloadStore) InstallBackupBlob(
+	ctx context.Context,
+	repositoryID, digest string,
+	size int64,
+	input io.Reader,
+) error {
+	if !safeComponent(repositoryID) || registryname.ValidateDigest(digest) != nil || size < 0 || input == nil {
+		return errors.New("registry backup blob input is invalid")
+	}
+	finalPath, err := store.blobPath(repositoryID, digest)
+	if err != nil {
+		return err
+	}
+	directory := filepath.Dir(finalPath)
+	temporary, err := os.CreateTemp(directory, ".restore-*.part")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	committed := false
+	defer func() {
+		if !committed {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	hash := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(temporary, hash), &contextReader{ctx: ctx, input: input})
+	if copyErr == nil && written != size {
+		copyErr = errors.New("registry backup blob size differs from manifest")
+	}
+	actualDigest := fmt.Sprintf("sha256:%x", hash.Sum(nil))
+	if copyErr == nil && actualDigest != digest {
+		copyErr = ErrBlobDigestMismatch
+	}
+	if copyErr == nil {
+		copyErr = temporary.Sync()
+	}
+	closeErr := temporary.Close()
+	if copyErr != nil || closeErr != nil {
+		return errors.Join(copyErr, closeErr)
+	}
+
+	if info, statErr := os.Lstat(finalPath); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return errors.New("existing registry blob path is not a regular file")
+		}
+		matches, verifyErr := fileMatchesBlob(ctx, finalPath, digest, size)
+		if verifyErr != nil {
+			return verifyErr
+		}
+		if matches {
+			if err := os.Remove(temporaryPath); err != nil {
+				return err
+			}
+			committed = true
+			return nil
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return statErr
+	}
+	if err := os.Rename(temporaryPath, finalPath); err != nil {
+		return err
+	}
+	committed = true
+	return syncDirectory(directory)
+}
+
+func fileMatchesBlob(ctx context.Context, path, digest string, size int64) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	hash := sha256.New()
+	written, copyErr := io.Copy(hash, &contextReader{ctx: ctx, input: file})
+	closeErr := file.Close()
+	if copyErr != nil || closeErr != nil {
+		return false, errors.Join(copyErr, closeErr)
+	}
+	return written == size && fmt.Sprintf("sha256:%x", hash.Sum(nil)) == digest, nil
+}
+
 func (store *PayloadStore) BlobExists(repositoryID, digest string) (bool, error) {
 	file, _, err := store.OpenBlob(repositoryID, digest)
 	if errors.Is(err, os.ErrNotExist) {

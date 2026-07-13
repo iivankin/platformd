@@ -25,8 +25,9 @@ import (
 )
 
 var (
-	ErrBadDigest    = errors.New("object payload digest does not match x-amz-content-sha256")
-	ErrInvalidInput = errors.New("invalid object store input")
+	ErrBadDigest           = errors.New("object payload digest does not match x-amz-content-sha256")
+	ErrInvalidInput        = errors.New("invalid object store input")
+	ErrMetadataMaintenance = errors.New("object store metadata is in maintenance")
 )
 
 type Repository interface {
@@ -47,6 +48,7 @@ type Repository interface {
 	MultipartParts(context.Context, string, string, string, int, int) ([]state.MultipartPart, bool, error)
 	CompleteMultipartUpload(context.Context, state.CompleteMultipartUpload) (state.ObjectMetadata, error)
 	AbortMultipartUpload(context.Context, string, string, string) error
+	RestoreObjectStore(context.Context, state.RestoreObjectStore) error
 }
 
 type Actor struct {
@@ -105,9 +107,10 @@ type Application struct {
 }
 
 type metadataAdmission struct {
-	active  int
-	blocked bool
-	changed chan struct{}
+	active        int
+	blocked       bool
+	rejectBlocked bool
+	changed       chan struct{}
 }
 
 func NewApplication(repository Repository, payloads *PayloadStore, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
@@ -326,6 +329,10 @@ func (application *Application) beginMetadataMutation(ctx context.Context, store
 	application.metadataMu.Lock()
 	admission := application.metadataAdmissionLocked(storeID)
 	for admission.blocked {
+		if admission.rejectBlocked {
+			application.metadataMu.Unlock()
+			return nil, ErrMetadataMaintenance
+		}
 		changed := admission.changed
 		application.metadataMu.Unlock()
 		select {
@@ -346,6 +353,14 @@ func (application *Application) beginMetadataMutation(ctx context.Context, store
 }
 
 func (application *Application) blockMetadata(ctx context.Context, storeID string) (func(), error) {
+	return application.blockMetadataWithMode(ctx, storeID, false)
+}
+
+func (application *Application) blockMetadataForRestore(ctx context.Context, storeID string) (func(), error) {
+	return application.blockMetadataWithMode(ctx, storeID, true)
+}
+
+func (application *Application) blockMetadataWithMode(ctx context.Context, storeID string, rejectBlocked bool) (func(), error) {
 	application.metadataMu.Lock()
 	admission := application.metadataAdmissionLocked(storeID)
 	if admission.blocked {
@@ -353,6 +368,7 @@ func (application *Application) blockMetadata(ctx context.Context, storeID strin
 		return nil, errors.New("object store metadata is already in maintenance")
 	}
 	admission.blocked = true
+	admission.rejectBlocked = rejectBlocked
 	application.signalMetadataLocked(admission)
 	for admission.active != 0 {
 		changed := admission.changed
@@ -361,6 +377,7 @@ func (application *Application) blockMetadata(ctx context.Context, storeID strin
 		case <-ctx.Done():
 			application.metadataMu.Lock()
 			admission.blocked = false
+			admission.rejectBlocked = false
 			application.signalMetadataLocked(admission)
 			application.metadataMu.Unlock()
 			return nil, ctx.Err()
@@ -372,6 +389,7 @@ func (application *Application) blockMetadata(ctx context.Context, storeID strin
 	return sync.OnceFunc(func() {
 		application.metadataMu.Lock()
 		admission.blocked = false
+		admission.rejectBlocked = false
 		application.signalMetadataLocked(admission)
 		application.metadataMu.Unlock()
 	}), nil

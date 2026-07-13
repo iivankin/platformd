@@ -121,3 +121,7 @@ func (repository *liveObjectStoreRepository) CompleteMultipartUpload(ctx context
 func (repository *liveObjectStoreRepository) AbortMultipartUpload(ctx context.Context, storeID, uploadID, objectKey string) error {
 	return repository.store.AbortMultipartUpload(ctx, storeID, uploadID, objectKey)
 }
+
+func (repository *liveObjectStoreRepository) RestoreObjectStore(ctx context.Context, input state.RestoreObjectStore) error {
+	return repository.store.RestoreObjectStore(ctx, input)
+}
