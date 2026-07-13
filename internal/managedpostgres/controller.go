@@ -18,8 +18,6 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/id"
-	"github.com/iivankin/platformd/internal/managedimages"
-	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -32,6 +30,7 @@ const (
 type ControllerStore interface {
 	ManagedPostgres(context.Context, string) (state.ManagedPostgres, error)
 	ManagedPostgresResources(context.Context) ([]state.ManagedPostgres, error)
+	SwitchManagedPostgresVolume(context.Context, state.SwitchManagedPostgresVolume) error
 }
 
 type Engine interface {
@@ -187,26 +186,9 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err != nil {
 		return fmt.Errorf("place managed PostgreSQL runtime: %w", err)
 	}
-	reference, err := managedimages.Reference(managedimages.PostgreSQL, resource.ImageTag)
+	image, err := controller.resolveImage(ctx, resource)
 	if err != nil {
 		return err
-	}
-	pinned, err := serviceconfig.PinnedReference(reference, resource.ImageDigest)
-	if err != nil {
-		return err
-	}
-	image, inspectErr := controller.engine.InspectImage(ctx, resource.ImageDigest)
-	if inspectErr != nil {
-		if err := controller.growth.PermitGrowth(ctx); err != nil {
-			return fmt.Errorf("managed PostgreSQL image is not cached: %w", err)
-		}
-		image, err = controller.engine.Pull(ctx, containerengine.PullRequest{Reference: pinned})
-		if err != nil {
-			return fmt.Errorf("pull pinned managed PostgreSQL image: %w", err)
-		}
-	}
-	if image.ID == "" || image.Digest != resource.ImageDigest {
-		return fmt.Errorf("managed PostgreSQL image digest = %q, want %q", image.Digest, resource.ImageDigest)
 	}
 	volume, err := ensureVolume(controller.volumeRoot, resource.ProjectID, resource.VolumeID)
 	if err != nil {
@@ -383,6 +365,21 @@ func (controller *Controller) Query(ctx context.Context, resourceID, sql string)
 }
 
 func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedPostgres, imageID string, placement Placement, volume, bootstrapPassword string) (containerengine.Container, error) {
+	return controller.createContainerAttempt(ctx, resource, resource.ID, imageID, placement, volume, bootstrapPassword)
+}
+
+func (controller *Controller) createContainerAttempt(
+	ctx context.Context,
+	resource state.ManagedPostgres,
+	runtimeID string,
+	imageID string,
+	placement Placement,
+	volume string,
+	bootstrapPassword string,
+) (containerengine.Container, error) {
+	if !safePathComponent(runtimeID) {
+		return containerengine.Container{}, errors.New("managed PostgreSQL runtime ID is invalid")
+	}
 	attemptID, err := controller.newID(controller.now())
 	if err != nil {
 		return containerengine.Container{}, err
@@ -392,7 +389,7 @@ func (controller *Controller) createContainer(ctx context.Context, resource stat
 		return containerengine.Container{}, err
 	}
 	return controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
-		ImageID: imageID, Name: "platformd-postgres-" + resource.ID,
+		ImageID: imageID, Name: "platformd-postgres-" + runtimeID,
 		Environment: map[string]string{
 			"PGDATA": "/var/lib/postgresql/data/pgdata", "POSTGRES_USER": "postgres",
 			"POSTGRES_DB": "postgres", "POSTGRES_PASSWORD": bootstrapPassword,
