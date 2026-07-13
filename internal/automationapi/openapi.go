@@ -5,7 +5,7 @@ import (
 	"strconv"
 )
 
-func serveOpenAPI(hostname string, serverExecEnabled bool) http.HandlerFunc {
+func serveOpenAPI(hostname string, serverExecEnabled, managedResourcesEnabled bool) http.HandlerFunc {
 	paths := map[string]any{
 		"/api/v1/me":                                                    readOperation("Read current token identity"),
 		"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
@@ -25,6 +25,11 @@ func serveOpenAPI(hostname string, serverExecEnabled bool) http.HandlerFunc {
 	if serverExecEnabled {
 		paths["/api/v1/server/exec"] = serverExecOperation()
 	}
+	if managedResourcesEnabled {
+		paths["/api/v1/projects/{projectID}/managed-resources"] = managedResourceListOperation()
+		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}"] = managedResourceReadOperation("Read one managed resource's lifecycle/configuration metadata")
+		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups"] = managedResourceBackupReadOperation()
+	}
 	document := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -42,6 +47,54 @@ func serveOpenAPI(hostname string, serverExecEnabled bool) http.HandlerFunc {
 	}
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
+	}
+}
+
+func managedResourceListOperation() map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary": "List managed PostgreSQL, Redis, and private S3 metadata",
+		"parameters": []map[string]any{
+			{"name": "projectID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+		},
+		"responses": readResponses("Managed resource metadata list"),
+	}}
+}
+
+func managedResourceReadOperation(summary string) map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary":    summary,
+		"parameters": managedResourceIdentityParameters(),
+		"responses":  readResponses("Managed resource metadata"),
+	}}
+}
+
+func managedResourceBackupReadOperation() map[string]any {
+	parameters := append(managedResourceIdentityParameters(),
+		map[string]any{"name": "beforeMillis", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 0}},
+		map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100, "default": 20}},
+	)
+	return map[string]any{"get": map[string]any{
+		"summary":    "Read a managed resource's backup policy and bounded backup history",
+		"parameters": parameters,
+		"responses":  readResponses("Managed resource backup status"),
+	}}
+}
+
+func managedResourceIdentityParameters() []map[string]any {
+	return []map[string]any{
+		{"name": "projectID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+		{"name": "kind", "in": "path", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"postgres", "redis", "object_store"}}},
+		{"name": "resourceID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+	}
+}
+
+func readResponses(successDescription string) map[string]any {
+	return map[string]any{
+		"200": map[string]string{"description": successDescription},
+		"400": map[string]string{"description": "Invalid query"},
+		"401": map[string]string{"description": "Missing or invalid Bearer token"},
+		"403": map[string]string{"description": "Outside token project boundary"},
+		"404": map[string]string{"description": "Managed resource not found"},
 	}
 }
 

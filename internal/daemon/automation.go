@@ -47,6 +47,18 @@ func (repository liveAutomationRepository) ManagedPostgresByProject(ctx context.
 	return repository.store.ManagedPostgresByProject(ctx, projectID)
 }
 
+func (repository liveAutomationRepository) ObjectStoreInProject(ctx context.Context, projectID, resourceID string) (state.ObjectStore, error) {
+	return repository.store.ObjectStoreInProject(ctx, projectID, resourceID)
+}
+
+func (repository liveAutomationRepository) ObjectStoresByProject(ctx context.Context, projectID string) ([]state.ObjectStore, error) {
+	return repository.store.ObjectStoresByProject(ctx, projectID)
+}
+
+func (repository liveAutomationRepository) BackupHistory(ctx context.Context, query state.BackupHistoryQuery) ([]state.BackupRecord, error) {
+	return repository.store.BackupHistory(ctx, query)
+}
+
 func (repository liveAutomationRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
 	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).CreateService(ctx, input)
 }

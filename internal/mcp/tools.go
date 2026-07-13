@@ -97,6 +97,14 @@ func readTools() []Tool {
 	}
 }
 
+func configuredReadTools(managedResources bool) []Tool {
+	tools := readTools()
+	if managedResources {
+		tools = append(tools, managedResourceReadTools()...)
+	}
+	return tools
+}
+
 func objectSchema(properties map[string]any, required []string) map[string]any {
 	if properties == nil {
 		properties = map[string]any{}
@@ -171,6 +179,24 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.readServiceLogs(request.Context(), call.Arguments, identity)
 	case "list_managed_image_tags":
 		output, err = handler.listManagedImageTags(request.Context(), call.Arguments)
+	case "list_managed_resources":
+		if handler.managed == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listManagedResources(request.Context(), call.Arguments, identity)
+	case "get_managed_resource":
+		if handler.managed == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.getManagedResource(request.Context(), call.Arguments, identity)
+	case "read_managed_resource_backups":
+		if handler.managed == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.readManagedResourceBackups(request.Context(), call.Arguments, identity)
 	case "create_service":
 		output, err = handler.createService(request.Context(), call.Arguments, identity)
 	case "update_service":
@@ -202,7 +228,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

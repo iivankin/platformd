@@ -35,6 +35,7 @@ type Config struct {
 	RedisStore    managedRedisRepository
 	Postgres      *automation.ManagedPostgresApplication
 	PostgresStore managedPostgresRepository
+	Managed       *automation.ManagedResourceApplication
 	ServerExec    *automation.ServerExecApplication
 	Admission     *admission.Gate
 }
@@ -44,7 +45,7 @@ func Handler(config Config) (http.Handler, error) {
 		return nil, errors.New("automation API dependencies are incomplete")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, config.ServerExec != nil))
+	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, config.ServerExec != nil, config.Managed != nil))
 	mux.HandleFunc("GET /api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}", getProject(config.Repository))
@@ -69,6 +70,11 @@ func Handler(config Config) (http.Handler, error) {
 	}
 	if config.ServerExec != nil {
 		mux.HandleFunc("POST /api/v1/server/exec", executeServerCommand(config.ServerExec))
+	}
+	if config.Managed != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources", listManagedResources(config.Managed))
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}", getManagedResource(config.Managed))
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups", readManagedResourceBackups(config.Managed))
 	}
 	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", mux)), nil
 }
@@ -223,6 +229,10 @@ func writeRepositoryError(response http.ResponseWriter, err error) {
 		writeError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrManagedRedisNotFound):
 		writeError(response, http.StatusNotFound, "redis_not_found", "Managed Redis resource not found")
+	case errors.Is(err, state.ErrManagedPostgresNotFound):
+		writeError(response, http.StatusNotFound, "postgres_not_found", "Managed PostgreSQL resource not found")
+	case errors.Is(err, state.ErrObjectStoreNotFound):
+		writeError(response, http.StatusNotFound, "object_store_not_found", "Object store not found")
 	case errors.Is(err, state.ErrDeploymentPageInvalid), errors.Is(err, state.ErrDeploymentCursorInvalid):
 		writeError(response, http.StatusBadRequest, "invalid_deployment_page", err.Error())
 	default:
