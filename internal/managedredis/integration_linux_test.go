@@ -5,6 +5,7 @@ package managedredis
 import (
 	"bytes"
 	"context"
+	"errors"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -42,6 +43,10 @@ func (store integrationStore) ManagedRedis(_ context.Context, id string) (state.
 
 func (store integrationStore) ManagedRedisResources(context.Context) ([]state.ManagedRedis, error) {
 	return []state.ManagedRedis{store.resource}, nil
+}
+
+func (integrationStore) SwitchManagedRedisVolume(context.Context, state.SwitchManagedRedisVolume) error {
+	return errors.New("unexpected managed Redis volume switch in runtime profile test")
 }
 
 type integrationPublisher struct{ published int }
