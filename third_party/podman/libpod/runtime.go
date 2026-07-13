@@ -824,7 +824,9 @@ func (r *Runtime) Shutdown(force bool) error {
 			logrus.Errorf("Retrieving containers from database: %v", err)
 		} else {
 			for _, ctr := range ctrs {
-				if err := ctr.StopWithTimeout(r.config.Engine.StopTimeout); err != nil {
+				// Update handoff deliberately retains stopped container records until
+				// the next process recreates runtime state. They need no second stop.
+				if err := ctr.StopWithTimeout(r.config.Engine.StopTimeout); err != nil && !errors.Is(err, define.ErrCtrStopped) {
 					logrus.Errorf("Stopping container %s: %v", ctr.ID(), err)
 				}
 			}

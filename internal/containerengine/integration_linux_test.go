@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/firewall"
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -292,8 +293,17 @@ func TestPrepareStoragePurgesContainersAndKeepsImages(t *testing.T) {
 	if _, err := containerRecord.Mount(); err != nil {
 		t.Fatalf("mount stopped container rootfs: %v", err)
 	}
-	if err := engine.CloseForUpdate(); err != nil {
-		t.Fatalf("close interrupted runtime with a mounted rootfs: %v", err)
+	logger := logrus.StandardLogger()
+	previousOutput := logger.Out
+	var shutdownLogs bytes.Buffer
+	logger.SetOutput(&shutdownLogs)
+	closeErr := engine.CloseForUpdate()
+	logger.SetOutput(previousOutput)
+	if closeErr != nil {
+		t.Fatalf("close interrupted runtime with a mounted rootfs: %v", closeErr)
+	}
+	if strings.Contains(shutdownLogs.String(), "container is stopped") {
+		t.Fatalf("forced runtime shutdown retried an already stopped container: %s", shutdownLogs.String())
 	}
 
 	cleanup, err := PrepareStorage(ctx, config)
