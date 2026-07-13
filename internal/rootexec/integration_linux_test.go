@@ -25,7 +25,7 @@ func TestServerExecUsesDelegatedLeafAndKillsProcessTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner, err := rootexec.New(rootexec.Config{
-		CreateLeaf:   func(identifier string) (rootexec.Leaf, error) { return tree.CreateLeaf(identifier) },
+		CreateLeaf:   func(identifier string) (rootexec.Leaf, error) { return tree.CreateOperationLeaf(identifier) },
 		CommandBytes: 4096, OutputBytes: 8, DefaultTimeout: time.Second,
 		MaximumTimeout: 2 * time.Second, MaximumParallel: 1,
 	})

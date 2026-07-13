@@ -467,6 +467,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure server terminal authentication: %w", err)
 	}
+	hostTerminal, err := newHostTerminalApplication(cgroups, store, installation.ID)
+	if err != nil {
+		return fmt.Errorf("configure host terminal: %w", err)
+	}
 	registrySettings := &liveRegistrySettings{store: store, runtime: runtime, certificates: certificates}
 	domains := &liveDomainRepository{store: store, certificates: certificates}
 	var automationHostname string
@@ -574,6 +578,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithDatabaseVersions(databaseVersions),
 		server.WithContainerConsole(installation.AdminHostname, containerConsole),
 		server.WithServerTerminalAuth(serverTerminalAuth),
+		server.WithServerTerminal(
+			installation.AdminHostname, hostTerminal,
+			serverTerminalIdleTimeout, serverTerminalAbsoluteLifetime,
+		),
 		server.WithDiskPressure(pressure),
 		server.WithResourceUsage(resourceUsage),
 		server.WithInfrastructureLogs(infrastructureLogs),

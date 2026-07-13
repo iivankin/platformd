@@ -4,6 +4,7 @@ import {
   Gauge,
   HardDrive,
   RefreshCw,
+  SquareTerminal,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -12,6 +13,7 @@ import type { DiskPressure } from "@/api";
 import { Button } from "@/components/ui/button";
 import { InfrastructureLogs } from "@/infrastructure-logs";
 import { cn } from "@/lib/utils";
+import { ServerTerminalOverlay } from "@/server-terminal-overlay";
 import { useSelfUpdate } from "@/use-self-update";
 
 const levelColor: Record<DiskPressure["level"], string> = {
@@ -160,6 +162,7 @@ const AllocationGrid = ({ pressure }: { pressure?: DiskPressure }) => {
 export const InfrastructurePage = () => {
   const [pressure, setPressure] = useState<DiskPressure>();
   const [error, setError] = useState<string>();
+  const [terminalOpen, setTerminalOpen] = useState(false);
   const {
     error: updateError,
     start,
@@ -228,6 +231,31 @@ export const InfrastructurePage = () => {
 
       <section className="flex flex-col gap-5 border-b border-border px-5 py-5 md:flex-row md:items-center">
         <div className="grid size-10 shrink-0 place-items-center bg-muted">
+          <SquareTerminal className="size-4" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-[9px] tracking-[0.15em] text-muted-foreground uppercase">
+            Server access
+          </p>
+          <p className="mt-1 text-sm font-medium">Interactive root console</p>
+          <p className="mt-2 max-w-2xl text-[10px] leading-4 text-muted-foreground">
+            Opens an ephemeral host PTY after Cloudflare Access and console
+            passphrase verification. Input and output are not recorded.
+          </p>
+        </div>
+        <Button
+          className="shrink-0"
+          onClick={() => setTerminalOpen(true)}
+          type="button"
+          variant="outline"
+        >
+          <SquareTerminal />
+          Open console
+        </Button>
+      </section>
+
+      <section className="flex flex-col gap-5 border-b border-border px-5 py-5 md:flex-row md:items-center">
+        <div className="grid size-10 shrink-0 place-items-center bg-muted">
           <RefreshCw className={cn("size-4", updating && "animate-spin")} />
         </div>
         <div className="min-w-0 flex-1">
@@ -261,6 +289,10 @@ export const InfrastructurePage = () => {
       </section>
 
       <InfrastructureLogs />
+
+      {terminalOpen ? (
+        <ServerTerminalOverlay onClose={() => setTerminalOpen(false)} />
+      ) : null}
     </div>
   );
 };

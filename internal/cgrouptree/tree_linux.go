@@ -20,14 +20,16 @@ const (
 	selfCgroupPath   = "/proc/self/cgroup"
 	controlLeaf      = "control"
 	workloadsLeaf    = "workloads"
+	operationsLeaf   = "operations"
 )
 
 var requiredControllers = []string{"cpu", "io", "memory", "pids"}
 
 type Tree struct {
-	mountRoot    string
-	unitPath     string
-	workloadPath string
+	mountRoot     string
+	unitPath      string
+	workloadPath  string
+	operationPath string
 }
 
 type Leaf struct {
@@ -68,11 +70,18 @@ func setupAt(mountRoot, currentPath string, pid int) (*Tree, error) {
 	if err := removeEmptyCgroupTree(workloadsRoot); err != nil {
 		return nil, fmt.Errorf("reset workload cgroups: %w", err)
 	}
+	operationsRoot := filepath.Join(unitRoot, operationsLeaf)
+	if err := removeEmptyCgroupTree(operationsRoot); err != nil {
+		return nil, fmt.Errorf("reset operation cgroups: %w", err)
+	}
 	if err := enableControllers(unitRoot); err != nil {
 		return nil, err
 	}
 	if err := os.Mkdir(workloadsRoot, 0o755); err != nil {
 		return nil, fmt.Errorf("create workload cgroup root: %w", err)
+	}
+	if err := os.Mkdir(operationsRoot, 0o755); err != nil {
+		return nil, fmt.Errorf("create operation cgroup root: %w", err)
 	}
 	if err := requireControllers(workloadsRoot); err != nil {
 		return nil, err
@@ -82,9 +91,10 @@ func setupAt(mountRoot, currentPath string, pid int) (*Tree, error) {
 	}
 
 	return &Tree{
-		mountRoot:    mountRoot,
-		unitPath:     unitPath,
-		workloadPath: path.Join(unitPath, workloadsLeaf),
+		mountRoot:     mountRoot,
+		unitPath:      unitPath,
+		workloadPath:  path.Join(unitPath, workloadsLeaf),
+		operationPath: path.Join(unitPath, operationsLeaf),
 	}, nil
 }
 
@@ -152,19 +162,19 @@ func cgroupEvent(value, name string) string {
 	return ""
 }
 
-func (tree *Tree) CreateLeaf(resourceID string) (*Leaf, error) {
+func (tree *Tree) CreateOperationLeaf(resourceID string) (*Leaf, error) {
 	if !validResourceID(resourceID) {
 		return nil, fmt.Errorf("invalid cgroup resource ID %q", resourceID)
 	}
-	root := filepath.Join(tree.mountRoot, filepath.FromSlash(strings.TrimPrefix(tree.workloadPath, "/")))
+	root := filepath.Join(tree.mountRoot, filepath.FromSlash(strings.TrimPrefix(tree.operationPath, "/")))
 	leafPath := filepath.Join(root, resourceID)
 	if err := os.Mkdir(leafPath, 0o755); err != nil {
-		return nil, fmt.Errorf("create workload cgroup leaf: %w", err)
+		return nil, fmt.Errorf("create operation cgroup leaf: %w", err)
 	}
 	file, err := os.Open(leafPath)
 	if err != nil {
 		_ = os.Remove(leafPath)
-		return nil, fmt.Errorf("open workload cgroup leaf: %w", err)
+		return nil, fmt.Errorf("open operation cgroup leaf: %w", err)
 	}
 	return &Leaf{path: leafPath, file: file}, nil
 }
@@ -175,7 +185,7 @@ func (leaf *Leaf) FD() uintptr {
 
 func (leaf *Leaf) Kill() error {
 	if err := os.WriteFile(filepath.Join(leaf.path, "cgroup.kill"), []byte("1\n"), 0o644); err != nil {
-		return fmt.Errorf("kill workload cgroup: %w", err)
+		return fmt.Errorf("kill operation cgroup: %w", err)
 	}
 	return nil
 }
