@@ -176,7 +176,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
 	logCleaner, err := containerlogs.NewCleaner(containerlogs.CleanerConfig{
-		Root: paths.LogsRoot, Retention: containerLogRetention,
+		Root: paths.LogsRoot, Retention: containerLogRetention, BudgetBytes: containerLogBudgetBytes,
 	})
 	if err != nil {
 		return err

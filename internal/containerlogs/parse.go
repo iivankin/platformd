@@ -21,33 +21,9 @@ func parseRecords(data []byte, startOffset int64, partialHead bool, source segme
 	result := make([]Record, 0, min(limit, len(lines)))
 	dropped := incompleteTail
 	for _, line := range lines {
-		if len(line) == 0 {
-			lineOffset++
-			continue
-		}
-		fields := bytes.SplitN(line, []byte{' '}, 4)
-		if len(fields) != 4 || (string(fields[1]) != "stdout" && string(fields[1]) != "stderr") || (string(fields[2]) != "F" && string(fields[2]) != "P") {
-			lineOffset += int64(len(line) + 1)
-			continue
-		}
-		timestamp, err := time.Parse(time.RFC3339Nano, string(fields[0]))
-		if err != nil {
-			lineOffset += int64(len(line) + 1)
-			continue
-		}
-		text := sanitizeText(fields[3])
-		truncated := false
-		if len(text) > maximumRecord {
-			text = truncateText(text, maximumRecord-len(truncationMarker)) + truncationMarker
-			truncated = true
-		}
-		if contains == "" || strings.Contains(text, contains) {
-			result = append(result, Record{
-				Timestamp: timestamp, Stream: string(fields[1]), Text: text,
-				DeploymentID: source.deploymentID, AttemptID: source.attemptID,
-				Partial: string(fields[2]) == "P", Truncated: truncated,
-				segment: source.rotation, offset: lineOffset,
-			})
+		record, valid := parseRecordLine(line, source, lineOffset, maximumRecord, false)
+		if valid && (contains == "" || strings.Contains(record.Text, contains)) {
+			result = append(result, record)
 			if len(result) > limit {
 				result = result[1:]
 				dropped = true
@@ -56,6 +32,31 @@ func parseRecords(data []byte, startOffset int64, partialHead bool, source segme
 		lineOffset += int64(len(line) + 1)
 	}
 	return result, dropped
+}
+
+func parseRecordLine(line []byte, source segment, offset int64, maximumRecord int, forcedTruncation bool) (Record, bool) {
+	if len(line) == 0 {
+		return Record{}, false
+	}
+	fields := bytes.SplitN(line, []byte{' '}, 4)
+	if len(fields) != 4 || (string(fields[1]) != "stdout" && string(fields[1]) != "stderr") || (string(fields[2]) != "F" && string(fields[2]) != "P") {
+		return Record{}, false
+	}
+	timestamp, err := time.Parse(time.RFC3339Nano, string(fields[0]))
+	if err != nil {
+		return Record{}, false
+	}
+	text := sanitizeText(fields[3])
+	truncated := forcedTruncation || len(text) > maximumRecord
+	if truncated {
+		text = truncateText(text, maximumRecord-len(truncationMarker)) + truncationMarker
+	}
+	return Record{
+		Timestamp: timestamp, Stream: string(fields[1]), Text: text,
+		DeploymentID: source.deploymentID, AttemptID: source.attemptID,
+		Partial: string(fields[2]) == "P", Truncated: truncated,
+		segment: source.rotation, offset: offset,
+	}, true
 }
 
 func sanitizeText(value []byte) string {

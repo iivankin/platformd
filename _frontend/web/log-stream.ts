@@ -21,6 +21,24 @@ export const serviceLogSocketURL = (
   return url.toString();
 };
 
+export const serviceLogDownloadURL = (
+  projectID: string,
+  serviceID: string,
+  filters: { deploymentId?: string; from: number; to: number },
+  origin = window.location.origin
+) => {
+  const url = new URL(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/logs/download`,
+    origin
+  );
+  url.searchParams.set("from", String(filters.from));
+  url.searchParams.set("to", String(filters.to));
+  if (filters.deploymentId) {
+    url.searchParams.set("deploymentId", filters.deploymentId);
+  }
+  return url.toString();
+};
+
 export const applyLogStreamMessage = (
   current: LogWindow | undefined,
   message: LogStreamMessage,

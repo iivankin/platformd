@@ -20,6 +20,7 @@ import (
 type LogRepository interface {
 	ServiceLogs(context.Context, string, string, string, string, int) (containerlogs.Window, error)
 	ServiceLogRevision(context.Context, string, string, string, string) (string, error)
+	DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error)
 }
 
 const logStreamPollInterval = 250 * time.Millisecond
@@ -29,8 +30,64 @@ func registerLogRoutes(mux *http.ServeMux, hostname string, repository LogReposi
 		return errors.New("log stream hostname is required")
 	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", getServiceLogs(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/download", downloadServiceLogs(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/stream", streamServiceLogs(hostname, repository))
 	return nil
+}
+
+func downloadServiceLogs(repository LogRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		from, to, err := logDownloadRange(request)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_range", err.Error())
+			return
+		}
+		serviceID := request.PathValue("serviceID")
+		response.Header().Set("Cache-Control", "private, no-store")
+		response.Header().Set("Content-Disposition", `attachment; filename="platformd-service-logs.ndjson"`)
+		response.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		response.Header().Set("X-Content-Type-Options", "nosniff")
+		result, err := repository.DownloadServiceLogs(request.Context(), request.PathValue("projectID"), containerlogs.DownloadQuery{
+			ServiceID: serviceID, DeploymentID: request.URL.Query().Get("deploymentId"), From: from, To: to,
+		}, response)
+		if err == nil || result.Bytes != 0 {
+			return
+		}
+		response.Header().Del("Content-Disposition")
+		writeLogDownloadError(response, err)
+	}
+}
+
+func logDownloadRange(request *http.Request) (time.Time, time.Time, error) {
+	fromMillis, err := strconv.ParseInt(request.URL.Query().Get("from"), 10, 64)
+	if err != nil || fromMillis <= 0 {
+		return time.Time{}, time.Time{}, errors.New("from must be a positive Unix millisecond timestamp")
+	}
+	toMillis, err := strconv.ParseInt(request.URL.Query().Get("to"), 10, 64)
+	if err != nil || toMillis <= 0 {
+		return time.Time{}, time.Time{}, errors.New("to must be a positive Unix millisecond timestamp")
+	}
+	from := time.UnixMilli(fromMillis)
+	to := time.UnixMilli(toMillis)
+	if !to.After(from) || to.Sub(from) > containerlogs.MaximumDownloadRange {
+		return time.Time{}, time.Time{}, errors.New("download range must be greater than zero and at most 24 hours")
+	}
+	return from, to, nil
+}
+
+func writeLogDownloadError(response http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, state.ErrServiceNotFound):
+		writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
+	case errors.Is(err, containerlogs.ErrInvalidQuery):
+		writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
+	default:
+		writeAPIError(response, http.StatusInternalServerError, "log_download_failed", "Unable to download service logs")
+	}
 }
 
 func getServiceLogs(repository LogRepository) http.HandlerFunc {

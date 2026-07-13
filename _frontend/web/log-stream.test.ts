@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import type { LogRecord } from "@/api";
-import { applyLogStreamMessage, serviceLogSocketURL } from "@/log-stream";
+import {
+  applyLogStreamMessage,
+  serviceLogDownloadURL,
+  serviceLogSocketURL,
+} from "@/log-stream";
 
 const record = (text: string): LogRecord => ({
   attemptId: "attempt",
@@ -9,6 +13,19 @@ const record = (text: string): LogRecord => ({
   stream: "stdout",
   text,
   timestamp: "2026-07-13T12:00:00Z",
+});
+
+test("builds a bounded log download URL", () => {
+  expect(
+    serviceLogDownloadURL(
+      "project/a",
+      "service",
+      { deploymentId: "deployment", from: 10, to: 20 },
+      "https://admin.example.com"
+    )
+  ).toBe(
+    "https://admin.example.com/api/v1/projects/project%2Fa/services/service/logs/download?from=10&to=20&deploymentId=deployment"
+  );
 });
 
 describe("log stream", () => {

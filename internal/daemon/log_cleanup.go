@@ -11,6 +11,7 @@ import (
 const (
 	containerLogRetention       = 7 * 24 * time.Hour
 	containerLogCleanupInterval = time.Hour
+	containerLogBudgetBytes     = 5 << 30
 )
 
 func runContainerLogCleanup(

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"io"
 
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
@@ -10,6 +11,18 @@ import (
 type liveLogRepository struct {
 	store  *state.Store
 	reader *containerlogs.Reader
+}
+
+func (repository liveLogRepository) DownloadServiceLogs(
+	ctx context.Context,
+	projectID string,
+	query containerlogs.DownloadQuery,
+	destination io.Writer,
+) (containerlogs.DownloadResult, error) {
+	if _, err := repository.store.Service(ctx, projectID, query.ServiceID); err != nil {
+		return containerlogs.DownloadResult{}, err
+	}
+	return repository.reader.Download(ctx, query, destination)
 }
 
 func (repository liveLogRepository) ServiceLogs(ctx context.Context, projectID, serviceID, deploymentID, contains string, limit int) (containerlogs.Window, error) {
