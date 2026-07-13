@@ -1,3 +1,4 @@
+import { ObjectStoreDetailPanel } from "@/object-store-detail-panel";
 import { PostgresDetailPanel } from "@/postgres-detail-panel";
 import type { ResourceFlowNode } from "@/project-flow";
 import { RedisDetailPanel } from "@/redis-detail-panel";
@@ -52,6 +53,16 @@ export const ProjectDetailOverlays = ({
           onClose={onClose}
           postgresID={selectedNode.id}
           projectID={projectID}
+        />
+      );
+    }
+    case "object_store": {
+      return (
+        <ObjectStoreDetailPanel
+          data={selectedNode.data}
+          onClose={onClose}
+          projectID={projectID}
+          storeID={selectedNode.id}
         />
       );
     }

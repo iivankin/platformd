@@ -409,6 +409,58 @@ export interface CreateManagedPostgresInput {
   name: string;
 }
 
+const objectStoreSchema = z.object({
+  accessKey: z.string().min(1).optional(),
+  backupCron: z.string().optional(),
+  backupEnabled: z.boolean(),
+  backupRetentionCount: z.number().int().min(1).max(100),
+  bucketName: z.string().min(3),
+  corsOrigins: z.array(z.string()),
+  createdAt: z.number().int().positive(),
+  credentialPermission: z.enum(["read", "read_write"]).optional(),
+  id: z.string().min(1),
+  internalHostname: z.string().min(1),
+  name: z.string().min(1),
+  projectId: z.string().min(1),
+  publicHostname: z.string().min(1).optional(),
+  region: z.literal("us-east-1"),
+  secret: z.string().min(1).optional(),
+  updatedAt: z.number().int().positive(),
+});
+
+const objectMetadataSchema = z.object({
+  contentType: z.string().optional(),
+  createdAt: z.number().int().positive(),
+  etag: z.string().min(1),
+  objectKey: z.string().min(1),
+  size: z.number().int().nonnegative(),
+  updatedAt: z.number().int().positive(),
+});
+
+const objectPageSchema = z.object({
+  nextContinuationToken: z.string(),
+  objects: z.array(objectMetadataSchema),
+});
+
+const objectPreviewSchema = z.object({
+  allowed: z.boolean(),
+  base64: z.string().optional(),
+  metadata: objectMetadataSchema,
+  text: z.string().optional(),
+});
+
+export type ObjectStore = z.infer<typeof objectStoreSchema>;
+export type ObjectMetadata = z.infer<typeof objectMetadataSchema>;
+export type ObjectPage = z.infer<typeof objectPageSchema>;
+export type ObjectPreview = z.infer<typeof objectPreviewSchema>;
+
+export interface CreateObjectStoreInput {
+  bucketName: string;
+  corsOrigins: string[];
+  name: string;
+  publicHostname?: string;
+}
+
 type Fetcher = (
   input: RequestInfo | URL,
   init?: RequestInit
@@ -1006,6 +1058,154 @@ export const queryManagedPostgres = async (
     );
   }
   return postgresQueryResultSchema.parse(await response.json());
+};
+
+const objectStorePath = (projectID: string, storeID?: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/object-stores${
+    storeID ? `/${encodeURIComponent(storeID)}` : ""
+  }`;
+
+export const createObjectStore = async (
+  projectID: string,
+  input: CreateObjectStoreInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectStore> => {
+  const response = await fetcher(objectStorePath(projectID), {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object store creation failed with ${response.status}`
+    );
+  }
+  return objectStoreSchema.parse(await response.json());
+};
+
+export const fetchObjectStore = async (
+  projectID: string,
+  storeID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectStore> => {
+  const response = await fetcher(objectStorePath(projectID, storeID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object store request failed with ${response.status}`
+    );
+  }
+  return objectStoreSchema.parse(await response.json());
+};
+
+export const fetchObjects = async (
+  projectID: string,
+  storeID: string,
+  options: { continuationToken?: string; limit?: number; prefix?: string } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectPage> => {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+  if (options.prefix) {
+    query.set("prefix", options.prefix);
+  }
+  if (options.continuationToken) {
+    query.set("continuationToken", options.continuationToken);
+  }
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/objects?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object list failed with ${response.status}`
+    );
+  }
+  return objectPageSchema.parse(await response.json());
+};
+
+export const previewObject = async (
+  projectID: string,
+  storeID: string,
+  key: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectPreview> => {
+  const query = new URLSearchParams({ key });
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/objects/preview?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object preview failed with ${response.status}`
+    );
+  }
+  return objectPreviewSchema.parse(await response.json());
+};
+
+export const objectDownloadURL = (
+  projectID: string,
+  storeID: string,
+  key: string
+) =>
+  `${objectStorePath(projectID, storeID)}/objects/download?${new URLSearchParams({ key }).toString()}`;
+
+export const uploadObject = async (
+  projectID: string,
+  storeID: string,
+  key: string,
+  file: Blob,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectMetadata> => {
+  const query = new URLSearchParams({ key });
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/objects?${query.toString()}`,
+    {
+      body: file,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": file.type || "application/octet-stream",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object upload failed with ${response.status}`
+    );
+  }
+  return objectMetadataSchema.parse(await response.json());
+};
+
+export const deleteObject = async (
+  projectID: string,
+  storeID: string,
+  key: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const query = new URLSearchParams({ key });
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/objects?${query.toString()}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object deletion failed with ${response.status}`
+    );
+  }
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>
