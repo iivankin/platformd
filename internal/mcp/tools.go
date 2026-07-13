@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
@@ -97,10 +98,13 @@ func readTools() []Tool {
 	}
 }
 
-func configuredReadTools(managedResources bool) []Tool {
+func configuredReadTools(managedResources, databaseVersions bool) []Tool {
 	tools := readTools()
 	if managedResources {
 		tools = append(tools, managedResourceReadTools()...)
+	}
+	if databaseVersions {
+		tools = append(tools, readDatabaseVersionTool())
 	}
 	return tools
 }
@@ -139,6 +143,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		}
 		if handler.serverExec != nil && identity.ProjectID == nil {
 			tools = append(tools, serverExecTool())
+		}
+		if handler.versions != nil {
+			tools = append(tools, startDatabaseVersionTool())
 		}
 	}
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
@@ -197,6 +204,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.readManagedResourceBackups(request.Context(), call.Arguments, identity)
+	case "read_managed_database_version_change":
+		if handler.versions == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.readDatabaseVersionChange(request.Context(), call.Arguments, identity)
 	case "create_service":
 		output, err = handler.createService(request.Context(), call.Arguments, identity)
 	case "update_service":
@@ -223,12 +236,18 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.executeServerCommand(request.Context(), call.Arguments, identity)
+	case "start_managed_database_version_change":
+		if handler.versions == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.startDatabaseVersionChange(request.Context(), call.Arguments, identity)
 	default:
 		writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

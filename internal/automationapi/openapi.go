@@ -5,7 +5,13 @@ import (
 	"strconv"
 )
 
-func serveOpenAPI(hostname string, serverExecEnabled, managedResourcesEnabled bool) http.HandlerFunc {
+type openAPIFeatures struct {
+	serverExec       bool
+	managedResources bool
+	databaseVersions bool
+}
+
+func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	paths := map[string]any{
 		"/api/v1/me":                                                    readOperation("Read current token identity"),
 		"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
@@ -22,13 +28,17 @@ func serveOpenAPI(hostname string, serverExecEnabled, managedResourcesEnabled bo
 		"/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
 		"/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
 	}
-	if serverExecEnabled {
+	if features.serverExec {
 		paths["/api/v1/server/exec"] = serverExecOperation()
 	}
-	if managedResourcesEnabled {
+	if features.managedResources {
 		paths["/api/v1/projects/{projectID}/managed-resources"] = managedResourceListOperation()
 		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}"] = managedResourceReadOperation("Read one managed resource's lifecycle/configuration metadata")
 		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups"] = managedResourceBackupReadOperation()
+	}
+	if features.databaseVersions {
+		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change"] = databaseVersionStartOperation()
+		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}"] = databaseVersionReadOperation()
 	}
 	document := map[string]any{
 		"openapi": "3.1.0",
@@ -48,6 +58,48 @@ func serveOpenAPI(hostname string, serverExecEnabled, managedResourcesEnabled bo
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func databaseVersionStartOperation() map[string]any {
+	return map[string]any{"post": map[string]any{
+		"summary":    "Start a new-volume managed database image change with expected downtime (admin token)",
+		"parameters": managedDatabaseIdentityParameters(false),
+		"requestBody": map[string]any{
+			"required": true,
+			"content": map[string]any{"application/json": map[string]any{
+				"schema": map[string]string{"$ref": "#/components/schemas/DatabaseVersionChangeRequest"},
+			}},
+		},
+		"responses": map[string]any{
+			"202": map[string]string{"description": "Observational operation and exact source/target digests"},
+			"400": map[string]string{"description": "Invalid target tag"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"403": map[string]string{"description": "Admin role or project boundary denied"},
+			"409": map[string]string{"description": "Resource is busy or target digest is already active"},
+		},
+	}}
+}
+
+func databaseVersionReadOperation() map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary":    "Read one managed database version-change operation",
+		"parameters": managedDatabaseIdentityParameters(true),
+		"responses":  readResponses("Version-change operation"),
+	}}
+}
+
+func managedDatabaseIdentityParameters(withOperation bool) []map[string]any {
+	parameters := []map[string]any{
+		{"name": "projectID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+		{"name": "kind", "in": "path", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"postgres", "redis"}}},
+		{"name": "resourceID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+	}
+	if withOperation {
+		parameters = append(parameters, map[string]any{
+			"name": "operationID", "in": "path", "required": true, "schema": map[string]string{"type": "string"},
+		})
+	}
+	return parameters
 }
 
 func managedResourceListOperation() map[string]any {
@@ -225,6 +277,11 @@ func serviceMutationSchemas() map[string]any {
 		},
 	}
 	return map[string]any{
+		"DatabaseVersionChangeRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required":   []string{"imageTag"},
+			"properties": map[string]any{"imageTag": map[string]string{"type": "string"}},
+		},
 		"ServerExecRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"required": []string{"command"},

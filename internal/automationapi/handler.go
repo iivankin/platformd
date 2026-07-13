@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -36,6 +37,7 @@ type Config struct {
 	Postgres      *automation.ManagedPostgresApplication
 	PostgresStore managedPostgresRepository
 	Managed       *automation.ManagedResourceApplication
+	Versions      *databaseversion.Service
 	ServerExec    *automation.ServerExecApplication
 	Admission     *admission.Gate
 }
@@ -45,7 +47,10 @@ func Handler(config Config) (http.Handler, error) {
 		return nil, errors.New("automation API dependencies are incomplete")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, config.ServerExec != nil, config.Managed != nil))
+	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, openAPIFeatures{
+		serverExec: config.ServerExec != nil, managedResources: config.Managed != nil,
+		databaseVersions: config.Versions != nil,
+	}))
 	mux.HandleFunc("GET /api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}", getProject(config.Repository))
@@ -75,6 +80,10 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources", listManagedResources(config.Managed))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}", getManagedResource(config.Managed))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups", readManagedResourceBackups(config.Managed))
+	}
+	if config.Versions != nil {
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change", startDatabaseVersionChange(config.Versions))
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}", readDatabaseVersionChange(config.Versions))
 	}
 	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", mux)), nil
 }

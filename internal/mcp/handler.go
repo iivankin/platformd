@@ -12,6 +12,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/managedimages"
 )
 
@@ -30,6 +31,7 @@ type Handler struct {
 	redis      *automation.ManagedRedisApplication
 	postgres   *automation.ManagedPostgresApplication
 	managed    *automation.ManagedResourceApplication
+	versions   *databaseversion.Service
 	serverExec *automation.ServerExecApplication
 	tools      []Tool
 	admission  *admission.Gate
@@ -45,6 +47,7 @@ type Config struct {
 	Redis      *automation.ManagedRedisApplication
 	Postgres   *automation.ManagedPostgresApplication
 	Managed    *automation.ManagedResourceApplication
+	Versions   *databaseversion.Service
 	ServerExec *automation.ServerExecApplication
 	Admission  *admission.Gate
 }
@@ -60,8 +63,8 @@ func New(config Config) (*Handler, error) {
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis, postgres: config.Postgres,
-		managed: config.Managed, serverExec: config.ServerExec,
-		tools: configuredReadTools(config.Managed != nil), admission: config.Admission,
+		managed: config.Managed, versions: config.Versions, serverExec: config.ServerExec,
+		tools: configuredReadTools(config.Managed != nil, config.Versions != nil), admission: config.Admission,
 	}, nil
 }
 

@@ -283,6 +283,8 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusBadRequest, "invalid_managed_redis", err.Error())
 	case errors.Is(err, managedredis.ErrInvalidBrowserQuery):
 		writeAPIError(response, http.StatusBadRequest, "invalid_redis_browser_query", err.Error())
+	case errors.Is(err, managedredis.ErrMaintenance):
+		writeAPIError(response, http.StatusConflict, "resource_busy", "Managed Redis is in maintenance")
 	case errors.Is(err, managedredis.ErrNotRunning):
 		writeAPIError(response, http.StatusServiceUnavailable, "redis_not_running", "Managed Redis resource is not running")
 	case errors.Is(err, managedredis.ErrKeyNotFound):

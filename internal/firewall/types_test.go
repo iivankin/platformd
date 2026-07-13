@@ -7,13 +7,20 @@ import (
 
 func TestCanonicalProjectsSortsAndMasks(t *testing.T) {
 	projects, err := canonicalProjects([]Project{
-		{ID: "z", Bridge: "pd-z", Subnet: netip.MustParsePrefix("10.80.2.9/24"), Gateway: netip.MustParseAddr("10.80.2.1")},
+		{
+			ID: "z", Bridge: "pd-z", Subnet: netip.MustParsePrefix("10.80.2.9/24"), Gateway: netip.MustParseAddr("10.80.2.1"),
+			BlockedDatabaseEndpoints: []DatabaseEndpoint{
+				{Address: netip.MustParseAddr("10.80.2.9"), Port: 6379},
+				{Address: netip.MustParseAddr("10.80.2.8"), Port: 5432},
+			},
+		},
 		{ID: "a", Bridge: "pd-a", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1")},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if projects[0].ID != "a" || projects[1].Subnet.String() != "10.80.2.0/24" {
+	if projects[0].ID != "a" || projects[1].Subnet.String() != "10.80.2.0/24" ||
+		projects[1].BlockedDatabaseEndpoints[0].Address.String() != "10.80.2.8" {
 		t.Fatalf("unexpected canonical projects: %+v", projects)
 	}
 }
@@ -30,6 +37,21 @@ func TestCanonicalProjectsRejectsUnsafeTopology(t *testing.T) {
 		},
 		"network gateway": {
 			{ID: "a", Bridge: "pd0", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.0")},
+		},
+		"database outside project": {
+			{
+				ID: "a", Bridge: "pd0", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1"),
+				BlockedDatabaseEndpoints: []DatabaseEndpoint{{Address: netip.MustParseAddr("10.80.2.4"), Port: 5432}},
+			},
+		},
+		"duplicate database endpoint": {
+			{
+				ID: "a", Bridge: "pd0", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1"),
+				BlockedDatabaseEndpoints: []DatabaseEndpoint{
+					{Address: netip.MustParseAddr("10.80.1.4"), Port: 5432},
+					{Address: netip.MustParseAddr("10.80.1.4"), Port: 5432},
+				},
+			},
 		},
 	}
 	for name, projects := range tests {

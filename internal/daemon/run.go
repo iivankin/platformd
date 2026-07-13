@@ -26,6 +26,7 @@ import (
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
@@ -418,6 +419,17 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	databaseVersions, err := databaseversion.New(databaseversion.Config{
+		Context: ctx, Store: store, Admission: mutationAdmission,
+		Adapters: map[string]databaseversion.Adapter{
+			databaseversion.Postgres: postgresVersionAdapter{store: store, runtime: runtime},
+			databaseversion.Redis:    redisVersionAdapter{store: store, runtime: runtime},
+		},
+		OnError: func(err error) { log.Printf("managed database version change: %v", err) },
+	})
+	if err != nil {
+		return err
+	}
 	serverTerminalAuth, err := terminalauth.New(terminalauth.Config{
 		Master: key, InstallationID: installation.ID, Verifier: installation.ConsolePassphrasePHC,
 	})
@@ -456,6 +468,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			RedisStore: automationRepository, Postgres: postgresAutomation,
 			PostgresStore: automationRepository,
 			Managed:       managedResourceAutomation,
+			Versions:      databaseVersions,
 			Admission:     mutationAdmission,
 		})
 		if err != nil {
@@ -465,6 +478,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
 			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
 			Redis: redisAutomation, Postgres: postgresAutomation, Managed: managedResourceAutomation,
+			Versions:  databaseVersions,
 			Admission: mutationAdmission,
 		})
 		if err != nil {
@@ -504,6 +518,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithRegistry(registryApplication, registrySettings),
 		server.WithBackupTargets(backupTargets),
 		server.WithBackupResources(backupResources),
+		server.WithDatabaseVersions(databaseVersions),
 		server.WithContainerConsole(installation.AdminHostname, containerConsole),
 		server.WithServerTerminalAuth(serverTerminalAuth),
 		server.WithDiskPressure(pressure),

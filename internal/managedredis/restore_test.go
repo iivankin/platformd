@@ -43,6 +43,13 @@ func (store *restoreStore) SwitchManagedRedisVolume(_ context.Context, input sta
 		return errors.New("unexpected managed Redis volume switch")
 	}
 	store.resource.VolumeID = input.VolumeID
+	if input.Action == "redis.version_change" {
+		if input.ExpectedImageTag != store.resource.ImageTag || input.ExpectedImageDigest != store.resource.ImageDigest {
+			return errors.New("unexpected managed Redis image switch")
+		}
+		store.resource.ImageTag = input.ImageTag
+		store.resource.ImageDigest = input.ImageDigest
+	}
 	store.resource.UpdatedAtMillis = input.UpdatedAtMillis
 	return nil
 }
@@ -242,7 +249,7 @@ func newRestoreFixture(t *testing.T, switchErr error) restoreFixture {
 	publisher := &restorePublisher{}
 	ids := []string{"new-volume", "runtime-id", "audit-id", "correlation-id", "attempt-id"}
 	controller, err := NewController(Config{
-		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{
@@ -250,10 +257,19 @@ func newRestoreFixture(t *testing.T, switchErr error) restoreFixture {
 				DNSSearch: "shop.internal", CgroupParent: "/workload/redis-id",
 			}, nil
 		},
-		Dial:          func(context.Context, string, string) (RedisConnection, error) { return &testConnection{}, nil },
+		Dial: func(context.Context, string, string) (RedisConnection, error) {
+			return &testConnection{onBackground: func() error {
+				temporary := filepath.Join(oldVolume, "dump.rdb.next")
+				if err := os.WriteFile(temporary, []byte("old-rdb"), 0o600); err != nil {
+					return err
+				}
+				return os.Rename(temporary, filepath.Join(oldVolume, "dump.rdb"))
+			}}, nil
+		},
 		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
 		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
-		Now: func() time.Time { return time.UnixMilli(10) },
+		MaintenanceDrain: time.Nanosecond,
+		Now:              func() time.Time { return time.UnixMilli(10) },
 		NewID: func(time.Time) (string, error) {
 			if len(ids) == 0 {
 				return "", errors.New("unexpected ID allocation")

@@ -18,7 +18,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedpostgres.NewController(managedpostgres.ControllerConfig{
-		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Admission: stack.admission,
+		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
 		OwnerPassword: func(resource state.ManagedPostgres) (string, error) {
 			return managedpostgres.OpenOwnerPassword(master, resource.ID, resource.OwnerPasswordEncrypted)
 		},
@@ -92,6 +92,28 @@ func (stack *runtimeStack) RestoreManagedPostgres(
 		delete(stack.postgresFailures, resourceID)
 	} else {
 		stack.postgresFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) ChangeManagedPostgresVersion(
+	ctx context.Context,
+	input managedpostgres.VersionChangeInput,
+) error {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed PostgreSQL runtime is not ready")
+	}
+	err := controller.ChangeVersion(ctx, input)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.postgresFailures, input.ResourceID)
+	} else {
+		stack.postgresFailures[input.ResourceID] = err
 	}
 	stack.mu.Unlock()
 	return err

@@ -16,11 +16,19 @@ const (
 // Project describes only inspected runtime network facts. It is deliberately
 // free of product state so the entire firewall can be recreated after a crash.
 type Project struct {
-	ID                 string
-	Bridge             string
-	Subnet             netip.Prefix
-	Gateway            netip.Addr
-	ObjectStoreEnabled bool
+	ID                       string
+	Bridge                   string
+	Subnet                   netip.Prefix
+	Gateway                  netip.Addr
+	ObjectStoreEnabled       bool
+	BlockedDatabaseEndpoints []DatabaseEndpoint
+}
+
+// DatabaseEndpoint is process-local maintenance state compiled into the same
+// authoritative ruleset as project isolation. It is never persisted.
+type DatabaseEndpoint struct {
+	Address netip.Addr
+	Port    uint16
 }
 
 func canonicalProjects(projects []Project) ([]Project, error) {
@@ -31,6 +39,13 @@ func canonicalProjects(projects []Project) ([]Project, error) {
 	for index := range result {
 		project := &result[index]
 		project.Subnet = project.Subnet.Masked()
+		project.BlockedDatabaseEndpoints = slices.Clone(project.BlockedDatabaseEndpoints)
+		slices.SortFunc(project.BlockedDatabaseEndpoints, func(left, right DatabaseEndpoint) int {
+			if order := left.Address.Compare(right.Address); order != 0 {
+				return order
+			}
+			return int(left.Port) - int(right.Port)
+		})
 		if err := validateProject(*project); err != nil {
 			return nil, err
 		}
@@ -68,6 +83,15 @@ func validateProject(project Project) error {
 	}
 	if project.Gateway == project.Subnet.Addr() || project.Gateway == lastAddress(project.Subnet) {
 		return fmt.Errorf("firewall project %q gateway %s is not a usable host address", project.ID, project.Gateway)
+	}
+	for index, endpoint := range project.BlockedDatabaseEndpoints {
+		if !endpoint.Address.IsValid() || !endpoint.Address.Is4() || !project.Subnet.Contains(endpoint.Address) ||
+			endpoint.Address == project.Gateway || endpoint.Port == 0 {
+			return fmt.Errorf("firewall project %q has invalid blocked database endpoint %s:%d", project.ID, endpoint.Address, endpoint.Port)
+		}
+		if index > 0 && endpoint == project.BlockedDatabaseEndpoints[index-1] {
+			return fmt.Errorf("firewall project %q has duplicate blocked database endpoint %s:%d", project.ID, endpoint.Address, endpoint.Port)
+		}
 	}
 	return nil
 }

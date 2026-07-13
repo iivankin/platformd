@@ -24,6 +24,7 @@ const (
 	Port                = 6379
 	defaultReadyTimeout = 60 * time.Second
 	defaultProbePeriod  = 250 * time.Millisecond
+	defaultDrainTimeout = 2 * time.Second
 	backupSaveTimeout   = 30 * time.Minute
 	stopTimeoutSeconds  = 10
 )
@@ -48,9 +49,14 @@ type GrowthGate interface {
 	PermitGrowth(context.Context) error
 }
 
+type MaintenanceGate interface {
+	BlockDatabase(context.Context, string, netip.Addr, uint16) (func() error, error)
+}
+
 type RedisConnection interface {
 	Ping(context.Context) error
 	Save(context.Context) error
+	KillNormalClients(context.Context) error
 	BeginBackgroundSave(context.Context) error
 	PersistenceStatus(context.Context) (PersistenceStatus, error)
 	ScanKeys(context.Context, ScanQuery) (KeyPage, error)
@@ -77,23 +83,25 @@ type Publisher interface {
 }
 
 type Config struct {
-	Store         Store
-	Engine        Engine
-	Publisher     Publisher
-	Growth        GrowthGate
-	Admission     *admission.Gate
-	Password      func(state.ManagedRedis) (string, error)
-	Placement     func(state.ManagedRedis) (Placement, error)
-	Dial          func(context.Context, string, string) (RedisConnection, error)
-	GeneratedRoot string
-	VolumeRoot    string
-	LogRoot       string
-	LogSizeBytes  int64
-	LogMaxFiles   uint
-	ReadyTimeout  time.Duration
-	ProbePeriod   time.Duration
-	Now           func() time.Time
-	NewID         func(time.Time) (string, error)
+	Store            Store
+	Engine           Engine
+	Publisher        Publisher
+	Growth           GrowthGate
+	Maintenance      MaintenanceGate
+	Admission        *admission.Gate
+	Password         func(state.ManagedRedis) (string, error)
+	Placement        func(state.ManagedRedis) (Placement, error)
+	Dial             func(context.Context, string, string) (RedisConnection, error)
+	GeneratedRoot    string
+	VolumeRoot       string
+	LogRoot          string
+	LogSizeBytes     int64
+	LogMaxFiles      uint
+	ReadyTimeout     time.Duration
+	ProbePeriod      time.Duration
+	MaintenanceDrain time.Duration
+	Now              func() time.Time
+	NewID            func(time.Time) (string, error)
 }
 
 type activeRuntime struct {
@@ -104,31 +112,34 @@ type activeRuntime struct {
 }
 
 type Controller struct {
-	store         Store
-	engine        Engine
-	publisher     Publisher
-	growth        GrowthGate
-	admission     *admission.Gate
-	password      func(state.ManagedRedis) (string, error)
-	placement     func(state.ManagedRedis) (Placement, error)
-	dial          func(context.Context, string, string) (RedisConnection, error)
-	generatedRoot string
-	volumeRoot    string
-	logRoot       string
-	logSizeBytes  int64
-	logMaxFiles   uint
-	readyTimeout  time.Duration
-	probePeriod   time.Duration
-	now           func() time.Time
-	newID         func(time.Time) (string, error)
+	store            Store
+	engine           Engine
+	publisher        Publisher
+	growth           GrowthGate
+	maintenance      MaintenanceGate
+	admission        *admission.Gate
+	password         func(state.ManagedRedis) (string, error)
+	placement        func(state.ManagedRedis) (Placement, error)
+	dial             func(context.Context, string, string) (RedisConnection, error)
+	generatedRoot    string
+	volumeRoot       string
+	logRoot          string
+	logSizeBytes     int64
+	logMaxFiles      uint
+	readyTimeout     time.Duration
+	probePeriod      time.Duration
+	maintenanceDrain time.Duration
+	now              func() time.Time
+	newID            func(time.Time) (string, error)
 
-	mu     sync.Mutex
-	locks  map[string]*sync.Mutex
-	active map[string]activeRuntime
+	mu          sync.Mutex
+	locks       map[string]*sync.Mutex
+	active      map[string]activeRuntime
+	maintaining map[string]struct{}
 }
 
 func NewController(config Config) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Admission == nil || config.Password == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Maintenance == nil || config.Admission == nil || config.Password == nil || config.Placement == nil {
 		return nil, errors.New("managed Redis controller dependencies are incomplete")
 	}
 	if !safeRoot(config.GeneratedRoot) || !safeRoot(config.VolumeRoot) || !safeRoot(config.LogRoot) {
@@ -151,7 +162,11 @@ func NewController(config Config) (*Controller, error) {
 	if probePeriod == 0 {
 		probePeriod = defaultProbePeriod
 	}
-	if readyTimeout < 0 || probePeriod < 0 {
+	maintenanceDrain := config.MaintenanceDrain
+	if maintenanceDrain == 0 {
+		maintenanceDrain = defaultDrainTimeout
+	}
+	if readyTimeout < 0 || probePeriod < 0 || maintenanceDrain < 0 {
 		return nil, errors.New("managed Redis readiness timing cannot be negative")
 	}
 	now := config.Now
@@ -163,12 +178,12 @@ func NewController(config Config) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, admission: config.Admission,
+		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		password: config.Password, placement: config.Placement, dial: dial,
 		generatedRoot: config.GeneratedRoot, volumeRoot: config.VolumeRoot, logRoot: config.LogRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
-		readyTimeout: readyTimeout, probePeriod: probePeriod, now: now, newID: newID,
-		locks: make(map[string]*sync.Mutex), active: make(map[string]activeRuntime),
+		readyTimeout: readyTimeout, probePeriod: probePeriod, maintenanceDrain: maintenanceDrain, now: now, newID: newID,
+		locks: make(map[string]*sync.Mutex), active: make(map[string]activeRuntime), maintaining: make(map[string]struct{}),
 	}, nil
 }
 
@@ -400,6 +415,14 @@ func (controller *Controller) OpenBackupRDB(ctx context.Context, resourceID stri
 	if err != nil {
 		return nil, err
 	}
+	return controller.openFreshRDB(ctx, active, password)
+}
+
+func (controller *Controller) openFreshRDB(
+	ctx context.Context,
+	active activeRuntime,
+	password string,
+) (*os.File, error) {
 	container, err := controller.engine.InspectContainer(active.container.ID)
 	if err != nil {
 		return nil, err
@@ -505,7 +528,10 @@ func (controller *Controller) waitForBackgroundSave(
 }
 
 func (controller *Controller) ScanKeys(ctx context.Context, resourceID string, query ScanQuery) (KeyPage, error) {
-	active, ok := controller.activeRuntime(resourceID)
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return KeyPage{}, ErrMaintenance
+	}
 	if !ok {
 		return KeyPage{}, ErrNotRunning
 	}
@@ -530,7 +556,10 @@ func (controller *Controller) ScanKeys(ctx context.Context, resourceID string, q
 }
 
 func (controller *Controller) PreviewKey(ctx context.Context, resourceID string, query PreviewQuery) (Preview, error) {
-	active, ok := controller.activeRuntime(resourceID)
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return Preview{}, ErrMaintenance
+	}
 	if !ok {
 		return Preview{}, ErrNotRunning
 	}
@@ -560,7 +589,10 @@ func (controller *Controller) Mutate(ctx context.Context, resourceID string, mut
 		return MutationResult{}, err
 	}
 	defer lease.Release()
-	active, ok := controller.activeRuntime(resourceID)
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return MutationResult{}, ErrMaintenance
+	}
 	if !ok {
 		return MutationResult{}, ErrNotRunning
 	}
@@ -704,6 +736,30 @@ func (controller *Controller) activeRuntime(resourceID string) (activeRuntime, b
 	defer controller.mu.Unlock()
 	active, ok := controller.active[resourceID]
 	return active, ok
+}
+
+func (controller *Controller) availableRuntime(resourceID string) (activeRuntime, bool, bool) {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	_, maintenance := controller.maintaining[resourceID]
+	active, exists := controller.active[resourceID]
+	return active, exists, maintenance
+}
+
+func (controller *Controller) beginMaintenance(resourceID string) bool {
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if _, exists := controller.maintaining[resourceID]; exists {
+		return false
+	}
+	controller.maintaining[resourceID] = struct{}{}
+	return true
+}
+
+func (controller *Controller) endMaintenance(resourceID string) {
+	controller.mu.Lock()
+	delete(controller.maintaining, resourceID)
+	controller.mu.Unlock()
 }
 
 func (controller *Controller) setActive(resourceID string, active activeRuntime) {

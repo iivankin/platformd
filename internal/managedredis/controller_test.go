@@ -90,6 +90,7 @@ func (engine *testEngine) InspectContainer(string) (containerengine.Container, e
 type testConnection struct {
 	pinged         bool
 	saved          bool
+	killed         bool
 	backgroundSave bool
 	closed         bool
 	statuses       []PersistenceStatus
@@ -103,6 +104,11 @@ func (connection *testConnection) Ping(context.Context) error {
 
 func (connection *testConnection) Save(context.Context) error {
 	connection.saved = true
+	return nil
+}
+
+func (connection *testConnection) KillNormalClients(context.Context) error {
+	connection.killed = true
 	return nil
 }
 
@@ -180,7 +186,7 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 	publisher := &testPublisher{}
 	connections := make([]*testConnection, 0, 2)
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1"), DNSSearch: "shop.internal", CgroupParent: "/workload/redis-id"}, nil
@@ -263,7 +269,7 @@ func TestControllerDoesNotPublishAndRemovesFailedReadinessCandidate(t *testing.T
 	}
 	publisher := &testPublisher{}
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1")}, nil
@@ -309,7 +315,7 @@ func TestOpenBackupRDBReturnsNewStableInode(t *testing.T) {
 	rdbPath := filepath.Join(volumeRoot, resource.ProjectID, resource.VolumeID, "dump.rdb")
 	connections := 0
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: &testPublisher{}, Growth: allowGrowthGate{}, Admission: admission.New(),
+		Store: testStore{resource: resource}, Engine: engine, Publisher: &testPublisher{}, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1")}, nil

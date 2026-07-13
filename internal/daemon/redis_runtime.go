@@ -18,7 +18,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedredis.NewController(managedredis.Config{
-		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Admission: stack.admission,
+		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
 		Password: func(resource state.ManagedRedis) (string, error) {
 			return managedredis.OpenPassword(master, resource.ID, resource.PasswordEncrypted)
 		},
@@ -90,6 +90,28 @@ func (stack *runtimeStack) RestoreManagedRedis(
 		delete(stack.redisFailures, resourceID)
 	} else {
 		stack.redisFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) ChangeManagedRedisVersion(
+	ctx context.Context,
+	input managedredis.VersionChangeInput,
+) error {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed Redis runtime is not ready")
+	}
+	err := controller.ChangeVersion(ctx, input)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.redisFailures, input.ResourceID)
+	} else {
+		stack.redisFailures[input.ResourceID] = err
 	}
 	stack.mu.Unlock()
 	return err

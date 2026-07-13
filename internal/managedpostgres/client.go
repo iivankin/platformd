@@ -27,6 +27,7 @@ const (
 var (
 	ErrInvalidQuery = errors.New("invalid managed PostgreSQL query")
 	ErrNotRunning   = errors.New("managed PostgreSQL resource is not running")
+	ErrMaintenance  = errors.New("managed PostgreSQL resource is in maintenance")
 )
 
 type Column struct {
