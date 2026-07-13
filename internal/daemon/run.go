@@ -275,6 +275,21 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 			Admission: mutationAdmission, Master: key,
 			Restorers: map[string]backup.ResourceRestorer{
+				"redis": backup.ResourceRestorerFunc(func(
+					restoreContext context.Context,
+					request backup.ResourceRestoreRequest,
+				) error {
+					if request.Options.Mode != "replace" || !request.Options.DestructiveConfirmed ||
+						request.Options.NewResourceName != "" {
+						return errors.New("managed Redis restore requires confirmed replace mode")
+					}
+					return runtime.RestoreManagedRedis(
+						restoreContext, request.ResourceID, request.Source.Reader,
+						managedredis.Actor{
+							Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
+						},
+					)
+				}),
 				"object_store": backup.ResourceRestorerFunc(func(
 					restoreContext context.Context,
 					request backup.ResourceRestoreRequest,

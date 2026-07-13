@@ -17,8 +17,6 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/id"
-	"github.com/iivankin/platformd/internal/managedimages"
-	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -33,6 +31,7 @@ const (
 type Store interface {
 	ManagedRedis(context.Context, string) (state.ManagedRedis, error)
 	ManagedRedisResources(context.Context) ([]state.ManagedRedis, error)
+	SwitchManagedRedisVolume(context.Context, state.SwitchManagedRedisVolume) error
 }
 
 type Engine interface {
@@ -101,6 +100,7 @@ type activeRuntime struct {
 	resource  state.ManagedRedis
 	container containerengine.Container
 	network   string
+	runtimeID string
 }
 
 type Controller struct {
@@ -213,26 +213,9 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err != nil {
 		return fmt.Errorf("place managed Redis runtime: %w", err)
 	}
-	reference, err := managedimages.Reference(managedimages.Redis, resource.ImageTag)
+	image, err := controller.resolveImage(ctx, resource)
 	if err != nil {
 		return err
-	}
-	pinned, err := serviceconfig.PinnedReference(reference, resource.ImageDigest)
-	if err != nil {
-		return err
-	}
-	image, inspectErr := controller.engine.InspectImage(ctx, resource.ImageDigest)
-	if inspectErr != nil {
-		if err := controller.growth.PermitGrowth(ctx); err != nil {
-			return fmt.Errorf("managed Redis image is not cached: %w", err)
-		}
-		image, err = controller.engine.Pull(ctx, containerengine.PullRequest{Reference: pinned})
-		if err != nil {
-			return fmt.Errorf("pull pinned managed Redis image: %w", err)
-		}
-	}
-	if image.ID == "" || image.Digest != resource.ImageDigest {
-		return fmt.Errorf("managed Redis image digest = %q, want %q", image.Digest, resource.ImageDigest)
 	}
 	volume, err := ensureVolume(controller.volumeRoot, resource.ProjectID, resource.VolumeID)
 	if err != nil {
@@ -262,7 +245,9 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err := controller.publisher.PublishRedis(resource, ready); err != nil {
 		return fmt.Errorf("publish managed Redis: %w", err)
 	}
-	controller.setActive(resource.ID, activeRuntime{resource: resource, container: ready, network: placement.NetworkName})
+	controller.setActive(resource.ID, activeRuntime{
+		resource: resource, container: ready, network: placement.NetworkName, runtimeID: resource.ID,
+	})
 	remove = false
 	return nil
 }
@@ -600,6 +585,21 @@ func (controller *Controller) Mutate(ctx context.Context, resourceID string, mut
 }
 
 func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedRedis, imageID string, placement Placement, volume, configPath string) (containerengine.Container, error) {
+	return controller.createContainerAttempt(ctx, resource, resource.ID, imageID, placement, volume, configPath)
+}
+
+func (controller *Controller) createContainerAttempt(
+	ctx context.Context,
+	resource state.ManagedRedis,
+	runtimeID string,
+	imageID string,
+	placement Placement,
+	volume string,
+	configPath string,
+) (containerengine.Container, error) {
+	if !safePathComponent(runtimeID) {
+		return containerengine.Container{}, errors.New("managed Redis runtime ID is invalid")
+	}
 	attemptID, err := controller.newID(controller.now())
 	if err != nil {
 		return containerengine.Container{}, fmt.Errorf("allocate managed Redis runtime attempt ID: %w", err)
@@ -609,7 +609,7 @@ func (controller *Controller) createContainer(ctx context.Context, resource stat
 		return containerengine.Container{}, fmt.Errorf("create managed Redis log directory: %w", err)
 	}
 	return controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
-		ImageID: imageID, Name: "platformd-redis-" + resource.ID,
+		ImageID: imageID, Name: "platformd-redis-" + runtimeID,
 		Command: []string{"redis-server", "/run/platformd/redis.conf"},
 		Labels: map[string]string{
 			"io.platformd.owner": "redis", "io.platformd.project-id": resource.ProjectID,
