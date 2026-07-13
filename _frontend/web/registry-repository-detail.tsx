@@ -340,6 +340,7 @@ export const RegistryRepositoryDetail = ({
                   </Button>
                 ) : null}
                 <Button
+                  aria-label={`Delete manifest ${selected.digest}`}
                   disabled={Boolean(busy)}
                   onClick={() => void removeImage()}
                   size="icon"
