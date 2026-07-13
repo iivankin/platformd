@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/coder/websocket"
@@ -40,17 +41,32 @@ type OpenRequest struct {
 
 type Open func(context.Context, OpenRequest, Size) (Session, error)
 type Admission func(*http.Request) (release func(), err error)
+type Authorization func(*http.Request, access.Identity) error
 
 type Handler struct {
-	hostname string
-	open     Open
-	idle     time.Duration
-	lifetime time.Duration
-	admit    Admission
+	hostname    string
+	open        Open
+	idle        time.Duration
+	lifetime    time.Duration
+	admit       Admission
+	authorize   Authorization
+	subprotocol string
 }
 
 func (handler *Handler) SetAdmission(admit Admission) {
 	handler.admit = admit
+}
+
+func (handler *Handler) SetAuthorization(authorize Authorization) {
+	handler.authorize = authorize
+}
+
+func (handler *Handler) RequireSubprotocol(protocol string) error {
+	if !validSubprotocol(protocol) {
+		return errors.New("terminal WebSocket subprotocol is invalid")
+	}
+	handler.subprotocol = protocol
+	return nil
 }
 
 func New(hostname string, open Open, idle, lifetime time.Duration) (*Handler, error) {
@@ -73,6 +89,16 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		http.Error(response, http.StatusText(http.StatusForbidden), http.StatusForbidden)
 		return
 	}
+	if handler.authorize != nil {
+		if err := handler.authorize(request, identity); err != nil {
+			http.Error(response, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+	}
+	if handler.subprotocol != "" && !subprotocolOffered(request, handler.subprotocol) {
+		http.Error(response, "required terminal WebSocket subprotocol was not offered", http.StatusBadRequest)
+		return
+	}
 	size, err := initialSize(request)
 	if err != nil {
 		http.Error(response, err.Error(), http.StatusBadRequest)
@@ -88,9 +114,11 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		defer release()
 	}
 
-	connection, err := websocket.Accept(response, request, &websocket.AcceptOptions{
-		CompressionMode: websocket.CompressionDisabled,
-	})
+	acceptOptions := &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled}
+	if handler.subprotocol != "" {
+		acceptOptions.Subprotocols = []string{handler.subprotocol}
+	}
+	connection, err := websocket.Accept(response, request, acceptOptions)
 	if err != nil {
 		return
 	}
@@ -155,6 +183,31 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 			return
 		}
 	}
+}
+
+func validSubprotocol(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("!#$%&'*+-.^_`|~", character) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func subprotocolOffered(request *http.Request, expected string) bool {
+	for _, value := range request.Header.Values("Sec-WebSocket-Protocol") {
+		for protocol := range strings.SplitSeq(value, ",") {
+			if strings.TrimSpace(protocol) == expected {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func normalWebSocketClose(err error) bool {

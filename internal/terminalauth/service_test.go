@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,15 @@ func TestServiceIssuesSubjectBoundExpiringTokenAndClearsPassphrase(t *testing.T)
 	}
 	if err := service.Verify(issued.Value, "access-subject"); err != nil {
 		t.Fatal(err)
+	}
+	request := httptest.NewRequest("GET", "https://admin.example.com/api/v1/server/terminal", nil)
+	request.Header.Set("Sec-WebSocket-Protocol", terminalauth.WebSocketProtocol+", "+terminalauth.WebSocketBearerPrefix+issued.Value)
+	if err := service.VerifyWebSocketRequest(request, "access-subject"); err != nil {
+		t.Fatalf("verify WebSocket bearer: %v", err)
+	}
+	request.Header.Set("Sec-WebSocket-Protocol", terminalauth.WebSocketBearerPrefix+issued.Value)
+	if err := service.VerifyWebSocketRequest(request, "access-subject"); !errors.Is(err, terminalauth.ErrInvalidToken) {
+		t.Fatalf("missing fixed WebSocket protocol verification = %v", err)
 	}
 	if err := service.Verify(issued.Value, "different-subject"); !errors.Is(err, terminalauth.ErrInvalidToken) {
 		t.Fatalf("wrong-subject verification = %v", err)
