@@ -46,6 +46,24 @@ FROM installation WHERE singleton = 1`).Scan(&installationID, &teamDomain, &audi
 		if teamDomain == "" || audience == "" {
 			return errors.New("restored Access configuration is empty")
 		}
+		// The control snapshot contains complete SQLite configuration, but a
+		// fresh VPS has none of the corresponding Registry/S3 payload files.
+		// Clear only content metadata at the one-time recovery boundary; each
+		// resource restore will republish its own latest generation. Keeping
+		// repositories, stores, credentials and policies makes recovery usable
+		// without introducing a second control-state format.
+		for _, statement := range []string{
+			"DELETE FROM registry_uploads",
+			"DELETE FROM registry_tags",
+			"DELETE FROM registry_manifests",
+			"DELETE FROM multipart_uploads",
+			"DELETE FROM objects",
+			"DELETE FROM object_payloads",
+		} {
+			if _, err := transaction.ExecContext(ctx, statement); err != nil {
+				return fmt.Errorf("clear resource content for recovery: %w", err)
+			}
+		}
 		if _, err := transaction.ExecContext(ctx, `
 UPDATE installation
 SET access_team_domain = ?, access_audience = ?, recovery_mode = 1, updated_at = ?
