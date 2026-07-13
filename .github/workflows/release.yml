@@ -118,10 +118,10 @@ jobs:
             -trimpath \
             -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" \
             -ldflags "-X github.com/iivankin/platformd/internal/version.Version=$VERSION -X github.com/iivankin/platformd/internal/version.Commit=$GITHUB_SHA" \
-            -o dist/platformd \
+            -o dist/platformd-linux-amd64 \
             .
-          go run ./tools/bundle --executable dist/platformd --runtime dist/runtime
-          python3 -m zipfile -t dist/platformd
+          go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
+          python3 -m zipfile -t dist/platformd-linux-amd64
 
       - name: Sign release manifest
         env:
@@ -132,7 +132,7 @@ jobs:
           umask 077
           printf '%s' "$RELEASE_PRIVATE_KEY_B64" | base64 --decode > "$key_path"
           arguments=(
-            --binary dist/platformd
+            --binary dist/platformd-linux-amd64
             --binary-url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/platformd-linux-amd64"
             --version "$VERSION"
             --private-key "$key_path"
@@ -146,7 +146,7 @@ jobs:
           fi
           go run ./tools/release-manifest "${arguments[@]}"
           rm -f "$key_path"
-          sha256sum dist/platformd dist/platformd-linux-amd64.manifest.json > dist/SHA256SUMS
+          sha256sum dist/platformd-linux-amd64 dist/platformd-linux-amd64.manifest.json > dist/SHA256SUMS
 
       - name: Publish immutable release assets
         env:
@@ -157,6 +157,6 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "v$VERSION" \
             --generate-notes \
-            "dist/platformd#platformd-linux-amd64" \
+            dist/platformd-linux-amd64 \
             dist/platformd-linux-amd64.manifest.json \
             dist/SHA256SUMS
