@@ -26,33 +26,34 @@ import (
 )
 
 type runtimeStack struct {
-	mu                  sync.Mutex
-	ctx                 context.Context
-	closed              bool
-	engine              *containerengine.Engine
-	firewall            *firewall.Manager
-	forwarder           *internaldns.ForwardCache
-	upstreams           []netip.AddrPort
-	firewallProjects    map[string]firewall.Project
-	networks            []string
-	projectFailures     []projectnetwork.Failure
-	dnsServers          []*internaldns.Server
-	dnsZones            map[string]*internaldns.Zone
-	projectNetworks     map[string]containerengine.Network
-	paths               layout.Paths
-	cgroupRoot          string
-	deployments         *deployment.Controller
-	serviceWatcher      *servicewatcher.Watcher
-	serviceRestarts     *servicerestart.Manager
-	serviceFailures     map[string]error
-	publishedServices   map[string]bool
-	managedRedis        *managedredis.Controller
-	redisFailures       map[string]error
-	managedPostgres     *managedpostgres.Controller
-	postgresFailures    map[string]error
-	objectStoreHandler  http.Handler
-	objectStoreServers  map[string]*objectStoreServer
-	objectStoreFailures map[string]error
+	mu                   sync.Mutex
+	ctx                  context.Context
+	closed               bool
+	engine               *containerengine.Engine
+	firewall             *firewall.Manager
+	forwarder            *internaldns.ForwardCache
+	upstreams            []netip.AddrPort
+	firewallProjects     map[string]firewall.Project
+	networks             []string
+	projectFailures      []projectnetwork.Failure
+	dnsServers           []*internaldns.Server
+	dnsZones             map[string]*internaldns.Zone
+	projectNetworks      map[string]containerengine.Network
+	paths                layout.Paths
+	cgroupRoot           string
+	deployments          *deployment.Controller
+	serviceWatcher       *servicewatcher.Watcher
+	embeddedRegistryHost string
+	serviceRestarts      *servicerestart.Manager
+	serviceFailures      map[string]error
+	publishedServices    map[string]bool
+	managedRedis         *managedredis.Controller
+	redisFailures        map[string]error
+	managedPostgres      *managedpostgres.Controller
+	postgresFailures     map[string]error
+	objectStoreHandler   http.Handler
+	objectStoreServers   map[string]*objectStoreServer
+	objectStoreFailures  map[string]error
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {

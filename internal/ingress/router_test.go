@@ -90,6 +90,40 @@ func TestRouterDispatchesObjectStoreAndPreservesIndependentRouteViews(t *testing
 	}
 }
 
+func TestRouterReloadsRegistryWithoutLosingOtherRoutes(t *testing.T) {
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		RegistryHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusAccepted)
+		}),
+		Backends: backendStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.ReloadObjectStores([]string{"objects.example.com"})
+	if err := router.ReloadRegistry("Registry.Example.com"); err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("registry.example.com", "registry.example.com"))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("registry status = %d", response.Code)
+	}
+	if router.routes.Load().services["app.example.com"] != "service-a" || len(router.routes.Load().objectStores) != 1 {
+		t.Fatalf("registry reload lost routes: %+v", router.routes.Load())
+	}
+	if err := router.ReloadRegistry(""); err != nil {
+		t.Fatal(err)
+	}
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("registry.example.com", "registry.example.com"))
+	if response.Code != http.StatusMisdirectedRequest {
+		t.Fatalf("disabled registry status = %d", response.Code)
+	}
+}
+
 func TestRouterProxiesApplicationAndReplacesForwardingHeaders(t *testing.T) {
 	received := make(chan *http.Request, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {

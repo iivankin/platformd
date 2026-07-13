@@ -10,6 +10,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/imagecredential"
+	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
@@ -20,11 +21,18 @@ const (
 	serviceLogMaxFiles     = 3
 )
 
-func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, credentials deployment.CredentialResolver) error {
+func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, credentials deployment.CredentialResolver, registryApplication *registry.Application) error {
+	var imageSources deployment.ImageSourceResolver
+	if registryApplication != nil {
+		imageSources = embeddedImageSourceResolver{
+			runtime: stack, application: registryApplication, generatedRoot: stack.paths.GeneratedRoot,
+		}
+	}
 	controller, err := deployment.New(deployment.Config{
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
-		Placement: stack.servicePlacement,
-		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
+		ImageSources: imageSources,
+		Placement:    stack.servicePlacement,
+		LogRoot:      stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
 		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,
 	})
 	if err != nil {
@@ -71,15 +79,12 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 }
 
 func (stack *runtimeStack) ConfigureServiceWatcher(ctx context.Context, store *state.Store, embeddedRegistryHost string) error {
+	stack.mu.Lock()
+	stack.embeddedRegistryHost = embeddedRegistryHost
+	stack.mu.Unlock()
 	watcher, err := servicewatcher.New(servicewatcher.Config{
 		Store: store, Deployer: stack,
-		IsEmbedded: func(reference string) bool {
-			if embeddedRegistryHost == "" {
-				return false
-			}
-			host, hostErr := imagecredential.HostForReference(reference)
-			return hostErr == nil && host == embeddedRegistryHost
-		},
+		IsEmbedded: stack.isEmbeddedReference,
 	})
 	if err != nil {
 		return err
@@ -95,6 +100,37 @@ func (stack *runtimeStack) ConfigureServiceWatcher(ctx context.Context, store *s
 	stack.serviceWatcher = watcher
 	stack.mu.Unlock()
 	return nil
+}
+
+func (stack *runtimeStack) SetEmbeddedRegistryHost(hostname string) {
+	stack.mu.Lock()
+	stack.embeddedRegistryHost = hostname
+	watcher := stack.serviceWatcher
+	stack.mu.Unlock()
+	if watcher != nil {
+		watcher.Reclassify()
+	}
+}
+
+func (stack *runtimeStack) isEmbeddedReference(reference string) bool {
+	host, err := imagecredential.HostForReference(reference)
+	if err != nil {
+		return false
+	}
+	stack.mu.Lock()
+	embedded := stack.embeddedRegistryHost
+	stack.mu.Unlock()
+	return embedded != "" && host == embedded
+}
+
+func (stack *runtimeStack) RegistryTagPublished(repository, tag string) {
+	stack.mu.Lock()
+	hostname := stack.embeddedRegistryHost
+	watcher := stack.serviceWatcher
+	stack.mu.Unlock()
+	if hostname != "" && watcher != nil {
+		watcher.NotifyEmbedded(hostname + "/" + repository + ":" + tag)
+	}
 }
 
 func (stack *runtimeStack) TrackService(ctx context.Context, serviceID string, retry bool) error {

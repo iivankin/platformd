@@ -33,15 +33,15 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 1 {
+	if version != 2 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int
-	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'registry_manifests', 'registry_tags', 'registry_uploads', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount != 8 {
-		t.Fatalf("core table count = %d, want 8", tableCount)
+	if tableCount != 11 {
+		t.Fatalf("core table count = %d, want 11", tableCount)
 	}
 }
 
@@ -93,6 +93,55 @@ func TestWriterSerializesTransactions(t *testing.T) {
 	}
 	if count != 2 {
 		t.Fatalf("project count = %d", count)
+	}
+}
+
+func TestOpenMigratesVersionOneRegistryStateAtomically(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "platformd.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.Exec(`
+CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
+CREATE TABLE installation(
+  singleton INTEGER PRIMARY KEY, admin_hostname TEXT NOT NULL UNIQUE,
+  automation_hostname TEXT UNIQUE
+) STRICT;
+CREATE TABLE registry_repositories(id TEXT PRIMARY KEY) STRICT;
+CREATE TABLE registry_credentials(
+  id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE
+) STRICT;
+INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
+PRAGMA user_version = 1;`)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(context.Background(), path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var version, tables int
+	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QueryRowContext(context.Background(), `
+SELECT count(*) FROM sqlite_schema
+WHERE type = 'table' AND name IN ('registry_manifests', 'registry_tags', 'registry_uploads')`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if version != 2 || tables != 3 {
+		t.Fatalf("migrated version/tables = %d/%d", version, tables)
 	}
 }
 

@@ -9,9 +9,16 @@ import {
   createProject,
   createImageCredential,
   createManagedPostgres,
+  createRegistryRepository,
+  createRegistryCredential,
+  cleanupRegistryRepository,
   createService,
   detachServiceDomain,
   deleteObject,
+  deleteRegistryImage,
+  deleteRegistryCredential,
+  deleteRegistryRepository,
+  deleteRegistryTag,
   fetchAPITokens,
   fetchAuditEvents,
   fetchService,
@@ -28,6 +35,11 @@ import {
   fetchObjectStore,
   fetchProjectCanvas,
   fetchProjects,
+  fetchRegistryImage,
+  fetchRegistryImages,
+  fetchRegistryCredentials,
+  fetchRegistryRepositories,
+  fetchRegistrySettings,
   mutateManagedRedis,
   objectDownloadURL,
   previewObject,
@@ -37,6 +49,8 @@ import {
   revokeAPIToken,
   rollbackService,
   scanManagedRedisKeys,
+  setRegistryHostname,
+  setRegistryRepositoryPublicPull,
   updateService,
   uploadObject,
 } from "@/api";
@@ -880,4 +894,143 @@ test("creates and revokes one-time API tokens", async () => {
     return Promise.resolve(new Response(null, { status: 204 }));
   });
   expect(revokeURL).toBe("/api/v1/tokens/token%2Fwith%20slash");
+});
+
+test("uses the Registry settings, repository, image, and deletion contracts", async () => {
+  const repository = {
+    backupEnabled: false,
+    backupRetentionCount: 7,
+    blobCount: 2,
+    createdAt: 1,
+    id: "repository/id",
+    manifestCount: 1,
+    name: "team/api",
+    publicPull: false,
+    referencedBlobBytes: 42,
+    tagCount: 1,
+    totalBlobBytes: 42,
+    updatedAt: 1,
+  };
+  const image = {
+    blobDigests: ["sha256:blob"],
+    digest: "sha256:digest",
+    manifestSize: 42,
+    mediaType: "application/vnd.oci.image.manifest.v1+json",
+    platforms: [],
+    pushedAt: 1,
+    referencedBlobBytes: 42,
+    tags: ["latest"],
+  };
+  await expect(
+    fetchRegistrySettings(undefined, () =>
+      Promise.resolve(Response.json({ hostname: "registry.example.com" }))
+    )
+  ).resolves.toEqual({ hostname: "registry.example.com" });
+
+  let hostnameBody = "";
+  await setRegistryHostname("registry.example.com", (_input, init) => {
+    hostnameBody = init?.body?.toString() ?? "";
+    return Promise.resolve(Response.json({ hostname: "registry.example.com" }));
+  });
+  expect(JSON.parse(hostnameBody)).toEqual({
+    hostname: "registry.example.com",
+  });
+
+  await expect(
+    fetchRegistryRepositories(undefined, () =>
+      Promise.resolve(Response.json({ repositories: [repository] }))
+    )
+  ).resolves.toEqual([repository]);
+  await expect(
+    createRegistryRepository(
+      {
+        credentialName: "deployer",
+        credentialPermission: "pull_push",
+        name: repository.name,
+        publicPull: false,
+      },
+      () => Promise.resolve(Response.json(repository, { status: 201 }))
+    )
+  ).resolves.toEqual(repository);
+
+  let publicPullBody = "";
+  await expect(
+    setRegistryRepositoryPublicPull(repository.id, true, (_input, init) => {
+      publicPullBody = init?.body?.toString() ?? "";
+      return Promise.resolve(
+        Response.json({ ...repository, publicPull: true })
+      );
+    })
+  ).resolves.toMatchObject({ publicPull: true });
+  expect(JSON.parse(publicPullBody)).toEqual({ publicPull: true });
+
+  await expect(
+    fetchRegistryImages(repository.id, {}, undefined, (input) => {
+      expect(input.toString()).toContain("repository%2Fid/images?limit=100");
+      return Promise.resolve(
+        Response.json({ images: [image], nextCursor: "" })
+      );
+    })
+  ).resolves.toEqual({ images: [image], nextCursor: "" });
+  await expect(
+    fetchRegistryImage(repository.id, image.digest, undefined, (input) => {
+      expect(input.toString()).toContain("sha256%3Adigest");
+      return Promise.resolve(
+        Response.json({ ...image, manifest: { schemaVersion: 2 } })
+      );
+    })
+  ).resolves.toMatchObject({ manifest: { schemaVersion: 2 } });
+
+  const deletionFetcher = ((input, init) => {
+    expect(input.toString()).not.toContain("repository/id");
+    expect(init?.method).toBe("DELETE");
+    return Promise.resolve(new Response(null, { status: 204 }));
+  }) as typeof fetch;
+  await Promise.all([
+    deleteRegistryTag(repository.id, "latest/tag", deletionFetcher),
+    deleteRegistryImage(repository.id, image.digest, deletionFetcher),
+    deleteRegistryRepository(repository.id, repository.name, deletionFetcher),
+  ]);
+
+  const credential = {
+    createdAt: 1,
+    id: "credential/id",
+    name: "reader",
+    permission: "pull" as const,
+  };
+  await expect(
+    fetchRegistryCredentials(repository.id, undefined, () =>
+      Promise.resolve(Response.json({ credentials: [credential] }))
+    )
+  ).resolves.toEqual([credential]);
+  await expect(
+    createRegistryCredential(
+      repository.id,
+      { name: credential.name, permission: credential.permission },
+      () =>
+        Promise.resolve(
+          Response.json(
+            { ...credential, secret: "secret", username: "robot" },
+            { status: 201 }
+          )
+        )
+    )
+  ).resolves.toMatchObject({ secret: "secret", username: "robot" });
+  await deleteRegistryCredential(repository.id, credential.id, deletionFetcher);
+  await expect(
+    cleanupRegistryRepository(repository.id, true, (_input, init) => {
+      expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+        dryRun: true,
+      });
+      return Promise.resolve(
+        Response.json({
+          blobCount: 1,
+          bytes: 42,
+          deleted: false,
+          previewDigests: ["sha256:orphan"],
+          previewTruncated: false,
+        })
+      );
+    })
+  ).resolves.toMatchObject({ blobCount: 1, deleted: false });
 });

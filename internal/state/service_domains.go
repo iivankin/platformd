@@ -235,9 +235,11 @@ func publicHostnameRoleExists(ctx context.Context, transaction *sql.Tx, hostname
 	var exists int
 	err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
-  SELECT 1 FROM installation WHERE admin_hostname = ? OR automation_hostname = ?
+  SELECT 1 FROM installation
+  WHERE admin_hostname = ? OR automation_hostname = ? OR registry_hostname = ?
+  UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
-)`, hostname, hostname, hostname).Scan(&exists)
+)`, hostname, hostname, hostname, hostname, hostname).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check public hostname roles: %w", err)
 	}

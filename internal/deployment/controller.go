@@ -79,11 +79,16 @@ type CredentialResolver interface {
 	Resolve(context.Context, state.ServiceDesired) (ImageCredential, error)
 }
 
+type ImageSourceResolver interface {
+	Resolve(context.Context, string) (reference string, close func(), handled bool, err error)
+}
+
 type Config struct {
 	Store        Store
 	Engine       Engine
 	Publisher    Publisher
 	Credentials  CredentialResolver
+	ImageSources ImageSourceResolver
 	Placement    func(state.ServiceDesired) (Placement, error)
 	LogRoot      string
 	VolumeRoot   string
@@ -106,6 +111,7 @@ type Controller struct {
 	engine       Engine
 	publisher    Publisher
 	credentials  CredentialResolver
+	imageSources ImageSourceResolver
 	placement    func(state.ServiceDesired) (Placement, error)
 	logRoot      string
 	volumeRoot   string
@@ -156,7 +162,8 @@ func New(config Config) (*Controller, error) {
 	}
 	return &Controller{
 		store: config.Store, engine: config.Engine, publisher: config.Publisher, credentials: config.Credentials,
-		placement: config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
+		imageSources: config.ImageSources,
+		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
 		now: now, newID: newID, httpClient: httpClient,
 		locks: make(map[string]*sync.Mutex), active: make(map[string]activeContainer),
@@ -191,7 +198,7 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 		}
 	}
 
-	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{
+	image, err := controller.pull(ctx, containerengine.PullRequest{
 		Reference: normalized.ImageReference,
 		Username:  credential.Username,
 		Password:  credential.Password,
@@ -302,7 +309,7 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 	if err != nil {
 		return false, err
 	}
-	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{
+	image, err := controller.pull(ctx, containerengine.PullRequest{
 		Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
 	})
 	if err != nil {
@@ -337,6 +344,30 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 		return false, fmt.Errorf("publish restored service: %w", err)
 	}
 	return true, nil
+}
+
+func (controller *Controller) pull(ctx context.Context, request containerengine.PullRequest) (containerengine.Image, error) {
+	if controller.imageSources == nil {
+		return controller.engine.Pull(ctx, request)
+	}
+	reference, closeSource, handled, err := controller.imageSources.Resolve(ctx, request.Reference)
+	if err != nil {
+		return containerengine.Image{}, err
+	}
+	if !handled {
+		return controller.engine.Pull(ctx, request)
+	}
+	if closeSource == nil || reference == "" {
+		return containerengine.Image{}, errors.New("resolved image source is incomplete")
+	}
+	if request.Username != "" || request.Password != "" {
+		closeSource()
+		return containerengine.Image{}, errors.New("embedded registry image cannot use a remote image credential")
+	}
+	defer closeSource()
+	request.Reference = reference
+	request.Refresh = false
+	return controller.engine.Pull(ctx, request)
 }
 
 // PrepareUnexpectedExit removes publication and the exited runtime attempt.

@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/origin"
+	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/sdnotify"
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/singletonlock"
@@ -100,16 +102,33 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
 	imageCredentials := liveImageCredentialRepository{store: store, master: key}
+	registryHostname := ""
+	if installation.RegistryHostname != nil {
+		registryHostname = *installation.RegistryHostname
+	}
+	runtime.SetEmbeddedRegistryHost(registryHostname)
+	registryPayloads, err := registry.NewPayloadStore(paths.RegistryRoot)
+	if err != nil {
+		return fmt.Errorf("configure registry payload storage: %w", err)
+	}
+	registryApplication, err := registry.NewApplication(store, registryPayloads, key, runtime, nil, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := registryApplication.CleanupExpiredUploads(ctx); err != nil {
+		return fmt.Errorf("clean expired registry uploads: %w", err)
+	}
+	startRegistryUploadCleanup(ctx, registryApplication)
 	if err := runtime.ConfigureManagedPostgres(ctx, store, key); err != nil {
 		return fmt.Errorf("configure managed PostgreSQL: %w", err)
 	}
 	if err := runtime.ConfigureManagedRedis(ctx, store, key); err != nil {
 		return fmt.Errorf("configure managed Redis: %w", err)
 	}
-	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials); err != nil {
+	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials, registryApplication); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
-	if err := runtime.ConfigureServiceWatcher(ctx, store, ""); err != nil {
+	if err := runtime.ConfigureServiceWatcher(ctx, store, registryHostname); err != nil {
 		return fmt.Errorf("configure service image watcher: %w", err)
 	}
 	certificates, err := origin.Load(key, installation.OriginCertificates)
@@ -136,6 +155,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	if err := runtime.ConfigureObjectStores(ctx, store, objectStoreHandler); err != nil {
 		return fmt.Errorf("configure managed S3: %w", err)
+	}
+	registryHandler, err := registry.NewHTTPHandler(registryApplication, automationauth.NewInMemoryFailureLimiter())
+	if err != nil {
+		return err
 	}
 	verifier, err := access.New(access.Config{
 		TeamDomain: installation.AccessTeamDomain,
@@ -171,6 +194,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	registrySettings := &liveRegistrySettings{store: store, runtime: runtime, certificates: certificates}
 	var automationHostname string
 	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
@@ -239,11 +263,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithManagedRedis(managedRedisApplication),
 			server.WithManagedPostgres(managedPostgresApplication),
 			server.WithObjectStores(objectStoreApplication),
+			server.WithRegistry(registryApplication, registrySettings),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
 		AutomationHostname: automationHostname, AutomationHandler: automationHandler,
+		RegistryHostname: registryHostname, RegistryHandler: registryHandler,
 		ObjectStoreHandler: objectStoreHandler,
 		Backends:           runtime,
 	})
@@ -252,6 +278,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	domains.router = ingressRouter
 	objectStoreRepository.router = ingressRouter
+	registrySettings.router = ingressRouter
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
 	}
@@ -276,6 +303,23 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	return serveListener(ctx, httpServer, listener, func() error {
 		return sdnotify.Ready("platformd admin control plane is ready")
 	})
+}
+
+func startRegistryUploadCleanup(ctx context.Context, application *registry.Application) {
+	go func() {
+		ticker := time.NewTicker(15 * time.Minute)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := application.CleanupExpiredUploads(ctx); err != nil && ctx.Err() == nil {
+					log.Printf("registry upload cleanup failed: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 func status(recoveryMode bool) string {

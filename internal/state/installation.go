@@ -16,6 +16,7 @@ type InitialInstallation struct {
 	ID                   string
 	AdminHostname        string
 	AutomationHostname   *string
+	RegistryHostname     *string
 	AccessTeamDomain     string
 	AccessAudience       string
 	ConsolePassphrasePHC string
@@ -30,6 +31,7 @@ type Installation struct {
 	ID                   string
 	AdminHostname        string
 	AutomationHostname   *string
+	RegistryHostname     *string
 	AccessTeamDomain     string
 	AccessAudience       string
 	ConsolePassphrasePHC string
@@ -62,13 +64,14 @@ VALUES (?, ?, ?, ?)`, input.OriginCertificateID, input.OriginCertificatePEM, inp
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO installation(
-  singleton, id, admin_hostname, automation_hostname,
+  singleton, id, admin_hostname, automation_hostname, registry_hostname,
   access_team_domain, access_audience,
   console_passphrase_phc, recovery_mode, created_at, updated_at
-) VALUES (1, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
 			input.ID,
 			input.AdminHostname,
 			input.AutomationHostname,
+			input.RegistryHostname,
 			input.AccessTeamDomain,
 			input.AccessAudience,
 			input.ConsolePassphrasePHC,
@@ -94,10 +97,10 @@ INSERT INTO audit_events(
 
 func (store *Store) Installation(ctx context.Context) (Installation, error) {
 	var installation Installation
-	var automationHostname sql.NullString
+	var automationHostname, registryHostname sql.NullString
 	var recoveryMode int
 	err := store.database.QueryRowContext(ctx, `
-SELECT id, admin_hostname, automation_hostname, access_team_domain,
+SELECT id, admin_hostname, automation_hostname, registry_hostname, access_team_domain,
        access_audience, console_passphrase_phc,
        recovery_mode, created_at, updated_at
 FROM installation
@@ -105,6 +108,7 @@ WHERE singleton = 1`).Scan(
 		&installation.ID,
 		&installation.AdminHostname,
 		&automationHostname,
+		&registryHostname,
 		&installation.AccessTeamDomain,
 		&installation.AccessAudience,
 		&installation.ConsolePassphrasePHC,
@@ -120,6 +124,9 @@ WHERE singleton = 1`).Scan(
 	}
 	if automationHostname.Valid {
 		installation.AutomationHostname = &automationHostname.String
+	}
+	if registryHostname.Valid {
+		installation.RegistryHostname = &registryHostname.String
 	}
 	installation.RecoveryMode = recoveryMode == 1
 
