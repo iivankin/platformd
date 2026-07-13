@@ -107,6 +107,14 @@ jobs:
           go test -race -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
           go vet -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
 
+      - name: Fuzz public protocol boundaries
+        run: |
+          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/registry -run '^$' -fuzz '^FuzzRegistryInputs$' -fuzztime 10s
+          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/objectstore -run '^$' -fuzz '^FuzzS3Inputs$' -fuzztime 10s
+          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/objectstore -run '^$' -fuzz '^FuzzSigV4Inputs$' -fuzztime 10s
+          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/internaldns -run '^$' -fuzz '^FuzzDNSInputs$' -fuzztime 10s
+          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/ingress -run '^$' -fuzz '^FuzzProxyInputs$' -fuzztime 10s
+
       - name: Build and verify bundled runtime
         env:
           PLATFORMD_STRICT_TOOLCHAIN: "1"
