@@ -154,7 +154,11 @@ jobs:
           fi
           go run ./tools/release-manifest "${arguments[@]}"
           rm -f "$key_path"
-          sha256sum dist/platformd-linux-amd64 dist/platformd-linux-amd64.manifest.json > dist/SHA256SUMS
+          (
+            cd dist
+            sha256sum platformd-linux-amd64 platformd-linux-amd64.manifest.json > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
 
       - name: Publish immutable release assets
         env:
