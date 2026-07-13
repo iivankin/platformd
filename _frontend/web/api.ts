@@ -257,6 +257,13 @@ const terminalShellsSchema = z.object({
   shells: z.array(z.enum(["/bin/sh", "/bin/bash"])),
 });
 
+const serverTerminalTokenSchema = z.object({
+  expiresAt: z.number().int().positive(),
+  token: z.string().min(1),
+});
+
+export type ServerTerminalToken = z.infer<typeof serverTerminalTokenSchema>;
+
 const diskPressureSchema = z.object({
   availableBytes: z.number().int().nonnegative(),
   availableInodes: z.number().int().nonnegative(),
@@ -1219,6 +1226,27 @@ export const fetchServiceTerminalShells = async (
     );
   }
   return terminalShellsSchema.parse(await response.json()).shells;
+};
+
+export const issueServerTerminalToken = async (
+  passphrase: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServerTerminalToken> => {
+  const response = await fetcher("/api/v1/server/terminal-token", {
+    body: JSON.stringify({ passphrase }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `server terminal authorization failed with ${response.status}`
+    );
+  }
+  return serverTerminalTokenSchema.parse(await response.json());
 };
 
 export const fetchDiskPressure = async (

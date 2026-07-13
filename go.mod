@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/containers/podman/v5 v5.8.2
 	github.com/coder/websocket v1.8.15
+	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
 	github.com/google/nftables v0.3.0
 	github.com/jackc/pgx/v5 v5.10.0

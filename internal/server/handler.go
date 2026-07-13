@@ -50,7 +50,10 @@ type handlerConfig struct {
 	backupResources    *backup.ResourceApplication
 	databaseVersions   *databaseversion.Service
 	containerConsole   ContainerConsole
+	serverTerminal     HostTerminal
 	serverTerminalAuth *terminalauth.Service
+	serverTerminalIdle time.Duration
+	serverTerminalLife time.Duration
 	adminHostname      string
 	diskPressure       DiskPressure
 	resourceUsage      ResourceUsage
@@ -176,6 +179,15 @@ func WithServerTerminalAuth(service *terminalauth.Service) Option {
 	}
 }
 
+func WithServerTerminal(hostname string, application HostTerminal, idle, lifetime time.Duration) Option {
+	return func(config *handlerConfig) {
+		config.adminHostname = hostname
+		config.serverTerminal = application
+		config.serverTerminalIdle = idle
+		config.serverTerminalLife = lifetime
+	}
+}
+
 func WithDiskPressure(pressure DiskPressure) Option {
 	return func(config *handlerConfig) {
 		config.diskPressure = pressure
@@ -280,6 +292,17 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.serverTerminalAuth != nil {
 		registerServerTerminalAuthRoute(mux, config.serverTerminalAuth)
+	}
+	if config.serverTerminal != nil {
+		if config.serverTerminalAuth == nil {
+			panic("register server terminal: authentication is missing")
+		}
+		if err := registerServerTerminalRoute(
+			mux, config.adminHostname, config.serverTerminal, config.serverTerminalAuth,
+			config.admission, config.serverTerminalIdle, config.serverTerminalLife,
+		); err != nil {
+			panic("register server terminal: " + err.Error())
+		}
 	}
 	if config.diskPressure != nil || config.resourceUsage != nil || config.infrastructureLogs != nil {
 		registerInfrastructureRoutes(mux, config.diskPressure, config.resourceUsage, config.infrastructureLogs)

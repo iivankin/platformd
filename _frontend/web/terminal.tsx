@@ -75,11 +75,16 @@ const theme = () => {
 };
 
 interface TerminalProperties {
+  socketProtocols?: readonly string[];
   socketURL: (cols: number, rows: number) => string;
   visible?: boolean;
 }
 
-export const Terminal = ({ socketURL, visible = true }: TerminalProperties) => {
+export const Terminal = ({
+  socketProtocols,
+  socketURL,
+  visible = true,
+}: TerminalProperties) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const fitRef = useRef<GhosttyFitAddon>(null);
   const [connection, setConnection] = useState<
@@ -119,7 +124,10 @@ export const Terminal = ({ socketURL, visible = true }: TerminalProperties) => {
         fit.fit();
         fit.observeResize();
 
-        socket = new WebSocket(socketURL(terminal.cols, terminal.rows));
+        socket = new WebSocket(
+          socketURL(terminal.cols, terminal.rows),
+          socketProtocols ? [...socketProtocols] : undefined
+        );
         socket.binaryType = "arraybuffer";
         socket.addEventListener("open", () => {
           if (!disposed) {
@@ -212,7 +220,7 @@ export const Terminal = ({ socketURL, visible = true }: TerminalProperties) => {
       socket?.close(1000, "terminal closed");
       disposeTerminal?.();
     };
-  }, [socketURL]);
+  }, [socketProtocols, socketURL]);
 
   useEffect(() => {
     if (!visible) {

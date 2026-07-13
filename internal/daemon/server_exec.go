@@ -24,7 +24,7 @@ func newServerExecApplication(cgroups *cgrouptree.Tree, store *state.Store) (*au
 	}
 	runner, err := rootexec.New(rootexec.Config{
 		CreateLeaf: func(identifier string) (rootexec.Leaf, error) {
-			return cgroups.CreateLeaf(identifier)
+			return cgroups.CreateOperationLeaf(identifier)
 		},
 		CommandBytes: serverExecCommandBytes, OutputBytes: serverExecOutputBytes,
 		DefaultTimeout: serverExecDefaultTimeout, MaximumTimeout: serverExecMaximumTimeout,

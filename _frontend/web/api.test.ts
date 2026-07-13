@@ -34,6 +34,7 @@ import {
   fetchServiceDomains,
   fetchServiceLogs,
   fetchServiceTerminalShells,
+  issueServerTerminalToken,
   fetchVolumeOwnerSuggestion,
   fetchVolumes,
   fetchImageCredentials,
@@ -499,6 +500,26 @@ test("discovers only allowlisted shells in the running service", async () => {
   expect(requested).toBe(
     "/api/v1/projects/project/services/service/terminal/shells"
   );
+});
+
+test("authorizes a server terminal without placing its bearer in the URL", async () => {
+  let requested = "";
+  let requestInit: RequestInit | undefined;
+  await expect(
+    issueServerTerminalToken("correct horse", (input, init) => {
+      requested = input.toString();
+      requestInit = init;
+      return Promise.resolve(
+        Response.json({ expiresAt: 1_900_000_030_000, token: "signed-token" })
+      );
+    })
+  ).resolves.toEqual({
+    expiresAt: 1_900_000_030_000,
+    token: "signed-token",
+  });
+  expect(requested).toBe("/api/v1/server/terminal-token");
+  expect(requestInit?.method).toBe("POST");
+  expect(requestInit?.body).toBe('{"passphrase":"correct horse"}');
 });
 
 test("reads derived disk pressure without a persisted operation", async () => {
