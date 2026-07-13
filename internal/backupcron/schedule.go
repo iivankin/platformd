@@ -117,6 +117,53 @@ func (schedule Schedule) Next(after time.Time) (time.Time, error) {
 	return time.Time{}, errors.New("backup cron has no occurrence within eight years")
 }
 
+// Previous returns the latest occurrence strictly before the supplied time.
+func (schedule Schedule) Previous(before time.Time) (time.Time, error) {
+	candidate := before.UTC().Truncate(time.Minute)
+	if !candidate.Before(before.UTC()) {
+		candidate = candidate.Add(-time.Minute)
+	}
+	deadline := candidate.AddDate(-searchYears, 0, 0)
+	for candidate.After(deadline) {
+		if !schedule.month.contains(int(candidate.Month())) {
+			month, wrapped := schedule.month.previous(int(candidate.Month()))
+			year := candidate.Year()
+			if wrapped {
+				year--
+			}
+			candidate = time.Date(year, time.Month(month)+1, 0, 23, 59, 0, 0, time.UTC)
+			continue
+		}
+		if !schedule.matchesDay(candidate) {
+			candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day()-1, 23, 59, 0, 0, time.UTC)
+			continue
+		}
+		if !schedule.hour.contains(candidate.Hour()) {
+			hour, wrapped := schedule.hour.previous(candidate.Hour())
+			if wrapped {
+				candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day()-1, hour, 59, 0, 0, time.UTC)
+			} else {
+				candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day(), hour, 59, 0, 0, time.UTC)
+			}
+			continue
+		}
+		if !schedule.minute.contains(candidate.Minute()) {
+			minute, wrapped := schedule.minute.previous(candidate.Minute())
+			if wrapped {
+				candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day(), candidate.Hour()-1, minute, 0, 0, time.UTC)
+			} else {
+				candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day(), candidate.Hour(), minute, 0, 0, time.UTC)
+			}
+			continue
+		}
+		if schedule.Matches(candidate) {
+			return candidate, nil
+		}
+		candidate = candidate.Add(-time.Minute)
+	}
+	return time.Time{}, errors.New("backup cron has no previous occurrence within eight years")
+}
+
 func (schedule Schedule) matchesDay(value time.Time) bool {
 	dayOfMonth := schedule.dayOfMonth.contains(value.Day())
 	dayOfWeek := schedule.dayOfWeek.contains(int(value.Weekday()))
@@ -228,6 +275,20 @@ func (value field) next(current int) (int, bool) {
 		}
 	}
 	for candidate := value.minimum; candidate <= current; candidate++ {
+		if value.contains(candidate) {
+			return candidate, true
+		}
+	}
+	panic("validated cron field contains no values")
+}
+
+func (value field) previous(current int) (int, bool) {
+	for candidate := current - 1; candidate >= value.minimum; candidate-- {
+		if value.contains(candidate) {
+			return candidate, false
+		}
+	}
+	for candidate := value.maximum; candidate >= current; candidate-- {
 		if value.contains(candidate) {
 			return candidate, true
 		}

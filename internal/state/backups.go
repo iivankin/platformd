@@ -41,6 +41,13 @@ type FinishBackup struct {
 	FinishedAtMillis int64
 }
 
+type BackupHistoryQuery struct {
+	ResourceKind string
+	ResourceID   string
+	BeforeMillis int64
+	Limit        int
+}
+
 func (store *Store) BeginBackup(ctx context.Context, input BeginBackup) error {
 	if input.ID == "" || !validBackupResourceKind(input.ResourceKind) || input.ResourceID == "" ||
 		input.GenerationID == "" || input.StartedAtMillis <= 0 ||
@@ -124,6 +131,57 @@ FROM backups WHERE id = ?`, id).Scan(
 		record.FinishedAtMillis = &finished.Int64
 	}
 	return record, nil
+}
+
+func (store *Store) BackupHistory(ctx context.Context, query BackupHistoryQuery) ([]BackupRecord, error) {
+	if !validBackupResourceKind(query.ResourceKind) || query.ResourceID == "" || query.Limit < 1 || query.Limit > 100 {
+		return nil, errors.New("backup history query is invalid")
+	}
+	before := query.BeforeMillis
+	if before <= 0 {
+		before = int64(^uint64(0) >> 1)
+	}
+	rows, err := store.database.QueryContext(ctx, `
+SELECT id FROM backups
+WHERE resource_kind = ? AND resource_id = ? AND started_at < ?
+ORDER BY started_at DESC, id DESC LIMIT ?`, query.ResourceKind, query.ResourceID, before, query.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	ids := make([]string, 0, query.Limit)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	result := make([]BackupRecord, 0, len(ids))
+	for _, id := range ids {
+		record, err := store.Backup(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, record)
+	}
+	return result, nil
+}
+
+func (store *Store) ScheduledBackupExists(ctx context.Context, resourceKind, resourceID string, occurrenceMillis int64) (bool, error) {
+	if !validBackupResourceKind(resourceKind) || resourceKind == "control" || resourceID == "" || occurrenceMillis <= 0 {
+		return false, errors.New("scheduled backup identity is invalid")
+	}
+	var exists int
+	err := store.database.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1 FROM backups
+  WHERE resource_kind = ? AND resource_id = ? AND scheduled_occurrence = ?
+)`, resourceKind, resourceID, occurrenceMillis).Scan(&exists)
+	return exists == 1, err
 }
 
 func validBackupResourceKind(value string) bool {
