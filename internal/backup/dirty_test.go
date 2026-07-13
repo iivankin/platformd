@@ -131,6 +131,49 @@ func TestWorkerRetriesFailureButNotMissingTargetOrPostPublishCleanup(t *testing.
 	}
 }
 
+func TestWorkerDoesNotConsumeItsOwnRetryWakeAsTheDelay(t *testing.T) {
+	t.Parallel()
+	tracker := NewDirtyTracker()
+	runner := &controlRunnerStub{
+		results: []error{errors.New("remote failed")},
+		called:  make(chan int, 2),
+	}
+	retryDelay := 80 * time.Millisecond
+	worker, err := NewWorker(tracker, runner, retryDelay, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(ctx) }()
+	tracker.Mark(time.Unix(1, 0))
+	select {
+	case call := <-runner.called:
+		if call != 1 {
+			t.Fatalf("first worker call = %d", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not make the first call")
+	}
+	select {
+	case call := <-runner.called:
+		t.Fatalf("worker retried immediately with call %d", call)
+	case <-time.After(retryDelay / 2):
+	}
+	select {
+	case call := <-runner.called:
+		if call != 2 {
+			t.Fatalf("second worker call = %d", call)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not retry after the configured delay")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("worker shutdown = %v", err)
+	}
+}
+
 func TestWorkerAcceptsOnlyOneImmediateManualBackupWithoutQueue(t *testing.T) {
 	t.Parallel()
 	runner := &resourceRunnerStub{

@@ -246,7 +246,7 @@ func (worker *Worker) runControl(ctx context.Context, since time.Time) error {
 		return nil
 	}
 	worker.dirty.Retry(since)
-	return worker.wait(ctx, worker.retryDelay)
+	return worker.waitRetry(ctx)
 }
 
 func (worker *Worker) report(err error) {
@@ -282,6 +282,19 @@ func (worker *Worker) wait(ctx context.Context, delay time.Duration) error {
 	case <-worker.dirty.Wake():
 		return nil
 	case <-worker.manualWake:
+		return nil
+	}
+}
+
+func (worker *Worker) waitRetry(ctx context.Context) error {
+	// Retry() signals the normal wake channel. Waiting on that channel here
+	// would consume our own signal and turn the configured delay into a hot loop.
+	timer := time.NewTimer(worker.retryDelay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
 		return nil
 	}
 }
