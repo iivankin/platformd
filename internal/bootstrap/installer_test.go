@@ -60,7 +60,6 @@ func TestInstallerCreatesCompleteStateAndRepairsWithoutInputs(t *testing.T) {
 	certificate, privateKey := testCertificate(t, []string{"*.example.com"})
 	validated, err := bootstrap.ValidateInput(bootstrap.Input{
 		AdminHostname:        "admin.example.com",
-		AutomationHostname:   "api.example.com",
 		AccessTeamDomain:     "team.cloudflareaccess.com",
 		AccessAudience:       "audience",
 		ConsolePassphrase:    "passphrase",

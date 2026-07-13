@@ -159,7 +159,6 @@ func (installer Installer) prepareInstallation(master cryptobox.MasterKey, input
 	return state.InitialInstallation{
 		ID:                   installationID,
 		AdminHostname:        input.AdminHostname,
-		AutomationHostname:   input.AutomationHostname,
 		AccessTeamDomain:     input.AccessTeamDomain,
 		AccessAudience:       input.AccessAudience,
 		ConsolePassphrasePHC: verifier,

@@ -18,7 +18,6 @@ var dnsLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type Input struct {
 	AdminHostname        string `json:"adminHostname"`
-	AutomationHostname   string `json:"automationHostname"`
 	AccessTeamDomain     string `json:"accessTeamDomain"`
 	AccessAudience       string `json:"accessAudience"`
 	ConsolePassphrase    string `json:"consolePassphrase"`
@@ -32,7 +31,6 @@ type ConsolePassphraseInput struct {
 
 type ValidatedInput struct {
 	AdminHostname        string
-	AutomationHostname   *string
 	AccessTeamDomain     string
 	AccessAudience       string
 	ConsolePassphrase    []byte
@@ -94,20 +92,6 @@ func ValidateInput(input Input) (ValidatedInput, error) {
 		return ValidatedInput{}, errors.New("console passphrase must contain 1..1024 bytes")
 	}
 
-	var automationHostname *string
-	if strings.TrimSpace(input.AutomationHostname) != "" {
-		value, err := normalizeHostname(input.AutomationHostname)
-		if err != nil {
-			clear(passphrase)
-			return ValidatedInput{}, fmt.Errorf("automation hostname: %w", err)
-		}
-		if value == adminHostname {
-			clear(passphrase)
-			return ValidatedInput{}, errors.New("admin and automation hostnames must differ")
-		}
-		automationHostname = &value
-	}
-
 	pair, err := tls.X509KeyPair([]byte(input.OriginCertificatePEM), []byte(input.OriginPrivateKeyPEM))
 	if err != nil {
 		clear(passphrase)
@@ -126,16 +110,8 @@ func ValidateInput(input Input) (ValidatedInput, error) {
 		clear(passphrase)
 		return ValidatedInput{}, fmt.Errorf("Origin certificate does not cover admin hostname: %w", err)
 	}
-	if automationHostname != nil {
-		if err := leaf.VerifyHostname(*automationHostname); err != nil {
-			clear(passphrase)
-			return ValidatedInput{}, fmt.Errorf("Origin certificate does not cover automation hostname: %w", err)
-		}
-	}
-
 	return ValidatedInput{
 		AdminHostname:        adminHostname,
-		AutomationHostname:   automationHostname,
 		AccessTeamDomain:     teamDomain,
 		AccessAudience:       audience,
 		ConsolePassphrase:    passphrase,

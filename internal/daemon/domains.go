@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"sync"
 
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/origin"
@@ -13,6 +14,7 @@ type liveDomainRepository struct {
 	store        *state.Store
 	certificates *origin.Selector
 	router       *ingress.Router
+	publicMu     *sync.Mutex
 }
 
 func (repository liveDomainRepository) ServiceDomains(ctx context.Context, projectID, serviceID string) ([]state.ServiceDomain, error) {
@@ -20,6 +22,8 @@ func (repository liveDomainRepository) ServiceDomains(ctx context.Context, proje
 }
 
 func (repository liveDomainRepository) AttachServiceDomain(ctx context.Context, input state.AttachServiceDomainInput) (state.ServiceDomain, error) {
+	repository.publicMu.Lock()
+	defer repository.publicMu.Unlock()
 	hostname, err := publichostname.Normalize(input.Hostname)
 	if err != nil {
 		return state.ServiceDomain{}, err

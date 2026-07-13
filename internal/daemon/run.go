@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -30,6 +31,7 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/ingress"
+	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/journallogs"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -294,8 +296,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure encrypted S3 payload storage: %w", err)
 	}
+	publicMutationMu := &sync.Mutex{}
 	objectStoreRepository := &liveObjectStoreRepository{
-		store: store, runtime: runtime, certificates: certificates,
+		store: store, runtime: runtime, certificates: certificates, publicMu: publicMutationMu,
 	}
 	objectStoreApplication, err := objectstore.NewApplication(objectStoreRepository, objectPayloads, key, nil, nil)
 	if err != nil {
@@ -471,87 +474,84 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure host terminal: %w", err)
 	}
-	registrySettings := &liveRegistrySettings{store: store, runtime: runtime, certificates: certificates}
-	domains := &liveDomainRepository{store: store, certificates: certificates}
+	registrySettings := &liveRegistrySettings{
+		store: store, runtime: runtime, certificates: certificates, publicMu: publicMutationMu,
+	}
+	domains := &liveDomainRepository{store: store, certificates: certificates, publicMu: publicMutationMu}
 	var automationHostname string
-	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
 		automationHostname = *installation.AutomationHostname
-		automationRepository := liveAutomationRepository{store: store, runtime: runtime}
-		projectAutomation, err := automation.NewProjectApplication(automationRepository, nil, nil)
-		if err != nil {
-			return err
-		}
-		serviceAutomation, err := automation.NewServiceApplication(automationRepository, nil, nil)
-		if err != nil {
-			return err
-		}
-		domainAutomation, err := automation.NewDomainApplication(domains, nil, nil)
-		if err != nil {
-			return err
-		}
-		redisAutomation, err := automation.NewManagedRedisApplication(managedRedisApplication)
-		if err != nil {
-			return err
-		}
-		postgresAutomation, err := automation.NewManagedPostgresApplication(managedPostgresApplication)
-		if err != nil {
-			return err
-		}
-		managedResourceAutomation, err := automation.NewManagedResourceApplication(automationRepository)
-		if err != nil {
-			return err
-		}
-		volumeAutomation, err := automation.NewVolumeApplication(volumeApplication)
-		if err != nil {
-			return err
-		}
-		logAutomation, err := automation.NewLogApplication(store, logReader)
-		if err != nil {
-			return err
-		}
-		serverExecAutomation, err := newServerExecApplication(cgroups, store)
-		if err != nil {
-			return err
-		}
-		automationAPI, err := automationapi.Handler(automationapi.Config{
-			Hostname: automationHostname, Repository: automationRepository, Projects: projectAutomation,
-			Services: serviceAutomation, Domains: domainAutomation,
-			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
-			RedisStore: automationRepository, Postgres: postgresAutomation,
-			PostgresStore: automationRepository, ObjectStores: objectStoreApplication,
-			Managed:          managedResourceAutomation,
-			Versions:         databaseVersions,
-			Volumes:          volumeAutomation,
-			Registry:         registryApplication,
-			RegistrySettings: registrySettings,
-			ServerExec:       serverExecAutomation,
-			Admission:        mutationAdmission,
-		})
-		if err != nil {
-			return err
-		}
-		mcpHandler, err := mcp.New(mcp.Config{
-			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
-			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
-			Redis: redisAutomation, Postgres: postgresAutomation, Managed: managedResourceAutomation,
-			Versions: databaseVersions, ServerExec: serverExecAutomation, Volumes: volumeAutomation,
-			Admission: mutationAdmission,
-		})
-		if err != nil {
-			return err
-		}
-		authenticator, err := automationauth.New(automationauth.Config{
-			Store: store, Verifier: tokenVerifier,
-			Limiter: automationauth.NewInMemoryFailureLimiter(),
-		})
-		if err != nil {
-			return err
-		}
-		automationMux := http.NewServeMux()
-		automationMux.Handle("/mcp", mcpHandler)
-		automationMux.Handle("/", automationAPI)
-		automationHandler = authenticator.Protect(automationMux)
+	}
+	automationRepository := liveAutomationRepository{store: store, runtime: runtime}
+	projectAutomation, err := automation.NewProjectApplication(automationRepository, nil, nil)
+	if err != nil {
+		return err
+	}
+	serviceAutomation, err := automation.NewServiceApplication(automationRepository, nil, nil)
+	if err != nil {
+		return err
+	}
+	domainAutomation, err := automation.NewDomainApplication(domains, nil, nil)
+	if err != nil {
+		return err
+	}
+	redisAutomation, err := automation.NewManagedRedisApplication(managedRedisApplication)
+	if err != nil {
+		return err
+	}
+	postgresAutomation, err := automation.NewManagedPostgresApplication(managedPostgresApplication)
+	if err != nil {
+		return err
+	}
+	managedResourceAutomation, err := automation.NewManagedResourceApplication(automationRepository)
+	if err != nil {
+		return err
+	}
+	volumeAutomation, err := automation.NewVolumeApplication(volumeApplication)
+	if err != nil {
+		return err
+	}
+	logAutomation, err := automation.NewLogApplication(store, logReader)
+	if err != nil {
+		return err
+	}
+	serverExecAutomation, err := newServerExecApplication(cgroups, store)
+	if err != nil {
+		return err
+	}
+	authenticator, err := automationauth.New(automationauth.Config{
+		Store: store, Verifier: tokenVerifier,
+		Limiter: automationauth.NewInMemoryFailureLimiter(),
+	})
+	if err != nil {
+		return err
+	}
+	automationFactory, err := newAutomationHandlerFactory(automationapi.Config{
+		Repository: automationRepository, Projects: projectAutomation, Services: serviceAutomation,
+		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
+		RedisStore: automationRepository, Postgres: postgresAutomation, PostgresStore: automationRepository,
+		ObjectStores: objectStoreApplication, Managed: managedResourceAutomation, Versions: databaseVersions,
+		Volumes: volumeAutomation, Registry: registryApplication, RegistrySettings: registrySettings,
+		ServerExec: serverExecAutomation, Admission: mutationAdmission,
+	}, mcp.Config{
+		Version: version.Version, Repository: automationRepository, Services: serviceAutomation,
+		Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, Postgres: postgresAutomation,
+		Managed: managedResourceAutomation, Versions: databaseVersions, ServerExec: serverExecAutomation,
+		Volumes: volumeAutomation, Admission: mutationAdmission,
+	}, authenticator, !installation.RecoveryMode)
+	if err != nil {
+		return err
+	}
+	automationHandler, err := automationFactory.Build(automationHostname)
+	if err != nil {
+		return err
+	}
+	automationRoute := &liveAutomationRoute{factory: automationFactory}
+	installationSettings, err := installationsettings.New(
+		store, key, certificates, automationRoute, publicMutationMu,
+	)
+	if err != nil {
+		return err
 	}
 	tlsConfig := certificates.TLSConfig()
 	var recoveryRepository server.RecoveryRepository
@@ -573,6 +573,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithManagedPostgres(managedPostgresApplication),
 		server.WithObjectStores(objectStoreApplication),
 		server.WithRegistry(registryApplication, registrySettings),
+		server.WithInstallationSettings(installationSettings),
 		server.WithBackupTargets(backupTargets),
 		server.WithBackupResources(backupResources),
 		server.WithDatabaseVersions(databaseVersions),
@@ -596,12 +597,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		adminApplicationHandler = recoveryAdminHandler{target: adminApplicationHandler}
 	}
 	adminHandler := access.ProtectAdmin(installation.AdminHostname, verifier, adminApplicationHandler)
-	if installation.RecoveryMode && automationHandler != nil {
-		automationHandler, err = newAvailabilityHandler(automationHandler, false)
-		if err != nil {
-			return err
-		}
-	}
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
 		AutomationHostname: automationHostname, AutomationHandler: automationHandler,
@@ -615,6 +610,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	domains.router = ingressRouter
 	objectStoreRepository.router = ingressRouter
 	registrySettings.router = ingressRouter
+	automationRoute.router = ingressRouter
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
 	}

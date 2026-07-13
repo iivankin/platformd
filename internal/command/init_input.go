@@ -104,10 +104,6 @@ func readInteractiveInput() (bootstrap.ValidatedInput, error) {
 	if err != nil {
 		return bootstrap.ValidatedInput{}, err
 	}
-	automationHostname, err := prompt(tty, "Automation API/MCP hostname (empty to disable): ")
-	if err != nil {
-		return bootstrap.ValidatedInput{}, err
-	}
 	teamDomain, err := prompt(tty, "Cloudflare Access team domain: ")
 	if err != nil {
 		return bootstrap.ValidatedInput{}, err
@@ -139,7 +135,6 @@ func readInteractiveInput() (bootstrap.ValidatedInput, error) {
 	}
 	input := bootstrap.Input{
 		AdminHostname:        adminHostname,
-		AutomationHostname:   automationHostname,
 		AccessTeamDomain:     teamDomain,
 		AccessAudience:       audience,
 		ConsolePassphrase:    string(passphrase),
