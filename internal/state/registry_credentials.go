@@ -39,7 +39,7 @@ func (store *Store) CreateRegistryCredential(ctx context.Context, input CreateRe
 	if input.Permission != "pull" && input.Permission != "pull_push" {
 		return RegistryCredential{}, errors.New("registry credential permission must be pull or pull_push")
 	}
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var repositoryName string
 		if err := transaction.QueryRowContext(ctx, "SELECT name FROM registry_repositories WHERE id = ?", input.RepositoryID).Scan(&repositoryName); errors.Is(err, sql.ErrNoRows) {
 			return ErrRegistryRepositoryNotFound
@@ -147,7 +147,7 @@ func (store *Store) DeleteRegistryCredential(ctx context.Context, input DeleteRe
 		return nil, err
 	}
 	uploads := make([]RegistryUpload, 0)
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var credentialName string
 		if err := transaction.QueryRowContext(ctx, `
 SELECT name FROM registry_credentials WHERE id = ? AND repository_id = ?`,

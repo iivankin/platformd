@@ -35,7 +35,7 @@ func (store *Store) SetRegistryHostname(ctx context.Context, input SetRegistryHo
 		}
 		hostname = normalized
 	}
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var installationID string
 		var previous sql.NullString
 		if err := transaction.QueryRowContext(ctx, "SELECT id, registry_hostname FROM installation WHERE singleton = 1").Scan(&installationID, &previous); errors.Is(err, sql.ErrNoRows) {

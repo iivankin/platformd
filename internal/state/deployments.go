@@ -75,7 +75,7 @@ func (store *Store) ActivateDeployment(ctx context.Context, serviceID, deploymen
 	if serviceID == "" || deploymentID == "" || finishedAtMillis <= 0 {
 		return errors.New("activate deployment input is incomplete")
 	}
-	return store.Write(ctx, func(transaction *sql.Tx) error {
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var activeDeploymentID sql.NullString
 		var status string
 		err := transaction.QueryRowContext(ctx, `

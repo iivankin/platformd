@@ -56,7 +56,7 @@ func (store *Store) SetBackupTarget(ctx context.Context, input SetBackupTarget) 
 	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
 		return BackupTarget{}, err
 	}
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var installationID string
 		if err := transaction.QueryRowContext(ctx, "SELECT id FROM installation WHERE singleton = 1").Scan(&installationID); errors.Is(err, sql.ErrNoRows) {
 			return ErrNotInitialized
@@ -126,7 +126,7 @@ func (store *Store) DeleteBackupTarget(ctx context.Context, input DeleteBackupTa
 	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
 		return err
 	}
-	return store.Write(ctx, func(transaction *sql.Tx) error {
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var installationID string
 		if err := transaction.QueryRowContext(ctx, "SELECT id FROM installation WHERE singleton = 1").Scan(&installationID); err != nil {
 			return err

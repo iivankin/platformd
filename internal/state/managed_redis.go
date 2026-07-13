@@ -81,7 +81,7 @@ func (store *Store) CreateManagedRedis(ctx context.Context, input CreateManagedR
 		return ManagedRedis{}, err
 	}
 
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var projectID string
 		if err := transaction.QueryRowContext(ctx, "SELECT id FROM projects WHERE id = ?", input.ProjectID).Scan(&projectID); errors.Is(err, sql.ErrNoRows) {
 			return ErrProjectNotFound

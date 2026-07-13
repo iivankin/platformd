@@ -76,7 +76,7 @@ func (store *Store) CreateProject(ctx context.Context, input CreateProject) (Pro
 	if err != nil {
 		return ProjectSummary{}, err
 	}
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var existingID string
 		err := transaction.QueryRowContext(ctx, "SELECT id FROM projects WHERE name = ?", input.Name).Scan(&existingID)
 		if err == nil {

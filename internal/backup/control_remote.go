@@ -23,6 +23,14 @@ type ControlRemote interface {
 	List(context.Context, string, string) (remotes3.Page, error)
 }
 
+type PublishedControlError struct{ Err error }
+
+func (failure *PublishedControlError) Error() string {
+	return "control generation was published but previous-generation cleanup failed: " + failure.Err.Error()
+}
+
+func (failure *PublishedControlError) Unwrap() error { return failure.Err }
+
 func PublishControl(ctx context.Context, remote ControlRemote, master cryptobox.MasterKey, build ControlBuild) error {
 	if remote == nil || build.Envelope.InstallationID == "" || build.Envelope.GenerationID == "" ||
 		len(build.Chunks) == 0 || len(build.Chunks) != len(build.Envelope.Chunks) || len(build.EnvelopeBytes) == 0 ||
@@ -69,7 +77,7 @@ func PublishControl(ctx context.Context, remote ControlRemote, master cryptobox.
 	}
 	if previousExists && previous.GenerationID != build.Completion.GenerationID {
 		if err := deleteRemotePrefix(ctx, remote, remote.Key(ControlGenerationPrefix(previous.GenerationID)+"/")); err != nil {
-			return fmt.Errorf("delete previous control generation: %w", err)
+			return &PublishedControlError{Err: fmt.Errorf("delete previous control generation: %w", err)}
 		}
 	}
 	return nil

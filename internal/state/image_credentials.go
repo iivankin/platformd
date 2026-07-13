@@ -54,7 +54,7 @@ func (store *Store) CreateImageRegistryCredential(ctx context.Context, input Cre
 	if err != nil {
 		return ImageRegistryCredential{}, err
 	}
-	err = store.Write(ctx, func(transaction *sql.Tx) error {
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var projectID string
 		if err := transaction.QueryRowContext(ctx, "SELECT id FROM projects WHERE id = ?", credential.ProjectID).Scan(&projectID); errors.Is(err, sql.ErrNoRows) {
 			return ErrProjectNotFound
