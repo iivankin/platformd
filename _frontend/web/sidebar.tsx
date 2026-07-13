@@ -1,4 +1,5 @@
 import {
+  ArchiveRestore,
   Box,
   ChevronLeft,
   FileClock,
@@ -40,6 +41,7 @@ interface SidebarProperties {
   identityError: string | null;
   onCollapsedChange: (collapsed: boolean) => void;
   projects: Project[];
+  recovery?: boolean;
 }
 
 const navClassName = ({ isActive }: { isActive: boolean }) =>
@@ -56,6 +58,7 @@ export const Sidebar = ({
   identityError,
   onCollapsedChange,
   projects,
+  recovery = false,
 }: SidebarProperties) => {
   const navigate = useNavigate();
 
@@ -90,82 +93,102 @@ export const Sidebar = ({
       </button>
 
       <nav className="min-h-0 flex-1 overflow-y-auto p-1.5">
-        <div className="flex h-8 items-center">
+        {recovery ? (
           <NavLink
-            className={({ isActive }) =>
-              cn(navClassName({ isActive }), "min-w-0 flex-1")
-            }
-            end
-            title={collapsed ? "Projects" : undefined}
-            to="/projects"
+            className={navClassName}
+            title={collapsed ? "Recovery" : undefined}
+            to="/recovery"
           >
-            <FolderKanban className="size-4 shrink-0" />
+            <ArchiveRestore className="size-4 shrink-0" />
             <span
               className={cn(
                 "ml-2.5 whitespace-nowrap transition-opacity",
                 collapsed && "opacity-0"
               )}
             >
-              Projects
+              Recovery
             </span>
           </NavLink>
-          {!collapsed && (
-            <Button
-              aria-label="Create project"
-              className="size-7"
-              onClick={() => navigate("/projects?new=1")}
-              size="icon"
-              title="Create project"
-              variant="ghost"
-            >
-              <Plus />
-            </Button>
-          )}
-        </div>
-
-        {projects.map((project) => (
-          <NavLink
-            className={({ isActive }) =>
-              cn(navClassName({ isActive }), !collapsed && "pl-6")
-            }
-            key={project.id}
-            title={collapsed ? project.name : undefined}
-            to={`/projects/${project.id}`}
-          >
-            <Box className="size-3.5 shrink-0" />
-            <span
-              className={cn(
-                "ml-2 truncate whitespace-nowrap transition-opacity",
-                collapsed && "opacity-0"
-              )}
-            >
-              {project.name}
-            </span>
-          </NavLink>
-        ))}
-
-        <div className="my-1.5 border-t border-border" />
-        {globalNavigation.map((item) => {
-          const Icon = item.icon;
-          return (
-            <NavLink
-              className={navClassName}
-              key={item.path}
-              title={collapsed ? item.label : undefined}
-              to={item.path}
-            >
-              <Icon className="size-4 shrink-0" />
-              <span
-                className={cn(
-                  "ml-2.5 whitespace-nowrap transition-opacity",
-                  collapsed && "opacity-0"
-                )}
+        ) : (
+          <>
+            <div className="flex h-8 items-center">
+              <NavLink
+                className={({ isActive }) =>
+                  cn(navClassName({ isActive }), "min-w-0 flex-1")
+                }
+                end
+                title={collapsed ? "Projects" : undefined}
+                to="/projects"
               >
-                {item.label}
-              </span>
-            </NavLink>
-          );
-        })}
+                <FolderKanban className="size-4 shrink-0" />
+                <span
+                  className={cn(
+                    "ml-2.5 whitespace-nowrap transition-opacity",
+                    collapsed && "opacity-0"
+                  )}
+                >
+                  Projects
+                </span>
+              </NavLink>
+              {!collapsed && (
+                <Button
+                  aria-label="Create project"
+                  className="size-7"
+                  onClick={() => navigate("/projects?new=1")}
+                  size="icon"
+                  title="Create project"
+                  variant="ghost"
+                >
+                  <Plus />
+                </Button>
+              )}
+            </div>
+
+            {projects.map((project) => (
+              <NavLink
+                className={({ isActive }) =>
+                  cn(navClassName({ isActive }), !collapsed && "pl-6")
+                }
+                key={project.id}
+                title={collapsed ? project.name : undefined}
+                to={`/projects/${project.id}`}
+              >
+                <Box className="size-3.5 shrink-0" />
+                <span
+                  className={cn(
+                    "ml-2 truncate whitespace-nowrap transition-opacity",
+                    collapsed && "opacity-0"
+                  )}
+                >
+                  {project.name}
+                </span>
+              </NavLink>
+            ))}
+
+            <div className="my-1.5 border-t border-border" />
+            {globalNavigation.map((item) => {
+              const Icon = item.icon;
+              return (
+                <NavLink
+                  className={navClassName}
+                  key={item.path}
+                  title={collapsed ? item.label : undefined}
+                  to={item.path}
+                >
+                  <Icon className="size-4 shrink-0" />
+                  <span
+                    className={cn(
+                      "ml-2.5 whitespace-nowrap transition-opacity",
+                      collapsed && "opacity-0"
+                    )}
+                  >
+                    {item.label}
+                  </span>
+                </NavLink>
+              );
+            })}
+          </>
+        )}
       </nav>
 
       <div className="border-t border-border p-1.5">
@@ -183,7 +206,7 @@ export const Sidebar = ({
           </div>
         )}
         <div className={cn("flex items-center", collapsed && "justify-center")}>
-          {!collapsed && (
+          {!collapsed && !recovery && (
             <Button className="min-w-0 flex-1 justify-start" variant="ghost">
               <Settings />
               <span className="whitespace-nowrap">Settings</span>

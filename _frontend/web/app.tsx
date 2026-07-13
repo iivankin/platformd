@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { LogsPage } from "@/logs-page";
 import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectsPage } from "@/projects-page";
+import { RecoveryPage } from "@/recovery-page";
 import { RegistryPage } from "@/registry-page";
 import { globalNavigation, Sidebar } from "@/sidebar";
 import type { NavigationItem } from "@/sidebar";
@@ -111,6 +112,9 @@ export const App = () => {
   const [collapsed, setCollapsed] = useState(false);
   const data = useAppData();
   const activeLabel = useMemo(() => {
+    if (data.meta?.status === "recovery") {
+      return "Recovery";
+    }
     if (location.pathname === "/") {
       return "Overview";
     }
@@ -130,7 +134,9 @@ export const App = () => {
       globalNavigation.find((item) => location.pathname.startsWith(item.path))
         ?.label ?? "platformd"
     );
-  }, [data.projects, location.pathname]);
+  }, [data.meta?.status, data.projects, location.pathname]);
+
+  const recovering = data.meta?.status === "recovery";
 
   return (
     <div className="flex h-full bg-background text-foreground">
@@ -140,6 +146,7 @@ export const App = () => {
         identityError={data.identityError}
         onCollapsedChange={setCollapsed}
         projects={data.projects}
+        recovery={recovering}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -151,7 +158,7 @@ export const App = () => {
             <span
               className={cn(
                 "size-1.5 bg-emerald-500",
-                (data.metaError || !data.meta) && "bg-amber-500"
+                (data.metaError || !data.meta || recovering) && "bg-amber-500"
               )}
             />
             {data.metaError
@@ -162,63 +169,70 @@ export const App = () => {
         </header>
 
         <div className="min-h-0 flex-1 overflow-auto">
-          <Routes>
-            <Route
-              element={
-                <Overview
-                  error={data.metaError}
-                  meta={data.meta}
-                  projectCount={data.projects.length}
-                />
-              }
-              path="/"
-            />
-            <Route
-              element={
-                <ProjectsPage
-                  loadError={data.projectsError}
-                  loading={data.projectsLoading}
-                  onCreated={data.handleProjectCreated}
-                  projects={data.projects}
-                />
-              }
-              path="/projects"
-            />
-            <Route
-              element={<ProjectCanvasPage />}
-              path="/projects/:projectID"
-            />
-            <Route
-              element={<APITokensPage projects={data.projects} />}
-              path="/tokens"
-            />
-            <Route
-              element={<LogsPage projects={data.projects} />}
-              path="/logs"
-            />
-            <Route element={<InfrastructurePage />} path="/infrastructure" />
-            <Route element={<AuditPage />} path="/audit" />
-            <Route element={<BackupsPage />} path="/backups" />
-            <Route element={<RegistryPage />} path="/registry" />
-            {globalNavigation
-              .filter(
-                (item) =>
-                  item.path !== "/tokens" &&
-                  item.path !== "/logs" &&
-                  item.path !== "/audit" &&
-                  item.path !== "/backups" &&
-                  item.path !== "/registry" &&
-                  item.path !== "/infrastructure"
-              )
-              .map((item) => (
-                <Route
-                  element={<EmptySection item={item} />}
-                  key={item.path}
-                  path={`${item.path}/*`}
-                />
-              ))}
-            <Route element={<Navigate replace to="/" />} path="*" />
-          </Routes>
+          {recovering ? (
+            <Routes>
+              <Route element={<RecoveryPage />} path="/recovery" />
+              <Route element={<Navigate replace to="/recovery" />} path="*" />
+            </Routes>
+          ) : (
+            <Routes>
+              <Route
+                element={
+                  <Overview
+                    error={data.metaError}
+                    meta={data.meta}
+                    projectCount={data.projects.length}
+                  />
+                }
+                path="/"
+              />
+              <Route
+                element={
+                  <ProjectsPage
+                    loadError={data.projectsError}
+                    loading={data.projectsLoading}
+                    onCreated={data.handleProjectCreated}
+                    projects={data.projects}
+                  />
+                }
+                path="/projects"
+              />
+              <Route
+                element={<ProjectCanvasPage />}
+                path="/projects/:projectID"
+              />
+              <Route
+                element={<APITokensPage projects={data.projects} />}
+                path="/tokens"
+              />
+              <Route
+                element={<LogsPage projects={data.projects} />}
+                path="/logs"
+              />
+              <Route element={<InfrastructurePage />} path="/infrastructure" />
+              <Route element={<AuditPage />} path="/audit" />
+              <Route element={<BackupsPage />} path="/backups" />
+              <Route element={<RegistryPage />} path="/registry" />
+              {globalNavigation
+                .filter(
+                  (item) =>
+                    item.path !== "/tokens" &&
+                    item.path !== "/logs" &&
+                    item.path !== "/audit" &&
+                    item.path !== "/backups" &&
+                    item.path !== "/registry" &&
+                    item.path !== "/infrastructure"
+                )
+                .map((item) => (
+                  <Route
+                    element={<EmptySection item={item} />}
+                    key={item.path}
+                    path={`${item.path}/*`}
+                  />
+                ))}
+              <Route element={<Navigate replace to="/" />} path="*" />
+            </Routes>
+          )}
         </div>
       </main>
     </div>

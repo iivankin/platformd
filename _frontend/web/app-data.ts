@@ -17,10 +17,15 @@ export const useAppData = () => {
 
   useEffect(() => {
     const controller = new AbortController();
+    let metaInFlight = false;
     const ignoreAbort = (error: unknown) =>
       error instanceof DOMException && error.name === "AbortError";
 
     const loadMeta = async () => {
+      if (metaInFlight) {
+        return;
+      }
+      metaInFlight = true;
       try {
         setMeta(await fetchMeta(controller.signal));
         setMetaError(null);
@@ -28,6 +33,8 @@ export const useAppData = () => {
         if (!ignoreAbort(error)) {
           setMetaError(errorMessage(error, "Meta request failed"));
         }
+      } finally {
+        metaInFlight = false;
       }
     };
     const loadIdentity = async () => {
@@ -60,7 +67,13 @@ export const useAppData = () => {
     void loadMeta();
     void loadIdentity();
     void loadProjects();
-    return () => controller.abort();
+    // Meta is the process-mode signal. Polling it lets the recovery workspace
+    // return to the normal panel after platformd completes and restarts.
+    const metaInterval = window.setInterval(() => void loadMeta(), 3000);
+    return () => {
+      controller.abort();
+      window.clearInterval(metaInterval);
+    };
   }, []);
 
   const handleProjectCreated = useCallback((project: Project) => {

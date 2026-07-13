@@ -44,7 +44,33 @@ const canDeleteTarget = (
   confirmation: string
 ) => !busy && target.configured && confirmation === target.bucket;
 
-export const BackupsPage = () => {
+const ResourcePolicies = ({ visible }: { visible: boolean }) => {
+  if (!visible) {
+    return null;
+  }
+  return (
+    <section className="border-b border-border">
+      <div className="flex items-center gap-3 px-5 py-4">
+        <div>
+          <h2 className="text-[10px] font-medium">Resource policies</h2>
+          <p className="mt-1 text-[9px] text-muted-foreground">
+            Schedule, retention, generations, and restore belong to each exact
+            PostgreSQL, Redis, Registry, or Object Store resource.
+          </p>
+        </div>
+        <span className="ml-auto font-mono text-[9px] text-muted-foreground">
+          UTC · 5-field cron · retention 1–100
+        </span>
+      </div>
+    </section>
+  );
+};
+
+export const BackupsPage = ({
+  targetOnly = false,
+}: {
+  targetOnly?: boolean;
+}) => {
   const [target, setTarget] = useState<BackupTarget>({ configured: false });
   const [input, setInput] = useState<SetBackupTargetInput>(emptyInput);
   const [editing, setEditing] = useState(true);
@@ -361,20 +387,7 @@ export const BackupsPage = () => {
         )}
       </section>
 
-      <section className="border-b border-border">
-        <div className="flex items-center gap-3 px-5 py-4">
-          <div>
-            <h2 className="text-[10px] font-medium">Resource policies</h2>
-            <p className="mt-1 text-[9px] text-muted-foreground">
-              Schedule, retention, generations, and restore belong to each exact
-              PostgreSQL, Redis, Registry, or Object Store resource.
-            </p>
-          </div>
-          <span className="ml-auto font-mono text-[9px] text-muted-foreground">
-            UTC · 5-field cron · retention 1–100
-          </span>
-        </div>
-      </section>
+      <ResourcePolicies visible={!targetOnly} />
 
       {target.configured ? (
         <section className="border-b border-destructive/25 bg-destructive/5 px-5 py-4">
