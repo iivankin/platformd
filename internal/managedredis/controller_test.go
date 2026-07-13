@@ -46,6 +46,10 @@ func (engine *testEngine) Pull(_ context.Context, request containerengine.PullRe
 	return engine.image, nil
 }
 
+func (engine *testEngine) InspectImage(context.Context, string) (containerengine.Image, error) {
+	return containerengine.Image{}, errors.New("image not cached")
+}
+
 func (engine *testEngine) CreateContainer(_ context.Context, spec containerengine.ContainerSpec) (containerengine.Container, error) {
 	engine.created = spec
 	return engine.container, nil
@@ -146,7 +150,7 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 	publisher := &testPublisher{}
 	connections := make([]*testConnection, 0, 2)
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher,
+		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1"), DNSSearch: "shop.internal", CgroupParent: "/workload/redis-id"}, nil
@@ -229,7 +233,7 @@ func TestControllerDoesNotPublishAndRemovesFailedReadinessCandidate(t *testing.T
 	}
 	publisher := &testPublisher{}
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher,
+		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1")}, nil

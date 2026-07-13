@@ -3,6 +3,7 @@
 package cgrouptree
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -71,6 +72,30 @@ func TestTreeParentStaysBelowDelegatedUnit(t *testing.T) {
 		if _, err := tree.Parent(invalid); err == nil {
 			t.Fatalf("expected resource ID %q to fail", invalid)
 		}
+	}
+}
+
+func TestTreeFreezesExactWorkloadSubtree(t *testing.T) {
+	t.Parallel()
+
+	mountRoot := t.TempDir()
+	root := filepath.Join(mountRoot, "unit", workloadsLeaf)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cgroup.freeze"), []byte("0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cgroup.events"), []byte("populated 1\nfrozen 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tree := &Tree{mountRoot: mountRoot, workloadPath: "/unit/" + workloadsLeaf}
+	if err := tree.SetFrozen(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	value, err := os.ReadFile(filepath.Join(root, "cgroup.freeze"))
+	if err != nil || string(value) != "1\n" {
+		t.Fatalf("cgroup.freeze = %q, %v", value, err)
 	}
 }
 

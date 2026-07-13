@@ -61,7 +61,7 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		{ID: "integration-a", Name: "alpha", ObjectStoreEnabled: true},
 		{ID: "integration-b", Name: "beta"},
 	}
-	first, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects)
+	first, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects)
+	second, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{})
 	if err != nil {
 		t.Fatal(err)
 	}

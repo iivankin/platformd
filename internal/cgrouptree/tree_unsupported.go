@@ -22,6 +22,10 @@ func (*Tree) WorkloadRoot() string {
 	return ""
 }
 
+func (*Tree) SetFrozen(context.Context, bool) error {
+	return fmt.Errorf("delegated cgroups require Linux")
+}
+
 func (*Tree) CreateLeaf(string) (*Leaf, error) {
 	return nil, fmt.Errorf("delegated cgroups require Linux")
 }

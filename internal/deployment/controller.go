@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
@@ -39,6 +40,7 @@ type Store interface {
 
 type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
+	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
 	StartContainer(context.Context, string) error
 	StopContainer(string, uint) error
@@ -90,12 +92,17 @@ type ImageSourceResolver interface {
 	Resolve(context.Context, string) (reference string, close func(), handled bool, err error)
 }
 
+type GrowthGate interface {
+	PermitGrowth(context.Context) error
+}
+
 type Config struct {
 	Store        Store
 	Engine       Engine
 	Publisher    Publisher
 	Credentials  CredentialResolver
 	ImageSources ImageSourceResolver
+	Growth       GrowthGate
 	Placement    func(state.ServiceDesired) (Placement, error)
 	LogRoot      string
 	VolumeRoot   string
@@ -119,6 +126,7 @@ type Controller struct {
 	publisher    Publisher
 	credentials  CredentialResolver
 	imageSources ImageSourceResolver
+	growth       GrowthGate
 	placement    func(state.ServiceDesired) (Placement, error)
 	logRoot      string
 	volumeRoot   string
@@ -134,7 +142,7 @@ type Controller struct {
 }
 
 func New(config Config) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Placement == nil {
 		return nil, errors.New("deployment controller dependencies are incomplete")
 	}
 	if !safeRoot(config.LogRoot) || !safeRoot(config.VolumeRoot) {
@@ -170,6 +178,7 @@ func New(config Config) (*Controller, error) {
 	return &Controller{
 		store: config.Store, engine: config.Engine, publisher: config.Publisher, credentials: config.Credentials,
 		imageSources: config.ImageSources,
+		growth:       config.Growth,
 		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
 		now: now, newID: newID, httpClient: httpClient,
@@ -194,6 +203,14 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 		return err
 	}
 	desired.Snapshot = normalized
+	if err := controller.growth.PermitGrowth(ctx); err != nil {
+		active, activeExists := controller.activeContainer(serviceID)
+		if !force && errors.Is(err, diskpressure.ErrGrowthDenied) && activeExists &&
+			active.deploymentID == desired.ActiveDeploymentID && desired.ActiveConfigHash == configHash {
+			return controller.publisher.Publish(desired, active.container)
+		}
+		return err
+	}
 	credential := ImageCredential{}
 	if normalized.ImageCredentialID != "" {
 		if controller.credentials == nil {
@@ -302,25 +319,31 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 		return false, fmt.Errorf("load active deployment: %w", err)
 	}
 	desired.Snapshot = activeDeployment.Snapshot
-	credential := ImageCredential{}
-	if desired.Snapshot.ImageCredentialID != "" {
-		if controller.credentials == nil {
-			return false, errors.New("image credential resolution is not configured")
-		}
-		credential, err = controller.credentials.Resolve(ctx, desired)
-		if err != nil {
-			return false, fmt.Errorf("resolve active image credential: %w", err)
-		}
-	}
 	pinnedReference, err := serviceconfig.PinnedReference(desired.Snapshot.ImageReference, activeDeployment.ImageDigest)
 	if err != nil {
 		return false, err
 	}
-	image, err := controller.pull(ctx, containerengine.PullRequest{
-		Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
-	})
-	if err != nil {
-		return false, fmt.Errorf("pull active service image: %w", err)
+	image, inspectErr := controller.engine.InspectImage(ctx, activeDeployment.ImageDigest)
+	if inspectErr != nil {
+		if err := controller.growth.PermitGrowth(ctx); err != nil {
+			return false, fmt.Errorf("active service image is not cached: %w", err)
+		}
+		credential := ImageCredential{}
+		if desired.Snapshot.ImageCredentialID != "" {
+			if controller.credentials == nil {
+				return false, errors.New("image credential resolution is not configured")
+			}
+			credential, err = controller.credentials.Resolve(ctx, desired)
+			if err != nil {
+				return false, fmt.Errorf("resolve active image credential: %w", err)
+			}
+		}
+		image, err = controller.pull(ctx, containerengine.PullRequest{
+			Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
+		})
+		if err != nil {
+			return false, fmt.Errorf("pull active service image: %w", err)
+		}
 	}
 	if image.Digest != activeDeployment.ImageDigest {
 		return false, fmt.Errorf("active image digest = %s, want %s", image.Digest, activeDeployment.ImageDigest)

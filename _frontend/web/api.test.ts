@@ -30,6 +30,7 @@ import {
   fetchServiceTerminalShells,
   fetchImageCredentials,
   fetchIdentity,
+  fetchDiskPressure,
   fetchManagedImageTags,
   fetchManagedPostgres,
   fetchManagedRedis,
@@ -396,6 +397,26 @@ test("discovers only allowlisted shells in the running service", async () => {
   expect(requested).toBe(
     "/api/v1/projects/project/services/service/terminal/shells"
   );
+});
+
+test("reads derived disk pressure without a persisted operation", async () => {
+  await expect(
+    fetchDiskPressure(undefined, () =>
+      Promise.resolve(
+        Response.json({
+          availableBytes: 4,
+          availableInodes: 500,
+          byteBasisPoints: 9600,
+          checkedAt: 42,
+          inodeBasisPoints: 5000,
+          level: "critical",
+          reservePresent: false,
+          totalBytes: 100,
+          totalInodes: 1000,
+        })
+      )
+    )
+  ).resolves.toMatchObject({ level: "critical", reservePresent: false });
 });
 
 test("reads filtered paginated audit history", async () => {

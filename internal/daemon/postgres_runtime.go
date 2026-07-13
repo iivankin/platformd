@@ -17,7 +17,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedPostgres(ctx context.Context, store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedpostgres.NewController(managedpostgres.ControllerConfig{
-		Store: store, Engine: stack.engine, Publisher: stack,
+		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth,
 		OwnerPassword: func(resource state.ManagedPostgres) (string, error) {
 			return managedpostgres.OpenOwnerPassword(master, resource.ID, resource.OwnerPasswordEncrypted)
 		},
@@ -139,6 +139,9 @@ func (stack *runtimeStack) ResolveManagedPostgresImage(ctx context.Context, tag 
 	stack.mu.Unlock()
 	if closed {
 		return "", errors.New("container runtime is closed")
+	}
+	if err := stack.growth.PermitGrowth(ctx); err != nil {
+		return "", err
 	}
 	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: reference, Refresh: true})
 	if err != nil {
