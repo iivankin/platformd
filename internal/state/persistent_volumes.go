@@ -56,7 +56,7 @@ ORDER BY 1, 2, 3`)
 			)
 		}
 		if reference.ProjectID == "" || reference.VolumeID == "" ||
-			reference.OwnerUID < 0 || reference.OwnerGID < 0 {
+			!validVolumeOwner(reference.OwnerUID) || !validVolumeOwner(reference.OwnerGID) {
 			return nil, errors.New("persistent volume reference is invalid")
 		}
 		seen[key] = reference.Kind

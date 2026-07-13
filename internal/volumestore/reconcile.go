@@ -36,6 +36,9 @@ func Reconcile(
 				reference.ProjectID, reference.VolumeID,
 			)
 		}
+		if err := validateReference(reference); err != nil {
+			return Result{}, err
+		}
 		volumes := projects[reference.ProjectID]
 		if volumes == nil {
 			volumes = make(map[string]state.PersistentVolumeReference)
@@ -76,6 +79,51 @@ func Reconcile(
 		}
 	}
 	return result, nil
+}
+
+func EnsureOrdinary(root string, reference state.PersistentVolumeReference) (bool, error) {
+	if !safeRoot(root) || !safeComponent(reference.ProjectID) || !safeComponent(reference.VolumeID) {
+		return false, errors.New("ordinary volume path is invalid")
+	}
+	if err := validateReference(reference); err != nil {
+		return false, err
+	}
+	if reference.Kind != state.PersistentVolumeOrdinary {
+		return false, errors.New("ordinary volume reference kind is invalid")
+	}
+	if err := ensureDirectory(root, 0o700); err != nil {
+		return false, fmt.Errorf("prepare persistent volume root: %w", err)
+	}
+	projectRoot := filepath.Join(root, reference.ProjectID)
+	if err := ensureDirectory(projectRoot, 0o700); err != nil {
+		return false, fmt.Errorf("prepare project volume directory: %w", err)
+	}
+	return ensureOrdinary(projectRoot, reference)
+}
+
+func Remove(root, projectID, volumeID string) error {
+	if !safeRoot(root) || !safeComponent(projectID) || !safeComponent(volumeID) {
+		return errors.New("volume removal path is invalid")
+	}
+	if err := requireDirectory(root); err != nil {
+		return fmt.Errorf("inspect persistent volume root: %w", err)
+	}
+	projectRoot := filepath.Join(root, projectID)
+	if err := requireDirectory(projectRoot); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect project volume directory: %w", err)
+	}
+	path := filepath.Join(projectRoot, volumeID)
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect volume before removal: %w", err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("remove volume: %w", err)
+	}
+	return syncDirectory(projectRoot)
 }
 
 func removeUnreferenced(
@@ -171,6 +219,23 @@ func ensureOrdinary(projectRoot string, reference state.PersistentVolumeReferenc
 		return false, err
 	}
 	return true, nil
+}
+
+func validateReference(reference state.PersistentVolumeReference) error {
+	switch reference.Kind {
+	case state.PersistentVolumeOrdinary:
+		if !validOwner(reference.OwnerUID) || !validOwner(reference.OwnerGID) {
+			return errors.New("ordinary volume owner is invalid")
+		}
+	case state.PersistentVolumePostgres, state.PersistentVolumeRedis:
+	default:
+		return fmt.Errorf("persistent volume kind %q is invalid", reference.Kind)
+	}
+	return nil
+}
+
+func validOwner(value int) bool {
+	return value >= 0 && int64(value) <= int64(1<<32-2)
 }
 
 func ensureDirectory(path string, mode os.FileMode) error {
