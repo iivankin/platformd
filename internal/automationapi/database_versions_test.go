@@ -114,7 +114,7 @@ func TestAutomationStartsDatabaseVersionChangeWithinTokenBoundary(t *testing.T) 
 		!strings.Contains(previewResponse.Body.String(), `"ready":true`) || len(store.operations) != 0 {
 		t.Fatalf("version preview = %d/%s operations=%d", previewResponse.Code, previewResponse.Body.String(), len(store.operations))
 	}
-	request := httptest.NewRequest(http.MethodPost, "/version-change", strings.NewReader(`{"imageTag":"8.0"}`))
+	request := httptest.NewRequest(http.MethodPost, "/version-change", strings.NewReader(`{"imageTag":"8.0","expectedTargetDigest":"sha256:target"}`))
 	request.SetPathValue("projectID", projectID)
 	request.SetPathValue("kind", databaseversion.Redis)
 	request.SetPathValue("resourceID", "redis")
@@ -134,7 +134,7 @@ func TestAutomationStartsDatabaseVersionChangeWithinTokenBoundary(t *testing.T) 
 	}
 
 	otherProject := "other"
-	denied := httptest.NewRequest(http.MethodPost, "/version-change", strings.NewReader(`{"imageTag":"8.1"}`))
+	denied := httptest.NewRequest(http.MethodPost, "/version-change", strings.NewReader(`{"imageTag":"8.1","expectedTargetDigest":"sha256:target"}`))
 	denied.SetPathValue("projectID", otherProject)
 	denied.SetPathValue("kind", databaseversion.Redis)
 	denied.SetPathValue("resourceID", "redis")
@@ -159,7 +159,8 @@ func TestAutomationOpenAPIAdvertisesDatabaseVersionRoutesOnlyWhenConfigured(t *t
 	serveOpenAPI("api.example.com", openAPIFeatures{databaseVersions: true}).ServeHTTP(with, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
 	if !strings.Contains(with.Body.String(), "/managed-databases/{kind}/{resourceID}/version-change") ||
 		!strings.Contains(with.Body.String(), "/version-change/preview") ||
-		!strings.Contains(with.Body.String(), "DatabaseVersionChangeRequest") {
+		!strings.Contains(with.Body.String(), "DatabaseVersionPreviewRequest") ||
+		!strings.Contains(with.Body.String(), "DatabaseVersionStartRequest") {
 		t.Fatalf("configured OpenAPI lacks version change: %s", with.Body.String())
 	}
 }

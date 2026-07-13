@@ -1,13 +1,15 @@
 import { Database, Play, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { fetchManagedPostgres, queryManagedPostgres } from "@/api";
 import type { ManagedPostgres, PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
+import { DatabaseVersionChange } from "@/database-version-change";
 import type { ResourceNodeData } from "@/project-flow";
 
 interface PostgresDetailPanelProperties {
   data: ResourceNodeData;
+  onChanged: () => void;
   onClose: () => void;
   postgresID: string;
   projectID: string;
@@ -33,6 +35,7 @@ const cellText = (cell: { base64?: string; null?: boolean; text?: string }) => {
 
 export const PostgresDetailPanel = ({
   data,
+  onChanged,
   onClose,
   postgresID,
   projectID,
@@ -43,13 +46,18 @@ export const PostgresDetailPanel = ({
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const loadResource = useCallback(
+    async (signal?: AbortSignal) => {
+      setResource(await fetchManagedPostgres(projectID, postgresID, signal));
+    },
+    [postgresID, projectID]
+  );
+
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
       try {
-        setResource(
-          await fetchManagedPostgres(projectID, postgresID, controller.signal)
-        );
+        await loadResource(controller.signal);
       } catch (loadError) {
         if (
           loadError instanceof DOMException &&
@@ -66,7 +74,12 @@ export const PostgresDetailPanel = ({
     };
     void load();
     return () => controller.abort();
-  }, [postgresID, projectID]);
+  }, [loadResource]);
+
+  const refreshAfterVersionChange = useCallback(async () => {
+    await loadResource();
+    onChanged();
+  }, [loadResource, onChanged]);
 
   const run = async () => {
     if (running) {
@@ -132,6 +145,17 @@ export const PostgresDetailPanel = ({
           <p className="mt-1 truncate">postgres:{resource?.imageTag ?? "—"}</p>
         </div>
       </div>
+
+      {resource ? (
+        <DatabaseVersionChange
+          activeDigest={resource.imageDigest}
+          activeTag={resource.imageTag}
+          engine="postgres"
+          onSucceeded={refreshAfterVersionChange}
+          projectID={projectID}
+          resourceID={postgresID}
+        />
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col">
         <div className="relative h-52 shrink-0 border-b border-border">

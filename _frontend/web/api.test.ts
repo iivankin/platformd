@@ -639,10 +639,15 @@ test("previews, starts, and reads a stateless managed database version change", 
       "project/id",
       "postgres/id",
       "18",
-      (input) => {
+      "sha256:target",
+      (input, init) => {
         expect(input.toString()).toBe(
           "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/version-change"
         );
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          expectedTargetDigest: "sha256:target",
+          imageTag: "18",
+        });
         return Promise.resolve(
           Response.json(
             {

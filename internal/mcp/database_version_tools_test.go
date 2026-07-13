@@ -111,7 +111,7 @@ func TestMCPStartsAndReadsDatabaseVersionChangeWithinTokenBoundary(t *testing.T)
 	}
 	output := callMCPTool(t, handler, automation.Identity{
 		TokenID: "admin-token", Role: "admin", ProjectID: &projectID,
-	}, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_managed_database_version_change","arguments":{"projectId":"project","kind":"redis","resourceId":"redis","imageTag":"8.0"}}}`)
+	}, `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"start_managed_database_version_change","arguments":{"projectId":"project","kind":"redis","resourceId":"redis","imageTag":"8.0","expectedTargetDigest":"sha256:target"}}}`)
 	if !strings.Contains(output, `\"targetDigest\":\"sha256:target\"`) || !strings.Contains(output, `\"status\":\"running\"`) {
 		t.Fatalf("MCP version start = %s", output)
 	}
@@ -122,7 +122,7 @@ func TestMCPStartsAndReadsDatabaseVersionChangeWithinTokenBoundary(t *testing.T)
 
 	denied := callMCPTool(t, handler, automation.Identity{
 		TokenID: "admin-token", Role: "admin", ProjectID: &projectID,
-	}, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_managed_database_version_change","arguments":{"projectId":"other","kind":"redis","resourceId":"redis","imageTag":"8.1"}}}`)
+	}, `{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"start_managed_database_version_change","arguments":{"projectId":"other","kind":"redis","resourceId":"redis","imageTag":"8.1","expectedTargetDigest":"sha256:target"}}}`)
 	if !strings.Contains(denied, automation.ErrProjectBoundary.Error()) {
 		t.Fatalf("cross-project MCP version start = %s", denied)
 	}

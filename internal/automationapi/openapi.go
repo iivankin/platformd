@@ -92,7 +92,7 @@ func databaseVersionPreviewOperation() map[string]any {
 		"requestBody": map[string]any{
 			"required": true,
 			"content": map[string]any{"application/json": map[string]any{
-				"schema": map[string]string{"$ref": "#/components/schemas/DatabaseVersionChangeRequest"},
+				"schema": map[string]string{"$ref": "#/components/schemas/DatabaseVersionPreviewRequest"},
 			}},
 		},
 		"responses": map[string]any{
@@ -111,7 +111,7 @@ func databaseVersionStartOperation() map[string]any {
 		"requestBody": map[string]any{
 			"required": true,
 			"content": map[string]any{"application/json": map[string]any{
-				"schema": map[string]string{"$ref": "#/components/schemas/DatabaseVersionChangeRequest"},
+				"schema": map[string]string{"$ref": "#/components/schemas/DatabaseVersionStartRequest"},
 			}},
 		},
 		"responses": map[string]any{
@@ -119,7 +119,7 @@ func databaseVersionStartOperation() map[string]any {
 			"400": map[string]string{"description": "Invalid target tag"},
 			"401": map[string]string{"description": "Missing or invalid Bearer token"},
 			"403": map[string]string{"description": "Admin role or project boundary denied"},
-			"409": map[string]string{"description": "Resource is busy or target digest is already active"},
+			"409": map[string]string{"description": "Resource is busy, target digest is already active, or the tag moved after preview"},
 			"507": map[string]string{"description": "Insufficient free space for a second database volume"},
 		},
 	}}
@@ -331,10 +331,18 @@ func serviceMutationSchemas() map[string]any {
 				"ownerGid": map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
 			},
 		},
-		"DatabaseVersionChangeRequest": map[string]any{
+		"DatabaseVersionPreviewRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"required":   []string{"imageTag"},
 			"properties": map[string]any{"imageTag": map[string]string{"type": "string"}},
+		},
+		"DatabaseVersionStartRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"imageTag", "expectedTargetDigest"},
+			"properties": map[string]any{
+				"imageTag":             map[string]string{"type": "string"},
+				"expectedTargetDigest": map[string]string{"type": "string"},
+			},
 		},
 		"ServerExecRequest": map[string]any{
 			"type": "object", "additionalProperties": false,

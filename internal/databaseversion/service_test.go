@@ -102,7 +102,7 @@ func TestServiceRunsOneInMemoryVersionChangeAndKeepsOperationObservational(t *te
 		t.Fatal(err)
 	}
 	result, err := service.Start(
-		context.Background(), Redis, "project", "redis", "8.0",
+		context.Background(), Redis, "project", "redis", "8.0", "sha256:target",
 		Actor{Kind: "token", ID: "admin"},
 	)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestServiceRunsOneInMemoryVersionChangeAndKeepsOperationObservational(t *te
 	}
 	<-adapter.started
 	if _, err := service.Start(
-		context.Background(), Redis, "project", "redis", "8.1", Actor{Kind: "token", ID: "admin"},
+		context.Background(), Redis, "project", "redis", "8.1", "sha256:target", Actor{Kind: "token", ID: "admin"},
 	); !errors.Is(err, ErrResourceBusy) {
 		t.Fatalf("concurrent start error = %v", err)
 	}
@@ -155,10 +155,28 @@ func TestServiceRejectsSameDigestBeforeCreatingOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = service.Start(
-		context.Background(), Redis, "project", "redis", "7.4", Actor{Kind: "token", ID: "admin"},
+		context.Background(), Redis, "project", "redis", "7.4", "sha256:same", Actor{Kind: "token", ID: "admin"},
 	)
 	if !errors.Is(err, ErrSameDigest) || len(store.operations) != 0 {
 		t.Fatalf("same digest result = %v, operations=%d", err, len(store.operations))
+	}
+}
+
+func TestServiceRejectsTargetDigestThatMovedAfterPreview(t *testing.T) {
+	store := &versionStore{operations: make(map[string]state.Operation)}
+	service, err := New(Config{
+		Context: context.Background(), Store: store, Admission: admission.New(),
+		Adapters: map[string]Adapter{Redis: &versionAdapter{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Start(
+		context.Background(), Redis, "project", "redis", "8.0", "sha256:previewed",
+		Actor{Kind: "token", ID: "admin"},
+	)
+	if !errors.Is(err, ErrTargetDigestMoved) || len(store.operations) != 0 {
+		t.Fatalf("moved target result = %v, operations=%d", err, len(store.operations))
 	}
 }
 
@@ -201,7 +219,7 @@ func TestServiceRejectsInsufficientSpaceBeforeCreatingOperation(t *testing.T) {
 		t.Fatalf("preview = %+v", preview)
 	}
 	_, err = service.Start(
-		context.Background(), Redis, "project", "redis", "8.0", Actor{Kind: "token", ID: "admin"},
+		context.Background(), Redis, "project", "redis", "8.0", "sha256:target", Actor{Kind: "token", ID: "admin"},
 	)
 	if !errors.Is(err, ErrInsufficientSpace) || len(store.operations) != 0 {
 		t.Fatalf("insufficient capacity result = %v, operations=%d", err, len(store.operations))

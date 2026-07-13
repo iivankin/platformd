@@ -8,8 +8,13 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-type databaseVersionRequest struct {
+type databaseVersionPreviewRequest struct {
 	ImageTag string `json:"imageTag"`
+}
+
+type databaseVersionStartRequest struct {
+	ImageTag             string `json:"imageTag"`
+	ExpectedTargetDigest string `json:"expectedTargetDigest"`
 }
 
 type databaseVersionOperation struct {
@@ -29,7 +34,7 @@ func previewDatabaseVersionChange(service *databaseversion.Service) http.Handler
 		if _, ok := requireAdminProject(response, request, request.PathValue("projectID")); !ok {
 			return
 		}
-		var body databaseVersionRequest
+		var body databaseVersionPreviewRequest
 		if !decodeMutationJSON(response, request, &body) {
 			return
 		}
@@ -50,13 +55,13 @@ func startDatabaseVersionChange(service *databaseversion.Service) http.HandlerFu
 		if !ok {
 			return
 		}
-		var body databaseVersionRequest
+		var body databaseVersionStartRequest
 		if !decodeMutationJSON(response, request, &body) {
 			return
 		}
 		result, err := service.Start(
 			request.Context(), request.PathValue("kind"), request.PathValue("projectID"),
-			request.PathValue("resourceID"), body.ImageTag,
+			request.PathValue("resourceID"), body.ImageTag, body.ExpectedTargetDigest,
 			databaseversion.Actor{Kind: "token", ID: identity.TokenID},
 		)
 		if writeAutomationDatabaseVersionError(response, err) {
@@ -108,6 +113,8 @@ func writeAutomationDatabaseVersionError(response http.ResponseWriter, err error
 		writeError(response, http.StatusConflict, "database_busy", "Managed database already has an active lifecycle operation")
 	case errors.Is(err, databaseversion.ErrSameDigest):
 		writeError(response, http.StatusConflict, "database_image_already_active", "Selected image digest is already active")
+	case errors.Is(err, databaseversion.ErrTargetDigestMoved):
+		writeError(response, http.StatusConflict, "database_target_digest_changed", "Selected tag moved after preview; preview it again before starting")
 	case errors.Is(err, databaseversion.ErrInsufficientSpace):
 		writeError(response, http.StatusInsufficientStorage, "database_version_space_insufficient", "Managed database version change needs more free disk space")
 	case errors.Is(err, databaseversion.ErrInvalidInput), errors.Is(err, databaseversion.ErrUnsupportedKind):
