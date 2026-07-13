@@ -13,8 +13,136 @@ import (
 
 	"github.com/iivankin/platformd/internal/backupcron"
 	"github.com/iivankin/platformd/internal/registryname"
+	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/strictjson"
 )
+
+type RestorePolicyMode string
+
+const (
+	RestoreKeepCurrentPolicy   RestorePolicyMode = "keep_current"
+	RestoreApplySnapshotPolicy RestorePolicyMode = "apply_snapshot"
+)
+
+type RestoreInput struct {
+	RepositoryID string
+	Archive      io.Reader
+	PolicyMode   RestorePolicyMode
+	Actor        Actor
+}
+
+// RestoreSnapshot verifies and installs immutable blobs before atomically
+// replacing the visible manifest/tag catalog. The policy mode is mandatory so
+// a caller cannot silently choose whether current access/backup settings win.
+func (application *Application) RestoreSnapshot(ctx context.Context, input RestoreInput) (string, error) {
+	if ctx == nil || input.RepositoryID == "" || input.Archive == nil ||
+		(input.PolicyMode != RestoreKeepCurrentPolicy && input.PolicyMode != RestoreApplySnapshotPolicy) ||
+		!validRestoreActor(input.Actor) {
+		return "", fmt.Errorf("%w: registry restore input is invalid", ErrInvalidInput)
+	}
+	repository, err := application.store.RegistryRepository(ctx, input.RepositoryID)
+	if err != nil {
+		return "", err
+	}
+	releaseMaintenance, err := application.beginRepositoryMaintenance(input.RepositoryID, "restore")
+	if err != nil {
+		return "", err
+	}
+	defer releaseMaintenance()
+
+	snapshot, err := restoreBackupArchive(ctx, input.RepositoryID, input.Archive, application.payloads)
+	if err != nil {
+		return "", err
+	}
+	if snapshot.Repository.Name != repository.Name {
+		return "", errors.New("registry backup repository name differs from current repository")
+	}
+
+	// Draining immediately before publication keeps archive verification out of
+	// the Registry downtime window. Passing false reopens admission; the boolean
+	// is true only for permanent repository deletion.
+	releaseAdmission, err := application.drainRepository(ctx, input.RepositoryID)
+	if err != nil {
+		return "", err
+	}
+	defer releaseAdmission(false)
+	lock := application.acquireRepositoryLock(input.RepositoryID)
+	defer application.releaseRepositoryLock(input.RepositoryID, lock)
+
+	manifests := make([]state.RegistryManifest, len(snapshot.Manifests))
+	for index, manifest := range snapshot.Manifests {
+		manifests[index] = state.RegistryManifest{
+			RepositoryID: input.RepositoryID, Digest: manifest.Digest,
+			MediaType: manifest.MediaType, Body: manifest.Body,
+			PushedAtMillis: manifest.PushedAtMillis,
+		}
+	}
+	tags := make([]state.RegistryTag, len(snapshot.Tags))
+	for index, tag := range snapshot.Tags {
+		tags[index] = state.RegistryTag{
+			Name: tag.Name, ManifestDigest: tag.ManifestDigest,
+			UpdatedAtMillis: tag.UpdatedAtMillis,
+		}
+	}
+	now := application.now()
+	identifiers, err := application.identifiers(now, 2)
+	if err != nil {
+		return "", err
+	}
+	err = application.store.RestoreRegistryRepository(ctx, state.RestoreRegistryRepository{
+		RepositoryID: input.RepositoryID, Manifests: manifests, Tags: tags,
+		ApplySnapshotPolicy: input.PolicyMode == RestoreApplySnapshotPolicy,
+		PublicPull:          snapshot.Repository.PublicPull, BackupEnabled: snapshot.Repository.BackupEnabled,
+		BackupCron:           snapshot.Repository.BackupCron,
+		BackupRetentionCount: snapshot.Repository.BackupRetentionCount,
+		AuditEventID:         identifiers[0], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
+		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[1],
+		CreatedAtMillis: now.UnixMilli(),
+	})
+	if err != nil {
+		return "", err
+	}
+	application.cleanupUploadsAfterRestore(input.RepositoryID)
+	if application.publisher != nil {
+		for _, tag := range snapshot.Tags {
+			application.publisher.RegistryTagPublished(repository.Name, tag.Name)
+		}
+	}
+	return identifiers[1], nil
+}
+
+func (application *Application) cleanupUploadsAfterRestore(repositoryID string) {
+	uploads, err := application.payloads.TemporaryUploads()
+	if err != nil {
+		// Catalog publication is already durable and does not depend on temporary
+		// uploads. The ordinary expiry cleanup retries filesystem housekeeping.
+		return
+	}
+	for _, upload := range uploads {
+		if upload.RepositoryID != repositoryID {
+			continue
+		}
+		lock := application.acquireUploadLock(upload.UploadID)
+		err := application.payloads.Cancel(repositoryID, upload.UploadID)
+		application.releaseUploadLock(upload.UploadID, lock)
+		if err == nil {
+			application.temporaryBytes.release(upload.Size)
+		}
+	}
+}
+
+func validRestoreActor(actor Actor) bool {
+	switch actor.Kind {
+	case "system":
+		return actor.ID != "" && actor.Email == ""
+	case "access":
+		return actor.ID != "" && actor.Email != ""
+	case "token":
+		return actor.ID != "" && actor.Email == ""
+	default:
+		return false
+	}
+}
 
 func restoreBackupArchive(
 	ctx context.Context,

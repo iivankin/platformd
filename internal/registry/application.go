@@ -61,6 +61,7 @@ type Store interface {
 	DeleteRegistryManifest(context.Context, state.RegistryAdminMutation) ([]string, error)
 	DeleteRegistryRepository(context.Context, state.RegistryAdminMutation) error
 	RecordRegistryCleanup(context.Context, state.RegistryCleanupAudit) error
+	RestoreRegistryRepository(context.Context, state.RestoreRegistryRepository) error
 }
 
 type Publisher interface {
