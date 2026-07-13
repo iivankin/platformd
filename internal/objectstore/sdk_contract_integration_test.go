@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -48,7 +49,7 @@ func TestBoto3S3Contract(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler, err := NewHTTPHandler(HTTPConfig{
-		Application: application,
+		Application: application, Admission: admission.New(),
 		LookupHost: func(context.Context, string) (state.ObjectStore, error) {
 			return created.Store, nil
 		},

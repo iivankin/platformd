@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/layout"
@@ -110,7 +111,7 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 	}
 	publisher := &integrationPublisher{}
 	controller, err := NewController(Config{
-		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
+		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: network.Name, Gateway: mustAddr(network.Gateway), DNSSearch: "integration.internal", CgroupParent: filepath.Join(tree.WorkloadRoot(), "redis-integration")}, nil

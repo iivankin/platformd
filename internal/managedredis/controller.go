@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -72,6 +73,7 @@ type Config struct {
 	Engine        Engine
 	Publisher     Publisher
 	Growth        GrowthGate
+	Admission     *admission.Gate
 	Password      func(state.ManagedRedis) (string, error)
 	Placement     func(state.ManagedRedis) (Placement, error)
 	Dial          func(context.Context, string, string) (RedisConnection, error)
@@ -97,6 +99,7 @@ type Controller struct {
 	engine        Engine
 	publisher     Publisher
 	growth        GrowthGate
+	admission     *admission.Gate
 	password      func(state.ManagedRedis) (string, error)
 	placement     func(state.ManagedRedis) (Placement, error)
 	dial          func(context.Context, string, string) (RedisConnection, error)
@@ -116,7 +119,7 @@ type Controller struct {
 }
 
 func NewController(config Config) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Password == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Admission == nil || config.Password == nil || config.Placement == nil {
 		return nil, errors.New("managed Redis controller dependencies are incomplete")
 	}
 	if !safeRoot(config.GeneratedRoot) || !safeRoot(config.VolumeRoot) || !safeRoot(config.LogRoot) {
@@ -151,7 +154,7 @@ func NewController(config Config) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth,
+		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, admission: config.Admission,
 		password: config.Password, placement: config.Placement, dial: dial,
 		generatedRoot: config.GeneratedRoot, volumeRoot: config.VolumeRoot, logRoot: config.LogRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -175,6 +178,11 @@ func (controller *Controller) RestoreAll(ctx context.Context) error {
 }
 
 func (controller *Controller) Start(ctx context.Context, resourceID string) error {
+	lease, err := controller.admission.Begin("redis_start", resourceID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
 	lock := controller.resourceLock(resourceID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -287,6 +295,87 @@ func (controller *Controller) StopAll(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
+func (controller *Controller) QuiesceAll(ctx context.Context) (func(context.Context) error, error) {
+	controller.mu.Lock()
+	ids := make([]string, 0, len(controller.active))
+	for resourceID := range controller.active {
+		ids = append(ids, resourceID)
+	}
+	controller.mu.Unlock()
+	sort.Strings(ids)
+	stopped := make([]activeRuntime, 0, len(ids))
+	for _, resourceID := range ids {
+		active, err := controller.quiesce(ctx, resourceID)
+		if active != nil {
+			stopped = append(stopped, *active)
+		}
+		if err != nil {
+			return controller.resumeAll(stopped), err
+		}
+	}
+	return controller.resumeAll(stopped), nil
+}
+
+func (controller *Controller) quiesce(ctx context.Context, resourceID string) (*activeRuntime, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	lock := controller.resourceLock(resourceID)
+	lock.Lock()
+	defer lock.Unlock()
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return nil, nil
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return nil, err
+	}
+	if err := controller.finalSave(ctx, active, password); err != nil {
+		return nil, err
+	}
+	if err := controller.publisher.WithdrawRedis(active.resource); err != nil {
+		return nil, err
+	}
+	if err := controller.engine.StopContainer(active.container.ID, stopTimeoutSeconds); err != nil {
+		return nil, errors.Join(err, controller.publisher.PublishRedis(active.resource, active.container))
+	}
+	controller.clearActive(resourceID)
+	return &active, nil
+}
+
+func (controller *Controller) resumeAll(runtimes []activeRuntime) func(context.Context) error {
+	return func(ctx context.Context) error {
+		var failures []error
+		for _, runtime := range runtimes {
+			if err := controller.resume(ctx, runtime); err != nil {
+				failures = append(failures, fmt.Errorf("resume managed Redis %s: %w", runtime.resource.ID, err))
+			}
+		}
+		return errors.Join(failures...)
+	}
+}
+
+func (controller *Controller) resume(ctx context.Context, runtime activeRuntime) error {
+	lock := controller.resourceLock(runtime.resource.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	password, err := controller.password(runtime.resource)
+	if err != nil {
+		return err
+	}
+	if err := controller.engine.StartContainer(ctx, runtime.container.ID); err != nil {
+		return err
+	}
+	ready, err := controller.waitReady(ctx, runtime.container.ID, runtime.network, password)
+	if err != nil {
+		return err
+	}
+	runtime.container = ready
+	controller.setActive(runtime.resource.ID, runtime)
+	return controller.publisher.PublishRedis(runtime.resource, ready)
+}
+
 func (controller *Controller) Status(resourceID string) (containerengine.Container, bool, error) {
 	active, ok := controller.activeRuntime(resourceID)
 	if !ok {
@@ -347,6 +436,11 @@ func (controller *Controller) PreviewKey(ctx context.Context, resourceID string,
 }
 
 func (controller *Controller) Mutate(ctx context.Context, resourceID string, mutation Mutation) (MutationResult, error) {
+	lease, err := controller.admission.Begin("redis_mutation", resourceID)
+	if err != nil {
+		return MutationResult{}, err
+	}
+	defer lease.Release()
 	active, ok := controller.activeRuntime(resourceID)
 	if !ok {
 		return MutationResult{}, ErrNotRunning

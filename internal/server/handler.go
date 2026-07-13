@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -45,6 +46,9 @@ type handlerConfig struct {
 	containerConsole ContainerConsole
 	adminHostname    string
 	diskPressure     DiskPressure
+	admission        *admission.Gate
+	selfUpdater      SelfUpdater
+	afterUpdate      func()
 	random           io.Reader
 	now              func() time.Time
 }
@@ -144,6 +148,19 @@ func WithDiskPressure(pressure DiskPressure) Option {
 	}
 }
 
+func WithAdmission(gate *admission.Gate) Option {
+	return func(config *handlerConfig) {
+		config.admission = gate
+	}
+}
+
+func WithSelfUpdate(updater SelfUpdater, afterCommit func()) Option {
+	return func(config *handlerConfig) {
+		config.selfUpdater = updater
+		config.afterUpdate = afterCommit
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -196,15 +213,22 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		registerBackupTargetRoutes(mux, config.backupTargets)
 	}
 	if config.containerConsole != nil {
-		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole); err != nil {
+		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole, config.admission); err != nil {
 			panic("register container console: " + err.Error())
 		}
 	}
 	if config.diskPressure != nil {
 		registerInfrastructureRoutes(mux, config.diskPressure)
 	}
+	if config.selfUpdater != nil && config.afterUpdate != nil {
+		registerSelfUpdateRoute(mux, config.selfUpdater, config.afterUpdate)
+	}
 	mux.Handle("/", static)
-	return securityHeaders(mux)
+	var handler http.Handler = mux
+	if config.admission != nil {
+		handler = admission.WrapHTTPMutations(config.admission, "admin_request", "/api/v1/infrastructure/update", handler)
+	}
+	return securityHeaders(handler)
 }
 
 func handleHealth(response http.ResponseWriter, _ *http.Request) {

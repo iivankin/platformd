@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -45,7 +46,7 @@ func TestDockerPushContractIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHTTPHandler(application, allowRegistryFailures{})
+	handler, err := NewHTTPHandler(application, allowRegistryFailures{}, admission.New())
 	if err != nil {
 		t.Fatal(err)
 	}

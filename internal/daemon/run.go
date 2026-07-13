@@ -9,14 +9,17 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/apitoken"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationapi"
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/backup"
+	"github.com/iivankin/platformd/internal/bootstrap"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerlogs"
@@ -31,7 +34,9 @@ import (
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/registry"
+	"github.com/iivankin/platformd/internal/releaseconfig"
 	"github.com/iivankin/platformd/internal/sdnotify"
+	"github.com/iivankin/platformd/internal/selfupdate"
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
@@ -63,6 +68,9 @@ func runDevelopment(ctx context.Context) error {
 }
 
 func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
+	ctx, cancelDaemon := context.WithCancel(ctx)
+	defer cancelDaemon()
+	var updateCommitted atomic.Bool
 	lock, err := singletonlock.Acquire(paths.DaemonLock, 0)
 	if err != nil {
 		return err
@@ -73,6 +81,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	cgroups, err := cgrouptree.Setup()
 	if err != nil {
 		return fmt.Errorf("configure delegated cgroups: %w", err)
+	}
+	if err := prepareRuntimeHost(ctx, paths, cgroups.WorkloadRoot()); err != nil {
+		return fmt.Errorf("clean runtime before state migration: %w", err)
 	}
 	key, err := masterkey.Load(paths.MasterKey, 0)
 	if err != nil {
@@ -125,13 +136,34 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot(), projects, pressure)
+	mutationAdmission := admission.New()
+	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot(), projects, pressure, mutationAdmission)
 	if err != nil {
 		return err
 	}
 	defer func() {
+		if updateCommitted.Load() {
+			returnErr = errors.Join(returnErr, runtime.ReleaseForUpdate())
+			return
+		}
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
+	releasePublicKey, err := releaseconfig.PublicKey()
+	if err != nil {
+		return err
+	}
+	platformUpdater, err := selfupdate.New(selfupdate.Config{
+		Paths: paths, ExpectedUID: 0, ManifestURL: releaseconfig.LatestManifestURL,
+		PublicKey: releasePublicKey, Admission: mutationAdmission, Growth: pressure,
+		QuiesceWorkloads: func(updateContext context.Context) (selfupdate.ResumeWorkloads, error) {
+			bounded, cancel := context.WithTimeout(updateContext, 90*time.Second)
+			defer cancel()
+			return runtime.QuiesceWorkloads(bounded)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("configure self-update: %w", err)
+	}
 	imageCredentials := liveImageCredentialRepository{store: store, master: key}
 	registryHostname := ""
 	if installation.RegistryHostname != nil {
@@ -149,7 +181,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if _, err := registryApplication.CleanupExpiredUploads(ctx); err != nil {
 		return fmt.Errorf("clean expired registry uploads: %w", err)
 	}
-	startRegistryUploadCleanup(ctx, registryApplication)
+	startRegistryUploadCleanup(ctx, registryApplication, mutationAdmission)
 	backupTargets, err := backup.NewTargetApplication(store, key, backup.NewGate(), nil, nil, nil)
 	if err != nil {
 		return err
@@ -189,6 +221,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	objectStoreHandler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
 		Application: objectStoreApplication,
+		Admission:   mutationAdmission,
 		LookupHost:  store.ObjectStoreByHostname,
 	})
 	if err != nil {
@@ -197,7 +230,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := runtime.ConfigureObjectStores(ctx, store, objectStoreHandler); err != nil {
 		return fmt.Errorf("configure managed S3: %w", err)
 	}
-	registryHandler, err := registry.NewHTTPHandler(registryApplication, automationauth.NewInMemoryFailureLimiter())
+	registryHandler, err := registry.NewHTTPHandler(registryApplication, automationauth.NewInMemoryFailureLimiter(), mutationAdmission)
 	if err != nil {
 		return err
 	}
@@ -262,6 +295,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 			RedisStore: automationRepository, Postgres: postgresAutomation,
 			PostgresStore: automationRepository,
+			Admission:     mutationAdmission,
 		})
 		if err != nil {
 			return err
@@ -270,6 +304,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
 			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
 			Redis: redisAutomation, Postgres: postgresAutomation,
+			Admission: mutationAdmission,
 		})
 		if err != nil {
 			return err
@@ -308,6 +343,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithBackupTargets(backupTargets),
 			server.WithContainerConsole(installation.AdminHostname, containerConsole),
 			server.WithDiskPressure(pressure),
+			server.WithAdmission(mutationAdmission),
+			server.WithSelfUpdate(platformUpdater, func() {
+				updateCommitted.Store(true)
+				cancelDaemon()
+			}),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{
@@ -345,11 +385,17 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	listener := tls.NewListener(netutil.LimitListener(rawListener, maximumHTTPSConnections), tlsConfig)
 	defer func() { _ = sdnotify.Stopping("platformd is stopping") }()
 	return serveListener(ctx, httpServer, listener, func() error {
-		return sdnotify.Ready("platformd admin control plane is ready")
+		if err := sdnotify.Ready("platformd admin control plane is ready"); err != nil {
+			return err
+		}
+		if err := bootstrap.FinalizeSuccessfulUpdate(paths, releasePublicKey, 0); err != nil {
+			log.Printf("release readiness cleanup failed: %v", err)
+		}
+		return nil
 	})
 }
 
-func startRegistryUploadCleanup(ctx context.Context, application *registry.Application) {
+func startRegistryUploadCleanup(ctx context.Context, application *registry.Application, gate *admission.Gate) {
 	go func() {
 		ticker := time.NewTicker(15 * time.Minute)
 		defer ticker.Stop()
@@ -358,9 +404,14 @@ func startRegistryUploadCleanup(ctx context.Context, application *registry.Appli
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				lease, admitErr := gate.Begin("registry_cleanup", "expired_uploads")
+				if admitErr != nil {
+					continue
+				}
 				if _, err := application.CleanupExpiredUploads(ctx); err != nil && ctx.Err() == nil {
 					log.Printf("registry upload cleanup failed: %v", err)
 				}
+				lease.Release()
 			}
 		}
 	}()

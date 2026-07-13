@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
@@ -34,10 +35,11 @@ type Config struct {
 	RedisStore    managedRedisRepository
 	Postgres      *automation.ManagedPostgresApplication
 	PostgresStore managedPostgresRepository
+	Admission     *admission.Gate
 }
 
 func Handler(config Config) (http.Handler, error) {
-	if config.Hostname == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil {
+	if config.Hostname == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil || config.Admission == nil {
 		return nil, errors.New("automation API dependencies are incomplete")
 	}
 	mux := http.NewServeMux()
@@ -64,7 +66,7 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(config.PostgresStore))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(config.Postgres))
 	}
-	return noStore(mux), nil
+	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", mux)), nil
 }
 
 func serveIdentity(response http.ResponseWriter, request *http.Request) {

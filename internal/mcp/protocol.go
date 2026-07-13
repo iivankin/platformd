@@ -36,17 +36,25 @@ func writeRPCResult(response http.ResponseWriter, id json.RawMessage, result any
 }
 
 func writeRPCError(response http.ResponseWriter, id json.RawMessage, code int, message string) {
+	writeRPCErrorStatus(response, id, http.StatusOK, code, message)
+}
+
+func writeRPCErrorStatus(response http.ResponseWriter, id json.RawMessage, status, code int, message string) {
 	if len(id) == 0 {
 		id = json.RawMessage("null")
 	}
-	writeRPC(response, responseMessage{
+	writeRPCStatus(response, status, responseMessage{
 		JSONRPC: "2.0", ID: id, Error: &rpcError{Code: code, Message: message},
 	})
 }
 
 func writeRPC(response http.ResponseWriter, message responseMessage) {
+	writeRPCStatus(response, http.StatusOK, message)
+}
+
+func writeRPCStatus(response http.ResponseWriter, status int, message responseMessage) {
 	response.Header().Set("Cache-Control", "private, no-store")
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
-	response.WriteHeader(http.StatusOK)
+	response.WriteHeader(status)
 	_ = json.NewEncoder(response).Encode(message)
 }

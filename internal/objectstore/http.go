@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -23,16 +24,18 @@ type HTTPConfig struct {
 	Application *Application
 	LookupHost  HostLookup
 	Now         func() time.Time
+	Admission   *admission.Gate
 }
 
 type HTTPHandler struct {
 	application *Application
 	lookupHost  HostLookup
 	verifier    *SigV4Verifier
+	admission   *admission.Gate
 }
 
 func NewHTTPHandler(config HTTPConfig) (*HTTPHandler, error) {
-	if config.Application == nil || config.LookupHost == nil {
+	if config.Application == nil || config.LookupHost == nil || config.Admission == nil {
 		return nil, errors.New("S3 HTTP handler dependencies are incomplete")
 	}
 	now := config.Now
@@ -45,7 +48,7 @@ func NewHTTPHandler(config HTTPConfig) (*HTTPHandler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &HTTPHandler{application: config.Application, lookupHost: config.LookupHost, verifier: verifier}, nil
+	return &HTTPHandler{application: config.Application, lookupHost: config.LookupHost, verifier: verifier, admission: config.Admission}, nil
 }
 
 func (handler *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -91,6 +94,16 @@ func (handler *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *htt
 	if write && credential.Permission != "read_write" {
 		writeS3Error(response, http.StatusForbidden, "AccessDenied", "Credential is read-only", requestID)
 		return
+	}
+	mutation := request.Method == http.MethodPut || request.Method == http.MethodDelete ||
+		(request.Method == http.MethodPost && (request.URL.Query().Has("uploads") || request.URL.Query().Has("uploadId")))
+	if mutation {
+		lease, err := handler.admission.Begin("s3_mutation", store.ID)
+		if err != nil {
+			writeS3Error(response, http.StatusConflict, "OperationAborted", "Platform update is in progress", requestID)
+			return
+		}
+		defer lease.Release()
 	}
 	handler.dispatch(response, request, store, objectKey, requestID)
 }

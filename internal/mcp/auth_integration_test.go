@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/apitoken"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationauth"
@@ -71,6 +72,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	mcpHandler, err := mcp.New(mcp.Config{
 		Hostname: "api.example.com", Version: "test", Repository: store,
 		Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalogStub{},
+		Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)

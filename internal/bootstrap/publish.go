@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/iivankin/platformd/internal/layout"
@@ -17,13 +18,13 @@ import (
 	"github.com/iivankin/platformd/internal/releasemanifest"
 )
 
-func publishReleaseSlot(release VerifiedRelease, paths layout.Paths, expectedUID int) error {
+func PublishReleaseSlot(release VerifiedRelease, paths layout.Paths, expectedUID int) error {
 	if err := ensurePrivateDirectory(paths.ReleasesRoot, expectedUID); err != nil {
 		return err
 	}
 	target := filepath.Join(paths.ReleasesRoot, release.Manifest.Version)
 	if _, err := os.Lstat(target); err == nil {
-		return verifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
+		return VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
@@ -49,17 +50,17 @@ func publishReleaseSlot(release VerifiedRelease, paths layout.Paths, expectedUID
 	}
 	if err := os.Rename(staging, target); err != nil {
 		if _, statErr := os.Lstat(target); statErr == nil {
-			return verifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
+			return VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
 		}
 		return fmt.Errorf("publish release slot: %w", err)
 	}
 	if err := syncDirectory(paths.ReleasesRoot); err != nil {
 		return err
 	}
-	return verifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
+	return VerifyReleaseSlot(target, release.ManifestBytes, release.PublicKey, expectedUID)
 }
 
-func verifyReleaseSlot(slot string, expectedManifest []byte, publicKey ed25519.PublicKey, expectedUID int) error {
+func VerifyReleaseSlot(slot string, expectedManifest []byte, publicKey ed25519.PublicKey, expectedUID int) error {
 	if err := verifyDirectory(slot, 0o700, expectedUID); err != nil {
 		return err
 	}
@@ -118,26 +119,137 @@ func verifyReleaseSlot(slot string, expectedManifest []byte, publicKey ed25519.P
 	return bundle.VerifyExtracted(slot)
 }
 
-func verifyCurrentRelease(paths layout.Paths, publicKey ed25519.PublicKey, expectedUID int) error {
+func VerifyCurrentRelease(paths layout.Paths, publicKey ed25519.PublicKey, expectedUID int) error {
+	_, err := CurrentReleaseManifest(paths, publicKey, expectedUID)
+	return err
+}
+
+func CurrentReleaseManifest(paths layout.Paths, publicKey ed25519.PublicKey, expectedUID int) (releasemanifest.Manifest, error) {
 	info, err := os.Lstat(paths.Current)
 	if err != nil {
-		return fmt.Errorf("inspect current release link: %w", err)
+		return releasemanifest.Manifest{}, fmt.Errorf("inspect current release link: %w", err)
 	}
 	if info.Mode()&fs.ModeSymlink == 0 {
-		return errors.New("current release path is not a symlink")
+		return releasemanifest.Manifest{}, errors.New("current release path is not a symlink")
 	}
 	target, err := os.Readlink(paths.Current)
 	if err != nil {
-		return err
+		return releasemanifest.Manifest{}, err
 	}
-	if filepath.IsAbs(target) || filepath.Base(target) != target || target == "." || target == ".." {
-		return errors.New("current release link target is invalid")
+	if !validReleaseName(target) {
+		return releasemanifest.Manifest{}, errors.New("current release link target is invalid")
 	}
-	return verifyReleaseSlot(filepath.Join(paths.ReleasesRoot, target), nil, publicKey, expectedUID)
+	slot := filepath.Join(paths.ReleasesRoot, target)
+	if err := VerifyReleaseSlot(slot, nil, publicKey, expectedUID); err != nil {
+		return releasemanifest.Manifest{}, err
+	}
+	value, err := readBoundedFile(filepath.Join(slot, "release-manifest.json"), maximumReleaseManifestBytes)
+	if err != nil {
+		return releasemanifest.Manifest{}, err
+	}
+	if publicKey == nil {
+		publicKey, err = releaseconfig.PublicKey()
+		if err != nil {
+			return releasemanifest.Manifest{}, err
+		}
+	}
+	return releasemanifest.ParseAndVerify(value, publicKey)
 }
 
-func switchCurrentRelease(paths layout.Paths, version string) error {
+func SwitchCurrentRelease(paths layout.Paths, version string) error {
+	if !validReleaseName(version) {
+		return errors.New("release version is not a safe slot name")
+	}
 	return replaceSymlink(version, paths.Current)
+}
+
+// SwitchToRelease verifies both slots and publishes previous before the single
+// durable selection boundary, current. A crash before current changes leaves
+// the old daemon selected; a crash after it starts the new slot.
+func SwitchToRelease(paths layout.Paths, expectedCurrent, target string, publicKey ed25519.PublicKey, expectedUID int) error {
+	if !validReleaseName(expectedCurrent) || !validReleaseName(target) || expectedCurrent == target {
+		return errors.New("release switch versions are invalid")
+	}
+	current, err := os.Readlink(paths.Current)
+	if err != nil {
+		return fmt.Errorf("read current release link: %w", err)
+	}
+	if current != expectedCurrent {
+		return errors.New("current release changed while update was staged")
+	}
+	if err := VerifyReleaseSlot(filepath.Join(paths.ReleasesRoot, expectedCurrent), nil, publicKey, expectedUID); err != nil {
+		return fmt.Errorf("verify previous release slot: %w", err)
+	}
+	if err := VerifyReleaseSlot(filepath.Join(paths.ReleasesRoot, target), nil, publicKey, expectedUID); err != nil {
+		return fmt.Errorf("verify target release slot: %w", err)
+	}
+	if err := replaceSymlink(expectedCurrent, paths.Previous); err != nil {
+		return fmt.Errorf("publish previous release link: %w", err)
+	}
+	if err := SwitchCurrentRelease(paths, target); err != nil {
+		return fmt.Errorf("switch current release: %w", err)
+	}
+	return nil
+}
+
+// FinalizeSuccessfulUpdate is called only after control-plane readiness. At
+// that point rollback is no longer offered, so every non-current slot and
+// transient download can be removed without another durable marker.
+func FinalizeSuccessfulUpdate(paths layout.Paths, publicKey ed25519.PublicKey, expectedUID int) error {
+	current, err := os.Readlink(paths.Current)
+	if err != nil || !validReleaseName(current) {
+		return errors.New("current release link is invalid during readiness cleanup")
+	}
+	if err := VerifyReleaseSlot(filepath.Join(paths.ReleasesRoot, current), nil, publicKey, expectedUID); err != nil {
+		return err
+	}
+	if info, err := os.Lstat(paths.Previous); err == nil {
+		if info.Mode()&fs.ModeSymlink == 0 {
+			return errors.New("previous release path is not a symlink")
+		}
+		previous, err := os.Readlink(paths.Previous)
+		if err != nil || !validReleaseName(previous) || previous == current {
+			return errors.New("previous release link is invalid")
+		}
+		if err := os.Remove(paths.Previous); err != nil {
+			return err
+		}
+		if err := syncDirectory(paths.ReleasesRoot); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	entries, err := os.ReadDir(paths.ReleasesRoot)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.Name() == "current" || entry.Name() == current {
+			continue
+		}
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return fmt.Errorf("release root contains unexpected entry %q", entry.Name())
+		}
+		if !entry.IsDir() {
+			if strings.HasPrefix(entry.Name(), ".download-") && entry.Type().IsRegular() {
+				if err := os.Remove(filepath.Join(paths.ReleasesRoot, entry.Name())); err != nil {
+					return err
+				}
+				continue
+			}
+			return fmt.Errorf("release root contains unexpected entry %q", entry.Name())
+		}
+		if err := os.RemoveAll(filepath.Join(paths.ReleasesRoot, entry.Name())); err != nil {
+			return fmt.Errorf("remove obsolete release %q: %w", entry.Name(), err)
+		}
+	}
+	return syncDirectory(paths.ReleasesRoot)
+}
+
+func validReleaseName(value string) bool {
+	return value != "" && !filepath.IsAbs(value) && filepath.Base(value) == value && value != "." && value != ".."
 }
 
 func installLocalBinaryLink(paths layout.Paths) error {

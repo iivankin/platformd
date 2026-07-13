@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/firewall"
@@ -42,6 +43,7 @@ type runtimeStack struct {
 	paths                layout.Paths
 	cgroupRoot           string
 	growth               deployment.GrowthGate
+	admission            *admission.Gate
 	deployments          *deployment.Controller
 	serviceWatcher       *servicewatcher.Watcher
 	embeddedRegistryHost string
@@ -57,23 +59,12 @@ type runtimeStack struct {
 	objectStoreFailures  map[string]error
 }
 
-func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject, growth deployment.GrowthGate) (*runtimeStack, error) {
-	if growth == nil {
-		return nil, errors.New("runtime growth gate is required")
+func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject, growth deployment.GrowthGate, gate *admission.Gate) (*runtimeStack, error) {
+	if growth == nil || gate == nil {
+		return nil, errors.New("runtime growth and mutation admission gates are required")
 	}
 	manager := firewall.New()
-	if err := manager.Clear(); err != nil {
-		return nil, fmt.Errorf("clear previous platform firewall: %w", err)
-	}
 	if err := firewall.EnableIPv4Forwarding(); err != nil {
-		return nil, err
-	}
-	for _, directory := range []string{paths.GeneratedRoot, paths.BackupWorkRoot} {
-		if err := resetTransientDirectory(directory); err != nil {
-			return nil, err
-		}
-	}
-	if err := projectnetwork.RemoveOwnedBridges(); err != nil {
 		return nil, err
 	}
 	projectInputs := make([]projectnetwork.Project, 0, len(projects))
@@ -112,9 +103,6 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	}
 
 	config := containerengine.ProductionConfig(paths, cgroupWorkloadRoot)
-	if _, err := containerengine.PrepareStorage(ctx, config); err != nil {
-		return nil, fmt.Errorf("prepare private container storage: %w", err)
-	}
 	engine, err := containerengine.Open(ctx, config)
 	if err != nil {
 		return nil, errors.Join(err, manager.Clear())
@@ -129,6 +117,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		paths:               paths,
 		cgroupRoot:          cgroupWorkloadRoot,
 		growth:              growth,
+		admission:           gate,
 		serviceFailures:     make(map[string]error),
 		publishedServices:   make(map[string]bool),
 		redisFailures:       make(map[string]error),
@@ -247,6 +236,45 @@ func (stack *runtimeStack) Close() error {
 		failures = append(failures, engine.RemoveNetwork(networks[index]))
 	}
 	failures = append(failures, engine.Close(), firewallManager.Clear())
+	return errors.Join(failures...)
+}
+
+// ReleaseForUpdate closes process-owned handles after workloads were already
+// quiesced. Persistent container records, bridges and nftables state are left
+// for the new binary's mandatory startup cleanup.
+func (stack *runtimeStack) ReleaseForUpdate() error {
+	stack.mu.Lock()
+	if stack.closed {
+		stack.mu.Unlock()
+		return nil
+	}
+	stack.closed = true
+	serviceWatcher := stack.serviceWatcher
+	serviceRestarts := stack.serviceRestarts
+	objectStoreServers := make([]*objectStoreServer, 0, len(stack.objectStoreServers))
+	for _, objectStoreServer := range stack.objectStoreServers {
+		objectStoreServers = append(objectStoreServers, objectStoreServer)
+	}
+	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
+	engine := stack.engine
+	stack.mu.Unlock()
+
+	if serviceWatcher != nil {
+		serviceWatcher.Close()
+	}
+	if serviceRestarts != nil {
+		serviceRestarts.Close()
+	}
+	var failures []error
+	for _, objectStoreServer := range objectStoreServers {
+		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		failures = append(failures, objectStoreServer.server.Shutdown(stopContext))
+		cancel()
+	}
+	for index := len(dnsServers) - 1; index >= 0; index-- {
+		failures = append(failures, dnsServers[index].Close())
+	}
+	failures = append(failures, engine.Close())
 	return errors.Join(failures...)
 }
 

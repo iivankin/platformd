@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -150,7 +151,7 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 	publisher := &testPublisher{}
 	connections := make([]*testConnection, 0, 2)
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
+		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1"), DNSSearch: "shop.internal", CgroupParent: "/workload/redis-id"}, nil
@@ -233,7 +234,7 @@ func TestControllerDoesNotPublishAndRemovesFailedReadinessCandidate(t *testing.T
 	}
 	publisher := &testPublisher{}
 	controller, err := NewController(Config{
-		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
+		Store: testStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
 		Password: func(state.ManagedRedis) (string, error) { return password, nil },
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1")}, nil

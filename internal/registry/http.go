@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/registryname"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -20,6 +21,7 @@ const distributionAPIVersion = "registry/2.0"
 type HTTPHandler struct {
 	application *Application
 	limiter     FailureLimiter
+	admission   *admission.Gate
 }
 
 type FailureLimiter interface {
@@ -28,11 +30,11 @@ type FailureLimiter interface {
 	Succeeded(string, string)
 }
 
-func NewHTTPHandler(application *Application, limiter FailureLimiter) (*HTTPHandler, error) {
-	if application == nil || limiter == nil {
+func NewHTTPHandler(application *Application, limiter FailureLimiter, gate *admission.Gate) (*HTTPHandler, error) {
+	if application == nil || limiter == nil || gate == nil {
 		return nil, errors.New("registry HTTP dependencies are incomplete")
 	}
-	return &HTTPHandler{application: application, limiter: limiter}, nil
+	return &HTTPHandler{application: application, limiter: limiter, admission: gate}, nil
 }
 
 func (handler *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *http.Request) {
@@ -65,6 +67,14 @@ func (handler *HTTPHandler) ServeHTTP(response http.ResponseWriter, request *htt
 	authentication, authorized := handler.authorize(response, request, repository, write)
 	if !authorized {
 		return
+	}
+	if write {
+		lease, err := handler.admission.Begin("registry_mutation", repository.ID)
+		if err != nil {
+			writeDistributionError(response, http.StatusConflict, "UNAVAILABLE", "platform update is in progress")
+			return
+		}
+		defer lease.Release()
 	}
 	switch route.kind {
 	case routeBlob:

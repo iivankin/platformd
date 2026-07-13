@@ -17,7 +17,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedPostgres(ctx context.Context, store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedpostgres.NewController(managedpostgres.ControllerConfig{
-		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth,
+		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Admission: stack.admission,
 		OwnerPassword: func(resource state.ManagedPostgres) (string, error) {
 			return managedpostgres.OpenOwnerPassword(master, resource.ID, resource.OwnerPasswordEncrypted)
 		},

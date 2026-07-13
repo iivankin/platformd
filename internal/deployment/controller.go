@@ -10,9 +10,11 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/id"
@@ -73,6 +75,11 @@ type RuntimeStatus struct {
 	ExitCode     int32
 }
 
+type quiescedService struct {
+	desired state.ServiceDesired
+	active  activeContainer
+}
+
 type Backend struct {
 	DeploymentID string
 	Address      string
@@ -103,6 +110,7 @@ type Config struct {
 	Credentials  CredentialResolver
 	ImageSources ImageSourceResolver
 	Growth       GrowthGate
+	Admission    *admission.Gate
 	Placement    func(state.ServiceDesired) (Placement, error)
 	LogRoot      string
 	VolumeRoot   string
@@ -127,6 +135,7 @@ type Controller struct {
 	credentials  CredentialResolver
 	imageSources ImageSourceResolver
 	growth       GrowthGate
+	admission    *admission.Gate
 	placement    func(state.ServiceDesired) (Placement, error)
 	logRoot      string
 	volumeRoot   string
@@ -142,7 +151,7 @@ type Controller struct {
 }
 
 func New(config Config) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Admission == nil || config.Placement == nil {
 		return nil, errors.New("deployment controller dependencies are incomplete")
 	}
 	if !safeRoot(config.LogRoot) || !safeRoot(config.VolumeRoot) {
@@ -179,6 +188,7 @@ func New(config Config) (*Controller, error) {
 		store: config.Store, engine: config.Engine, publisher: config.Publisher, credentials: config.Credentials,
 		imageSources: config.ImageSources,
 		growth:       config.Growth,
+		admission:    config.Admission,
 		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
 		now: now, newID: newID, httpClient: httpClient,
@@ -187,6 +197,11 @@ func New(config Config) (*Controller, error) {
 }
 
 func (controller *Controller) Deploy(ctx context.Context, serviceID string, force bool) error {
+	lease, err := controller.admission.Begin("service_deploy", serviceID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
 	lock := controller.serviceLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -283,10 +298,15 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 }
 
 func (controller *Controller) Restore(ctx context.Context, serviceID string) error {
+	lease, err := controller.admission.Begin("service_reconcile", serviceID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
 	lock := controller.serviceLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
-	_, err := controller.restoreCurrentLocked(ctx, serviceID, "")
+	_, err = controller.restoreCurrentLocked(ctx, serviceID, "")
 	return err
 }
 
@@ -294,10 +314,98 @@ func (controller *Controller) Restore(ctx context.Context, serviceID string) err
 // still current. The expected pointer prevents a delayed crash-loop attempt
 // from reviving an older deployment after a user action has replaced it.
 func (controller *Controller) RestoreCurrent(ctx context.Context, serviceID, expectedDeploymentID string) (bool, error) {
+	lease, err := controller.admission.Begin("service_restart", serviceID)
+	if err != nil {
+		return false, err
+	}
+	defer lease.Release()
 	lock := controller.serviceLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
 	return controller.restoreCurrentLocked(ctx, serviceID, expectedDeploymentID)
+}
+
+// QuiesceAll stops active service containers without deleting their libpod
+// records. The returned closure recreates the exact active pointers if update
+// cutover aborts after this point.
+func (controller *Controller) QuiesceAll(ctx context.Context) (func(context.Context) error, error) {
+	controller.mu.Lock()
+	serviceIDs := make([]string, 0, len(controller.active))
+	for serviceID := range controller.active {
+		serviceIDs = append(serviceIDs, serviceID)
+	}
+	controller.mu.Unlock()
+	sort.Strings(serviceIDs)
+	stopped := make([]quiescedService, 0, len(serviceIDs))
+	for _, serviceID := range serviceIDs {
+		if err := ctx.Err(); err != nil {
+			return controller.resumeServices(stopped), err
+		}
+		quiesced, err := controller.quiesceService(ctx, serviceID)
+		if quiesced != nil {
+			stopped = append(stopped, *quiesced)
+		}
+		if err != nil {
+			return controller.resumeServices(stopped), err
+		}
+	}
+	return controller.resumeServices(stopped), nil
+}
+
+func (controller *Controller) quiesceService(ctx context.Context, serviceID string) (*quiescedService, error) {
+	lock := controller.serviceLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+	active, ok := controller.activeContainer(serviceID)
+	if !ok {
+		return nil, nil
+	}
+	desired, err := controller.store.DesiredService(ctx, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	if err := controller.publisher.Withdraw(desired); err != nil {
+		return nil, fmt.Errorf("withdraw service %s before update: %w", serviceID, err)
+	}
+	if err := controller.engine.StopContainer(active.container.ID, stopTimeoutSeconds); err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("stop service %s before update: %w", serviceID, err),
+			controller.publisher.Publish(desired, active.container),
+		)
+	}
+	controller.clearActive(serviceID)
+	return &quiescedService{desired: desired, active: active}, nil
+}
+
+func (controller *Controller) resumeServices(services []quiescedService) func(context.Context) error {
+	return func(ctx context.Context) error {
+		var failures []error
+		for _, service := range services {
+			if err := controller.resumeService(ctx, service); err != nil {
+				failures = append(failures, fmt.Errorf("resume service %s: %w", service.desired.ID, err))
+			}
+		}
+		return errors.Join(failures...)
+	}
+}
+
+func (controller *Controller) resumeService(ctx context.Context, service quiescedService) error {
+	lock := controller.serviceLock(service.desired.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	if _, active := controller.activeContainer(service.desired.ID); active {
+		return nil
+	}
+	if err := controller.engine.StartContainer(ctx, service.active.container.ID); err != nil {
+		return err
+	}
+	ready, err := controller.waitReady(ctx, service.desired, service.active.container.ID, service.active.networkName)
+	if err != nil {
+		return err
+	}
+	service.active.container = ready
+	controller.setActive(service.desired.ID, service.active)
+	return controller.publisher.Publish(service.desired, ready)
 }
 
 func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceID, expectedDeploymentID string) (bool, error) {

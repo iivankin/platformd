@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/terminaltransport"
 )
@@ -18,7 +19,7 @@ type ContainerConsole interface {
 	Shells(context.Context, string, string) ([]string, error)
 }
 
-func registerContainerConsoleRoute(mux *http.ServeMux, hostname string, application ContainerConsole) error {
+func registerContainerConsoleRoute(mux *http.ServeMux, hostname string, application ContainerConsole, gate *admission.Gate) error {
 	handler, err := terminaltransport.New(hostname, func(ctx context.Context, open terminaltransport.OpenRequest, size terminaltransport.Size) (terminaltransport.Session, error) {
 		command, err := containerTerminalCommand(open.HTTP)
 		if err != nil {
@@ -36,6 +37,15 @@ func registerContainerConsoleRoute(mux *http.ServeMux, hostname string, applicat
 	}, 0, 0)
 	if err != nil {
 		return err
+	}
+	if gate != nil {
+		handler.SetAdmission(func(request *http.Request) (func(), error) {
+			lease, err := gate.Begin("container_console", request.PathValue("serviceID"))
+			if err != nil {
+				return nil, err
+			}
+			return lease.Release, nil
+		})
 	}
 	mux.Handle("GET /api/v1/projects/{projectID}/services/{serviceID}/terminal", handler)
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/terminal/shells", func(response http.ResponseWriter, request *http.Request) {

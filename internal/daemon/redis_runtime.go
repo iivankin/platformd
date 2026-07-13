@@ -17,7 +17,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedRedis(ctx context.Context, store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedredis.NewController(managedredis.Config{
-		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth,
+		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Admission: stack.admission,
 		Password: func(resource state.ManagedRedis) (string, error) {
 			return managedredis.OpenPassword(master, resource.ID, resource.PasswordEncrypted)
 		},
