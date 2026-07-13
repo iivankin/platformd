@@ -102,10 +102,47 @@ func PrepareStorage(ctx context.Context, config Config) (StorageCleanupResult, e
 		_, _ = store.Shutdown(true)
 		return StorageCleanupResult{}, fmt.Errorf("container store still has %d records", len(remaining))
 	}
+	layers, err := store.Layers()
+	if err != nil {
+		_, _ = store.Shutdown(true)
+		return StorageCleanupResult{}, fmt.Errorf("list cached image layers: %w", err)
+	}
+	if _, err := repairImageLayerPermissions(config.GraphRoot, layers); err != nil {
+		_, _ = store.Shutdown(true)
+		return StorageCleanupResult{}, fmt.Errorf("repair cached image layer permissions: %w", err)
+	}
 	if _, err := store.Shutdown(false); err != nil {
 		return StorageCleanupResult{}, fmt.Errorf("shutdown cleanup store: %w", err)
 	}
 	return result, nil
+}
+
+func repairImageLayerPermissions(graphRoot string, layers []storage.Layer) (int, error) {
+	repaired := 0
+	for _, layer := range layers {
+		if layer.ID == "" || layer.ID == "." || layer.ID == ".." || filepath.Base(layer.ID) != layer.ID {
+			return repaired, fmt.Errorf("image layer ID %q is unsafe", layer.ID)
+		}
+		diffRoot := filepath.Join(graphRoot, "overlay", layer.ID, "diff")
+		info, err := os.Lstat(diffRoot)
+		if err != nil {
+			return repaired, fmt.Errorf("inspect image layer %s: %w", layer.ID, err)
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return repaired, fmt.Errorf("image layer %s root is not a directory", layer.ID)
+		}
+		if info.Mode().Perm() != 0o500 {
+			continue
+		}
+		// platformd v0.1.2 ran containers/storage under UMask=0077, masking the
+		// normal read-only layer-root mode from 0555 to 0500. Repair that exact
+		// signature so non-root image processes work without discarding the cache.
+		if err := os.Chmod(diffRoot, 0o555); err != nil {
+			return repaired, fmt.Errorf("repair image layer %s root mode: %w", layer.ID, err)
+		}
+		repaired++
+	}
+	return repaired, nil
 }
 
 func resetGraphRoot(graphRoot string) error {

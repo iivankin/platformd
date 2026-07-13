@@ -23,6 +23,7 @@ const (
 	integrationDataRoot    = "/var/lib/platformd-managedredis-integration"
 	integrationRuntimeRoot = "/run/platformd-managedredis-integration"
 	integrationReleaseRoot = "/var/lib/platformd/releases/current"
+	integrationRedisTag    = "7.4.2-alpine"
 )
 
 func TestMain(main *testing.M) {
@@ -93,7 +94,7 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.Close() })
-	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: "docker.io/library/redis:7.4", Refresh: true})
+	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: "docker.io/library/redis:" + integrationRedisTag, Refresh: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +113,7 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 	}
 	resource := state.ManagedRedis{
 		ID: "redis-integration", ProjectID: "project-integration", ProjectName: "integration", Name: "cache",
-		ImageTag: "7.4", ImageDigest: image.Digest, VolumeID: "redis-volume",
+		ImageTag: integrationRedisTag, ImageDigest: image.Digest, VolumeID: "redis-volume",
 	}
 	publisher := &integrationPublisher{}
 	controller, err := NewController(Config{

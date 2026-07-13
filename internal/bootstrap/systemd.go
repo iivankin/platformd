@@ -38,7 +38,7 @@ TasksMax=infinity
 Delegate=yes
 DelegateSubgroup=control
 KillMode=mixed
-UMask=0077
+UMask=0022
 
 [Install]
 WantedBy=multi-user.target
