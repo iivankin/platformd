@@ -1,4 +1,4 @@
-import { Power, RefreshCw, Server, X } from "lucide-react";
+import { Power, RefreshCw, Server, SquareTerminal, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import {
@@ -16,6 +16,7 @@ import type {
   UpdateServiceInput,
 } from "@/api";
 import { Button } from "@/components/ui/button";
+import { ContainerTerminalOverlay } from "@/container-terminal-overlay";
 import { DeploymentHistory } from "@/deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
 import { ServiceDomains } from "@/service-domains";
@@ -82,6 +83,7 @@ export const ServiceDetailPanel = ({
   const [rollbackCandidate, setRollbackCandidate] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string | null>(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -171,131 +173,153 @@ export const ServiceDetailPanel = ({
   };
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-20 w-full max-w-lg overflow-y-auto border-l border-border bg-background shadow-[-8px_0_24px_oklch(0_0_0/5%)]">
-      <div className="flex h-12 items-center border-b border-border px-4">
-        <Server className="size-4 text-muted-foreground" />
-        <div className="ml-2 min-w-0">
-          <h2 className="truncate text-xs font-medium">{data.name}</h2>
-          <p className="text-[9px] text-muted-foreground">Service</p>
-        </div>
-        <Button
-          aria-label="Close service details"
-          className="ml-auto"
-          onClick={onClose}
-          size="icon"
-          variant="ghost"
-        >
-          <X />
-        </Button>
-      </div>
-
-      <section className="border-b border-border px-4 py-4">
-        <div className="flex items-center gap-2">
-          <span className={`size-1.5 ${statusColor(data.status)}`} />
-          <span className="text-[10px] font-medium capitalize">
-            {data.status}
-          </span>
-        </div>
-        {data.statusMessage ? (
-          <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-            {data.statusMessage}
-          </p>
-        ) : null}
-      </section>
-
-      <section className="border-b border-border px-4 py-4">
-        <div className="flex flex-wrap gap-2">
+    <>
+      <aside className="absolute inset-y-0 right-0 z-20 w-full max-w-lg overflow-y-auto border-l border-border bg-background shadow-[-8px_0_24px_oklch(0_0_0/5%)]">
+        <div className="flex h-12 items-center border-b border-border px-4">
+          <Server className="size-4 text-muted-foreground" />
+          <div className="ml-2 min-w-0">
+            <h2 className="truncate text-xs font-medium">{data.name}</h2>
+            <p className="text-[9px] text-muted-foreground">Service</p>
+          </div>
           <Button
-            disabled={!service || Boolean(busy)}
-            onClick={() => {
-              if (service) {
-                void apply(service.enabled ? "disable" : "enable", () =>
-                  updateService(
-                    projectID,
-                    serviceID,
-                    serviceUpdate(service, !service.enabled)
-                  )
-                );
-              }
-            }}
-            size="sm"
-            variant={service?.enabled ? "destructive" : "default"}
+            aria-label="Close service details"
+            className="ml-auto"
+            onClick={onClose}
+            size="icon"
+            variant="ghost"
           >
-            <Power />
-            {service?.enabled ? "Disable" : "Enable"}
-          </Button>
-          <Button
-            disabled={!service?.enabled || Boolean(busy)}
-            onClick={() => {
-              if (service) {
-                void apply("redeploy", () =>
-                  redeployService(projectID, serviceID, service.updatedAt)
-                );
-              }
-            }}
-            size="sm"
-            variant="outline"
-          >
-            <RefreshCw />
-            Redeploy
+            <X />
           </Button>
         </div>
-        {error ? (
-          <p aria-live="polite" className="mt-3 text-[10px] text-destructive">
-            {error}
-          </p>
-        ) : null}
-      </section>
 
-      <section className="border-b border-border px-4 py-4">
-        <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
-          Runtime configuration
-        </h3>
-        <dl className="mt-2">
-          <Detail label="Internal DNS" value={data.internalHostname} />
-          <Detail label="Image" value={service?.imageReference} />
-          <Detail label="Digest" value={service?.activeImageDigest} />
-          <Detail label="Target port" value={service?.targetPort?.toString()} />
-          <Detail
-            label="Updated"
-            value={
-              service
-                ? new Date(service.updatedAt).toLocaleString()
-                : "Loading…"
+        <section className="border-b border-border px-4 py-4">
+          <div className="flex items-center gap-2">
+            <span className={`size-1.5 ${statusColor(data.status)}`} />
+            <span className="text-[10px] font-medium capitalize">
+              {data.status}
+            </span>
+          </div>
+          {data.statusMessage ? (
+            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+              {data.statusMessage}
+            </p>
+          ) : null}
+        </section>
+
+        <section className="border-b border-border px-4 py-4">
+          <div className="flex flex-wrap gap-2">
+            <Button
+              disabled={!service || Boolean(busy)}
+              onClick={() => {
+                if (service) {
+                  void apply(service.enabled ? "disable" : "enable", () =>
+                    updateService(
+                      projectID,
+                      serviceID,
+                      serviceUpdate(service, !service.enabled)
+                    )
+                  );
+                }
+              }}
+              size="sm"
+              variant={service?.enabled ? "destructive" : "default"}
+            >
+              <Power />
+              {service?.enabled ? "Disable" : "Enable"}
+            </Button>
+            <Button
+              disabled={!service?.enabled || Boolean(busy)}
+              onClick={() => {
+                if (service) {
+                  void apply("redeploy", () =>
+                    redeployService(projectID, serviceID, service.updatedAt)
+                  );
+                }
+              }}
+              size="sm"
+              variant="outline"
+            >
+              <RefreshCw />
+              Redeploy
+            </Button>
+            <Button
+              disabled={data.status !== "running"}
+              onClick={() => setTerminalOpen(true)}
+              size="sm"
+              variant="outline"
+            >
+              <SquareTerminal />
+              Terminal
+            </Button>
+          </div>
+          {error ? (
+            <p aria-live="polite" className="mt-3 text-[10px] text-destructive">
+              {error}
+            </p>
+          ) : null}
+        </section>
+
+        <section className="border-b border-border px-4 py-4">
+          <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
+            Runtime configuration
+          </h3>
+          <dl className="mt-2">
+            <Detail label="Internal DNS" value={data.internalHostname} />
+            <Detail label="Image" value={service?.imageReference} />
+            <Detail label="Digest" value={service?.activeImageDigest} />
+            <Detail
+              label="Target port"
+              value={service?.targetPort?.toString()}
+            />
+            <Detail
+              label="Updated"
+              value={
+                service
+                  ? new Date(service.updatedAt).toLocaleString()
+                  : "Loading…"
+              }
+            />
+          </dl>
+        </section>
+
+        <ServiceDomains
+          domains={domains}
+          onChanged={setDomains}
+          projectID={projectID}
+          serviceID={serviceID}
+          targetPort={service?.targetPort}
+        />
+
+        <DeploymentHistory
+          busy={Boolean(busy)}
+          deployments={deployments}
+          nextCursor={nextCursor}
+          onCancelRollback={() => setRollbackCandidate(undefined)}
+          onLoadOlder={() => void loadOlder()}
+          onRollback={(deployment) => {
+            if (service) {
+              void apply("rollback", () =>
+                rollbackService(
+                  projectID,
+                  serviceID,
+                  deployment.id,
+                  service.updatedAt
+                )
+              );
             }
-          />
-        </dl>
-      </section>
-
-      <ServiceDomains
-        domains={domains}
-        onChanged={setDomains}
-        projectID={projectID}
-        serviceID={serviceID}
-        targetPort={service?.targetPort}
-      />
-
-      <DeploymentHistory
-        busy={Boolean(busy)}
-        deployments={deployments}
-        nextCursor={nextCursor}
-        onCancelRollback={() => setRollbackCandidate(undefined)}
-        onLoadOlder={() => void loadOlder()}
-        onRollback={(deployment) => {
-          if (service) {
-            void apply("rollback", () =>
-              rollbackService(
-                projectID,
-                serviceID,
-                deployment.id,
-                service.updatedAt
-              )
-            );
-          }
-        }}
-        onSelectRollback={setRollbackCandidate}
-        rollbackCandidate={rollbackCandidate}
-      />
-    </aside>
+          }}
+          onSelectRollback={setRollbackCandidate}
+          rollbackCandidate={rollbackCandidate}
+        />
+      </aside>
+      {terminalOpen ? (
+        <ContainerTerminalOverlay
+          onClose={() => setTerminalOpen(false)}
+          projectID={projectID}
+          serviceID={serviceID}
+          serviceName={data.name}
+        />
+      ) : null}
+    </>
   );
 };

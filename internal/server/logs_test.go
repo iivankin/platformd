@@ -25,9 +25,13 @@ func (repository *logRepository) ServiceLogs(context.Context, string, string, st
 	}}}, nil
 }
 
+func (*logRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {
+	return "revision", nil
+}
+
 func TestAdminServiceLogsRequireAccessAndReturnStructuredWindow(t *testing.T) {
 	repository := &logRepository{}
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs(repository))
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
 	response := httptest.NewRecorder()
 	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs", nil))
 	if response.Code != http.StatusForbidden || repository.calls != 0 {

@@ -7,10 +7,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,6 +113,51 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	})
 	if err != nil || exitCode != 0 || stdout.String() != "runtime-exec-ok" {
 		t.Fatalf("exec mismatch: code=%d stdout=%q err=%v", exitCode, stdout.String(), err)
+	}
+
+	terminalInput, terminalWriter := io.Pipe()
+	defer terminalWriter.Close()
+	var terminalOutput bytes.Buffer
+	resizes := make(chan TerminalSize, 1)
+	type terminalResult struct {
+		code int
+		err  error
+	}
+	terminalDone := make(chan terminalResult, 1)
+	go func() {
+		code, execErr := engine.ExecTerminalContainer(ctx, container.ID, TerminalExecRequest{
+			Command: []string{"/bin/sh", "-c", `stty size; IFS= read -r line; stty size; printf '<%s>' "$line"`},
+			Stdin:   terminalInput, Output: &terminalOutput,
+			InitialSize: TerminalSize{Cols: 100, Rows: 30}, Resizes: resizes,
+		})
+		terminalDone <- terminalResult{code: code, err: execErr}
+	}()
+	time.Sleep(250 * time.Millisecond)
+	resizes <- TerminalSize{Cols: 132, Rows: 44}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := terminalWriter.Write([]byte("hello\n")); err != nil {
+		t.Fatalf("write terminal input: %v", err)
+	}
+	result := <-terminalDone
+	if result.err != nil || result.code != 0 {
+		t.Fatalf("terminal exec: code=%d output=%q err=%v", result.code, terminalOutput.String(), result.err)
+	}
+	terminalText := strings.ReplaceAll(terminalOutput.String(), "\r", "")
+	if !strings.Contains(terminalText, "30 100\n") || !strings.Contains(terminalText, "44 132\n") || !strings.Contains(terminalText, "<hello>") {
+		t.Fatalf("terminal size/input output = %q", terminalText)
+	}
+
+	terminalCancelCtx, cancelTerminal := context.WithTimeout(ctx, 100*time.Millisecond)
+	defer cancelTerminal()
+	_, err = engine.ExecTerminalContainer(terminalCancelCtx, container.ID, TerminalExecRequest{
+		Command: []string{"sleep", "30"}, Stdin: bytes.NewReader(nil), Output: io.Discard,
+		InitialSize: TerminalSize{Cols: 80, Rows: 24}, Resizes: make(chan TerminalSize),
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("cancel terminal exec: %v", err)
+	}
+	if running, inspectErr := engine.InspectContainer(container.ID); inspectErr != nil || running.State != "running" {
+		t.Fatalf("terminal cancellation stopped workload: %+v, %v", running, inspectErr)
 	}
 
 	cancelCtx, cancelExec := context.WithTimeout(ctx, 100*time.Millisecond)

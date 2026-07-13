@@ -1,13 +1,15 @@
 import { AlertTriangle, FileClock, RefreshCw, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { fetchProjectCanvas, fetchServiceLogs } from "@/api";
+import { fetchProjectCanvas, parseLogStreamMessage } from "@/api";
 import type { LogWindow, Project, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { applyLogStreamMessage, serviceLogSocketURL } from "@/log-stream";
 
 const shortID = (value: string) => value.slice(0, 8);
+const logWindowLimit = 500;
 
 export const LogsPage = ({ projects }: { projects: Project[] }) => {
   const [selectedProjectID, setSelectedProjectID] = useState("");
@@ -18,6 +20,12 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
   const [window, setWindow] = useState<LogWindow>();
   const [loadingCanvas, setLoadingCanvas] = useState(false);
   const [loadingLogs, setLoadingLogs] = useState(false);
+  const [streamRevision, setStreamRevision] = useState(0);
+  const [streamStatus, setStreamStatus] = useState<
+    "connected" | "connecting" | "disconnected"
+  >("disconnected");
+  const [appliedContains, setAppliedContains] = useState("");
+  const [appliedDeploymentID, setAppliedDeploymentID] = useState("");
   const [error, setError] = useState<string>();
 
   const projectID = selectedProjectID || projects[0]?.id || "";
@@ -42,6 +50,8 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
             ? current
             : (firstService?.id ?? "")
         );
+        setStreamStatus(firstService ? "connecting" : "disconnected");
+        setLoadingLogs(Boolean(firstService));
         setError(undefined);
       } catch (loadError) {
         if (
@@ -69,65 +79,67 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
     [canvas]
   );
 
-  const loadLogs = async () => {
-    if (!projectID || !serviceID || loadingLogs) {
-      return;
-    }
-    setLoadingLogs(true);
-    try {
-      setWindow(
-        await fetchServiceLogs(projectID, serviceID, {
-          contains: contains.trim() || undefined,
-          deploymentId: deploymentID.trim() || undefined,
-          limit: 500,
-        })
-      );
-      setError(undefined);
-    } catch (loadError) {
-      setError(
-        loadError instanceof Error ? loadError.message : "Unable to read logs"
-      );
-    } finally {
-      setLoadingLogs(false);
-    }
-  };
-
   useEffect(() => {
     if (!projectID || !serviceID) {
       return;
     }
-    const controller = new AbortController();
-    const load = async () => {
-      setLoadingLogs(true);
-      try {
-        setWindow(
-          await fetchServiceLogs(
-            projectID,
-            serviceID,
-            { limit: 500 },
-            controller.signal
-          )
-        );
+    let disposed = false;
+    const socket = new WebSocket(
+      serviceLogSocketURL(projectID, serviceID, {
+        contains: appliedContains || undefined,
+        deploymentId: appliedDeploymentID || undefined,
+        limit: logWindowLimit,
+      })
+    );
+    socket.addEventListener("open", () => {
+      if (!disposed) {
+        setStreamStatus("connected");
         setError(undefined);
-      } catch (loadError) {
-        if (
-          !(
-            loadError instanceof DOMException && loadError.name === "AbortError"
-          )
-        ) {
-          setError(
-            loadError instanceof Error
-              ? loadError.message
-              : "Unable to read logs"
-          );
-        }
-      } finally {
-        setLoadingLogs(false);
       }
+    });
+    socket.addEventListener("message", (event) => {
+      if (disposed || typeof event.data !== "string") {
+        return;
+      }
+      try {
+        const message = parseLogStreamMessage(JSON.parse(event.data));
+        setWindow((current) =>
+          applyLogStreamMessage(current, message, logWindowLimit)
+        );
+        setLoadingLogs(false);
+        setError(undefined);
+      } catch (messageError) {
+        setError(
+          messageError instanceof Error
+            ? messageError.message
+            : "Invalid log stream message"
+        );
+        socket.close(1003, "invalid log stream message");
+      }
+    });
+    socket.addEventListener("close", () => {
+      if (!disposed) {
+        setStreamStatus("disconnected");
+        setLoadingLogs(false);
+        setError((current) => current ?? "Live log stream disconnected");
+      }
+    });
+    socket.addEventListener("error", () => {
+      if (!disposed) {
+        setStreamStatus("disconnected");
+      }
+    });
+    return () => {
+      disposed = true;
+      socket.close(1000, "log view changed");
     };
-    void load();
-    return () => controller.abort();
-  }, [projectID, serviceID]);
+  }, [
+    appliedContains,
+    appliedDeploymentID,
+    projectID,
+    serviceID,
+    streamRevision,
+  ]);
 
   return (
     <div className="enter-row min-h-full">
@@ -143,6 +155,10 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
               setDeploymentID("");
               setCanvas(undefined);
               setWindow(undefined);
+              setAppliedContains("");
+              setAppliedDeploymentID("");
+              setLoadingLogs(true);
+              setStreamStatus("connecting");
             }}
             value={projectID}
           >
@@ -162,6 +178,10 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
               setServiceID(event.target.value);
               setDeploymentID("");
               setWindow(undefined);
+              setAppliedContains("");
+              setAppliedDeploymentID("");
+              setLoadingLogs(true);
+              setStreamStatus("connecting");
             }}
             value={serviceID}
           >
@@ -192,7 +212,12 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
           className="flex min-w-64 flex-1 items-end gap-2"
           onSubmit={(event) => {
             event.preventDefault();
-            void loadLogs();
+            setAppliedContains(contains.trim());
+            setAppliedDeploymentID(deploymentID.trim());
+            setWindow(undefined);
+            setLoadingLogs(true);
+            setStreamStatus("connecting");
+            setStreamRevision((current) => current + 1);
           }}
         >
           <label
@@ -219,20 +244,20 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
             variant="outline"
           >
             <RefreshCw className={cn(loadingLogs && "animate-spin")} />
-            Refresh
+            Apply
           </Button>
         </form>
       </section>
 
       <section className="grid grid-cols-3 border-b border-border text-[10px] text-muted-foreground">
         <div className="border-r border-border px-5 py-3">
-          Window{" "}
+          Live window{" "}
           <span className="ml-1 text-foreground">
             {window?.records.length ?? 0} records
           </span>
         </div>
         <div className="border-r border-border px-5 py-3">
-          Source <span className="ml-1 text-foreground">conmon k8s-file</span>
+          Stream <span className="ml-1 text-foreground">{streamStatus}</span>
         </div>
         <div className="px-5 py-3">
           Limit <span className="ml-1 text-foreground">500 recent matches</span>
@@ -259,7 +284,7 @@ export const LogsPage = ({ projects }: { projects: Project[] }) => {
         >
           {window.records.map((record, index) => (
             <div
-              className="grid border-b border-border/70 md:grid-cols-[190px_72px_150px_minmax(0,1fr)]"
+              className="log-record grid border-b border-border/70 md:grid-cols-[190px_72px_150px_minmax(0,1fr)]"
               key={`${record.attemptId}-${record.timestamp}-${index}`}
             >
               <time className="px-3 py-2 text-muted-foreground md:border-r md:border-border/70">

@@ -38,3 +38,7 @@ func (*Engine) InspectContainer(string) (Container, error) {
 func (*Engine) ExecContainer(context.Context, string, ExecRequest) (int, error) {
 	return -1, ErrUnsupported
 }
+
+func (*Engine) ExecTerminalContainer(context.Context, string, TerminalExecRequest) (int, error) {
+	return -1, ErrUnsupported
+}

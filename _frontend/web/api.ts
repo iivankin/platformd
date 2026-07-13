@@ -210,8 +210,26 @@ const logWindowSchema = z.object({
   truncated: z.boolean(),
 });
 
+const logStreamMessageSchema = z.discriminatedUnion("type", [
+  z.object({
+    records: z.array(logRecordSchema),
+    truncated: z.boolean().optional().default(false),
+    type: z.literal("snapshot"),
+  }),
+  z.object({ records: z.array(logRecordSchema), type: z.literal("records") }),
+  z.object({ type: z.literal("gap") }),
+]);
+
 export type LogRecord = z.infer<typeof logRecordSchema>;
+export type LogStreamMessage = z.infer<typeof logStreamMessageSchema>;
 export type LogWindow = z.infer<typeof logWindowSchema>;
+
+export const parseLogStreamMessage = (value: unknown): LogStreamMessage =>
+  logStreamMessageSchema.parse(value);
+
+const terminalShellsSchema = z.object({
+  shells: z.array(z.enum(["/bin/sh", "/bin/bash"])),
+});
 
 const auditEventSchema = z.object({
   action: z.string().min(1),
@@ -902,6 +920,25 @@ export const fetchServiceLogs = async (
     );
   }
   return logWindowSchema.parse(await response.json());
+};
+
+export const fetchServiceTerminalShells = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<string[]> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/terminal/shells`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `terminal shell request failed with ${response.status}`
+    );
+  }
+  return terminalShellsSchema.parse(await response.json()).shells;
 };
 
 export const fetchAuditEvents = async (

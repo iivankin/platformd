@@ -27,6 +27,7 @@ import {
   fetchServiceDeployments,
   fetchServiceDomains,
   fetchServiceLogs,
+  fetchServiceTerminalShells,
   fetchImageCredentials,
   fetchIdentity,
   fetchManagedImageTags,
@@ -381,6 +382,19 @@ test("reads a validated bounded structured log window", async () => {
   ).resolves.toMatchObject({ records: [{ text: "ready" }] });
   expect(requested).toBe(
     "/api/v1/projects/project/services/service/logs?limit=25&deploymentId=deployment&contains=ready"
+  );
+});
+
+test("discovers only allowlisted shells in the running service", async () => {
+  let requested = "";
+  await expect(
+    fetchServiceTerminalShells("project", "service", undefined, (input) => {
+      requested = input.toString();
+      return Promise.resolve(Response.json({ shells: ["/bin/sh"] }));
+    })
+  ).resolves.toEqual(["/bin/sh"]);
+  expect(requested).toBe(
+    "/api/v1/projects/project/services/service/terminal/shells"
   );
 });
 

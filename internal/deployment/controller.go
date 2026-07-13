@@ -44,6 +44,8 @@ type Engine interface {
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	InspectContainer(string) (containerengine.Container, error)
+	ExecContainer(context.Context, string, containerengine.ExecRequest) (int, error)
+	ExecTerminalContainer(context.Context, string, containerengine.TerminalExecRequest) (int, error)
 }
 
 type Placement struct {
@@ -73,6 +75,11 @@ type Backend struct {
 	DeploymentID string
 	Address      string
 	Port         int
+}
+
+type TerminalTarget struct {
+	DeploymentID string
+	ContainerID  string
 }
 
 type CredentialResolver interface {
@@ -425,6 +432,40 @@ func (controller *Controller) Backend(serviceID string) (Backend, bool, error) {
 	return Backend{
 		DeploymentID: active.deploymentID, Address: addresses[0], Port: active.targetPort,
 	}, true, nil
+}
+
+func (controller *Controller) TerminalTarget(serviceID string) (TerminalTarget, bool, error) {
+	active, ok := controller.activeContainer(serviceID)
+	if !ok {
+		return TerminalTarget{}, false, nil
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return TerminalTarget{DeploymentID: active.deploymentID, ContainerID: active.container.ID}, true, err
+	}
+	if container.State != "running" {
+		return TerminalTarget{}, false, nil
+	}
+	return TerminalTarget{DeploymentID: active.deploymentID, ContainerID: container.ID}, true, nil
+}
+
+func (controller *Controller) ExecTerminal(ctx context.Context, serviceID, expectedContainerID string, request containerengine.TerminalExecRequest) (int, error) {
+	active, ok := controller.activeContainer(serviceID)
+	if !ok || active.container.ID != expectedContainerID {
+		return -1, errors.New("service terminal target is no longer active")
+	}
+	return controller.engine.ExecTerminalContainer(ctx, expectedContainerID, request)
+}
+
+func (controller *Controller) ProbeTerminalShell(ctx context.Context, serviceID, expectedContainerID, shell string) bool {
+	active, ok := controller.activeContainer(serviceID)
+	if !ok || active.container.ID != expectedContainerID {
+		return false
+	}
+	exitCode, err := controller.engine.ExecContainer(ctx, expectedContainerID, containerengine.ExecRequest{
+		Command: []string{shell, "-c", "exit 0"},
+	})
+	return err == nil && exitCode == 0
 }
 
 func (controller *Controller) runDeployment(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) error {

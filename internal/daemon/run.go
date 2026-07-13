@@ -18,6 +18,7 @@ import (
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/cgrouptree"
+	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
@@ -132,6 +133,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials, registryApplication); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
+	}
+	containerConsole, err := containerconsole.New(containerconsole.Config{
+		Services: store, Runtime: runtime.deployments, Audit: store,
+	})
+	if err != nil {
+		return fmt.Errorf("configure container console: %w", err)
 	}
 	if err := runtime.ConfigureServiceWatcher(ctx, store, registryHostname); err != nil {
 		return fmt.Errorf("configure service image watcher: %w", err)
@@ -262,7 +269,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithImageCredentials(imageCredentials),
 			server.WithDomains(domains),
 			server.WithAPITokens(apiTokens),
-			server.WithLogs(logs),
+			server.WithLogs(installation.AdminHostname, logs),
 			server.WithAudit(store),
 			server.WithManagedImages(managedImageCatalog),
 			server.WithManagedRedis(managedRedisApplication),
@@ -270,6 +277,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithObjectStores(objectStoreApplication),
 			server.WithRegistry(registryApplication, registrySettings),
 			server.WithBackupTargets(backupTargets),
+			server.WithContainerConsole(installation.AdminHostname, containerConsole),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{

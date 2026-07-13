@@ -33,6 +33,7 @@ type handlerConfig struct {
 	tokens           APITokenRepository
 	imageCredentials ImageCredentialRepository
 	logs             LogRepository
+	logsHostname     string
 	audit            AuditRepository
 	managedImages    ManagedImageCatalog
 	managedRedis     ManagedRedisRepository
@@ -41,6 +42,8 @@ type handlerConfig struct {
 	registry         *registry.Application
 	registrySettings RegistrySettings
 	backupTargets    *backup.TargetApplication
+	containerConsole ContainerConsole
+	adminHostname    string
 	random           io.Reader
 	now              func() time.Time
 }
@@ -77,9 +80,10 @@ func WithAPITokens(repository APITokenRepository) Option {
 	}
 }
 
-func WithLogs(repository LogRepository) Option {
+func WithLogs(hostname string, repository LogRepository) Option {
 	return func(config *handlerConfig) {
 		config.logs = repository
+		config.logsHostname = hostname
 	}
 }
 
@@ -126,6 +130,13 @@ func WithBackupTargets(application *backup.TargetApplication) Option {
 	}
 }
 
+func WithContainerConsole(hostname string, application ContainerConsole) Option {
+	return func(config *handlerConfig) {
+		config.adminHostname = hostname
+		config.containerConsole = application
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -152,7 +163,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		registerAPITokenRoutes(mux, config)
 	}
 	if config.logs != nil {
-		registerLogRoutes(mux, config.logs)
+		if err := registerLogRoutes(mux, config.logsHostname, config.logs); err != nil {
+			panic("register log routes: " + err.Error())
+		}
 	}
 	if config.audit != nil {
 		registerAuditRoutes(mux, config.audit)
@@ -174,6 +187,11 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.backupTargets != nil {
 		registerBackupTargetRoutes(mux, config.backupTargets)
+	}
+	if config.containerConsole != nil {
+		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole); err != nil {
+			panic("register container console: " + err.Error())
+		}
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

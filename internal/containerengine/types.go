@@ -80,3 +80,19 @@ type ExecRequest struct {
 	Stdout      io.Writer
 	Stderr      io.Writer
 }
+
+type TerminalSize struct {
+	Cols uint16
+	Rows uint16
+}
+
+type TerminalExecRequest struct {
+	Command     []string
+	Environment map[string]string
+	User        string
+	WorkDir     string
+	Stdin       io.Reader
+	Output      io.Writer
+	InitialSize TerminalSize
+	Resizes     <-chan TerminalSize
+}
