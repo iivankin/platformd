@@ -23,6 +23,8 @@ const (
 	integrationDataRoot    = "/var/lib/platformd-integration"
 	integrationRuntimeRoot = "/run/platformd-integration"
 	integrationReleaseRoot = "/var/lib/platformd/releases/current/runtime"
+	integrationAlpineImage = "docker.io/library/alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6"
+	integrationDebianImage = "docker.io/library/debian@sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1"
 )
 
 func TestMain(m *testing.M) {
@@ -59,7 +61,7 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 		}
 	})
 
-	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/alpine:3.22", Refresh: true})
+	image, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage, Refresh: true})
 	if err != nil {
 		t.Fatalf("pull image: %v", err)
 	}
@@ -81,7 +83,7 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 		Name:    "platformd-integration",
 		Command: []string{
 			"/bin/sh", "-c",
-			`i=0; while [ "$i" -lt 300 ]; do echo "platformd-runtime-rotation-$i-abcdefghijklmnopqrstuvwxyz"; i=$((i+1)); done; sleep 2`,
+			`test "$(cat /proc/1/comm)" = catatonit || exit 71; i=0; while [ "$i" -lt 300 ]; do echo "platformd-runtime-rotation-$i-abcdefghijklmnopqrstuvwxyz"; i=$((i+1)); done; sleep 2`,
 		},
 		Labels:       map[string]string{"io.platformd.test": "runtime"},
 		Network:      network.Name,
@@ -212,14 +214,14 @@ func TestStaticInitRunsInGlibcImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
-	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/debian:13-slim"})
+	image, err := engine.Pull(ctx, PullRequest{Reference: integrationDebianImage})
 	if err != nil {
 		t.Fatalf("pull glibc image: %v", err)
 	}
 	container, err := engine.CreateContainer(ctx, ContainerSpec{
 		ImageID:      image.ID,
 		Name:         "platformd-glibc-init",
-		Command:      []string{"/bin/sh", "-c", "printf glibc-init-ok"},
+		Command:      []string{"/bin/sh", "-c", `test "$(cat /proc/1/comm)" = catatonit || exit 71; printf glibc-init-ok`},
 		Labels:       map[string]string{"io.platformd.test": "glibc-init"},
 		LogPath:      filepath.Join(config.LogRoot, "glibc-init.log"),
 		LogSizeBytes: 1024,
@@ -254,7 +256,7 @@ func TestPrepareStoragePurgesContainersAndKeepsImages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open runtime: %v", err)
 	}
-	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/alpine:3.22"})
+	image, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
 	if err != nil {
 		t.Fatalf("pull image: %v", err)
 	}
@@ -333,7 +335,7 @@ func TestProjectFirewallPacketPolicy(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/alpine:3.22"})
+	image, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
 	if err != nil {
 		t.Fatalf("pull image: %v", err)
 	}

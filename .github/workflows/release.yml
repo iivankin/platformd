@@ -120,6 +120,31 @@ jobs:
           PLATFORMD_STRICT_TOOLCHAIN: "1"
         run: build/runtime-linux-amd64.sh
 
+      - name: Verify private runtime lifecycle and isolation
+        run: |
+          cleanup_runtime_integration() {
+            sudo rm -rf \
+              /run/platformd-integration \
+              /var/lib/platformd-integration \
+              /var/lib/platformd/releases/current
+          }
+          trap cleanup_runtime_integration EXIT
+          go test -c \
+            -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" \
+            -o dist/containerengine-integration.test \
+            ./internal/containerengine
+          cleanup_runtime_integration
+          sudo mkdir -p /var/lib/platformd/releases/current
+          sudo cp -a dist/runtime /var/lib/platformd/releases/current/runtime
+          sudo /usr/bin/env \
+            HOME=/root \
+            PATH=/nonexistent \
+            PLATFORMD_FIREWALL_INTEGRATION=1 \
+            PLATFORMD_RUNTIME_INTEGRATION=1 \
+            dist/containerengine-integration.test \
+              -test.timeout=5m \
+              -test.v
+
       - name: Build self-contained release
         run: |
           CGO_ENABLED=1 go build \

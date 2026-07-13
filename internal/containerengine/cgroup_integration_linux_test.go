@@ -37,7 +37,7 @@ func TestDelegatedCgroupPlacementAndLimits(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
-	image, err := engine.Pull(ctx, PullRequest{Reference: "docker.io/library/alpine:3.22"})
+	image, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
 	if err != nil {
 		t.Fatal(err)
 	}
