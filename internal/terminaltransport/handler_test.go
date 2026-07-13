@@ -156,6 +156,32 @@ func TestTransportRejectsOriginAndInvalidDimensionsBeforeOpen(t *testing.T) {
 	}
 }
 
+func TestTransportRejectsAdmissionBeforeWebSocketUpgrade(t *testing.T) {
+	t.Parallel()
+
+	var openCount atomic.Int32
+	handler, err := terminaltransport.New("admin.example.com", func(context.Context, terminaltransport.OpenRequest, terminaltransport.Size) (terminaltransport.Session, error) {
+		openCount.Add(1)
+		return nil, errors.New("unexpected open")
+	}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.SetAdmission(func(*http.Request) (func(), error) {
+		return nil, errors.New("updating")
+	})
+	server := httptest.NewTLSServer(access.ProtectAdmin("admin.example.com", verifier{}, handler))
+	defer server.Close()
+
+	_, response, err := websocket.Dial(context.Background(), "wss://admin.example.com/terminal?cols=80&rows=24", dialOptions(server, "https://admin.example.com"))
+	if err == nil || response == nil || response.StatusCode != http.StatusConflict {
+		t.Fatalf("admission response = %#v, %v", response, err)
+	}
+	if openCount.Load() != 0 {
+		t.Fatalf("opener called %d times", openCount.Load())
+	}
+}
+
 func dialOptions(server *httptest.Server, origin string) *websocket.DialOptions {
 	address := server.Listener.Addr().String()
 	transport := &http.Transport{

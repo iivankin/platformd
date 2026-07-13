@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/managedimages"
 )
@@ -29,6 +30,7 @@ type Handler struct {
 	redis      *automation.ManagedRedisApplication
 	postgres   *automation.ManagedPostgresApplication
 	tools      []Tool
+	admission  *admission.Gate
 }
 
 type Config struct {
@@ -40,6 +42,7 @@ type Config struct {
 	Images     ManagedImageCatalog
 	Redis      *automation.ManagedRedisApplication
 	Postgres   *automation.ManagedPostgresApplication
+	Admission  *admission.Gate
 }
 
 type ManagedImageCatalog interface {
@@ -47,13 +50,13 @@ type ManagedImageCatalog interface {
 }
 
 func New(config Config) (*Handler, error) {
-	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil {
+	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil || config.Admission == nil {
 		return nil, errors.New("MCP handler dependencies are incomplete")
 	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis, postgres: config.Postgres,
-		tools: readTools(),
+		tools: readTools(), admission: config.Admission,
 	}, nil
 }
 

@@ -7,7 +7,8 @@ import (
 )
 
 type initOptions struct {
-	inputFD int
+	inputFD        int
+	rollbackUpdate bool
 }
 
 func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int) {
@@ -20,6 +21,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 	flags.SetOutput(stderr)
 	flags.Usage = func() { _, _ = io.WriteString(stderr, usage) }
 	flags.IntVar(&options.inputFD, "input-fd", -1, "read bounded bootstrap JSON from an inherited file descriptor")
+	flags.BoolVar(&options.rollbackUpdate, "rollback-update", false, "restore the previous signed release before schema migration")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			_, _ = io.WriteString(stdout, usage)
@@ -27,7 +29,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 		}
 		return initOptions{}, 2
 	}
-	if flags.NArg() != 0 || options.inputFD < -1 {
+	if flags.NArg() != 0 || options.inputFD < -1 || (options.rollbackUpdate && options.inputFD != -1) {
 		_, _ = fmt.Fprint(stderr, usage)
 		return initOptions{}, 2
 	}

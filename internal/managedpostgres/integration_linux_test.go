@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/layout"
@@ -110,7 +111,7 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 	}
 	publisher := &integrationPublisher{}
 	controller, err := NewController(ControllerConfig{
-		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
+		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Admission: admission.New(),
 		OwnerPassword:     func(state.ManagedPostgres) (string, error) { return credentials.OwnerPassword, nil },
 		BootstrapPassword: func(state.ManagedPostgres) (string, error) { return credentials.BootstrapPassword, nil },
 		Placement: func(state.ManagedPostgres) (Placement, error) {

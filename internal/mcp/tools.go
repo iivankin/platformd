@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -141,6 +142,16 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 	if isAdminMutationTool(call.Name) && !identity.IsAdmin() {
 		writeToolResult(response, message.ID, map[string]string{"error": automation.ErrAdminRequired.Error()}, true)
 		return
+	}
+	var lease *admission.Lease
+	if isAdminMutationTool(call.Name) {
+		var err error
+		lease, err = handler.admission.Begin("mcp_tool", call.Name)
+		if err != nil {
+			writeRPCErrorStatus(response, message.ID, http.StatusConflict, codeInternalError, "platform_updating")
+			return
+		}
+		defer lease.Release()
 	}
 	var output any
 	var err error

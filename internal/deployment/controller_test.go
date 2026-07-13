@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/serviceconfig"
@@ -235,7 +236,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	identifiers := []string{"deployment-1", "attempt-1", "deployment-2", "attempt-2"}
 	clockIndex := 0
 	controller, err := New(Config{
-		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth,
+		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth, Admission: admission.New(),
 		Placement: func(state.ServiceDesired) (Placement, error) {
 			return Placement{
 				NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
@@ -321,7 +322,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	identifiers := []string{"deployment", "first-attempt"}
 	identifierIndex := 0
 	first, err := New(Config{
-		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Growth: allowGrowth, Placement: placement,
+		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
 		NewID: func(time.Time) (string, error) {
@@ -341,7 +342,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	restoredEngine := &fakeEngine{containers: make(map[string]containerengine.Container)}
 	restoredPublisher := &fakePublisher{}
 	restored, err := New(Config{
-		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Growth: allowGrowth, Placement: placement,
+		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "restored-logs"), VolumeRoot: filepath.Join(t.TempDir(), "restored-volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
 		NewID: func(time.Time) (string, error) { return "restored-attempt", nil },
@@ -375,6 +376,23 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	}
 	if store.service.ActiveDeploymentID != pointer {
 		t.Fatalf("crash restart changed deployment pointer to %q", store.service.ActiveDeploymentID)
+	}
+	resume, err := restored.QuiesceAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, active := restored.activeContainer("service"); active {
+		t.Fatal("quiesced service remained active")
+	}
+	containerID := "platformd-service-" + pointer
+	if container, exists := restoredEngine.containers[containerID]; !exists || container.State != "stopped" {
+		t.Fatalf("quiesced container was removed or running: %+v/%t", container, exists)
+	}
+	if err := resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if container, active, err := restored.Status("service"); err != nil || !active || container.State != "running" {
+		t.Fatalf("resumed service = %+v/%t/%v", container, active, err)
 	}
 }
 
@@ -410,7 +428,7 @@ func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
 	}
 	publisher := &fakePublisher{}
 	controller, err := New(Config{
-		Store: store, Engine: engine, Publisher: publisher,
+		Store: store, Engine: engine, Publisher: publisher, Admission: admission.New(),
 		Growth: growthGateFunc(func(context.Context) error {
 			return fmt.Errorf("%w: critical", diskpressure.ErrGrowthDenied)
 		}),

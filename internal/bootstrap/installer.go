@@ -80,7 +80,7 @@ func (installer Installer) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := publishReleaseSlot(release, installer.Paths, installer.ExpectedUID); err != nil {
+	if err := PublishReleaseSlot(release, installer.Paths, installer.ExpectedUID); err != nil {
 		return err
 	}
 	if err := ensurePrivateDirectory(installer.Paths.ConfigRoot, installer.ExpectedUID); err != nil {
@@ -109,7 +109,7 @@ func (installer Installer) Init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := switchCurrentRelease(installer.Paths, release.Manifest.Version); err != nil {
+	if err := SwitchCurrentRelease(installer.Paths, release.Manifest.Version); err != nil {
 		return err
 	}
 	if err := installLocalBinaryLink(installer.Paths); err != nil {
@@ -199,7 +199,7 @@ func (installer Installer) repair(ctx context.Context, installation state.Instal
 	if _, err := masterkey.Load(installer.Paths.MasterKey, installer.ExpectedUID); err != nil {
 		return fmt.Errorf("load existing master key: %w", err)
 	}
-	if err := verifyCurrentRelease(installer.Paths, installer.ReleasePublicKey, installer.ExpectedUID); err != nil {
+	if err := VerifyCurrentRelease(installer.Paths, installer.ReleasePublicKey, installer.ExpectedUID); err != nil {
 		return err
 	}
 	if err := installLocalBinaryLink(installer.Paths); err != nil {

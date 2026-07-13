@@ -31,6 +31,7 @@ import {
   fetchImageCredentials,
   fetchIdentity,
   fetchDiskPressure,
+  applySelfUpdate,
   fetchManagedImageTags,
   fetchManagedPostgres,
   fetchManagedRedis,
@@ -75,6 +76,26 @@ const validMetaFetcher = () =>
 
 test("rejects a malformed control-plane metadata response", async () => {
   await expect(fetchMeta(undefined, invalidMetaFetcher)).rejects.toThrow();
+});
+
+test("starts a verified self-update through the dedicated idle-only endpoint", async () => {
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const result = await applySelfUpdate((input, init) => {
+    calls.push({ init, input });
+    return Promise.resolve(
+      Response.json(
+        { previousVersion: "1.0.0", targetVersion: "2.0.0" },
+        { status: 202 }
+      )
+    );
+  });
+  expect(result.targetVersion).toBe("2.0.0");
+  expect(calls).toEqual([
+    {
+      init: { headers: { Accept: "application/json" }, method: "POST" },
+      input: "/api/v1/infrastructure/update",
+    },
+  ]);
 });
 
 test("returns validated control-plane metadata", async () => {

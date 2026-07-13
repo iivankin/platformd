@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -23,8 +24,22 @@ import (
 type registryHTTPFixture struct {
 	application *Application
 	handler     http.Handler
+	admission   *admission.Gate
 	private     CreateRepositoryResult
 	public      CreateRepositoryResult
+}
+
+func TestDistributionRejectsAuthenticatedPushWhilePlatformUpdates(t *testing.T) {
+	t.Parallel()
+	fixture := newRegistryHTTPFixture(t)
+	update, _, err := fixture.admission.TryUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer update.Release()
+	response := fixture.request(t, http.MethodPost, "/v2/"+fixture.private.Repository.Name+"/blobs/uploads/", nil, &fixture.private)
+	assertRegistryResponse(t, response, http.StatusConflict)
+	assertDistributionError(t, response, "UNAVAILABLE")
 }
 
 func TestDistributionHTTPContract(t *testing.T) {
@@ -252,7 +267,8 @@ func newRegistryHTTPFixture(t *testing.T) registryHTTPFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := NewHTTPHandler(application, allowRegistryFailures{})
+	gate := admission.New()
+	handler, err := NewHTTPHandler(application, allowRegistryFailures{}, gate)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +283,7 @@ func newRegistryHTTPFixture(t *testing.T) registryHTTPFixture {
 		return result
 	}
 	return registryHTTPFixture{
-		application: application, handler: handler,
+		application: application, handler: handler, admission: gate,
 		private: create("team/private", false), public: create("team/public", true),
 	}
 }

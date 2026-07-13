@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -55,8 +56,9 @@ func TestS3HTTPPutRangeListHeadAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	timestamp := time.Date(2026, 7, 13, 10, 11, 12, 0, time.UTC)
+	gate := admission.New()
 	handler, err := NewHTTPHandler(HTTPConfig{
-		Application: application, Now: func() time.Time { return timestamp },
+		Application: application, Now: func() time.Time { return timestamp }, Admission: gate,
 		LookupHost: func(_ context.Context, hostname string) (state.ObjectStore, error) {
 			if hostname != "assets.shop.internal" {
 				return state.ObjectStore{}, state.ErrObjectStoreNotFound
@@ -134,6 +136,17 @@ func TestS3HTTPPutRangeListHeadAndDelete(t *testing.T) {
 	if response.Code != http.StatusNotFound || !strings.Contains(response.Body.String(), "<Code>NoSuchKey</Code>") {
 		t.Fatalf("deleted GET = %d/%s", response.Code, response.Body)
 	}
+	update, _, err := gate.TryUpdate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer update.Release()
+	blockedPut := signedS3Request(t, http.MethodPut, "http://assets.shop.internal:9000/shop-assets/blocked.txt", []byte("blocked"), created.AccessKey, created.Secret, timestamp)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, blockedPut)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "<Code>OperationAborted</Code>") {
+		t.Fatalf("PUT during update = %d/%s", response.Code, response.Body)
+	}
 }
 
 func TestS3HTTPMultipartEncryptsPartsListsAndPublishesExactFinalETag(t *testing.T) {
@@ -171,7 +184,7 @@ func TestS3HTTPMultipartEncryptsPartsListsAndPublishesExactFinalETag(t *testing.
 	}
 	timestamp := time.Date(2026, 7, 13, 10, 11, 12, 0, time.UTC)
 	handler, err := NewHTTPHandler(HTTPConfig{
-		Application: application, Now: func() time.Time { return timestamp },
+		Application: application, Now: func() time.Time { return timestamp }, Admission: admission.New(),
 		LookupHost: func(_ context.Context, _ string) (state.ObjectStore, error) {
 			return created.Store, nil
 		},

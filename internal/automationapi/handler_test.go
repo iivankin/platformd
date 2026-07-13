@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -61,6 +62,7 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	}
 	handler, err := Handler(Config{
 		Hostname: "api.example.com", Repository: repository, Services: services, Logs: logs, Images: repository,
+		Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)

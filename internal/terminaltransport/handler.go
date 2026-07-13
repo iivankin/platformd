@@ -39,12 +39,18 @@ type OpenRequest struct {
 }
 
 type Open func(context.Context, OpenRequest, Size) (Session, error)
+type Admission func(*http.Request) (release func(), err error)
 
 type Handler struct {
 	hostname string
 	open     Open
 	idle     time.Duration
 	lifetime time.Duration
+	admit    Admission
+}
+
+func (handler *Handler) SetAdmission(admit Admission) {
+	handler.admit = admit
 }
 
 func New(hostname string, open Open, idle, lifetime time.Duration) (*Handler, error) {
@@ -71,6 +77,15 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	if err != nil {
 		http.Error(response, err.Error(), http.StatusBadRequest)
 		return
+	}
+	var release func()
+	if handler.admit != nil {
+		release, err = handler.admit(request)
+		if err != nil {
+			http.Error(response, "platform update is in progress", http.StatusConflict)
+			return
+		}
+		defer release()
 	}
 
 	connection, err := websocket.Accept(response, request, &websocket.AcceptOptions{

@@ -30,7 +30,7 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 	}
 	controller, err := deployment.New(deployment.Config{
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
-		ImageSources: imageSources, Growth: stack.growth,
+		ImageSources: imageSources, Growth: stack.growth, Admission: stack.admission,
 		Placement: stack.servicePlacement,
 		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
 		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,

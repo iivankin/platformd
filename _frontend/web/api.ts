@@ -245,6 +245,13 @@ const diskPressureSchema = z.object({
 
 export type DiskPressure = z.infer<typeof diskPressureSchema>;
 
+const selfUpdateResultSchema = z.object({
+  previousVersion: z.string().min(1),
+  targetVersion: z.string().min(1),
+});
+
+export type SelfUpdateResult = z.infer<typeof selfUpdateResultSchema>;
+
 const auditEventSchema = z.object({
   action: z.string().min(1),
   actorId: z.string().min(1),
@@ -970,6 +977,22 @@ export const fetchDiskPressure = async (
     );
   }
   return diskPressureSchema.parse(await response.json());
+};
+
+export const applySelfUpdate = async (
+  fetcher: Fetcher = globalThis.fetch
+): Promise<SelfUpdateResult> => {
+  const response = await fetcher("/api/v1/infrastructure/update", {
+    headers: { Accept: "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `platform update failed with ${response.status}`
+    );
+  }
+  return selfUpdateResultSchema.parse(await response.json());
 };
 
 export const fetchAuditEvents = async (

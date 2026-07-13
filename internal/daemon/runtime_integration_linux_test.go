@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/cryptobox"
@@ -61,7 +62,10 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		{ID: "integration-a", Name: "alpha", ObjectStoreEnabled: true},
 		{ID: "integration-b", Name: "beta"},
 	}
-	first, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{})
+	if err := prepareRuntimeHost(ctx, paths, tree.WorkloadRoot()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{}, admission.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +96,10 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{})
+	if err := prepareRuntimeHost(ctx, paths, tree.WorkloadRoot()); err != nil {
+		t.Fatal(err)
+	}
+	second, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{}, admission.New())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +143,7 @@ func assertProjectObjectStore(t *testing.T, ctx context.Context, runtime *runtim
 		t.Fatal(err)
 	}
 	handler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
-		Application: application, LookupHost: store.ObjectStoreByHostname,
+		Application: application, LookupHost: store.ObjectStoreByHostname, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)

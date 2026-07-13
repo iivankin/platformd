@@ -9,7 +9,7 @@ import (
 	"github.com/iivankin/platformd/internal/daemon"
 )
 
-const usage = "usage: platformd init [--input-fd <fd>]\n"
+const usage = "usage: platformd init [--input-fd <fd> | --rollback-update]\n"
 
 // Run dispatches the one public command and private process modes.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -37,6 +37,18 @@ func runInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	options, code := parseInitOptions(args, stdout, stderr)
 	if code != -1 {
 		return code
+	}
+	if options.rollbackUpdate {
+		rollback, err := bootstrap.ProductionUpdateRollback()
+		if err == nil {
+			err = rollback.Run(ctx)
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "platformd: rollback update: %v\n", err)
+			return 1
+		}
+		_, _ = io.WriteString(stdout, "platformd update rolled back\n")
+		return 0
 	}
 	provider, err := bootstrapInputProvider(options.inputFD)
 	if err != nil {

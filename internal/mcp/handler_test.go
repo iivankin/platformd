@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -60,7 +61,7 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	}
 	handler, err := New(Config{
 		Hostname: "api.example.com", Version: "1.2.3", Repository: repository,
-		Services: services, Logs: logs, Images: repository,
+		Services: services, Logs: logs, Images: repository, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
