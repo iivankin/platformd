@@ -83,7 +83,7 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 		Name:    "platformd-integration",
 		Command: []string{
 			"/bin/sh", "-c",
-			`test "$(cat /proc/1/comm)" = catatonit || exit 71; i=0; while [ "$i" -lt 300 ]; do echo "platformd-runtime-rotation-$i-abcdefghijklmnopqrstuvwxyz"; i=$((i+1)); done; sleep 2`,
+			`test "$(cat /proc/1/comm)" = podman-init && test "$(readlink /proc/1/exe)" = /run/podman-init || exit 71; i=0; while [ "$i" -lt 300 ]; do echo "platformd-runtime-rotation-$i-abcdefghijklmnopqrstuvwxyz"; i=$((i+1)); done; sleep 2`,
 		},
 		Labels:       map[string]string{"io.platformd.test": "runtime"},
 		Network:      network.Name,
@@ -221,7 +221,7 @@ func TestStaticInitRunsInGlibcImage(t *testing.T) {
 	container, err := engine.CreateContainer(ctx, ContainerSpec{
 		ImageID:      image.ID,
 		Name:         "platformd-glibc-init",
-		Command:      []string{"/bin/sh", "-c", `test "$(cat /proc/1/comm)" = catatonit || exit 71; printf glibc-init-ok`},
+		Command:      []string{"/bin/sh", "-c", `test "$(cat /proc/1/comm)" = podman-init && test "$(readlink /proc/1/exe)" = /run/podman-init || exit 71; printf glibc-init-ok`},
 		Labels:       map[string]string{"io.platformd.test": "glibc-init"},
 		LogPath:      filepath.Join(config.LogRoot, "glibc-init.log"),
 		LogSizeBytes: 1024,
@@ -390,7 +390,11 @@ func TestProjectFirewallPacketPolicy(t *testing.T) {
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 1, "nc", "-z", "-w", "2", projectA.Gateway.String(), "9001")
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "3", containerAPeer.IPs["packet-a"][0], "8080")
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 1, "nc", "-z", "-w", "2", containerB.IPs["packet-b"][0], "8080")
-	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "5", "1.1.1.1", "443")
+	masquerade := startMasqueradeProbe(t)
+	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "5", masquerade.address, masquerade.port)
+	if err := masquerade.verify(ctx); err != nil {
+		t.Fatalf("masqueraded egress: %v", err)
+	}
 
 	udpResult := make(chan error, 1)
 	go func() {
