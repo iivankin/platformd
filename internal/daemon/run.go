@@ -466,6 +466,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure server terminal authentication: %w", err)
 	}
 	registrySettings := &liveRegistrySettings{store: store, runtime: runtime, certificates: certificates}
+	domains := &liveDomainRepository{store: store, certificates: certificates}
 	var automationHostname string
 	var automationHandler http.Handler
 	if installation.AutomationHostname != nil {
@@ -476,6 +477,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return err
 		}
 		serviceAutomation, err := automation.NewServiceApplication(automationRepository, nil, nil)
+		if err != nil {
+			return err
+		}
+		domainAutomation, err := automation.NewDomainApplication(domains, nil, nil)
 		if err != nil {
 			return err
 		}
@@ -501,8 +506,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
 			Hostname: automationHostname, Repository: automationRepository, Projects: projectAutomation,
-			Services: serviceAutomation,
-			Logs:     logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
+			Services: serviceAutomation, Domains: domainAutomation,
+			Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 			RedisStore: automationRepository, Postgres: postgresAutomation,
 			PostgresStore: automationRepository, ObjectStores: objectStoreApplication,
 			Managed:   managedResourceAutomation,
@@ -536,7 +541,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		automationHandler = authenticator.Protect(automationMux)
 	}
 	tlsConfig := certificates.TLSConfig()
-	domains := &liveDomainRepository{store: store, certificates: certificates}
 	var recoveryRepository server.RecoveryRepository
 	if disasterRecoveryProgress != nil {
 		recoveryRepository = &liveRecoveryRepository{store: store, progress: disasterRecoveryProgress}

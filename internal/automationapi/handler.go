@@ -31,6 +31,7 @@ type Config struct {
 	Repository    Repository
 	Projects      *automation.ProjectApplication
 	Services      *automation.ServiceApplication
+	Domains       *automation.DomainApplication
 	Logs          *automation.LogApplication
 	Images        ManagedImageCatalog
 	Redis         *automation.ManagedRedisApplication
@@ -54,6 +55,7 @@ func Handler(config Config) (http.Handler, error) {
 		serverExec: config.ServerExec != nil, managedResources: config.Managed != nil,
 		databaseVersions: config.Versions != nil, volumes: config.Volumes != nil,
 		projects: config.Projects != nil, objectStores: config.ObjectStores != nil,
+		domains: config.Domains != nil,
 	}))
 	mux.HandleFunc("GET /api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
@@ -69,6 +71,12 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
+	if config.Domains != nil {
+		pattern := "/api/v1/projects/{projectID}/services/{serviceID}/domains"
+		mux.HandleFunc("GET "+pattern, listServiceDomains(config.Domains))
+		mux.HandleFunc("POST "+pattern, attachServiceDomain(config.Domains))
+		mux.HandleFunc("DELETE "+pattern+"/{hostname}", detachServiceDomain(config.Domains))
+	}
 	if config.Volumes != nil {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(config.Volumes))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(config.Volumes))
