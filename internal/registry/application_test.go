@@ -95,6 +95,13 @@ func TestRepositoryLocalBlobUploadAuthenticationAndManifestPublication(t *testin
 	if err != nil || loaded.Digest != manifest.Digest || !bytes.Equal(loaded.Body, manifestBody) {
 		t.Fatalf("manifest = %+v, %v", loaded, err)
 	}
+	described, err := application.Image(ctx, created.Repository.ID, manifest.Digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if described.Tags == nil || described.Platforms == nil || described.BlobDigests == nil {
+		t.Fatalf("image collections must serialize as arrays: %+v", described)
+	}
 	tags, more, err := application.Tags(ctx, created.Repository.ID, "", 100)
 	if err != nil || more || len(tags) != 1 || tags[0].Name != "latest" {
 		t.Fatalf("tags = %+v more=%v err=%v", tags, more, err)

@@ -205,6 +205,9 @@ func (application *Application) describeImage(ctx context.Context, manifest stat
 	result := Image{
 		Digest: manifest.Digest, MediaType: manifest.MediaType, PushedAtMillis: manifest.PushedAtMillis,
 		ManifestSize: int64(len(manifest.Body)), ManifestJSON: slices.Clone(manifest.Body),
+		Tags:        make([]string, 0, len(tags)),
+		Platforms:   []ImagePlatform{},
+		BlobDigests: []string{},
 	}
 	for _, tag := range tags {
 		result.Tags = append(result.Tags, tag.Name)
