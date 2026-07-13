@@ -9,7 +9,7 @@ import (
 	"github.com/iivankin/platformd/internal/daemon"
 )
 
-const usage = "usage: platformd init [--input-fd <fd> | --rollback-update]\n"
+const usage = "usage: platformd init [--input-fd <fd> | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n"
 
 // Run dispatches the one public command and private process modes.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -48,6 +48,18 @@ func runInit(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		_, _ = io.WriteString(stdout, "platformd update rolled back\n")
+		return 0
+	}
+	if options.installUpdate != "" {
+		installer, err := bootstrap.ProductionSignedUpdateInstaller(options.installUpdate, options.binaryPath)
+		if err == nil {
+			err = installer.Run(ctx)
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(stderr, "platformd: install signed update: %v\n", err)
+			return 1
+		}
+		_, _ = io.WriteString(stdout, "platformd signed update installed\n")
 		return 0
 	}
 	provider, err := bootstrapInputProvider(options.inputFD)

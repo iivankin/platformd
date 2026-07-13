@@ -99,17 +99,25 @@ func LoadRelease(ctx context.Context, config ReleaseLoaderConfig) (VerifiedRelea
 	if len(manifestBytes) > maximumReleaseManifestBytes {
 		return VerifiedRelease{}, errors.New("release manifest exceeds 64 KiB")
 	}
-	manifest, err := releasemanifest.ParseAndVerify(manifestBytes, config.PublicKey)
+	release, err := VerifyRelease(config.ExecutablePath, manifestBytes, config.PublicKey)
 	if err != nil {
 		return VerifiedRelease{}, err
 	}
-	if manifest.Version != config.Version {
-		return VerifiedRelease{}, fmt.Errorf("release manifest version = %s, running version = %s", manifest.Version, config.Version)
+	if release.Manifest.Version != config.Version {
+		return VerifiedRelease{}, fmt.Errorf("release manifest version = %s, running version = %s", release.Manifest.Version, config.Version)
 	}
-	if err := manifest.VerifyBinary(config.ExecutablePath); err != nil {
+	return release, nil
+}
+
+func VerifyRelease(executablePath string, manifestBytes []byte, publicKey ed25519.PublicKey) (VerifiedRelease, error) {
+	manifest, err := releasemanifest.ParseAndVerify(manifestBytes, publicKey)
+	if err != nil {
 		return VerifiedRelease{}, err
 	}
-	bundle, err := releasebundle.Open(config.ExecutablePath)
+	if err := manifest.VerifyBinary(executablePath); err != nil {
+		return VerifiedRelease{}, err
+	}
+	bundle, err := releasebundle.Open(executablePath)
 	if err != nil {
 		return VerifiedRelease{}, err
 	}
@@ -119,10 +127,9 @@ func LoadRelease(ctx context.Context, config ReleaseLoaderConfig) (VerifiedRelea
 		return VerifiedRelease{}, errors.Join(verifyErr, closeErr)
 	}
 	return VerifiedRelease{
-		ExecutablePath: config.ExecutablePath,
-		Manifest:       manifest,
-		ManifestBytes:  append([]byte(nil), manifestBytes...),
-		PublicKey:      append(ed25519.PublicKey(nil), config.PublicKey...),
+		ExecutablePath: executablePath, Manifest: manifest,
+		ManifestBytes: append([]byte(nil), manifestBytes...),
+		PublicKey:     append(ed25519.PublicKey(nil), publicKey...),
 	}, nil
 }
 
