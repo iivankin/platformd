@@ -95,21 +95,8 @@ func (restorer Restorer) Restore(ctx context.Context) error {
 			_ = lock.Close()
 		}
 	}()
-	if err := restorer.ValidateHost(ctx, nearestExistingParent(restorer.Paths.DataRoot)); err != nil {
-		return err
-	}
-	if err := ensurePrivateRestoreDirectory(restorer.Paths.DataRoot, restorer.ExpectedUID); err != nil {
-		return err
-	}
-	if err := ensurePrivateRestoreDirectory(restorer.Paths.ConfigRoot, restorer.ExpectedUID); err != nil {
-		return err
-	}
-	// A fresh restore has no concurrent backup work. Removing the entire local
-	// work root makes a power-loss retry independent of stale staging files.
-	if err := os.RemoveAll(restorer.Paths.BackupWorkRoot); err != nil {
-		return err
-	}
-	if err := ensurePrivateRestoreDirectory(restorer.Paths.BackupWorkRoot, restorer.ExpectedUID); err != nil {
+	preflightParent := nearestExistingParent(restorer.Paths.DataRoot)
+	if err := restorer.ValidateHost(ctx, preflightParent); err != nil {
 		return err
 	}
 	input, err := restorer.ProvideInput()
@@ -124,8 +111,19 @@ func (restorer Restorer) Restore(ctx context.Context) error {
 	if err := remote.Probe(ctx); err != nil {
 		return fmt.Errorf("probe restore target: %w", err)
 	}
+	// Fetch into an ephemeral directory beside the future data root. This keeps
+	// cross-architecture/signature failures out of persistent product state and
+	// still guarantees that the final SQLite hard link stays on one filesystem.
+	preflightRoot, err := os.MkdirTemp(preflightParent, ".platformd-restore-")
+	if err != nil {
+		return fmt.Errorf("create restore preflight directory: %w", err)
+	}
+	defer os.RemoveAll(preflightRoot)
+	if err := ensurePrivateRestoreDirectory(preflightRoot, restorer.ExpectedUID); err != nil {
+		return err
+	}
 	fetched, err := backup.FetchControl(ctx, backup.ControlFetchConfig{
-		Remote: remote, Master: input.Master, WorkRoot: restorer.Paths.BackupWorkRoot,
+		Remote: remote, Master: input.Master, WorkRoot: preflightRoot,
 		ExpectedUID: restorer.ExpectedUID, PublicKey: restorer.PublicKey,
 		OS: restorer.OS, Architecture: restorer.Architecture,
 	})
@@ -133,6 +131,20 @@ func (restorer Restorer) Restore(ctx context.Context) error {
 		return err
 	}
 	defer os.RemoveAll(fetched.WorkDirectory)
+	if err := ensurePrivateRestoreDirectory(restorer.Paths.DataRoot, restorer.ExpectedUID); err != nil {
+		return err
+	}
+	if err := ensurePrivateRestoreDirectory(restorer.Paths.ConfigRoot, restorer.ExpectedUID); err != nil {
+		return err
+	}
+	// A fresh restore has no concurrent backup work. Removing the entire local
+	// work root makes a power-loss retry independent of stale staging files.
+	if err := os.RemoveAll(restorer.Paths.BackupWorkRoot); err != nil {
+		return err
+	}
+	if err := ensurePrivateRestoreDirectory(restorer.Paths.BackupWorkRoot, restorer.ExpectedUID); err != nil {
+		return err
+	}
 	if err := bootstrap.PublishReleaseSlot(fetched.Release, restorer.Paths, restorer.ExpectedUID); err != nil {
 		return err
 	}

@@ -152,18 +152,40 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	restorer := disasterrestore.Restorer{
-		Paths: paths, ExpectedUID: os.Geteuid(), PublicKey: publicKey,
-		ProvideInput:  func() (disasterrestore.ValidatedInput, error) { return validated, nil },
-		ValidateHost:  func(context.Context, string) error { return nil },
-		RemoteFactory: func(remotes3.Config) (disasterrestore.RestoreRemote, error) { return remote, nil },
-		ImportExact: func(ctx context.Context, _ string, payload disasterrestore.ImportPayload) (disasterrestore.ImportResult, error) {
-			return disasterrestore.ImportSnapshot(ctx, payload)
-		},
-		AcquireLock: func(string, int) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
-		Services:    services, Now: func() time.Time { return time.Unix(20, 0) }, Random: rand.Reader,
-		OS: "linux", Architecture: "amd64",
+	makeRestorer := func(paths layout.Paths, architecture string, services *restoreServices) disasterrestore.Restorer {
+		return disasterrestore.Restorer{
+			Paths: paths, ExpectedUID: os.Geteuid(), PublicKey: publicKey,
+			ProvideInput:  func() (disasterrestore.ValidatedInput, error) { return validated, nil },
+			ValidateHost:  func(context.Context, string) error { return nil },
+			RemoteFactory: func(remotes3.Config) (disasterrestore.RestoreRemote, error) { return remote, nil },
+			ImportExact: func(ctx context.Context, _ string, payload disasterrestore.ImportPayload) (disasterrestore.ImportResult, error) {
+				return disasterrestore.ImportSnapshot(ctx, payload)
+			},
+			AcquireLock: func(string, int) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
+			Services:    services, Now: func() time.Time { return time.Unix(20, 0) }, Random: rand.Reader,
+			OS: "linux", Architecture: architecture,
+		}
 	}
+
+	mismatchRoot := t.TempDir()
+	mismatchPaths := layout.FromRoots(
+		filepath.Join(mismatchRoot, "data"), filepath.Join(mismatchRoot, "config"), filepath.Join(mismatchRoot, "run"),
+		filepath.Join(mismatchRoot, "bin", "platformd"), filepath.Join(mismatchRoot, "systemd", "platformd.service"),
+	)
+	mismatchServices := &restoreServices{}
+	if err := makeRestorer(mismatchPaths, "arm64", mismatchServices).Restore(ctx); err == nil || !strings.Contains(err.Error(), "cannot restore") {
+		t.Fatalf("cross-architecture restore error = %v", err)
+	}
+	for _, path := range []string{mismatchPaths.DataRoot, mismatchPaths.ConfigRoot} {
+		if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("cross-architecture restore created persistent path %s: %v", path, err)
+		}
+	}
+	if entries, err := os.ReadDir(mismatchRoot); err != nil || len(entries) != 0 {
+		t.Fatalf("cross-architecture restore left preflight state: entries=%v err=%v", entries, err)
+	}
+
+	restorer := makeRestorer(paths, "amd64", services)
 	if err := restorer.Restore(ctx); err != nil {
 		t.Fatal(err)
 	}
