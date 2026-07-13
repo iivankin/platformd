@@ -8,6 +8,7 @@ import (
 type openAPIFeatures struct {
 	projects         bool
 	objectStores     bool
+	domains          bool
 	serverExec       bool
 	managedResources bool
 	databaseVersions bool
@@ -37,6 +38,10 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	if features.objectStores {
 		paths["/api/v1/projects/{projectID}/object-stores"] = objectStoreCollectionOperation()
 		paths["/api/v1/projects/{projectID}/object-stores/{storeID}"] = readOperation("Get one private S3 resource")
+	}
+	if features.domains {
+		paths["/api/v1/projects/{projectID}/services/{serviceID}/domains"] = domainCollectionOperation()
+		paths["/api/v1/projects/{projectID}/services/{serviceID}/domains/{hostname}"] = domainDeleteOperation()
 	}
 	if features.serverExec {
 		paths["/api/v1/server/exec"] = serverExecOperation()
@@ -91,6 +96,24 @@ func objectStoreCollectionOperation() map[string]any {
 	operation := readOperation("List private S3 resources in one visible project")
 	operation["post"] = writeMethod("Create a private S3 resource and return its credential once (admin token)", http.StatusCreated, "ObjectStoreCreateRequest")
 	return operation
+}
+
+func domainCollectionOperation() map[string]any {
+	operation := readOperation("List public domains attached to one service")
+	operation["post"] = writeMethod("Attach or explicitly move a public domain (admin token)", http.StatusCreated, "DomainAttachRequest")
+	return operation
+}
+
+func domainDeleteOperation() map[string]any {
+	return map[string]any{"delete": map[string]any{
+		"summary": "Detach a public domain from one service (admin token)",
+		"responses": map[string]any{
+			"204": map[string]string{"description": "Domain detached"},
+			"401": map[string]string{"description": "Missing or invalid Bearer token"},
+			"403": map[string]string{"description": "Admin role or project boundary denied"},
+			"404": map[string]string{"description": "Service or domain not found"},
+		},
+	}}
 }
 
 func volumeDeleteOperation() map[string]any {
@@ -357,6 +380,14 @@ func serviceMutationSchemas() map[string]any {
 				"corsOrigins":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 				"credentialName":       map[string]string{"type": "string"},
 				"credentialPermission": map[string]any{"type": "string", "enum": []string{"read_only", "read_write"}},
+			},
+		},
+		"DomainAttachRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"hostname"},
+			"properties": map[string]any{
+				"hostname": map[string]string{"type": "string"},
+				"move":     map[string]any{"type": "boolean", "default": false},
 			},
 		},
 		"VolumeCreateRequest": map[string]any{

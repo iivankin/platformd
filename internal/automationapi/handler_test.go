@@ -31,6 +31,29 @@ type repositoryStub struct {
 	projectCreate state.CreateProjectByToken
 	objectCreate  objectstore.CreateInput
 	objectStores  []state.ObjectStore
+	domains       []state.ServiceDomain
+	domainAttach  state.AttachServiceDomainInput
+	domainDetach  state.DetachServiceDomainInput
+}
+
+func (repository *repositoryStub) ServiceDomains(context.Context, string, string) ([]state.ServiceDomain, error) {
+	return repository.domains, nil
+}
+
+func (repository *repositoryStub) AttachServiceDomain(_ context.Context, input state.AttachServiceDomainInput) (state.ServiceDomain, error) {
+	repository.domainAttach = input
+	domain := state.ServiceDomain{
+		Hostname: input.Hostname, ProjectID: input.ProjectID, ProjectName: "shop",
+		ServiceID: input.ServiceID, ServiceName: "api", CreatedAt: input.CreatedAtMillis,
+	}
+	repository.domains = append(repository.domains, domain)
+	return domain, nil
+}
+
+func (repository *repositoryStub) DetachServiceDomain(_ context.Context, input state.DetachServiceDomainInput) error {
+	repository.domainDetach = input
+	repository.domains = nil
+	return nil
 }
 
 func (repository *repositoryStub) CreateProjectByToken(_ context.Context, input state.CreateProjectByToken) (state.ProjectSummary, error) {
@@ -102,6 +125,10 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	domains, err := automation.NewDomainApplication(repository, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	logs, err := automation.NewLogApplication(repository, logReaderStub{})
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +145,7 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	}
 	handler, err := Handler(Config{
 		Hostname: "api.example.com", Repository: repository, Projects: projects,
-		Services: services, Logs: logs, Images: repository, ObjectStores: repository,
+		Services: services, Domains: domains, Logs: logs, Images: repository, ObjectStores: repository,
 		Volumes: volumes, Admission: admission.New(),
 	})
 	if err != nil {
@@ -238,8 +265,37 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || !strings.Contains(response.Body.String(), `/object-stores`) || !strings.Contains(response.Body.String(), `ProjectCreateRequest`) || strings.Contains(response.Body.String(), `/query`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || !strings.Contains(response.Body.String(), `/object-stores`) || !strings.Contains(response.Body.String(), `/domains`) || !strings.Contains(response.Body.String(), `ProjectCreateRequest`) || strings.Contains(response.Body.String(), `/query`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestAutomationAPIManagesServiceDomainsWithinTokenBoundary(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := automationHandler(t, repository)
+	path := "https://api.example.com/api/v1/projects/project/services/service/domains"
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"hostname":"app.example.com","move":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || repository.domainAttach.ActorKind != "token" || repository.domainAttach.ActorID != "admin" || !repository.domainAttach.Move {
+		t.Fatalf("attach domain = %d/%s input=%+v", response.Code, response.Body, repository.domainAttach)
+	}
+	bound := "other"
+	request = httptest.NewRequest(http.MethodDelete, path+"/app.example.com", nil)
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "bound", Role: "admin", ProjectID: &bound}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || repository.domainDetach.Hostname != "" {
+		t.Fatalf("cross-project detach = %d/%s input=%+v", response.Code, response.Body, repository.domainDetach)
+	}
+	request = httptest.NewRequest(http.MethodDelete, path+"/app.example.com", nil)
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent || repository.domainDetach.ActorKind != "token" || repository.domainDetach.ActorID != "admin" {
+		t.Fatalf("detach domain = %d/%s input=%+v", response.Code, response.Body, repository.domainDetach)
 	}
 }
 
