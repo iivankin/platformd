@@ -16,6 +16,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/iivankin/platformd/internal/strictjson"
 )
 
 const (
@@ -245,7 +247,17 @@ func readManifest(entry *zip.File) (Manifest, error) {
 		return Manifest{}, fmt.Errorf("open runtime bundle manifest: %w", err)
 	}
 	defer reader.Close()
-	decoder := json.NewDecoder(io.LimitReader(reader, maximumManifestBytes+1))
+	value, err := io.ReadAll(io.LimitReader(reader, maximumManifestBytes+1))
+	if err != nil {
+		return Manifest{}, fmt.Errorf("read runtime bundle manifest: %w", err)
+	}
+	if len(value) > maximumManifestBytes {
+		return Manifest{}, errors.New("runtime bundle manifest size is outside bounds")
+	}
+	if err := strictjson.RejectDuplicateKeys(value); err != nil {
+		return Manifest{}, fmt.Errorf("decode runtime bundle manifest: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
 	decoder.DisallowUnknownFields()
 	var manifest Manifest
 	if err := decoder.Decode(&manifest); err != nil {
