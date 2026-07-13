@@ -17,7 +17,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedRedis(ctx context.Context, store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedredis.NewController(managedredis.Config{
-		Store: store, Engine: stack.engine, Publisher: stack,
+		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth,
 		Password: func(resource state.ManagedRedis) (string, error) {
 			return managedredis.OpenPassword(master, resource.ID, resource.PasswordEncrypted)
 		},
@@ -147,6 +147,9 @@ func (stack *runtimeStack) ResolveManagedRedisImage(ctx context.Context, tag str
 	stack.mu.Unlock()
 	if closed {
 		return "", errors.New("container runtime is closed")
+	}
+	if err := stack.growth.PermitGrowth(ctx); err != nil {
+		return "", err
 	}
 	image, err := engine.Pull(ctx, containerengine.PullRequest{Reference: reference, Refresh: true})
 	if err != nil {

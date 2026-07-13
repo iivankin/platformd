@@ -20,6 +20,7 @@ import (
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -92,11 +93,39 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	reserve, err := diskpressure.NewFileReserve(0)
+	if err != nil {
+		return err
+	}
+	pressure, err := diskpressure.New(diskpressure.Config{
+		DataRoot: paths.DataRoot, ReservePath: paths.ReserveFile,
+		Collector: diskpressure.StatfsCollector{}, Reserve: reserve, Freezer: cgroups,
+		Transitions: diskPressureAuditSink{store: store, installationID: installation.ID},
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := pressure.Check(ctx); err != nil {
+		return fmt.Errorf("initialize disk pressure: %w", err)
+	}
+	pressureContext, cancelPressure := context.WithCancel(ctx)
+	pressureDone := make(chan struct{})
+	defer func() {
+		cancelPressure()
+		<-pressureDone
+	}()
+	go func() {
+		defer close(pressureDone)
+		err := pressure.Run(pressureContext, func(checkErr error) { log.Printf("disk pressure check: %v", checkErr) })
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("disk pressure monitor stopped: %v", err)
+		}
+	}()
 	projects, err := store.RuntimeProjects(ctx)
 	if err != nil {
 		return err
 	}
-	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot(), projects)
+	runtime, err := startRuntime(ctx, paths, cgroups.WorkloadRoot(), projects, pressure)
 	if err != nil {
 		return err
 	}
@@ -278,6 +307,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			server.WithRegistry(registryApplication, registrySettings),
 			server.WithBackupTargets(backupTargets),
 			server.WithContainerConsole(installation.AdminHostname, containerConsole),
+			server.WithDiskPressure(pressure),
 		),
 	)
 	ingressRouter, err := ingress.New(ingress.Config{

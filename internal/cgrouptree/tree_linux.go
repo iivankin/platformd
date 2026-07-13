@@ -115,6 +115,43 @@ func (tree *Tree) WorkloadRoot() string {
 	return tree.workloadPath
 }
 
+func (tree *Tree) SetFrozen(ctx context.Context, frozen bool) error {
+	root := filepath.Join(tree.mountRoot, filepath.FromSlash(strings.TrimPrefix(tree.workloadPath, "/")))
+	wanted := "0"
+	if frozen {
+		wanted = "1"
+	}
+	if err := os.WriteFile(filepath.Join(root, "cgroup.freeze"), []byte(wanted+"\n"), 0o644); err != nil {
+		return fmt.Errorf("set workload cgroup freeze=%s: %w", wanted, err)
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		value, err := os.ReadFile(filepath.Join(root, "cgroup.events"))
+		if err != nil {
+			return fmt.Errorf("read workload cgroup events: %w", err)
+		}
+		if cgroupEvent(string(value), "frozen") == wanted {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for workload cgroup freeze=%s: %w", wanted, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func cgroupEvent(value, name string) string {
+	for line := range strings.Lines(value) {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && fields[0] == name {
+			return fields[1]
+		}
+	}
+	return ""
+}
+
 func (tree *Tree) CreateLeaf(resourceID string) (*Leaf, error) {
 	if !validResourceID(resourceID) {
 		return nil, fmt.Errorf("invalid cgroup resource ID %q", resourceID)

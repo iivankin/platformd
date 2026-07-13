@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/netip"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -74,14 +76,28 @@ type fakeEngine struct {
 	created    []containerengine.ContainerSpec
 	pulls      []containerengine.PullRequest
 	containers map[string]containerengine.Container
+	images     map[string]containerengine.Image
 }
 
 func (engine *fakeEngine) Pull(_ context.Context, request containerengine.PullRequest) (containerengine.Image, error) {
 	engine.events = append(engine.events, "pull")
 	engine.pulls = append(engine.pulls, request)
-	return containerengine.Image{
+	image := containerengine.Image{
 		ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68",
-	}, nil
+	}
+	if engine.images == nil {
+		engine.images = make(map[string]containerengine.Image)
+	}
+	engine.images[image.Digest] = image
+	return image, nil
+}
+
+func (engine *fakeEngine) InspectImage(_ context.Context, idOrName string) (containerengine.Image, error) {
+	image, ok := engine.images[idOrName]
+	if !ok {
+		return containerengine.Image{}, errors.New("image not found")
+	}
+	return image, nil
 }
 
 func (engine *fakeEngine) CreateContainer(_ context.Context, spec containerengine.ContainerSpec) (containerengine.Container, error) {
@@ -149,6 +165,14 @@ func (resolver imageSourceResolverFunc) Resolve(ctx context.Context, reference s
 	return resolver(ctx, reference)
 }
 
+type growthGateFunc func(context.Context) error
+
+func (gate growthGateFunc) PermitGrowth(ctx context.Context) error {
+	return gate(ctx)
+}
+
+var allowGrowth = growthGateFunc(func(context.Context) error { return nil })
+
 func TestEmbeddedImageSourceReplacesRemotePullAndCloses(t *testing.T) {
 	engine := &fakeEngine{containers: make(map[string]containerengine.Container)}
 	closed := false
@@ -211,7 +235,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	identifiers := []string{"deployment-1", "attempt-1", "deployment-2", "attempt-2"}
 	clockIndex := 0
 	controller, err := New(Config{
-		Store: store, Engine: engine, Publisher: publisher,
+		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth,
 		Placement: func(state.ServiceDesired) (Placement, error) {
 			return Placement{
 				NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
@@ -297,7 +321,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	identifiers := []string{"deployment", "first-attempt"}
 	identifierIndex := 0
 	first, err := New(Config{
-		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Placement: placement,
+		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Growth: allowGrowth, Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
 		NewID: func(time.Time) (string, error) {
@@ -317,7 +341,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	restoredEngine := &fakeEngine{containers: make(map[string]containerengine.Container)}
 	restoredPublisher := &fakePublisher{}
 	restored, err := New(Config{
-		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Placement: placement,
+		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Growth: allowGrowth, Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "restored-logs"), VolumeRoot: filepath.Join(t.TempDir(), "restored-volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
 		NewID: func(time.Time) (string, error) { return "restored-attempt", nil },
@@ -351,6 +375,80 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	}
 	if store.service.ActiveDeploymentID != pointer {
 		t.Fatalf("crash restart changed deployment pointer to %q", store.service.ActiveDeploymentID)
+	}
+}
+
+func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
+	port := 8080
+	snapshot := serviceconfig.Snapshot{
+		ImageReference: "registry.example.com/acme/api:latest", TargetPort: &port,
+		HealthPath: "/healthz", StartupTimeoutSeconds: 1,
+	}
+	normalized, snapshotJSON, configHash, err := serviceconfig.Canonical(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const digest = "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: normalized, ActiveDeploymentID: "deployment", ActiveImageDigest: digest, ActiveConfigHash: configHash,
+		},
+		deployments: map[string]state.BeginDeployment{
+			"deployment": {
+				ID: "deployment", ServiceID: "service", ImageDigest: digest,
+				ConfigHash: configHash, SnapshotJSON: snapshotJSON,
+			},
+		},
+		failed: make(map[string]bool),
+	}
+	engine := &fakeEngine{
+		containers: make(map[string]containerengine.Container),
+		images: map[string]containerengine.Image{
+			digest: {ID: "cached-image", Digest: digest},
+		},
+	}
+	publisher := &fakePublisher{}
+	controller, err := New(Config{
+		Store: store, Engine: engine, Publisher: publisher,
+		Growth: growthGateFunc(func(context.Context) error {
+			return fmt.Errorf("%w: critical", diskpressure.ErrGrowthDenied)
+		}),
+		Placement: func(state.ServiceDesired) (Placement, error) {
+			return Placement{
+				NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
+				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
+			}, nil
+		},
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2,
+		NewID: func(time.Time) (string, error) { return "attempt", nil },
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Restore(context.Background(), "service"); err != nil {
+		t.Fatal(err)
+	}
+	if len(engine.pulls) != 0 || len(engine.created) != 1 || engine.created[0].ImageID != "cached-image" {
+		t.Fatalf("cached restore pulls/specs = %+v/%+v", engine.pulls, engine.created)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatalf("critical active reconcile = %v", err)
+	}
+	if len(engine.pulls) != 0 {
+		t.Fatalf("critical active reconcile pulled images: %+v", engine.pulls)
+	}
+
+	store.service.Snapshot.Environment = map[string]string{"REVISION": "next"}
+	if err := controller.Deploy(context.Background(), "service", false); !errors.Is(err, diskpressure.ErrGrowthDenied) {
+		t.Fatalf("critical changed deployment = %v", err)
+	}
+	if len(engine.pulls) != 0 || len(store.deployments) != 1 {
+		t.Fatalf("denied deployment mutated state: pulls=%+v deployments=%+v", engine.pulls, store.deployments)
 	}
 }
 

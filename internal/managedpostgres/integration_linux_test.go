@@ -110,7 +110,7 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 	}
 	publisher := &integrationPublisher{}
 	controller, err := NewController(ControllerConfig{
-		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher,
+		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{},
 		OwnerPassword:     func(state.ManagedPostgres) (string, error) { return credentials.OwnerPassword, nil },
 		BootstrapPassword: func(state.ManagedPostgres) (string, error) { return credentials.BootstrapPassword, nil },
 		Placement: func(state.ManagedPostgres) (Placement, error) {

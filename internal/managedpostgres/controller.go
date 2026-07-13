@@ -33,11 +33,16 @@ type ControllerStore interface {
 
 type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
+	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
 	StartContainer(context.Context, string) error
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	InspectContainer(string) (containerengine.Container, error)
+}
+
+type GrowthGate interface {
+	PermitGrowth(context.Context) error
 }
 
 type Connection interface {
@@ -63,6 +68,7 @@ type ControllerConfig struct {
 	Store             ControllerStore
 	Engine            Engine
 	Publisher         Publisher
+	Growth            GrowthGate
 	OwnerPassword     func(state.ManagedPostgres) (string, error)
 	BootstrapPassword func(state.ManagedPostgres) (string, error)
 	Placement         func(state.ManagedPostgres) (Placement, error)
@@ -87,6 +93,7 @@ type Controller struct {
 	store             ControllerStore
 	engine            Engine
 	publisher         Publisher
+	growth            GrowthGate
 	ownerPassword     func(state.ManagedPostgres) (string, error)
 	bootstrapPassword func(state.ManagedPostgres) (string, error)
 	placement         func(state.ManagedPostgres) (Placement, error)
@@ -105,7 +112,7 @@ type Controller struct {
 }
 
 func NewController(config ControllerConfig) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.OwnerPassword == nil || config.BootstrapPassword == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.OwnerPassword == nil || config.BootstrapPassword == nil || config.Placement == nil {
 		return nil, errors.New("managed PostgreSQL controller dependencies are incomplete")
 	}
 	if !safeRoot(config.VolumeRoot) || !safeRoot(config.LogRoot) || config.LogSizeBytes <= 0 || config.LogMaxFiles == 0 {
@@ -137,7 +144,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher,
+		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth,
 		ownerPassword: config.OwnerPassword, bootstrapPassword: config.BootstrapPassword,
 		placement: config.Placement, dial: dial, volumeRoot: config.VolumeRoot,
 		logRoot: config.LogRoot, logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -177,9 +184,15 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err != nil {
 		return err
 	}
-	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{Reference: pinned})
-	if err != nil {
-		return fmt.Errorf("pull pinned managed PostgreSQL image: %w", err)
+	image, inspectErr := controller.engine.InspectImage(ctx, resource.ImageDigest)
+	if inspectErr != nil {
+		if err := controller.growth.PermitGrowth(ctx); err != nil {
+			return fmt.Errorf("managed PostgreSQL image is not cached: %w", err)
+		}
+		image, err = controller.engine.Pull(ctx, containerengine.PullRequest{Reference: pinned})
+		if err != nil {
+			return fmt.Errorf("pull pinned managed PostgreSQL image: %w", err)
+		}
 	}
 	if image.ID == "" || image.Digest != resource.ImageDigest {
 		return fmt.Errorf("managed PostgreSQL image digest = %q, want %q", image.Digest, resource.ImageDigest)

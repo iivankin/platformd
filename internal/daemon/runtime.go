@@ -41,6 +41,7 @@ type runtimeStack struct {
 	projectNetworks      map[string]containerengine.Network
 	paths                layout.Paths
 	cgroupRoot           string
+	growth               deployment.GrowthGate
 	deployments          *deployment.Controller
 	serviceWatcher       *servicewatcher.Watcher
 	embeddedRegistryHost string
@@ -56,7 +57,10 @@ type runtimeStack struct {
 	objectStoreFailures  map[string]error
 }
 
-func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject) (*runtimeStack, error) {
+func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject, growth deployment.GrowthGate) (*runtimeStack, error) {
+	if growth == nil {
+		return nil, errors.New("runtime growth gate is required")
+	}
 	manager := firewall.New()
 	if err := manager.Clear(); err != nil {
 		return nil, fmt.Errorf("clear previous platform firewall: %w", err)
@@ -124,6 +128,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		projectNetworks:     make(map[string]containerengine.Network),
 		paths:               paths,
 		cgroupRoot:          cgroupWorkloadRoot,
+		growth:              growth,
 		serviceFailures:     make(map[string]error),
 		publishedServices:   make(map[string]bool),
 		redisFailures:       make(map[string]error),

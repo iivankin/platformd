@@ -44,6 +44,7 @@ type handlerConfig struct {
 	backupTargets    *backup.TargetApplication
 	containerConsole ContainerConsole
 	adminHostname    string
+	diskPressure     DiskPressure
 	random           io.Reader
 	now              func() time.Time
 }
@@ -137,6 +138,12 @@ func WithContainerConsole(hostname string, application ContainerConsole) Option 
 	}
 }
 
+func WithDiskPressure(pressure DiskPressure) Option {
+	return func(config *handlerConfig) {
+		config.diskPressure = pressure
+	}
+}
+
 func Handler(meta Meta, options ...Option) http.Handler {
 	config := handlerConfig{random: rand.Reader, now: time.Now}
 	for _, option := range options {
@@ -192,6 +199,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole); err != nil {
 			panic("register container console: " + err.Error())
 		}
+	}
+	if config.diskPressure != nil {
+		registerInfrastructureRoutes(mux, config.diskPressure)
 	}
 	mux.Handle("/", static)
 	return securityHeaders(mux)

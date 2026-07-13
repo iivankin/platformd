@@ -34,11 +34,16 @@ type Store interface {
 
 type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
+	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
 	StartContainer(context.Context, string) error
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	InspectContainer(string) (containerengine.Container, error)
+}
+
+type GrowthGate interface {
+	PermitGrowth(context.Context) error
 }
 
 type RedisConnection interface {
@@ -66,6 +71,7 @@ type Config struct {
 	Store         Store
 	Engine        Engine
 	Publisher     Publisher
+	Growth        GrowthGate
 	Password      func(state.ManagedRedis) (string, error)
 	Placement     func(state.ManagedRedis) (Placement, error)
 	Dial          func(context.Context, string, string) (RedisConnection, error)
@@ -90,6 +96,7 @@ type Controller struct {
 	store         Store
 	engine        Engine
 	publisher     Publisher
+	growth        GrowthGate
 	password      func(state.ManagedRedis) (string, error)
 	placement     func(state.ManagedRedis) (Placement, error)
 	dial          func(context.Context, string, string) (RedisConnection, error)
@@ -109,7 +116,7 @@ type Controller struct {
 }
 
 func NewController(config Config) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Password == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Password == nil || config.Placement == nil {
 		return nil, errors.New("managed Redis controller dependencies are incomplete")
 	}
 	if !safeRoot(config.GeneratedRoot) || !safeRoot(config.VolumeRoot) || !safeRoot(config.LogRoot) {
@@ -144,7 +151,7 @@ func NewController(config Config) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher,
+		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth,
 		password: config.Password, placement: config.Placement, dial: dial,
 		generatedRoot: config.GeneratedRoot, volumeRoot: config.VolumeRoot, logRoot: config.LogRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -197,9 +204,15 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err != nil {
 		return err
 	}
-	image, err := controller.engine.Pull(ctx, containerengine.PullRequest{Reference: pinned})
-	if err != nil {
-		return fmt.Errorf("pull pinned managed Redis image: %w", err)
+	image, inspectErr := controller.engine.InspectImage(ctx, resource.ImageDigest)
+	if inspectErr != nil {
+		if err := controller.growth.PermitGrowth(ctx); err != nil {
+			return fmt.Errorf("managed Redis image is not cached: %w", err)
+		}
+		image, err = controller.engine.Pull(ctx, containerengine.PullRequest{Reference: pinned})
+		if err != nil {
+			return fmt.Errorf("pull pinned managed Redis image: %w", err)
+		}
 	}
 	if image.ID == "" || image.Digest != resource.ImageDigest {
 		return fmt.Errorf("managed Redis image digest = %q, want %q", image.Digest, resource.ImageDigest)

@@ -231,6 +231,20 @@ const terminalShellsSchema = z.object({
   shells: z.array(z.enum(["/bin/sh", "/bin/bash"])),
 });
 
+const diskPressureSchema = z.object({
+  availableBytes: z.number().int().nonnegative(),
+  availableInodes: z.number().int().nonnegative(),
+  byteBasisPoints: z.number().int().min(0).max(10_000),
+  checkedAt: z.number().int().positive(),
+  inodeBasisPoints: z.number().int().min(0).max(10_000),
+  level: z.enum(["normal", "low", "critical", "emergency"]),
+  reservePresent: z.boolean(),
+  totalBytes: z.number().int().positive(),
+  totalInodes: z.number().int().nonnegative(),
+});
+
+export type DiskPressure = z.infer<typeof diskPressureSchema>;
+
 const auditEventSchema = z.object({
   action: z.string().min(1),
   actorId: z.string().min(1),
@@ -939,6 +953,23 @@ export const fetchServiceTerminalShells = async (
     );
   }
   return terminalShellsSchema.parse(await response.json()).shells;
+};
+
+export const fetchDiskPressure = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<DiskPressure> => {
+  const response = await fetcher("/api/v1/infrastructure/disk-pressure", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `disk pressure request failed with ${response.status}`
+    );
+  }
+  return diskPressureSchema.parse(await response.json());
 };
 
 export const fetchAuditEvents = async (

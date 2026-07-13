@@ -14,6 +14,7 @@ import { useAppData } from "@/app-data";
 import { AuditPage } from "@/audit-page";
 import { BackupsPage } from "@/backups-page";
 import { Button } from "@/components/ui/button";
+import { InfrastructurePage } from "@/infrastructure-page";
 import { cn } from "@/lib/utils";
 import { LogsPage } from "@/logs-page";
 import { ProjectCanvasPage } from "@/project-canvas-page";
@@ -195,6 +196,7 @@ export const App = () => {
               element={<LogsPage projects={data.projects} />}
               path="/logs"
             />
+            <Route element={<InfrastructurePage />} path="/infrastructure" />
             <Route element={<AuditPage />} path="/audit" />
             <Route element={<BackupsPage />} path="/backups" />
             <Route element={<RegistryPage />} path="/registry" />
@@ -205,7 +207,8 @@ export const App = () => {
                   item.path !== "/logs" &&
                   item.path !== "/audit" &&
                   item.path !== "/backups" &&
-                  item.path !== "/registry"
+                  item.path !== "/registry" &&
+                  item.path !== "/infrastructure"
               )
               .map((item) => (
                 <Route
