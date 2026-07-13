@@ -46,6 +46,7 @@ import {
   fetchDatabaseVersionOperation,
   fetchManagedPostgres,
   fetchManagedRedis,
+  fetchManagedRedisPersistence,
   fetchMeta,
   fetchOperation,
   fetchObjects,
@@ -717,6 +718,29 @@ test("uses Access-only managed Redis data routes with encoded values unchanged",
       return Promise.resolve(Response.json(resource));
     })
   ).resolves.toEqual(resource);
+  await expect(
+    fetchManagedRedisPersistence(
+      resource.projectId,
+      resource.id,
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/redis/redis%2Fid/persistence"
+        );
+        return Promise.resolve(
+          Response.json({
+            actualRpoMillis: 600_000,
+            backgroundSaveInProgress: false,
+            lastBackgroundSaveSuccessful: true,
+            lastSuccessfulSaveAt: 1_700_000_000_000,
+            needsAttention: true,
+            observedAt: 1_700_000_600_000,
+            targetRpoMillis: 300_000,
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ actualRpoMillis: 600_000, needsAttention: true });
 
   await expect(
     scanManagedRedisKeys(

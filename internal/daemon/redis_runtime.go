@@ -252,6 +252,17 @@ func (stack *runtimeStack) StartManagedRedis(ctx context.Context, resourceID str
 	return err
 }
 
+func (stack *runtimeStack) ManagedRedisPersistence(ctx context.Context, resourceID string) (managedredis.PersistenceStatus, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedredis.PersistenceStatus{}, errors.New("managed Redis runtime is not ready")
+	}
+	return controller.Persistence(ctx, resourceID)
+}
+
 func (stack *runtimeStack) ScanManagedRedisKeys(ctx context.Context, resourceID string, query managedredis.ScanQuery) (managedredis.KeyPage, error) {
 	stack.mu.Lock()
 	controller := stack.managedRedis

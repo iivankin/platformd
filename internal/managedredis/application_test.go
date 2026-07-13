@@ -38,10 +38,12 @@ func (store *applicationStore) RecordManagedRedisDataMutation(_ context.Context,
 }
 
 type applicationRuntime struct {
-	tag       string
-	startedID string
-	mutation  Mutation
-	mutatedID string
+	tag           string
+	startedID     string
+	persistenceID string
+	persistence   PersistenceStatus
+	mutation      Mutation
+	mutatedID     string
 }
 
 func (runtime *applicationRuntime) ResolveManagedRedisImage(_ context.Context, tag string) (string, error) {
@@ -52,6 +54,11 @@ func (runtime *applicationRuntime) ResolveManagedRedisImage(_ context.Context, t
 func (runtime *applicationRuntime) StartManagedRedis(_ context.Context, id string) error {
 	runtime.startedID = id
 	return nil
+}
+
+func (runtime *applicationRuntime) ManagedRedisPersistence(_ context.Context, id string) (PersistenceStatus, error) {
+	runtime.persistenceID = id
+	return runtime.persistence, nil
 }
 
 func (*applicationRuntime) ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error) {
@@ -66,6 +73,29 @@ func (runtime *applicationRuntime) MutateManagedRedis(_ context.Context, id stri
 	runtime.mutatedID = id
 	runtime.mutation = mutation
 	return MutationResult{Affected: 1}, nil
+}
+
+func TestApplicationReportsLiveRedisRPOWithoutDurableState(t *testing.T) {
+	t.Parallel()
+	runtime := &applicationRuntime{persistence: PersistenceStatus{
+		LastBackgroundSaveOK: true, LastSuccessfulSaveUnixSeconds: 1_700_000_000,
+	}}
+	application, err := NewApplication(
+		&applicationStore{}, runtime, cryptobox.MasterKey{1}, nil,
+		func() time.Time { return time.UnixMilli(1_700_000_600_000) },
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report, err := application.Persistence(context.Background(), "project", "redis")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.persistenceID != "redis" || report.ActualRPOMillis != 10*time.Minute.Milliseconds() ||
+		report.TargetRPOMillis != TargetRPO.Milliseconds() || !report.NeedsAttention ||
+		report.LastSuccessfulSaveAtMillis != 1_700_000_000_000 || !report.LastBackgroundSaveSuccessful {
+		t.Fatalf("persistence runtime/report = %+v/%+v", runtime, report)
+	}
 }
 
 func TestApplicationRestrictsDataMutationsToAccessAndAuditsWithoutContent(t *testing.T) {

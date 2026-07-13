@@ -126,12 +126,17 @@ func parsePersistenceStatus(value []byte) (PersistenceStatus, error) {
 	}
 	inProgress, progressExists := fields["rdb_bgsave_in_progress"]
 	lastStatus, statusExists := fields["rdb_last_bgsave_status"]
-	if !progressExists || (inProgress != "0" && inProgress != "1") || !statusExists || (lastStatus != "ok" && lastStatus != "err") {
+	lastSave, saveExists := fields["rdb_last_save_time"]
+	lastSaveUnix, saveErr := strconv.ParseInt(lastSave, 10, 64)
+	if !progressExists || (inProgress != "0" && inProgress != "1") ||
+		!statusExists || (lastStatus != "ok" && lastStatus != "err") ||
+		!saveExists || saveErr != nil || lastSaveUnix <= 0 {
 		return PersistenceStatus{}, errors.New("Redis persistence INFO lacks required RDB status fields")
 	}
 	return PersistenceStatus{
-		BackgroundSaveInProgress: inProgress == "1",
-		LastBackgroundSaveOK:     lastStatus == "ok",
+		BackgroundSaveInProgress:      inProgress == "1",
+		LastBackgroundSaveOK:          lastStatus == "ok",
+		LastSuccessfulSaveUnixSeconds: lastSaveUnix,
 	}, nil
 }
 

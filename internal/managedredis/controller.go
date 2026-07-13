@@ -22,6 +22,7 @@ import (
 
 const (
 	Port                = 6379
+	TargetRPO           = 5 * time.Minute
 	defaultReadyTimeout = 60 * time.Second
 	defaultProbePeriod  = 250 * time.Millisecond
 	defaultDrainTimeout = 2 * time.Second
@@ -66,8 +67,9 @@ type RedisConnection interface {
 }
 
 type PersistenceStatus struct {
-	BackgroundSaveInProgress bool
-	LastBackgroundSaveOK     bool
+	BackgroundSaveInProgress      bool
+	LastBackgroundSaveOK          bool
+	LastSuccessfulSaveUnixSeconds int64
 }
 
 type Placement struct {
@@ -553,6 +555,34 @@ func (controller *Controller) ScanKeys(ctx context.Context, resourceID string, q
 	}
 	defer connection.Close()
 	return connection.ScanKeys(ctx, query)
+}
+
+func (controller *Controller) Persistence(ctx context.Context, resourceID string) (PersistenceStatus, error) {
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return PersistenceStatus{}, ErrMaintenance
+	}
+	if !ok {
+		return PersistenceStatus{}, ErrNotRunning
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return PersistenceStatus{}, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return PersistenceStatus{}, err
+	}
+	addresses := container.IPs[active.network]
+	if container.State != "running" || len(addresses) != 1 {
+		return PersistenceStatus{}, ErrNotRunning
+	}
+	connection, err := controller.dial(ctx, net.JoinHostPort(addresses[0], fmt.Sprint(Port)), password)
+	if err != nil {
+		return PersistenceStatus{}, err
+	}
+	defer connection.Close()
+	return connection.PersistenceStatus(ctx)
 }
 
 func (controller *Controller) PreviewKey(ctx context.Context, resourceID string, query PreviewQuery) (Preview, error) {

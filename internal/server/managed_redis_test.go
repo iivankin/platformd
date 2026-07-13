@@ -41,6 +41,14 @@ func (repository *managedRedisRepository) Resources(_ context.Context, projectID
 	return []state.ManagedRedis{repository.resource}, nil
 }
 
+func (*managedRedisRepository) Persistence(context.Context, string, string) (managedredis.PersistenceReport, error) {
+	return managedredis.PersistenceReport{
+		ObservedAtMillis: 1_700_000_600_000, LastSuccessfulSaveAtMillis: 1_700_000_000_000,
+		ActualRPOMillis: 600_000, TargetRPOMillis: 300_000,
+		LastBackgroundSaveSuccessful: true, NeedsAttention: true,
+	}, nil
+}
+
 func (*managedRedisRepository) Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error) {
 	ttl := int64(1500)
 	return managedredis.KeyPage{NextCursor: 7, Keys: []managedredis.KeySummary{{
@@ -100,6 +108,15 @@ func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
 	handler.ServeHTTP(listResponse, list)
 	if listResponse.Code != http.StatusOK || strings.Contains(listResponse.Body.String(), "password") || !strings.Contains(listResponse.Body.String(), `"imageDigest"`) {
 		t.Fatalf("list status/body = %d/%s", listResponse.Code, listResponse.Body)
+	}
+	persistence := projectRequest(http.MethodGet, "/api/v1/projects/project/redis/redis/persistence", "")
+	persistenceResponse := httptest.NewRecorder()
+	handler.ServeHTTP(persistenceResponse, persistence)
+	if persistenceResponse.Code != http.StatusOK ||
+		!strings.Contains(persistenceResponse.Body.String(), `"actualRpoMillis":600000`) ||
+		!strings.Contains(persistenceResponse.Body.String(), `"lastSuccessfulSaveAt":1700000000000`) ||
+		!strings.Contains(persistenceResponse.Body.String(), `"needsAttention":true`) {
+		t.Fatalf("persistence status/body = %d/%s", persistenceResponse.Code, persistenceResponse.Body)
 	}
 	keys := projectRequest(http.MethodGet, "/api/v1/projects/project/redis/redis/keys?count=2", "")
 	keysResponse := httptest.NewRecorder()

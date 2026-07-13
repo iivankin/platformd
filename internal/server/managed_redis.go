@@ -24,6 +24,7 @@ type ManagedRedisRepository interface {
 	Create(context.Context, managedredis.CreateInput) (managedredis.CreateResult, error)
 	Resource(context.Context, string, string) (state.ManagedRedis, error)
 	Resources(context.Context, string) ([]state.ManagedRedis, error)
+	Persistence(context.Context, string, string) (managedredis.PersistenceReport, error)
 	Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error)
 	Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error)
 	Mutate(context.Context, managedredis.DataMutationInput) (managedredis.DataMutationResult, error)
@@ -47,13 +48,44 @@ type managedRedisResponse struct {
 	UpdatedAt            int64  `json:"updatedAt"`
 }
 
+type managedRedisPersistenceResponse struct {
+	ObservedAt                   int64 `json:"observedAt"`
+	LastSuccessfulSaveAt         int64 `json:"lastSuccessfulSaveAt"`
+	ActualRPOMillis              int64 `json:"actualRpoMillis"`
+	TargetRPOMillis              int64 `json:"targetRpoMillis"`
+	BackgroundSaveInProgress     bool  `json:"backgroundSaveInProgress"`
+	LastBackgroundSaveSuccessful bool  `json:"lastBackgroundSaveSuccessful"`
+	NeedsAttention               bool  `json:"needsAttention"`
+}
+
 func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepository) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/persistence", getManagedRedisPersistence(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis/{redisID}/data/mutations", mutateManagedRedisData(repository))
+}
+
+func getManagedRedisPersistence(repository ManagedRedisRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		report, err := repository.Persistence(request.Context(), request.PathValue("projectID"), request.PathValue("redisID"))
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, managedRedisPersistenceResponse{
+			ObservedAt: report.ObservedAtMillis, LastSuccessfulSaveAt: report.LastSuccessfulSaveAtMillis,
+			ActualRPOMillis: report.ActualRPOMillis, TargetRPOMillis: report.TargetRPOMillis,
+			BackgroundSaveInProgress:     report.BackgroundSaveInProgress,
+			LastBackgroundSaveSuccessful: report.LastBackgroundSaveSuccessful,
+			NeedsAttention:               report.NeedsAttention,
+		})
+	}
 }
 
 func previewManagedRedisKey(repository ManagedRedisRepository) http.HandlerFunc {
