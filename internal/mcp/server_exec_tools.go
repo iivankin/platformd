@@ -16,11 +16,12 @@ func serverExecTool() Tool {
 		Description: "Execute one bounded non-interactive command as host root. Only visible to an unbound admin token, which is a full root credential.",
 		InputSchema: objectSchema(map[string]any{
 			"command": map[string]any{
-				"type": "string", "description": "Command passed unchanged to /bin/sh -lc",
+				"type": "string", "maxLength": 65_536,
+				"description": "Command passed unchanged to /bin/sh -lc; server enforces a 64 KiB UTF-8 byte limit",
 			},
 			"timeoutSeconds": map[string]any{
-				"type": "integer", "minimum": 0,
-				"description": "Zero or omitted uses the server default",
+				"type": "integer", "minimum": 0, "maximum": 300, "default": 30,
+				"description": "Zero or omitted uses the 30-second server default; maximum is 300 seconds",
 			},
 		}, []string{"command"}),
 	}

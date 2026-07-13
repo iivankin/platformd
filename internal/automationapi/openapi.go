@@ -424,8 +424,11 @@ func serviceMutationSchemas() map[string]any {
 			"type": "object", "additionalProperties": false,
 			"required": []string{"command"},
 			"properties": map[string]any{
-				"command":        map[string]string{"type": "string"},
-				"timeoutSeconds": map[string]any{"type": "integer", "minimum": 0},
+				"command": map[string]any{
+					"type": "string", "maxLength": 65_536,
+					"description": "Valid UTF-8 without NUL; server enforces a 64 KiB byte limit",
+				},
+				"timeoutSeconds": map[string]any{"type": "integer", "minimum": 0, "maximum": 300, "default": 30},
 			},
 		},
 		"ServiceConfiguration": configuration,

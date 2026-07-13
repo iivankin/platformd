@@ -506,6 +506,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err != nil {
 			return err
 		}
+		serverExecAutomation, err := newServerExecApplication(cgroups, store)
+		if err != nil {
+			return err
+		}
 		automationAPI, err := automationapi.Handler(automationapi.Config{
 			Hostname: automationHostname, Repository: automationRepository, Projects: projectAutomation,
 			Services: serviceAutomation, Domains: domainAutomation,
@@ -517,6 +521,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Volumes:          volumeAutomation,
 			Registry:         registryApplication,
 			RegistrySettings: registrySettings,
+			ServerExec:       serverExecAutomation,
 			Admission:        mutationAdmission,
 		})
 		if err != nil {
@@ -526,7 +531,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Hostname: automationHostname, Version: version.Version, Repository: automationRepository,
 			Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalog,
 			Redis: redisAutomation, Postgres: postgresAutomation, Managed: managedResourceAutomation,
-			Versions: databaseVersions, Volumes: volumeAutomation,
+			Versions: databaseVersions, ServerExec: serverExecAutomation, Volumes: volumeAutomation,
 			Admission: mutationAdmission,
 		})
 		if err != nil {
