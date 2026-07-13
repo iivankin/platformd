@@ -6,6 +6,8 @@ import (
 )
 
 type openAPIFeatures struct {
+	projects         bool
+	objectStores     bool
 	serverExec       bool
 	managedResources bool
 	databaseVersions bool
@@ -28,6 +30,13 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		"/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
 		"/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
 		"/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
+	}
+	if features.projects {
+		paths["/api/v1/projects"] = projectCollectionOperation()
+	}
+	if features.objectStores {
+		paths["/api/v1/projects/{projectID}/object-stores"] = objectStoreCollectionOperation()
+		paths["/api/v1/projects/{projectID}/object-stores/{storeID}"] = readOperation("Get one private S3 resource")
 	}
 	if features.serverExec {
 		paths["/api/v1/server/exec"] = serverExecOperation()
@@ -69,6 +78,18 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 func volumeCollectionOperation() map[string]any {
 	operation := readOperation("List ordinary writable volumes owned by one service")
 	operation["post"] = writeMethod("Create an empty ordinary service volume (admin token)", http.StatusCreated, "VolumeCreateRequest")
+	return operation
+}
+
+func projectCollectionOperation() map[string]any {
+	operation := readOperation("List visible projects")
+	operation["post"] = writeMethod("Create a project (unbound admin token)", http.StatusCreated, "ProjectCreateRequest")
+	return operation
+}
+
+func objectStoreCollectionOperation() map[string]any {
+	operation := readOperation("List private S3 resources in one visible project")
+	operation["post"] = writeMethod("Create a private S3 resource and return its credential once (admin token)", http.StatusCreated, "ObjectStoreCreateRequest")
 	return operation
 }
 
@@ -322,6 +343,22 @@ func serviceMutationSchemas() map[string]any {
 		},
 	}
 	return map[string]any{
+		"ProjectCreateRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required":   []string{"name"},
+			"properties": map[string]any{"name": map[string]string{"type": "string"}},
+		},
+		"ObjectStoreCreateRequest": map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"name", "bucketName"},
+			"properties": map[string]any{
+				"name": map[string]string{"type": "string"}, "bucketName": map[string]string{"type": "string"},
+				"publicHostname":       map[string]string{"type": "string"},
+				"corsOrigins":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+				"credentialName":       map[string]string{"type": "string"},
+				"credentialPermission": map[string]any{"type": "string", "enum": []string{"read_only", "read_write"}},
+			},
+		},
 		"VolumeCreateRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
 			"required": []string{"name", "ownerUid", "ownerGid"},

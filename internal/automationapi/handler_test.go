@@ -12,6 +12,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -27,6 +28,43 @@ type repositoryStub struct {
 	service       state.ServiceDesired
 	volumes       []state.Volume
 	volumeCreate  state.CreateVolume
+	projectCreate state.CreateProjectByToken
+	objectCreate  objectstore.CreateInput
+	objectStores  []state.ObjectStore
+}
+
+func (repository *repositoryStub) CreateProjectByToken(_ context.Context, input state.CreateProjectByToken) (state.ProjectSummary, error) {
+	repository.projectCreate = input
+	project := state.ProjectSummary{ID: input.ID, Name: input.Name, CreatedAtMillis: input.CreatedAtMillis, UpdatedAtMillis: input.CreatedAtMillis}
+	repository.projects = append(repository.projects, project)
+	return project, nil
+}
+
+func (repository *repositoryStub) Stores(context.Context, string) ([]state.ObjectStore, error) {
+	return repository.objectStores, nil
+}
+
+func (repository *repositoryStub) Store(_ context.Context, projectID, storeID string) (state.ObjectStore, error) {
+	for _, store := range repository.objectStores {
+		if store.ProjectID == projectID && store.ID == storeID {
+			return store, nil
+		}
+	}
+	return state.ObjectStore{}, state.ErrObjectStoreNotFound
+}
+
+func (repository *repositoryStub) Create(_ context.Context, input objectstore.CreateInput) (objectstore.CreateResult, error) {
+	repository.objectCreate = input
+	store := state.ObjectStore{
+		ID: "store", ProjectID: input.ProjectID, ProjectName: "shop", Name: input.Name,
+		BucketName: input.BucketName, PublicHostname: input.PublicHostname,
+		CORSOrigins: input.CORSOrigins, CreatedAtMillis: 42, UpdatedAtMillis: 42,
+	}
+	repository.objectStores = append(repository.objectStores, store)
+	return objectstore.CreateResult{
+		Store: store, Credential: state.S3Credential{Permission: "read_write"},
+		AccessKey: "access-key", Secret: "one-time-secret", RequestID: "object-request",
+	}, nil
 }
 
 func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -56,6 +94,10 @@ func (*repositoryStub) List(context.Context, managedimages.Engine, int, int) (ma
 
 func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	t.Helper()
+	projects, err := automation.NewProjectApplication(repository, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	services, err := automation.NewServiceApplication(repository, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +117,8 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 		t.Fatal(err)
 	}
 	handler, err := Handler(Config{
-		Hostname: "api.example.com", Repository: repository, Services: services, Logs: logs, Images: repository,
+		Hostname: "api.example.com", Repository: repository, Projects: projects,
+		Services: services, Logs: logs, Images: repository, ObjectStores: repository,
 		Volumes: volumes, Admission: admission.New(),
 	})
 	if err != nil {
@@ -195,8 +238,62 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	}
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || strings.Contains(response.Body.String(), `/query`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || !strings.Contains(response.Body.String(), `/object-stores`) || !strings.Contains(response.Body.String(), `ProjectCreateRequest`) || strings.Contains(response.Body.String(), `/query`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestAutomationAPICreatesProjectOnlyWithUnboundAdmin(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := automationHandler(t, repository)
+	path := "https://api.example.com/api/v1/projects"
+	bound := "project"
+	for _, identity := range []automation.Identity{
+		{TokenID: "read", Role: "read"},
+		{TokenID: "bound", Role: "admin", ProjectID: &bound},
+	} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("not-json"))
+		request.Header.Set("Content-Type", "application/json")
+		request = request.WithContext(automation.WithIdentity(request.Context(), identity))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden || repository.projectCreate.ID != "" {
+			t.Fatalf("denied project create = %d/%s input=%+v", response.Code, response.Body, repository.projectCreate)
+		}
+	}
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"shop"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "root-token", Role: "admin"}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || repository.projectCreate.ActorTokenID != "root-token" || response.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("project create = %d/%s input=%+v", response.Code, response.Body, repository.projectCreate)
+	}
+}
+
+func TestAutomationAPIManagesObjectStoreMetadataWithoutObjectDataRoutes(t *testing.T) {
+	repository := &repositoryStub{}
+	handler := automationHandler(t, repository)
+	path := "https://api.example.com/api/v1/projects/project/object-stores"
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"assets","bucketName":"assets-bucket"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated || repository.objectCreate.Actor.Kind != "token" || repository.objectCreate.Actor.ID != "admin" || !strings.Contains(response.Body.String(), `"secret":"one-time-secret"`) {
+		t.Fatalf("object store create = %d/%s input=%+v", response.Code, response.Body, repository.objectCreate)
+	}
+	list := automationRequest("/api/v1/projects/project/object-stores", automation.Identity{TokenID: "read", Role: "read"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "one-time-secret") || !strings.Contains(response.Body.String(), `"region":"us-east-1"`) {
+		t.Fatalf("object store list = %d/%s", response.Code, response.Body)
+	}
+	dataRequest := automationRequest("/api/v1/projects/project/object-stores/store/objects", automation.Identity{TokenID: "admin", Role: "admin"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, dataRequest)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("object data route unexpectedly exposed: %d/%s", response.Code, response.Body)
 	}
 }
 

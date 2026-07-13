@@ -29,6 +29,7 @@ type ManagedImageCatalog interface {
 type Config struct {
 	Hostname      string
 	Repository    Repository
+	Projects      *automation.ProjectApplication
 	Services      *automation.ServiceApplication
 	Logs          *automation.LogApplication
 	Images        ManagedImageCatalog
@@ -36,6 +37,7 @@ type Config struct {
 	RedisStore    managedRedisRepository
 	Postgres      *automation.ManagedPostgresApplication
 	PostgresStore managedPostgresRepository
+	ObjectStores  objectStoreApplication
 	Managed       *automation.ManagedResourceApplication
 	Versions      *databaseversion.Service
 	ServerExec    *automation.ServerExecApplication
@@ -51,9 +53,13 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, openAPIFeatures{
 		serverExec: config.ServerExec != nil, managedResources: config.Managed != nil,
 		databaseVersions: config.Versions != nil, volumes: config.Volumes != nil,
+		projects: config.Projects != nil, objectStores: config.ObjectStores != nil,
 	}))
 	mux.HandleFunc("GET /api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
+	if config.Projects != nil {
+		mux.HandleFunc("POST /api/v1/projects", createProject(config.Projects))
+	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}", getProject(config.Repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services", listServices(config.Repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config.Repository))
@@ -78,6 +84,11 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(config.PostgresStore))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(config.PostgresStore))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(config.Postgres))
+	}
+	if config.ObjectStores != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores", listObjectStores(config.ObjectStores))
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores", createObjectStore(config.ObjectStores))
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}", getObjectStore(config.ObjectStores))
 	}
 	if config.ServerExec != nil {
 		mux.HandleFunc("POST /api/v1/server/exec", executeServerCommand(config.ServerExec))
