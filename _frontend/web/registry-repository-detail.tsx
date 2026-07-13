@@ -24,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { RegistryCleanup } from "@/registry-cleanup";
 import { RegistryCredentials } from "@/registry-credentials";
 import { formatRegistryBytes } from "@/registry-repository-list";
+import { ResourceBackupPanel } from "@/resource-backup-panel";
 
 const errorText = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
@@ -209,6 +210,8 @@ export const RegistryRepositoryDetail = ({
           </div>
         ))}
       </div>
+
+      <ResourceBackupPanel resourceID={repository.id} resourceKind="registry" />
 
       <div className="flex items-center gap-3 border-b border-border px-4 py-3">
         <div>
