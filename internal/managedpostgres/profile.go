@@ -42,5 +42,5 @@ func safeRoot(value string) bool {
 
 func safePathComponent(value string) bool {
 	return value != "" && value != "." && value != ".." && filepath.Base(value) == value &&
-		!strings.ContainsAny(value, `/\\\x00`)
+		!strings.ContainsAny(value, "/\\\x00")
 }
