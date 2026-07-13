@@ -1,12 +1,15 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/diskpressure"
+	"github.com/iivankin/platformd/internal/journallogs"
 )
 
 type DiskPressure interface {
@@ -15,6 +18,10 @@ type DiskPressure interface {
 
 type ResourceUsage interface {
 	Read(cgroupstats.Kind, string) (cgroupstats.Sample, error)
+}
+
+type InfrastructureLogs interface {
+	Read(context.Context, journallogs.Query) (journallogs.Window, error)
 }
 
 type diskPressureResponse struct {
@@ -38,7 +45,7 @@ type resourceUsageResponse struct {
 	Running         bool   `json:"running"`
 }
 
-func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usage ResourceUsage) {
+func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usage ResourceUsage, logs InfrastructureLogs) {
 	if pressure != nil {
 		mux.HandleFunc("GET /api/v1/infrastructure/disk-pressure", func(response http.ResponseWriter, request *http.Request) {
 			if _, ok := access.IdentityFromContext(request.Context()); !ok {
@@ -59,10 +66,16 @@ func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usa
 			})
 		})
 	}
-	if usage == nil {
-		return
+	if usage != nil {
+		mux.HandleFunc("GET /api/v1/infrastructure/resources/{kind}/{resourceID}/usage", resourceUsageHandler(usage))
 	}
-	mux.HandleFunc("GET /api/v1/infrastructure/resources/{kind}/{resourceID}/usage", func(response http.ResponseWriter, request *http.Request) {
+	if logs != nil {
+		mux.HandleFunc("GET /api/v1/infrastructure/logs", infrastructureLogsHandler(logs))
+	}
+}
+
+func resourceUsageHandler(usage ResourceUsage) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := access.IdentityFromContext(request.Context()); !ok {
 			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
 			return
@@ -81,5 +94,32 @@ func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usa
 			MemoryBytes: sample.MemoryBytes, HostCPUCores: sample.HostCPUCores,
 			HostMemoryBytes: sample.HostMemoryBytes, Running: sample.Running,
 		})
-	})
+	}
+}
+
+func infrastructureLogsHandler(logs InfrastructureLogs) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		limit := journallogs.DefaultLimit
+		if value := request.URL.Query().Get("limit"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 1 || parsed > journallogs.MaximumLimit {
+				writeAPIError(response, http.StatusBadRequest, "invalid_journal_query", "limit must be an integer from 1 to 2000")
+				return
+			}
+			limit = parsed
+		}
+		window, err := logs.Read(request.Context(), journallogs.Query{Limit: limit})
+		switch {
+		case err == nil:
+			writeJSON(response, http.StatusOK, window)
+		case errors.Is(err, journallogs.ErrInvalidQuery):
+			writeAPIError(response, http.StatusBadRequest, "invalid_journal_query", err.Error())
+		default:
+			writeAPIError(response, http.StatusServiceUnavailable, "journal_unavailable", "Unable to read platform journal")
+		}
+	}
 }

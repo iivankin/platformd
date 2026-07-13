@@ -38,6 +38,7 @@ import {
   fetchVolumes,
   fetchImageCredentials,
   fetchIdentity,
+  fetchInfrastructureLogs,
   fetchDiskPressure,
   applySelfUpdate,
   fetchManagedImageTags,
@@ -518,6 +519,31 @@ test("reads derived disk pressure without a persisted operation", async () => {
       )
     )
   ).resolves.toMatchObject({ level: "critical", reservePresent: false });
+});
+
+test("reads a bounded platform journald window", async () => {
+  let requested = "";
+  await expect(
+    fetchInfrastructureLogs(25, undefined, (input) => {
+      requested = input.toString();
+      return Promise.resolve(
+        Response.json({
+          records: [
+            {
+              cursor: "cursor",
+              identifier: "platformd",
+              message: "ready",
+              pid: "42",
+              priority: 6,
+              timestamp: "2026-07-12T10:00:00Z",
+            },
+          ],
+          truncated: false,
+        })
+      );
+    })
+  ).resolves.toMatchObject({ records: [{ message: "ready" }] });
+  expect(requested).toBe("/api/v1/infrastructure/logs?limit=25");
 });
 
 test("reads stateless resource cgroup usage", async () => {
