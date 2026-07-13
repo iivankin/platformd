@@ -11,8 +11,10 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,6 +27,8 @@ const (
 	integrationReleaseRoot = "/var/lib/platformd/releases/current/runtime"
 	integrationAlpineImage = "docker.io/library/alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6"
 	integrationDebianImage = "docker.io/library/debian@sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1"
+	packetPolicyChildEnv   = "PLATFORMD_FIREWALL_PACKET_CHILD"
+	packetPolicyImageEnv   = "PLATFORMD_FIREWALL_PACKET_IMAGE"
 )
 
 func TestMain(m *testing.M) {
@@ -317,6 +321,10 @@ func TestProjectFirewallPacketPolicy(t *testing.T) {
 	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" || os.Getenv("PLATFORMD_FIREWALL_INTEGRATION") != "1" {
 		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 and PLATFORMD_FIREWALL_INTEGRATION=1 on an isolated root host")
 	}
+	if os.Getenv(packetPolicyChildEnv) != "1" {
+		runPacketPolicyInIsolatedNamespace(t, cachePacketPolicyImage(t))
+		return
+	}
 	config := runtimeIntegrationConfig()
 	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0], config.AllowedMountRoots[1]} {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -335,9 +343,9 @@ func TestProjectFirewallPacketPolicy(t *testing.T) {
 			t.Errorf("close runtime: %v", err)
 		}
 	})
-	image, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
+	image, err := engine.InspectImage(ctx, os.Getenv(packetPolicyImageEnv))
 	if err != nil {
-		t.Fatalf("pull image: %v", err)
+		t.Fatalf("inspect cached image: %v", err)
 	}
 
 	projectA := firewall.Project{ID: "packet-a", Bridge: "pdit-a", Subnet: netip.MustParsePrefix("10.89.44.0/24"), Gateway: netip.MustParseAddr("10.89.44.1"), ObjectStoreEnabled: true}
@@ -422,6 +430,46 @@ func TestProjectFirewallPacketPolicy(t *testing.T) {
 	}
 	if err := <-udpResult; err != nil {
 		t.Fatalf("DNS UDP listener: %v", err)
+	}
+}
+
+func cachePacketPolicyImage(t *testing.T) string {
+	t.Helper()
+	config := runtimeIntegrationConfig()
+	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0], config.AllowedMountRoots[1]} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatalf("open runtime to cache packet-policy image: %v", err)
+	}
+	image, pullErr := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
+	closeErr := engine.Close()
+	if pullErr != nil {
+		t.Fatalf("cache packet-policy image: %v", pullErr)
+	}
+	if closeErr != nil {
+		t.Fatalf("close runtime after caching packet-policy image: %v", closeErr)
+	}
+	return image.ID
+}
+
+func runPacketPolicyInIsolatedNamespace(t *testing.T, imageID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	command := exec.CommandContext(ctx, "/proc/self/exe", "-test.run=^TestProjectFirewallPacketPolicy$", "-test.v")
+	command.Env = append(os.Environ(), packetPolicyChildEnv+"=1", packetPolicyImageEnv+"="+imageID)
+	// A dedicated namespace prevents unrelated runner firewall tables from
+	// accepting or dropping packets after platformd's own base chains.
+	command.SysProcAttr = &syscall.SysProcAttr{Cloneflags: syscall.CLONE_NEWNET}
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("packet policy in isolated network namespace: %v\n%s", err, output)
 	}
 }
 
