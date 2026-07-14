@@ -3,6 +3,7 @@
 package managedpostgres
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/netip"
@@ -163,6 +164,11 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cleanupCancel()
+		_ = controller.Stop(cleanupContext, resource.ID)
+	})
 	if err := controller.Start(ctx, resource.ID); err != nil {
 		logs, _ := filepath.Glob(filepath.Join(paths.LogsRoot, "postgres", resource.ID, "*.log"))
 		var logContent []byte
@@ -208,10 +214,17 @@ FROM pg_roles WHERE rolname = current_user`)
 	if publisher.published != 2 {
 		t.Fatalf("publication count = %d, want 2", publisher.published)
 	}
-	dataDirectory, err := controller.Query(ctx, resource.ID, "SHOW data_directory")
-	if err != nil || len(dataDirectory.Statements) != 1 || len(dataDirectory.Statements[0].Rows) != 1 ||
-		dataDirectory.Statements[0].Rows[0][0].Text != "/var/lib/postgresql/data/pgdata" {
-		t.Fatalf("data_directory = %+v, %v", dataDirectory, err)
+	active, ok := controller.activeRuntime(resource.ID)
+	if !ok {
+		t.Fatal("managed PostgreSQL runtime is not active after restart")
+	}
+	var profileOutput, profileError bytes.Buffer
+	exitCode, execErr := engine.ExecContainer(ctx, active.container.ID, containerengine.ExecRequest{
+		Command: []string{"sh", "-ceu", `test -f "$PGDATA/PG_VERSION"; printf %s "$PGDATA"`},
+		Stdout:  &profileOutput, Stderr: &profileError,
+	})
+	if execErr != nil || exitCode != 0 || profileOutput.String() != "/var/lib/postgresql/data/pgdata" {
+		t.Fatalf("PGDATA profile = %q, exit=%d, stderr=%q, error=%v", profileOutput.String(), exitCode, profileError.String(), execErr)
 	}
 	if err := controller.Stop(ctx, resource.ID); err != nil {
 		t.Fatal(err)
