@@ -13,6 +13,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
+	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
@@ -52,6 +53,7 @@ type handlerConfig struct {
 	backupResources      *backup.ResourceApplication
 	databaseVersions     *databaseversion.Service
 	containerConsole     ContainerConsole
+	containerFiles       *containerfiles.Application
 	serverTerminal       HostTerminal
 	serverTerminalAuth   *terminalauth.Service
 	serverTerminalIdle   time.Duration
@@ -181,6 +183,12 @@ func WithContainerConsole(hostname string, application ContainerConsole) Option 
 	}
 }
 
+func WithContainerFiles(application *containerfiles.Application) Option {
+	return func(config *handlerConfig) {
+		config.containerFiles = application
+	}
+}
+
 func WithServerTerminalAuth(service *terminalauth.Service) Option {
 	return func(config *handlerConfig) {
 		config.serverTerminalAuth = service
@@ -300,6 +308,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		if err := registerContainerConsoleRoute(mux, config.adminHostname, config.containerConsole, config.admission); err != nil {
 			panic("register container console: " + err.Error())
 		}
+	}
+	if config.containerFiles != nil {
+		registerContainerFileRoutes(mux, config.containerFiles)
 	}
 	if config.serverTerminalAuth != nil {
 		registerServerTerminalAuthRoute(mux, config.serverTerminalAuth)

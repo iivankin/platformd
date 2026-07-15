@@ -18,57 +18,65 @@ const maximumServiceRequestBytes = 300 << 10
 type ServiceRepository interface {
 	CreateService(context.Context, state.CreateService) (state.ServiceDesired, error)
 	Service(context.Context, string, string) (state.ServiceDesired, error)
+	ServiceDeployment(context.Context, string, string, string) (state.DeploymentRecord, error)
 	ServiceDeployments(context.Context, string, string, string, int) (state.DeploymentPage, error)
 	UpdateService(context.Context, state.UpdateServiceInput) (state.ServiceDesired, error)
-	RollbackService(context.Context, state.RollbackServiceInput) (state.ServiceDesired, error)
+	DeployServiceVersion(context.Context, state.DeployServiceVersionInput) (state.ServiceDesired, error)
 	RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error)
 }
 
+type ServiceDeploymentActionRepository interface {
+	RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error)
+	RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error)
+}
+
 type serviceResponse struct {
-	ID                 string                          `json:"id"`
-	ProjectID          string                          `json:"projectId"`
-	Name               string                          `json:"name"`
-	ImageReference     string                          `json:"imageReference"`
-	ImageCredentialID  string                          `json:"imageCredentialId,omitempty"`
-	Command            []string                        `json:"command,omitempty"`
-	Args               []string                        `json:"args,omitempty"`
-	Environment        map[string]string               `json:"environment"`
-	TargetPort         *int                            `json:"targetPort,omitempty"`
-	HealthPath         string                          `json:"healthPath,omitempty"`
-	StartupTimeout     int                             `json:"startupTimeoutSeconds"`
-	CPUMillicores      int64                           `json:"cpuMillicores,omitempty"`
-	MemoryMaxBytes     int64                           `json:"memoryMaxBytes,omitempty"`
-	Enabled            bool                            `json:"enabled"`
-	ActiveDeploymentID string                          `json:"activeDeploymentId,omitempty"`
-	ActiveImageDigest  string                          `json:"activeImageDigest,omitempty"`
-	ActiveConfigHash   string                          `json:"activeConfigHash,omitempty"`
-	SecretReferences   []serviceconfig.SecretReference `json:"secretReferences"`
-	VolumeMounts       []serviceconfig.VolumeMount     `json:"volumeMounts"`
-	CreatedAt          int64                           `json:"createdAt"`
-	UpdatedAt          int64                           `json:"updatedAt"`
+	ID                 string                            `json:"id"`
+	ProjectID          string                            `json:"projectId"`
+	Name               string                            `json:"name"`
+	ImageReference     string                            `json:"imageReference"`
+	ImageCredentialID  string                            `json:"imageCredentialId,omitempty"`
+	Command            []string                          `json:"command,omitempty"`
+	Args               []string                          `json:"args,omitempty"`
+	Environment        map[string]string                 `json:"environment"`
+	TargetPort         *int                              `json:"targetPort,omitempty"`
+	HealthPath         string                            `json:"healthPath,omitempty"`
+	StartupTimeout     int                               `json:"startupTimeoutSeconds"`
+	CPUMillicores      int64                             `json:"cpuMillicores,omitempty"`
+	MemoryMaxBytes     int64                             `json:"memoryMaxBytes,omitempty"`
+	Enabled            bool                              `json:"enabled"`
+	ActiveDeploymentID string                            `json:"activeDeploymentId,omitempty"`
+	ActiveImageDigest  string                            `json:"activeImageDigest,omitempty"`
+	ActiveConfigHash   string                            `json:"activeConfigHash,omitempty"`
+	SecretReferences   []serviceconfig.SecretReference   `json:"secretReferences"`
+	ResourceReferences []serviceconfig.ResourceReference `json:"resourceReferences"`
+	VolumeMounts       []serviceconfig.VolumeMount       `json:"volumeMounts"`
+	CreatedAt          int64                             `json:"createdAt"`
+	UpdatedAt          int64                             `json:"updatedAt"`
 }
 
 type serviceConfigRequest struct {
-	ImageReference        string                          `json:"imageReference"`
-	ImageCredentialID     string                          `json:"imageCredentialId"`
-	Command               []string                        `json:"command"`
-	Args                  []string                        `json:"args"`
-	Environment           map[string]string               `json:"environment"`
-	SecretReferences      []serviceconfig.SecretReference `json:"secretReferences"`
-	TargetPort            *int                            `json:"targetPort"`
-	HealthPath            string                          `json:"healthPath"`
-	StartupTimeoutSeconds int                             `json:"startupTimeoutSeconds"`
-	CPUMillicores         int64                           `json:"cpuMillicores"`
-	MemoryMaxBytes        int64                           `json:"memoryMaxBytes"`
-	VolumeMounts          []serviceconfig.VolumeMount     `json:"volumeMounts"`
+	ImageReference        string                            `json:"imageReference"`
+	ImageCredentialID     string                            `json:"imageCredentialId"`
+	Command               []string                          `json:"command"`
+	Args                  []string                          `json:"args"`
+	Environment           map[string]string                 `json:"environment"`
+	SecretReferences      []serviceconfig.SecretReference   `json:"secretReferences"`
+	ResourceReferences    []serviceconfig.ResourceReference `json:"resourceReferences"`
+	TargetPort            *int                              `json:"targetPort"`
+	HealthPath            string                            `json:"healthPath"`
+	StartupTimeoutSeconds int                               `json:"startupTimeoutSeconds"`
+	CPUMillicores         int64                             `json:"cpuMillicores"`
+	MemoryMaxBytes        int64                             `json:"memoryMaxBytes"`
+	VolumeMounts          []serviceconfig.VolumeMount       `json:"volumeMounts"`
 }
 
 func (request serviceConfigRequest) snapshot() serviceconfig.Snapshot {
 	return serviceconfig.Snapshot{
 		ImageReference: request.ImageReference, ImageCredentialID: request.ImageCredentialID,
 		Command: request.Command, Args: request.Args, Environment: request.Environment,
-		SecretReferences: request.SecretReferences,
-		TargetPort:       request.TargetPort, HealthPath: request.HealthPath,
+		SecretReferences: request.SecretReferences, ResourceReferences: request.ResourceReferences,
+		TargetPort: request.TargetPort, HealthPath: request.HealthPath,
 		StartupTimeoutSeconds: request.StartupTimeoutSeconds,
 		CPUMillicores:         request.CPUMillicores, MemoryMaxBytes: request.MemoryMaxBytes,
 		VolumeMounts: request.VolumeMounts,
@@ -169,7 +177,8 @@ func publicService(service state.ServiceDesired) serviceResponse {
 		MemoryMaxBytes: service.Snapshot.MemoryMaxBytes,
 		Enabled:        service.Enabled, ActiveDeploymentID: service.ActiveDeploymentID,
 		ActiveImageDigest: service.ActiveImageDigest, ActiveConfigHash: service.ActiveConfigHash,
-		SecretReferences: service.Snapshot.SecretReferences, VolumeMounts: service.Snapshot.VolumeMounts,
-		CreatedAt: service.CreatedAtMillis, UpdatedAt: service.UpdatedAtMillis,
+		SecretReferences: service.Snapshot.SecretReferences, ResourceReferences: service.Snapshot.ResourceReferences,
+		VolumeMounts: service.Snapshot.VolumeMounts,
+		CreatedAt:    service.CreatedAtMillis, UpdatedAt: service.UpdatedAtMillis,
 	}
 }

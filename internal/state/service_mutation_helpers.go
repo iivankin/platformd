@@ -70,6 +70,11 @@ SELECT project_id, registry_host FROM image_registry_credentials WHERE id = ?`, 
 			return fmt.Errorf("%w: secret %s", ErrDependencyMissing, reference.SecretID)
 		}
 	}
+	for _, reference := range snapshot.ResourceReferences {
+		if err := validateResourceVariableReference(ctx, transaction, projectID, serviceID, reference); err != nil {
+			return err
+		}
+	}
 	for _, mount := range snapshot.VolumeMounts {
 		var dependencyProjectID string
 		var dependencyServiceID string
@@ -133,6 +138,16 @@ INSERT INTO service_secret_refs(service_id, environment_name, secret_id) VALUES 
 			serviceID, reference.EnvironmentName, reference.SecretID,
 		); err != nil {
 			return fmt.Errorf("replace service secret reference: %w", err)
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, "DELETE FROM service_resource_variable_refs WHERE service_id = ?", serviceID); err != nil {
+		return fmt.Errorf("clear service resource variable references: %w", err)
+	}
+	for _, reference := range snapshot.ResourceReferences {
+		if _, err := transaction.ExecContext(ctx, `
+INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
+VALUES (?, ?, ?, ?, ?)`, serviceID, reference.EnvironmentName, reference.ResourceKind, reference.ResourceID, reference.OutputName); err != nil {
+			return fmt.Errorf("replace service resource variable reference: %w", err)
 		}
 	}
 	if _, err := transaction.ExecContext(ctx, "DELETE FROM service_volume_mounts WHERE service_id = ?", serviceID); err != nil {

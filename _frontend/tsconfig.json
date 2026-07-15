@@ -17,5 +17,11 @@
     "target": "ESNext",
     "types": ["bun"]
   },
-  "include": ["build.ts", "web/**/*.ts", "web/**/*.tsx"]
+  "include": [
+    "build.ts",
+    "dev.ts",
+    "mock/**/*.ts",
+    "web/**/*.ts",
+    "web/**/*.tsx"
+  ]
 }

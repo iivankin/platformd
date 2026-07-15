@@ -1,17 +1,22 @@
 import { Play, SquareTerminal, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
-import { fetchServiceTerminalShells } from "@/api";
+import { fetchResourceTerminalShells } from "@/api";
+import type { ContainerResourceKind } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import { Terminal } from "@/terminal";
-import { serviceTerminalSocketURL } from "@/terminal-url";
+import { resourceTerminalSocketURL } from "@/terminal-url";
 
 interface ContainerTerminalOverlayProperties {
-  onClose: () => void;
+  className?: string;
+  embedded?: boolean;
+  onClose?: () => void;
   projectID: string;
-  serviceID: string;
-  serviceName: string;
+  resourceID: string;
+  resourceKind: ContainerResourceKind;
+  resourceName: string;
 }
 
 const parseCommand = (value: string) => {
@@ -28,10 +33,13 @@ const parseCommand = (value: string) => {
 };
 
 export const ContainerTerminalOverlay = ({
+  className,
+  embedded = false,
   onClose,
   projectID,
-  serviceID,
-  serviceName,
+  resourceID,
+  resourceKind,
+  resourceName,
 }: ContainerTerminalOverlayProperties) => {
   const [shells, setShells] = useState<string[]>([]);
   const [selection, setSelection] = useState("custom");
@@ -45,9 +53,10 @@ export const ContainerTerminalOverlay = ({
     const controller = new AbortController();
     const load = async () => {
       try {
-        const available = await fetchServiceTerminalShells(
+        const available = await fetchResourceTerminalShells(
           projectID,
-          serviceID,
+          resourceKind,
+          resourceID,
           controller.signal
         );
         setShells(available);
@@ -73,18 +82,19 @@ export const ContainerTerminalOverlay = ({
     };
     void load();
     return () => controller.abort();
-  }, [projectID, serviceID]);
+  }, [projectID, resourceID, resourceKind]);
 
   const socketURL = useCallback(
     (cols: number, rows: number) =>
-      serviceTerminalSocketURL(
+      resourceTerminalSocketURL(
         projectID,
-        serviceID,
+        resourceKind,
+        resourceID,
         activeCommand ?? [],
         cols,
         rows
       ),
-    [activeCommand, projectID, serviceID]
+    [activeCommand, projectID, resourceID, resourceKind]
   );
 
   const start = () => {
@@ -105,13 +115,19 @@ export const ContainerTerminalOverlay = ({
 
   return (
     <section
-      aria-label={`${serviceName} container terminal`}
-      className="fixed inset-0 z-50 flex flex-col bg-background"
+      aria-label={`${resourceName} container terminal`}
+      className={cn(
+        "flex flex-col bg-background",
+        embedded
+          ? "h-[clamp(18rem,42vh,28rem)]"
+          : "fixed inset-0 z-50 min-h-[36rem]",
+        className
+      )}
     >
       <header className="flex min-h-12 flex-wrap items-center gap-3 border-b border-border px-4 py-2">
         <SquareTerminal className="size-4 text-muted-foreground" />
         <div className="min-w-0">
-          <h2 className="truncate text-xs font-medium">{serviceName}</h2>
+          <h2 className="truncate text-xs font-medium">{resourceName}</h2>
           <p className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
             Container console · Access only
           </p>
@@ -148,14 +164,16 @@ export const ContainerTerminalOverlay = ({
             <Play />
             New session
           </Button>
-          <Button
-            aria-label="Close terminal"
-            onClick={onClose}
-            size="icon"
-            variant="ghost"
-          >
-            <X />
-          </Button>
+          {onClose ? (
+            <Button
+              aria-label="Close terminal"
+              onClick={onClose}
+              size="icon"
+              variant="ghost"
+            >
+              <X />
+            </Button>
+          ) : null}
         </div>
       </header>
       {error ? (

@@ -119,6 +119,14 @@ const serviceSchema = z.object({
   memoryMaxBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
   projectId: z.string().min(1),
+  resourceReferences: z.array(
+    z.object({
+      environmentName: z.string().min(1),
+      outputName: z.string().min(1),
+      resourceId: z.string().min(1),
+      resourceKind: z.enum(["service", "postgres", "redis", "object_store"]),
+    })
+  ),
   secretReferences: z.array(
     z.object({
       environmentName: z.string().min(1),
@@ -182,6 +190,7 @@ export interface UpdateServiceInput {
   imageReference: string;
   memoryMaxBytes?: number;
   secretReferences: Service["secretReferences"];
+  resourceReferences: Service["resourceReferences"];
   startupTimeoutSeconds: number;
   targetPort?: number;
   volumeMounts: Service["volumeMounts"];
@@ -205,6 +214,7 @@ const deploymentSchema = z.object({
     imageCredentialId: true,
     imageReference: true,
     memoryMaxBytes: true,
+    resourceReferences: true,
     secretReferences: true,
     startupTimeoutSeconds: true,
     targetPort: true,
@@ -220,6 +230,28 @@ const deploymentPageSchema = z.object({
 
 export type Deployment = z.infer<typeof deploymentSchema>;
 export type DeploymentPage = z.infer<typeof deploymentPageSchema>;
+
+const runtimeDeploymentSchema = z.object({
+  active: z.boolean(),
+  createdAt: z.number().int().positive(),
+  errorCode: z.string().optional(),
+  errorMessage: z.string().optional(),
+  finishedAt: z.number().int().positive().optional(),
+  id: z.string().min(1),
+  imageDigest: z.string().min(1),
+  imageTag: z.string().min(1),
+  resourceId: z.string().min(1),
+  resourceKind: z.enum(["postgres", "redis"]),
+  status: z.enum(["failed", "interrupted", "removed", "running", "succeeded"]),
+});
+
+const runtimeDeploymentPageSchema = z.object({
+  deployments: z.array(runtimeDeploymentSchema),
+  nextCursor: z.string().min(1).optional(),
+});
+
+export type RuntimeDeployment = z.infer<typeof runtimeDeploymentSchema>;
+export type RuntimeDeploymentPage = z.infer<typeof runtimeDeploymentPageSchema>;
 
 const logRecordSchema = z.object({
   attemptId: z.string().min(1),
@@ -304,12 +336,33 @@ const resourceUsageSchema = z.object({
   hostCpuCores: z.number().int().positive(),
   hostMemoryBytes: z.number().int().positive(),
   memoryBytes: z.number().int().nonnegative(),
+  networkAvailable: z.boolean(),
+  networkRxBytes: z.number().int().nonnegative(),
+  networkTxBytes: z.number().int().nonnegative(),
   observedAt: z.number().int().positive(),
   running: z.boolean(),
 });
 
+const resourceUsageHistoryPointSchema = z.object({
+  cpuMillicores: z.number().int().nonnegative().optional(),
+  memoryBytes: z.number().int().nonnegative(),
+  networkEgressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkIngressBytesPerSecond: z.number().int().nonnegative().optional(),
+  observedAt: z.number().int().positive(),
+  running: z.boolean(),
+});
+
+const resourceUsageHistorySchema = z.object({
+  from: z.number().int().positive(),
+  points: z.array(resourceUsageHistoryPointSchema),
+  stepMillis: z.number().int().positive(),
+  to: z.number().int().positive(),
+});
+
 export type ResourceUsage = z.infer<typeof resourceUsageSchema>;
+export type ResourceUsageHistory = z.infer<typeof resourceUsageHistorySchema>;
 export type ResourceUsageKind = "postgres" | "redis" | "service";
+export type ResourceUsageRange = "1d" | "1h" | "30d" | "6h" | "7d";
 
 const selfUpdateResultSchema = z.object({
   previousVersion: z.string().min(1),
@@ -379,7 +432,7 @@ const managedRedisSchema = z.object({
   imageTag: z.string().min(1),
   memoryBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
-  password: z.string().min(1).optional(),
+  password: z.string().min(1),
   port: z.literal(6379),
   projectId: z.string().min(1),
   updatedAt: z.number().int().positive(),
@@ -393,6 +446,44 @@ const managedRedisPersistenceSchema = z.object({
   needsAttention: z.boolean(),
   observedAt: z.number().int().positive(),
   targetRpoMillis: z.number().int().positive(),
+});
+
+const managedRedisStatsSchema = z.object({
+  aofEnabled: z.boolean(),
+  blockedClients: z.number().int().nonnegative(),
+  commands: z.array(
+    z.object({
+      calls: z.number().int().nonnegative(),
+      microsPerCall: z.number().nonnegative(),
+      name: z.string().min(1),
+      totalMicros: z.number().int().nonnegative(),
+    })
+  ),
+  connectedClients: z.number().int().nonnegative(),
+  evictedKeys: z.number().int().nonnegative(),
+  evictionPolicy: z.string().min(1),
+  expiredKeys: z.number().int().nonnegative(),
+  fragmentationRatio: z.number().nonnegative(),
+  keyspaceHits: z.number().int().nonnegative(),
+  keyspaceMisses: z.number().int().nonnegative(),
+  keyspaces: z.array(
+    z.object({
+      averageTtlMillis: z.number().int().nonnegative(),
+      database: z.string().min(1),
+      expires: z.number().int().nonnegative(),
+      keys: z.number().int().nonnegative(),
+    })
+  ),
+  maxMemoryBytes: z.number().int().nonnegative(),
+  operationsPerSecond: z.number().int().nonnegative(),
+  peakMemoryBytes: z.number().int().nonnegative(),
+  rejectedConnections: z.number().int().nonnegative(),
+  rssMemoryBytes: z.number().int().nonnegative(),
+  totalCommands: z.number().int().nonnegative(),
+  totalConnections: z.number().int().nonnegative(),
+  uptimeSeconds: z.number().int().nonnegative(),
+  usedMemoryBytes: z.number().int().nonnegative(),
+  version: z.string().min(1),
 });
 
 const redisKeySchema = z.object({
@@ -426,6 +517,7 @@ export type ManagedRedis = z.infer<typeof managedRedisSchema>;
 export type ManagedRedisPersistence = z.infer<
   typeof managedRedisPersistenceSchema
 >;
+export type ManagedRedisStats = z.infer<typeof managedRedisStatsSchema>;
 export type RedisKey = z.infer<typeof redisKeySchema>;
 export type RedisKeyPage = z.infer<typeof redisKeyPageSchema>;
 export type RedisPreview = z.infer<typeof redisPreviewSchema>;
@@ -489,7 +581,7 @@ const managedPostgresSchema = z.object({
   imageTag: z.string().min(1),
   memoryBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
-  ownerPassword: z.string().min(1).optional(),
+  ownerPassword: z.string().min(1),
   ownerUsername: z.string().min(1),
   port: z.literal(5432),
   projectId: z.string().min(1),
@@ -528,21 +620,21 @@ export interface CreateManagedPostgresInput {
 }
 
 const objectStoreSchema = z.object({
-  accessKey: z.string().min(1).optional(),
+  accessKey: z.string().min(1),
   backupCron: z.string().optional(),
   backupEnabled: z.boolean(),
   backupRetentionCount: z.number().int().min(1).max(100),
   bucketName: z.string().min(3),
   corsOrigins: z.array(z.string()),
   createdAt: z.number().int().positive(),
-  credentialPermission: z.enum(["read", "read_write"]).optional(),
+  credentialPermission: z.enum(["read", "read_write"]),
   id: z.string().min(1),
   internalHostname: z.string().min(1),
   name: z.string().min(1),
   projectId: z.string().min(1),
   publicHostname: z.string().min(1).optional(),
   region: z.literal("us-east-1"),
-  secret: z.string().min(1).optional(),
+  secret: z.string().min(1),
   updatedAt: z.number().int().positive(),
 });
 
@@ -630,7 +722,8 @@ const registryCredentialSchema = z.object({
   name: z.string().min(1),
   permission: z.enum(["pull", "pull_push"]),
   secret: z.string().min(1).optional(),
-  username: z.string().min(1).optional(),
+  secretAvailable: z.boolean(),
+  username: z.string().min(1),
 });
 const registryCredentialsSchema = z.object({
   credentials: z.array(registryCredentialSchema),
@@ -1105,7 +1198,7 @@ export const deleteVolume = async (
 const serviceAction = async (
   projectID: string,
   serviceID: string,
-  action: "redeploy" | "rollback",
+  action: "redeploy",
   body: Record<string, number | string>,
   fetcher: Fetcher
 ): Promise<Service> => {
@@ -1143,18 +1236,76 @@ export const redeployService = (
     fetcher
   );
 
-export const rollbackService = (
+const serviceDeploymentAction = async (
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+  action: "deploy" | "remove" | "restart",
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Service> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments/${encodeURIComponent(deploymentID)}/${action}`,
+    {
+      body: JSON.stringify({ expectedUpdatedAt }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `${action} service deployment request failed with ${response.status}`
+    );
+  }
+  return serviceSchema.parse(await response.json());
+};
+
+export const deployServiceVersion = (
   projectID: string,
   serviceID: string,
   deploymentID: string,
   expectedUpdatedAt: number,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<Service> =>
-  serviceAction(
+  serviceDeploymentAction(
     projectID,
     serviceID,
-    "rollback",
-    { deploymentId: deploymentID, expectedUpdatedAt },
+    deploymentID,
+    "deploy",
+    expectedUpdatedAt,
+    fetcher
+  );
+
+export const restartServiceDeployment = (
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+  expectedUpdatedAt: number,
+  fetcher?: Fetcher
+) =>
+  serviceDeploymentAction(
+    projectID,
+    serviceID,
+    deploymentID,
+    "restart",
+    expectedUpdatedAt,
+    fetcher
+  );
+
+export const removeServiceDeployment = (
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+  expectedUpdatedAt: number,
+  fetcher?: Fetcher
+) =>
+  serviceDeploymentAction(
+    projectID,
+    serviceID,
+    deploymentID,
+    "remove",
+    expectedUpdatedAt,
     fetcher
   );
 
@@ -1181,6 +1332,126 @@ export const fetchServiceDeployments = async (
   }
   return deploymentPageSchema.parse(await response.json());
 };
+
+export const fetchServiceDeployment = async (
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Deployment> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments/${encodeURIComponent(deploymentID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `deployment request failed with ${response.status}`
+    );
+  }
+  return deploymentSchema.parse(await response.json());
+};
+
+export type ManagedDeploymentKind = "postgres" | "redis";
+
+export const fetchRuntimeDeployments = async (
+  projectID: string,
+  kind: ManagedDeploymentKind,
+  resourceID: string,
+  cursor?: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RuntimeDeploymentPage> => {
+  const query = new URLSearchParams({ limit: "50" });
+  if (cursor) {
+    query.set("cursor", cursor);
+  }
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/${kind}/${encodeURIComponent(resourceID)}/deployments?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `deployment history request failed with ${response.status}`
+    );
+  }
+  return runtimeDeploymentPageSchema.parse(await response.json());
+};
+
+export const fetchRuntimeDeployment = async (
+  projectID: string,
+  kind: ManagedDeploymentKind,
+  resourceID: string,
+  deploymentID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<RuntimeDeployment> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/${kind}/${encodeURIComponent(resourceID)}/deployments/${encodeURIComponent(deploymentID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `deployment request failed with ${response.status}`
+    );
+  }
+  return runtimeDeploymentSchema.parse(await response.json());
+};
+
+const runtimeDeploymentAction = async (
+  projectID: string,
+  kind: ManagedDeploymentKind,
+  resourceID: string,
+  deploymentID: string,
+  action: "remove" | "restart",
+  fetcher: Fetcher = globalThis.fetch
+) => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/${kind}/${encodeURIComponent(resourceID)}/deployments/${encodeURIComponent(deploymentID)}/${action}`,
+    { method: "POST" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `${action} deployment request failed with ${response.status}`
+    );
+  }
+};
+
+export const restartRuntimeDeployment = (
+  projectID: string,
+  kind: ManagedDeploymentKind,
+  resourceID: string,
+  deploymentID: string,
+  fetcher?: Fetcher
+) =>
+  runtimeDeploymentAction(
+    projectID,
+    kind,
+    resourceID,
+    deploymentID,
+    "restart",
+    fetcher
+  );
+
+export const removeRuntimeDeployment = (
+  projectID: string,
+  kind: ManagedDeploymentKind,
+  resourceID: string,
+  deploymentID: string,
+  fetcher?: Fetcher
+) =>
+  runtimeDeploymentAction(
+    projectID,
+    kind,
+    resourceID,
+    deploymentID,
+    "remove",
+    fetcher
+  );
 
 export const fetchServiceLogs = async (
   projectID: string,
@@ -1209,14 +1480,54 @@ export const fetchServiceLogs = async (
   return logWindowSchema.parse(await response.json());
 };
 
-export const fetchServiceTerminalShells = async (
+export type ResourceLogKind = "object_store" | "postgres" | "redis" | "service";
+
+const resourceLogCollection: Record<ResourceLogKind, string> = {
+  object_store: "object-stores",
+  postgres: "postgres",
+  redis: "redis",
+  service: "services",
+};
+
+export const fetchResourceLogs = async (
   projectID: string,
-  serviceID: string,
+  kind: ResourceLogKind,
+  resourceID: string,
+  options: { contains?: string; deploymentId?: string; limit?: number } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<LogWindow> => {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 500) });
+  if (options.contains) {
+    query.set("contains", options.contains);
+  }
+  if (options.deploymentId) {
+    query.set("deploymentId", options.deploymentId);
+  }
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/${resourceLogCollection[kind]}/${encodeURIComponent(resourceID)}/logs?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `resource logs request failed with ${response.status}`
+    );
+  }
+  return logWindowSchema.parse(await response.json());
+};
+
+export type ContainerResourceKind = "postgres" | "redis" | "service";
+
+export const fetchResourceTerminalShells = async (
+  projectID: string,
+  resourceKind: ContainerResourceKind,
+  resourceID: string,
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<string[]> => {
   const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/terminal/shells`,
+    `/api/v1/projects/${encodeURIComponent(projectID)}/resources/${encodeURIComponent(resourceKind)}/${encodeURIComponent(resourceID)}/terminal/shells`,
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
@@ -1226,6 +1537,81 @@ export const fetchServiceTerminalShells = async (
     );
   }
   return terminalShellsSchema.parse(await response.json()).shells;
+};
+
+const containerFileEntrySchema = z.object({
+  directory: z.boolean(),
+  mode: z.number().int().nonnegative(),
+  modifiedAt: z.string(),
+  path: z.string(),
+  sizeBytes: z.number().int().nonnegative(),
+});
+
+const containerFileTreeSchema = z.object({
+  entries: z.array(containerFileEntrySchema),
+  root: z.string(),
+});
+
+export type ContainerFileEntry = z.infer<typeof containerFileEntrySchema>;
+export type ContainerFileTree = z.infer<typeof containerFileTreeSchema>;
+
+const resourceFilesPath = (
+  projectID: string,
+  resourceKind: ContainerResourceKind,
+  resourceID: string
+) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/resources/${encodeURIComponent(resourceKind)}/${encodeURIComponent(resourceID)}/files`;
+
+export const fetchContainerFiles = async (
+  projectID: string,
+  resourceKind: ContainerResourceKind,
+  resourceID: string,
+  path: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ContainerFileTree> => {
+  const query = new URLSearchParams({ path });
+  const response = await fetcher(
+    `${resourceFilesPath(projectID, resourceKind, resourceID)}?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `container files request failed with ${response.status}`
+    );
+  }
+  return containerFileTreeSchema.parse(await response.json());
+};
+
+export const containerFileContentURL = (
+  projectID: string,
+  resourceKind: ContainerResourceKind,
+  resourceID: string,
+  path: string
+) => {
+  const query = new URLSearchParams({ path });
+  return `${resourceFilesPath(projectID, resourceKind, resourceID)}/content?${query.toString()}`;
+};
+
+export const uploadContainerFile = async (
+  projectID: string,
+  resourceKind: ContainerResourceKind,
+  resourceID: string,
+  path: string,
+  file: File,
+  fetcher: Fetcher = globalThis.fetch
+) => {
+  const response = await fetcher(
+    containerFileContentURL(projectID, resourceKind, resourceID, path),
+    { body: file, method: "PUT" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `container file upload failed with ${response.status}`
+    );
+  }
 };
 
 export const issueServerTerminalToken = async (
@@ -1301,6 +1687,26 @@ export const fetchResourceUsage = async (
     );
   }
   return resourceUsageSchema.parse(await response.json());
+};
+
+export const fetchResourceUsageHistory = async (
+  kind: ResourceUsageKind,
+  resourceID: string,
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ResourceUsageHistory> => {
+  const response = await fetcher(
+    `/api/v1/infrastructure/resources/${kind}/${encodeURIComponent(resourceID)}/usage/history?range=${range}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `resource usage history request failed with ${response.status}`
+    );
+  }
+  return resourceUsageHistorySchema.parse(await response.json());
 };
 
 export const applySelfUpdate = async (
@@ -1445,6 +1851,28 @@ export const fetchManagedRedisPersistence = async (
     );
   }
   return managedRedisPersistenceSchema.parse(await response.json());
+};
+
+export const fetchManagedRedisStats = async (
+  projectID: string,
+  redisID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedRedisStats> => {
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/stats`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis stats request failed with ${response.status}`
+    );
+  }
+  return managedRedisStatsSchema.parse(await response.json());
 };
 
 export const scanManagedRedisKeys = async (

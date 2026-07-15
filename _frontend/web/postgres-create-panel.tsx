@@ -6,6 +6,7 @@ import { createManagedPostgres, fetchManagedImageTags } from "@/api";
 import type { ManagedPostgres } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { postgresConnectionURL } from "@/connection-values";
 import { FormField } from "@/form-field";
 
 interface PostgresCreatePanelProperties {
@@ -75,9 +76,7 @@ export const PostgresCreatePanel = ({
     }
   };
 
-  const connectionURL = created
-    ? `postgres://${created.ownerUsername}:${created.ownerPassword ?? ""}@${created.hostname}:${created.port}/${created.databaseName}`
-    : "";
+  const connectionURL = created ? postgresConnectionURL(created) : "";
 
   return (
     <aside className="absolute inset-y-0 right-0 z-20 w-full max-w-md overflow-y-auto border-l border-border bg-background shadow-[-8px_0_24px_oklch(0_0_0/5%)]">
@@ -101,8 +100,8 @@ export const PostgresCreatePanel = ({
             PostgreSQL desired state created
           </div>
           <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-            Save this owner connection URL now. The password is not revealed
-            again.
+            The owner connection URL remains available from the PostgreSQL
+            overview.
           </p>
           <code className="mt-5 block bg-muted px-3 py-3 text-[10px] break-all select-all">
             {connectionURL}
@@ -119,7 +118,7 @@ export const PostgresCreatePanel = ({
             {copied ? "Copied" : "Copy connection URL"}
           </Button>
           <Button className="mt-3 w-full" onClick={onCreated}>
-            I saved the credentials
+            Open project
           </Button>
         </div>
       ) : (

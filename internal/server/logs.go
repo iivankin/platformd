@@ -19,6 +19,7 @@ import (
 
 type LogRepository interface {
 	ServiceLogs(context.Context, string, string, string, string, int) (containerlogs.Window, error)
+	ResourceLogs(context.Context, string, string, string, string, string, int) (containerlogs.Window, error)
 	ServiceLogRevision(context.Context, string, string, string, string) (string, error)
 	DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error)
 }
@@ -30,9 +31,40 @@ func registerLogRoutes(mux *http.ServeMux, hostname string, repository LogReposi
 		return errors.New("log stream hostname is required")
 	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", getServiceLogs(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{resourceID}/logs", getResourceLogs(repository, "redis"))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{resourceID}/logs", getResourceLogs(repository, "postgres"))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{resourceID}/logs", getResourceLogs(repository, "object_store"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/download", downloadServiceLogs(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/stream", streamServiceLogs(hostname, repository))
 	return nil
+}
+
+func getResourceLogs(repository LogRepository, kind string) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		limit, err := logLimit(request)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_limit", err.Error())
+			return
+		}
+		window, err := repository.ResourceLogs(
+			request.Context(), request.PathValue("projectID"), kind, request.PathValue("resourceID"),
+			request.URL.Query().Get("deploymentId"), request.URL.Query().Get("contains"), limit,
+		)
+		switch {
+		case err == nil:
+			writeJSON(response, http.StatusOK, window)
+		case errors.Is(err, state.ErrManagedRedisNotFound), errors.Is(err, state.ErrManagedPostgresNotFound), errors.Is(err, state.ErrObjectStoreNotFound):
+			writeAPIError(response, http.StatusNotFound, "resource_not_found", "Resource not found")
+		case errors.Is(err, containerlogs.ErrInvalidQuery):
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
+		default:
+			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read resource logs")
+		}
+	}
 }
 
 func downloadServiceLogs(repository LogRepository) http.HandlerFunc {
@@ -120,8 +152,15 @@ func getServiceLogs(repository LogRepository) http.HandlerFunc {
 
 type logStreamMessage struct {
 	Type      string                 `json:"type"`
-	Records   []containerlogs.Record `json:"records,omitempty"`
+	Records   []containerlogs.Record `json:"records"`
 	Truncated bool                   `json:"truncated,omitempty"`
+}
+
+func logStreamRecords(records []containerlogs.Record) []containerlogs.Record {
+	if records == nil {
+		return []containerlogs.Record{}
+	}
+	return records
 }
 
 func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFunc {
@@ -162,7 +201,9 @@ func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFu
 		}
 		defer connection.CloseNow()
 		ctx := connection.CloseRead(context.Background())
-		if err := writeLogMessage(ctx, connection, logStreamMessage{Type: "snapshot", Records: window.Records, Truncated: window.Truncated}); err != nil {
+		if err := writeLogMessage(ctx, connection, logStreamMessage{
+			Type: "snapshot", Records: logStreamRecords(window.Records), Truncated: window.Truncated,
+		}); err != nil {
 			return
 		}
 		seen := logFingerprints(window.Records)
@@ -198,7 +239,7 @@ func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFu
 				currentSeen := logFingerprints(current.Records)
 				newRecords, overlap := unseenLogRecords(current.Records, seen)
 				if len(seen) > 0 && !overlap && len(current.Records) > 0 {
-					if err := writeLogMessage(ctx, connection, logStreamMessage{Type: "gap"}); err != nil {
+					if err := writeLogMessage(ctx, connection, logStreamMessage{Type: "gap", Records: []containerlogs.Record{}}); err != nil {
 						return
 					}
 				}

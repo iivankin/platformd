@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"mime"
@@ -34,8 +35,13 @@ func registerServiceLifecycleRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config.services))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config))
-	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments", listServiceDeployments(config.services))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}", getServiceDeployment(config.services))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/deploy", deployServiceVersion(config))
+	if actions, ok := config.services.(ServiceDeploymentActionRepository); ok {
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/restart", restartServiceDeployment(config, actions))
+		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/remove", removeServiceDeployment(config, actions))
+	}
 }
 
 func getService(repository ServiceRepository) http.HandlerFunc {
@@ -138,10 +144,9 @@ func redeployService(config handlerConfig) http.HandlerFunc {
 	}
 }
 
-func rollbackService(config handlerConfig) http.HandlerFunc {
+func deployServiceVersion(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
-		DeploymentID      string `json:"deploymentId"`
-		ExpectedUpdatedAt int64  `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := access.IdentityFromContext(request.Context())
@@ -153,20 +158,68 @@ func rollbackService(config handlerConfig) http.HandlerFunc {
 		if !decodeServiceJSON(response, request, &body) {
 			return
 		}
-		if body.DeploymentID == "" || body.ExpectedUpdatedAt <= 0 {
-			writeAPIError(response, http.StatusBadRequest, "invalid_service_rollback", "deploymentId and expectedUpdatedAt are required")
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_deploy_version", "expectedUpdatedAt is required")
 			return
 		}
 		_, auditID, correlationID, err := createRequestIDs(config.now(), config.random)
 		if err != nil {
-			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate rollback identifiers")
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate deployment identifiers")
 			return
 		}
-		service, err := config.services.RollbackService(request.Context(), state.RollbackServiceInput{
-			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"), DeploymentID: body.DeploymentID,
+		service, err := config.services.DeployServiceVersion(request.Context(), state.DeployServiceVersionInput{
+			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"), DeploymentID: request.PathValue("deploymentID"),
 			ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
 			AuditEventID:          auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
+		})
+		if writeServiceMutationError(response, err) {
+			return
+		}
+		response.Header().Set("X-Request-ID", correlationID)
+		writeJSON(response, http.StatusOK, publicService(service))
+	}
+}
+
+func restartServiceDeployment(config handlerConfig, repository ServiceDeploymentActionRepository) http.HandlerFunc {
+	return serviceDeploymentAction(config, repository.RestartServiceDeployment)
+}
+
+func removeServiceDeployment(config handlerConfig, repository ServiceDeploymentActionRepository) http.HandlerFunc {
+	return serviceDeploymentAction(config, repository.RemoveServiceDeployment)
+}
+
+func serviceDeploymentAction(
+	config handlerConfig,
+	action func(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error),
+) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := access.IdentityFromContext(request.Context())
+		if !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		var body requestBody
+		if !decodeServiceJSON(response, request, &body) {
+			return
+		}
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_deployment_action", "expectedUpdatedAt is required")
+			return
+		}
+		_, auditID, correlationID, err := createRequestIDs(config.now(), config.random)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service action identifiers")
+			return
+		}
+		service, err := action(request.Context(), state.DeleteServiceDeploymentInput{
+			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
+			DeploymentID: request.PathValue("deploymentID"), ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
+			RequestCorrelationID: correlationID, CreatedAtMillis: config.now().UnixMilli(),
 		})
 		if writeServiceMutationError(response, err) {
 			return
@@ -216,6 +269,28 @@ func listServiceDeployments(repository ServiceRepository) http.HandlerFunc {
 	}
 }
 
+func getServiceDeployment(repository ServiceRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		deployment, err := repository.ServiceDeployment(
+			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"), request.PathValue("deploymentID"),
+		)
+		switch {
+		case err == nil:
+			writeJSON(response, http.StatusOK, publicDeployment(deployment))
+		case errors.Is(err, state.ErrServiceNotFound):
+			writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
+		case errors.Is(err, state.ErrDeploymentNotFound):
+			writeAPIError(response, http.StatusNotFound, "deployment_not_found", "Deployment not found for this service")
+		default:
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load deployment")
+		}
+	}
+}
+
 func decodeServiceJSON(response http.ResponseWriter, request *http.Request, destination any) bool {
 	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
 	if err != nil || mediaType != "application/json" {
@@ -246,7 +321,9 @@ func writeServiceMutationError(response http.ResponseWriter, err error) bool {
 	case errors.Is(err, state.ErrDeploymentNotFound):
 		writeAPIError(response, http.StatusNotFound, "deployment_not_found", "Deployment not found for this service")
 	case errors.Is(err, state.ErrDeploymentNotSuccess):
-		writeAPIError(response, http.StatusConflict, "deployment_not_successful", "Only successful deployments can be rolled back")
+		writeAPIError(response, http.StatusConflict, "deployment_not_deployable", "This deployment cannot be deployed again")
+	case errors.Is(err, state.ErrDeploymentIsActive):
+		writeAPIError(response, http.StatusConflict, "deployment_is_active", "The current deployment must be stopped instead of deleted from history")
 	case errors.Is(err, state.ErrServiceDisabled):
 		writeAPIError(response, http.StatusConflict, "service_disabled", "Disabled service cannot be redeployed")
 	case errors.Is(err, state.ErrImageCredentialHostMismatch):

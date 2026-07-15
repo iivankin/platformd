@@ -34,6 +34,17 @@ type ControllerStore interface {
 	SwitchManagedPostgresVolume(context.Context, state.SwitchManagedPostgresVolume) error
 }
 
+type DeploymentStore interface {
+	BeginRuntimeDeployment(context.Context, state.RuntimeDeployment) error
+	ActivateRuntimeDeployment(context.Context, string, string, string, int64) error
+	FailRuntimeDeployment(context.Context, string, string, string, int64) error
+	StopRuntimeDeployment(context.Context, string, string, string, int64) error
+	DeleteRuntimeDeployment(context.Context, string, string, string) error
+	RestartRuntimeDeployment(context.Context, string, string, string) error
+	ActiveRuntimeDeployment(context.Context, string, string) (state.RuntimeDeployment, error)
+	RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
+}
+
 type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
 	InspectImage(context.Context, string) (containerengine.Image, error)
@@ -74,6 +85,7 @@ type Publisher interface {
 
 type ControllerConfig struct {
 	Store             ControllerStore
+	Deployments       DeploymentStore
 	Engine            Engine
 	Publisher         Publisher
 	Growth            GrowthGate
@@ -98,10 +110,12 @@ type activeRuntime struct {
 	resource  state.ManagedPostgres
 	container containerengine.Container
 	network   string
+	runtimeID string
 }
 
 type Controller struct {
 	store             ControllerStore
+	deployments       DeploymentStore
 	engine            Engine
 	publisher         Publisher
 	growth            GrowthGate
@@ -163,7 +177,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
+		store: config.Store, deployments: config.Deployments, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		ownerPassword: config.OwnerPassword, bootstrapPassword: config.BootstrapPassword,
 		placement: config.Placement, dial: dial, volumeRoot: config.VolumeRoot,
 		logRoot: config.LogRoot, logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -172,7 +186,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 	}, nil
 }
 
-func (controller *Controller) Start(ctx context.Context, resourceID string) error {
+func (controller *Controller) Start(ctx context.Context, resourceID string) (resultErr error) {
 	lease, err := controller.admission.Begin("postgres_start", resourceID)
 	if err != nil {
 		return err
@@ -187,6 +201,20 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	resource, err := controller.store.ManagedPostgres(ctx, resourceID)
 	if err != nil {
 		return err
+	}
+	runtimeID, stopped, err := controller.prepareRuntimeDeployment(ctx, resource)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		return nil
+	}
+	if controller.deployments != nil {
+		defer func() {
+			if resultErr != nil {
+				resultErr = errors.Join(resultErr, controller.recordDeploymentFailure(runtimeID, "start_failed", resultErr.Error()))
+			}
+		}()
 	}
 	ownerPassword, err := controller.ownerPassword(resource)
 	if err != nil {
@@ -208,7 +236,7 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err != nil {
 		return err
 	}
-	container, err := controller.createContainer(ctx, resource, image.ID, placement, volume, bootstrapPassword)
+	container, err := controller.createContainerAttempt(ctx, resource, runtimeID, image.ID, placement, volume, bootstrapPassword)
 	if err != nil {
 		return err
 	}
@@ -228,7 +256,12 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err := controller.publisher.PublishPostgres(resource, ready); err != nil {
 		return fmt.Errorf("publish managed PostgreSQL: %w", err)
 	}
-	controller.setActive(resource.ID, activeRuntime{resource: resource, container: ready, network: placement.NetworkName})
+	if controller.deployments != nil {
+		if err := controller.deployments.ActivateRuntimeDeployment(ctx, "postgres", resource.ID, runtimeID, controller.now().UnixMilli()); err != nil {
+			return errors.Join(fmt.Errorf("activate managed PostgreSQL deployment: %w", err), controller.publisher.WithdrawPostgres(resource))
+		}
+	}
+	controller.setActive(resource.ID, activeRuntime{resource: resource, container: ready, network: placement.NetworkName, runtimeID: runtimeID})
 	remove = false
 	return nil
 }
@@ -237,6 +270,10 @@ func (controller *Controller) Stop(ctx context.Context, resourceID string) error
 	lock := controller.resourceLock(resourceID)
 	lock.Lock()
 	defer lock.Unlock()
+	return controller.stopLocked(ctx, resourceID)
+}
+
+func (controller *Controller) stopLocked(ctx context.Context, resourceID string) error {
 	active, ok := controller.activeRuntime(resourceID)
 	if !ok {
 		return nil
@@ -401,7 +438,7 @@ func (controller *Controller) createContainerAttempt(
 	if err != nil {
 		return containerengine.Container{}, err
 	}
-	logPath := filepath.Join(controller.logRoot, "postgres", resource.ID, attemptID+".log")
+	logPath := filepath.Join(controller.logRoot, "postgres", resource.ID, runtimeID, attemptID+".log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return containerengine.Container{}, err
 	}

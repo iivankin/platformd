@@ -19,7 +19,7 @@ func addRegistryPaths(paths map[string]any) {
 
 func registryCollectionOperation() map[string]any {
 	operation := registryReadOperation("List embedded Registry repositories and storage statistics")
-	operation["post"] = registryWriteMethod("Create a Registry repository and return its initial credential once (unbound admin token)", http.StatusCreated, "RegistryRepositoryCreateRequest")
+	operation["post"] = registryWriteMethod("Create a Registry repository with a persistent initial credential (unbound admin token)", http.StatusCreated, "RegistryRepositoryCreateRequest")
 	return operation
 }
 
@@ -30,8 +30,8 @@ func registryRepositoryOperation() map[string]any {
 }
 
 func registryCredentialCollectionOperation() map[string]any {
-	operation := registryReadOperation("List Registry credentials without secret material")
-	operation["post"] = registryWriteMethod("Create a Registry credential and return its secret once (unbound admin token)", http.StatusCreated, "RegistryCredentialCreateRequest")
+	operation := registryReadOperation("List Registry credentials and their available persistent secrets")
+	operation["post"] = registryWriteMethod("Create a Registry credential with a persistent secret (unbound admin token)", http.StatusCreated, "RegistryCredentialCreateRequest")
 	return operation
 }
 

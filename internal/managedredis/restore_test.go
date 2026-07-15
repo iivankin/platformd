@@ -167,7 +167,7 @@ func TestRestoreReplacePublishesValidatedCandidateAndDeletesOldVolume(t *testing
 	}
 	spec := fixture.engine.created[0]
 	if spec.Name != "platformd-redis-runtime-id" || spec.Labels["io.platformd.redis-id"] != "redis-id" ||
-		!strings.HasSuffix(spec.LogPath, "/redis/redis-id/attempt-id.log") {
+		!strings.HasSuffix(spec.LogPath, "/redis/redis-id/runtime-id/attempt-id.log") {
 		t.Fatalf("candidate identity/profile = %+v", spec)
 	}
 	if !reflect.DeepEqual(fixture.publisher.events, []string{"withdraw:redis-id", "publish:" + candidateID}) {

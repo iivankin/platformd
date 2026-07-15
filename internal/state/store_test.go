@@ -34,15 +34,15 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 {
+	if version != 6 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int
-	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'registry_manifests', 'registry_tags', 'registry_uploads', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'runtime_deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'registry_manifests', 'registry_tags', 'registry_uploads', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount != 11 {
-		t.Fatalf("core table count = %d, want 11", tableCount)
+	if tableCount != 12 {
+		t.Fatalf("core table count = %d, want 12", tableCount)
 	}
 }
 
@@ -177,8 +177,61 @@ SELECT count(*) FROM sqlite_schema
 WHERE type = 'table' AND name IN ('registry_manifests', 'registry_tags', 'registry_uploads')`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if version != 2 || tables != 3 {
+	if version != 6 || tables != 3 {
 		t.Fatalf("migrated version/tables = %d/%d", version, tables)
+	}
+}
+
+func TestOpenPreservesLegacyRegistryCredentialDuringVersionThreeMigration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "platformd.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.Exec(`
+CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
+CREATE TABLE registry_repositories(id TEXT PRIMARY KEY) STRICT;
+CREATE TABLE registry_credentials(
+  id TEXT PRIMARY KEY,
+  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  permission TEXT NOT NULL,
+  secret_hmac BLOB NOT NULL,
+  created_at INTEGER NOT NULL,
+  last_used_at INTEGER
+) STRICT;
+INSERT INTO registry_repositories(id) VALUES ('repository');
+INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, created_at)
+VALUES ('credential', 'repository', 'legacy', 'pull', zeroblob(32), 1);
+INSERT INTO schema_migrations(version, applied_at) VALUES (2, 1);
+PRAGMA user_version = 2;`)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := state.Open(context.Background(), path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var version int
+	var verifier, encrypted []byte
+	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QueryRowContext(context.Background(), `
+SELECT secret_hmac, secret_encrypted FROM registry_credentials WHERE id = 'credential'`).Scan(&verifier, &encrypted); err != nil {
+		t.Fatal(err)
+	}
+	if version != 6 || len(verifier) != 32 || len(encrypted) != 0 {
+		t.Fatalf("migrated legacy credential = version %d, verifier %d bytes, encrypted %d bytes", version, len(verifier), len(encrypted))
 	}
 }
 

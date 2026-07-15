@@ -3,6 +3,7 @@ package server_test
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -19,6 +20,31 @@ import (
 	"github.com/iivankin/platformd/internal/server"
 )
 
+func TestServiceLogWebSocketEmptySnapshotContainsRecordsArray(t *testing.T) {
+	t.Parallel()
+
+	repository := &liveLogRepository{}
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
+	tlsServer := httptest.NewTLSServer(access.ProtectAdmin("admin.example.com", projectVerifier{}, direct))
+	defer tlsServer.Close()
+
+	connection, response, err := websocket.Dial(context.Background(), "wss://admin.example.com/api/v1/projects/project/services/service/logs/stream", logDialOptions(tlsServer, "https://admin.example.com"))
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial status %d: %v", response.StatusCode, err)
+		}
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	var snapshot struct {
+		Type    string          `json:"type"`
+		Records json.RawMessage `json:"records"`
+	}
+	if err := wsjson.Read(context.Background(), connection, &snapshot); err != nil || snapshot.Type != "snapshot" || string(snapshot.Records) != "[]" {
+		t.Fatalf("empty snapshot = type %q records %s, %v", snapshot.Type, snapshot.Records, err)
+	}
+}
+
 type liveLogRepository struct {
 	mu       sync.Mutex
 	records  []containerlogs.Record
@@ -28,6 +54,10 @@ type liveLogRepository struct {
 
 func (*liveLogRepository) DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error) {
 	return containerlogs.DownloadResult{}, nil
+}
+
+func (*liveLogRepository) ResourceLogs(context.Context, string, string, string, string, string, int) (containerlogs.Window, error) {
+	return containerlogs.Window{}, nil
 }
 
 func (repository *liveLogRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {

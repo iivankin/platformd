@@ -48,6 +48,7 @@ CREATE TABLE registry_credentials (
   name TEXT NOT NULL,
   permission TEXT NOT NULL CHECK (permission IN ('pull', 'pull_push')),
   secret_hmac BLOB NOT NULL,
+  secret_encrypted BLOB,
   created_at INTEGER NOT NULL,
   last_used_at INTEGER,
   UNIQUE (repository_id, name)
@@ -136,6 +137,18 @@ CREATE TABLE service_secret_refs (
   PRIMARY KEY (service_id, environment_name)
 ) WITHOUT ROWID, STRICT;
 
+CREATE TABLE service_resource_variable_refs (
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  environment_name TEXT NOT NULL,
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis', 'object_store')),
+  resource_id TEXT NOT NULL,
+  output_name TEXT NOT NULL,
+  PRIMARY KEY (service_id, environment_name)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX service_resource_variable_refs_target_idx
+  ON service_resource_variable_refs(resource_kind, resource_id);
+
 CREATE TABLE volumes (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -170,6 +183,25 @@ CREATE TABLE deployments (
 
 CREATE INDEX deployments_service_created_idx ON deployments(service_id, created_at DESC);
 CREATE INDEX deployments_retry_pair_idx ON deployments(service_id, service_config_hash, image_digest, created_at DESC);
+
+CREATE TABLE runtime_deployments (
+  id TEXT PRIMARY KEY,
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('postgres', 'redis')),
+  resource_id TEXT NOT NULL,
+  image_tag TEXT NOT NULL,
+  image_digest TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'interrupted', 'removed')),
+  active INTEGER NOT NULL DEFAULT 0 CHECK (active IN (0, 1)),
+  error_code TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER
+) STRICT;
+
+CREATE INDEX runtime_deployments_resource_created_idx
+  ON runtime_deployments(resource_kind, resource_id, created_at DESC);
+CREATE UNIQUE INDEX runtime_deployments_active_idx
+  ON runtime_deployments(resource_kind, resource_id) WHERE active = 1;
 
 CREATE TABLE service_domains (
   hostname TEXT PRIMARY KEY,
@@ -353,7 +385,22 @@ CREATE TABLE audit_events (
 
 CREATE INDEX audit_events_created_idx ON audit_events(created_at DESC);
 
-INSERT INTO schema_migrations(version, applied_at)
-VALUES (2, unixepoch('subsec') * 1000);
+CREATE TABLE resource_metric_samples (
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis')),
+  resource_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  cpu_usage_micros INTEGER NOT NULL CHECK (cpu_usage_micros >= 0),
+  memory_bytes INTEGER NOT NULL CHECK (memory_bytes >= 0),
+  network_rx_bytes INTEGER CHECK (network_rx_bytes IS NULL OR network_rx_bytes >= 0),
+  network_tx_bytes INTEGER CHECK (network_tx_bytes IS NULL OR network_tx_bytes >= 0),
+  running INTEGER NOT NULL CHECK (running IN (0, 1)),
+  PRIMARY KEY (resource_kind, resource_id, observed_at)
+) WITHOUT ROWID, STRICT;
 
-PRAGMA user_version = 2;
+CREATE INDEX resource_metric_samples_retention_idx
+  ON resource_metric_samples(observed_at);
+
+INSERT INTO schema_migrations(version, applied_at)
+VALUES (6, unixepoch('subsec') * 1000);
+
+PRAGMA user_version = 6;

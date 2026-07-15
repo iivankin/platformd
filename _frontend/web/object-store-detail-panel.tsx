@@ -1,4 +1,4 @@
-import { HardDrive, RefreshCw, Search, X } from "lucide-react";
+import { RefreshCw, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -17,6 +17,11 @@ import type {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ConnectionDetails } from "@/connection-details";
+import {
+  objectStoreConfiguration,
+  objectStoreEndpoint,
+} from "@/connection-values";
 import {
   ObjectStorePreviewPane,
   ObjectStoreTable,
@@ -24,12 +29,21 @@ import {
 } from "@/object-store-browser";
 import type { ResourceNodeData } from "@/project-flow";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
+import { ResourceLogs } from "@/resource-logs";
+import { ResourceVariables } from "@/resource-variables";
+
+export type ObjectStoreWorkspaceView =
+  | "backups"
+  | "logs"
+  | "objects"
+  | "settings"
+  | "variables";
 
 interface ObjectStoreDetailPanelProperties {
   data: ResourceNodeData;
-  onClose: () => void;
   projectID: string;
   storeID: string;
+  view: ObjectStoreWorkspaceView;
 }
 
 const errorText = (error: unknown, fallback: string) =>
@@ -37,9 +51,9 @@ const errorText = (error: unknown, fallback: string) =>
 
 export const ObjectStoreDetailPanel = ({
   data,
-  onClose,
   projectID,
   storeID,
+  view,
 }: ObjectStoreDetailPanelProperties) => {
   const [resource, setResource] = useState<ObjectStore | null>(null);
   const [page, setPage] = useState<ObjectPage | null>(null);
@@ -180,112 +194,150 @@ export const ObjectStoreDetailPanel = ({
     clearSelection();
   };
 
-  const endpoint = resource?.publicHostname
-    ? `https://${resource.publicHostname}`
-    : `http://${resource?.internalHostname ?? data.internalHostname}:9000`;
+  const endpoint = resource
+    ? objectStoreEndpoint(resource)
+    : `http://${data.internalHostname}:9000`;
 
   return (
-    <aside className="absolute inset-y-0 right-0 z-20 flex w-full max-w-6xl flex-col border-l border-border bg-background shadow-[-8px_0_24px_oklch(0_0_0/5%)]">
-      <div className="flex h-12 shrink-0 items-center border-b border-border px-4">
-        <HardDrive className="size-4 text-muted-foreground" />
-        <div className="ml-2 min-w-0">
-          <h2 className="truncate text-xs font-medium">{data.name}</h2>
-          <p className="truncate text-[9px] text-muted-foreground">
-            {resource?.bucketName ?? data.bucketName}
-          </p>
-        </div>
-        <Button
-          aria-label="Refresh object list"
-          className="ml-auto"
-          onClick={() => setRefreshVersion((value) => value + 1)}
-          size="icon"
-          variant="ghost"
-        >
-          <RefreshCw />
-        </Button>
-        <Button
-          aria-label="Close object storage workspace"
-          onClick={onClose}
-          size="icon"
-          variant="ghost"
-        >
-          <X />
-        </Button>
-      </div>
+    <div>
+      {view === "settings" ? (
+        <>
+          <div className="grid shrink-0 grid-cols-3 border-b border-border text-[10px]">
+            <div className="border-r border-border px-4 py-3">
+              <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                Endpoint
+              </p>
+              <p className="mt-1 truncate" title={endpoint}>
+                {endpoint}
+              </p>
+            </div>
+            <div className="border-r border-border px-4 py-3">
+              <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                Region
+              </p>
+              <p className="mt-1">{resource?.region ?? "us-east-1"}</p>
+            </div>
+            <div className="px-4 py-3">
+              <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                Access
+              </p>
+              <p className="mt-1">
+                {resource?.publicHostname
+                  ? "Public + internal"
+                  : "Internal only"}
+              </p>
+            </div>
+          </div>
+          {resource ? (
+            <ConnectionDetails
+              description="S3 configuration remains available in this storage workspace."
+              rows={[
+                { label: "Endpoint", value: endpoint },
+                { label: "Bucket", value: resource.bucketName },
+                { label: "Access key", value: resource.accessKey },
+                { label: "Secret key", value: resource.secret },
+                {
+                  label: "Configuration",
+                  value: objectStoreConfiguration(resource),
+                },
+              ]}
+            />
+          ) : null}
+        </>
+      ) : null}
 
-      <div className="grid shrink-0 grid-cols-3 border-b border-border text-[10px]">
-        <div className="border-r border-border px-4 py-3">
-          <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-            Endpoint
-          </p>
-          <p className="mt-1 truncate" title={endpoint}>
-            {endpoint}
-          </p>
-        </div>
-        <div className="border-r border-border px-4 py-3">
-          <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-            Region
-          </p>
-          <p className="mt-1">{resource?.region ?? "us-east-1"}</p>
-        </div>
-        <div className="px-4 py-3">
-          <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-            Access
-          </p>
-          <p className="mt-1">
-            {resource?.publicHostname ? "Public + internal" : "Internal only"}
-          </p>
-        </div>
-      </div>
+      {view === "variables" && resource ? (
+        <ResourceVariables
+          description="Reference these outputs from a service Variables tab. Values remain available here."
+          variables={[
+            { name: "S3_ENDPOINT", value: endpoint },
+            { name: "S3_REGION", value: resource.region },
+            { name: "S3_BUCKET", value: resource.bucketName },
+            { name: "S3_ACCESS_KEY_ID", value: resource.accessKey },
+            { name: "S3_SECRET_ACCESS_KEY", value: resource.secret },
+          ]}
+        />
+      ) : null}
 
-      <div className="max-h-[45vh] shrink-0 overflow-y-auto">
+      {view === "backups" ? (
         <ResourceBackupPanel resourceID={storeID} resourceKind="object_store" />
-      </div>
+      ) : null}
 
-      <ObjectStoreUploadBar
-        busy={busy}
-        onUpload={submitUpload}
-        prefix={prefix}
-      />
-
-      <form
-        className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2"
-        onSubmit={applyPrefix}
-      >
-        <Search className="size-3.5 text-muted-foreground" />
-        <Input
-          aria-label="Object key prefix"
-          className="h-7 border-0 px-1 focus-visible:ring-0"
-          onChange={(event) => setPrefixInput(event.target.value)}
-          placeholder="Filter by exact key prefix"
-          value={prefixInput}
-        />
-        <Button size="sm" type="submit" variant="ghost">
-          Apply
-        </Button>
-      </form>
-
-      <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,3fr)_minmax(20rem,2fr)]">
-        <ObjectStoreTable
-          canGoBack={tokenHistory.length > 0}
-          onNext={nextPage}
-          onPrevious={previousPage}
-          onSelect={selectObject}
-          page={page}
-          selectedKey={selected?.objectKey}
-        />
-        <div className="min-h-0 overflow-auto">
-          <ObjectStorePreviewPane
+      {view === "objects" ? (
+        <>
+          <section className="flex min-h-14 items-center justify-between border-b border-border px-4 py-3">
+            <div>
+              <h3 className="text-[10px] font-medium">Object browser</h3>
+              <p className="mt-1 text-[9px] text-muted-foreground">
+                Upload, inspect, and delete objects in this bucket.
+              </p>
+            </div>
+            <Button
+              aria-label="Refresh object list"
+              onClick={() => setRefreshVersion((value) => value + 1)}
+              size="icon"
+              variant="ghost"
+            >
+              <RefreshCw />
+            </Button>
+          </section>
+          <ObjectStoreUploadBar
             busy={busy}
-            key={selected?.objectKey ?? "empty"}
-            onDelete={removeSelected}
-            preview={preview}
-            projectID={projectID}
-            selected={selected}
-            storeID={storeID}
+            onUpload={submitUpload}
+            prefix={prefix}
           />
-        </div>
-      </div>
+
+          <form
+            className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2"
+            onSubmit={applyPrefix}
+          >
+            <Search className="size-3.5 text-muted-foreground" />
+            <Input
+              aria-label="Object key prefix"
+              className="h-7 border-0 px-1 focus-visible:ring-0"
+              onChange={(event) => setPrefixInput(event.target.value)}
+              placeholder="Filter by exact key prefix"
+              value={prefixInput}
+            />
+            <Button size="sm" type="submit" variant="ghost">
+              Apply
+            </Button>
+          </form>
+
+          <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,3fr)_minmax(20rem,2fr)]">
+            <ObjectStoreTable
+              canGoBack={tokenHistory.length > 0}
+              onNext={nextPage}
+              onPrevious={previousPage}
+              onSelect={selectObject}
+              page={page}
+              selectedKey={selected?.objectKey}
+            />
+            <div className="min-h-0 overflow-auto">
+              <ObjectStorePreviewPane
+                busy={busy}
+                key={selected?.objectKey ?? "empty"}
+                onDelete={removeSelected}
+                preview={preview}
+                projectID={projectID}
+                selected={selected}
+                storeID={storeID}
+              />
+            </div>
+          </div>
+        </>
+      ) : null}
+
+      {view === "logs" ? (
+        <ResourceLogs
+          description="Audited storage activity, refreshed every two seconds."
+          kind="object_store"
+          projectID={projectID}
+          resourceID={storeID}
+          title="Storage activity logs"
+        />
+      ) : null}
+
       {error ? (
         <p
           aria-live="polite"
@@ -294,6 +346,6 @@ export const ObjectStoreDetailPanel = ({
           {error}
         </p>
       ) : null}
-    </aside>
+    </div>
   );
 };

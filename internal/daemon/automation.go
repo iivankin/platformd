@@ -77,7 +77,7 @@ func (repository liveAutomationRepository) UpdateService(ctx context.Context, in
 }
 
 func (repository liveAutomationRepository) RollbackService(ctx context.Context, input state.RollbackServiceInput) (state.ServiceDesired, error) {
-	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).RollbackService(ctx, input)
+	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).DeployServiceVersion(ctx, input)
 }
 
 func (repository liveAutomationRepository) RedeployService(ctx context.Context, input state.RedeployServiceInput) (state.ServiceDesired, error) {

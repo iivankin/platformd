@@ -102,7 +102,7 @@ func projectCollectionOperation() map[string]any {
 
 func objectStoreCollectionOperation() map[string]any {
 	operation := readOperation("List private S3 resources in one visible project")
-	operation["post"] = writeMethod("Create a private S3 resource and return its credential once (admin token)", http.StatusCreated, "ObjectStoreCreateRequest")
+	operation["post"] = writeMethod("Create a private S3 resource with persistent connection credentials (admin token)", http.StatusCreated, "ObjectStoreCreateRequest")
 	return operation
 }
 
@@ -268,13 +268,13 @@ func serverExecOperation() map[string]any {
 
 func managedPostgresOperation() map[string]any {
 	operation := readOperation("List managed PostgreSQL resources in one visible project")
-	operation["post"] = writeMethod("Create managed PostgreSQL from an official image tag and return its owner password once (admin token)", http.StatusCreated, "ManagedPostgresCreateRequest")
+	operation["post"] = writeMethod("Create managed PostgreSQL with a persistent owner password (admin token)", http.StatusCreated, "ManagedPostgresCreateRequest")
 	return operation
 }
 
 func managedRedisOperation() map[string]any {
 	operation := readOperation("List managed Redis resources in one visible project")
-	operation["post"] = writeMethod("Create managed Redis from an official image tag and return its password once (admin token)", http.StatusCreated, "ManagedRedisCreateRequest")
+	operation["post"] = writeMethod("Create managed Redis with a persistent password (admin token)", http.StatusCreated, "ManagedRedisCreateRequest")
 	return operation
 }
 
@@ -358,6 +358,15 @@ func serviceMutationSchemas() map[string]any {
 			"command":           map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"args":              map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"environment":       map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"resourceReferences": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "required": []string{"environmentName", "resourceKind", "resourceId", "outputName"},
+				"properties": map[string]any{
+					"environmentName": map[string]string{"type": "string"},
+					"resourceKind":    map[string]any{"type": "string", "enum": []string{"service", "postgres", "redis", "object_store"}},
+					"resourceId":      map[string]string{"type": "string"},
+					"outputName":      map[string]string{"type": "string"},
+				},
+			}},
 			"secretReferences": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "required": []string{"environmentName", "secretId"},
 				"properties": map[string]any{"environmentName": map[string]string{"type": "string"}, "secretId": map[string]string{"type": "string"}},

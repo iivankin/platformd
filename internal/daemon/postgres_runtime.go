@@ -18,7 +18,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedpostgres.NewController(managedpostgres.ControllerConfig{
-		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
+		Store: store, Deployments: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
 		OwnerPassword: func(resource state.ManagedPostgres) (string, error) {
 			return managedpostgres.OpenOwnerPassword(master, resource.ID, resource.OwnerPasswordEncrypted)
 		},
@@ -241,6 +241,42 @@ func (stack *runtimeStack) StartManagedPostgres(ctx context.Context, resourceID 
 		stack.postgresFailures[resourceID] = err
 	}
 	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) RestartManagedPostgresDeployment(ctx context.Context, resourceID, deploymentID string) error {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed PostgreSQL runtime is not ready")
+	}
+	err := controller.RestartDeployment(ctx, resourceID, deploymentID)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.postgresFailures, resourceID)
+	} else {
+		stack.postgresFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) RemoveManagedPostgresDeployment(ctx context.Context, resourceID, deploymentID string) error {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed PostgreSQL runtime is not ready")
+	}
+	err := controller.RemoveDeployment(ctx, resourceID, deploymentID)
+	if err == nil {
+		stack.mu.Lock()
+		delete(stack.postgresFailures, resourceID)
+		stack.mu.Unlock()
+	}
 	return err
 }
 

@@ -5,6 +5,7 @@ package containerengine
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -163,6 +164,26 @@ func (e *Engine) InspectContainer(id string) (Container, error) {
 		return Container{}, err
 	}
 	return e.publicContainer(container)
+}
+
+func (e *Engine) ContainerNetworkCounters(id string) (NetworkCounters, error) {
+	container, err := e.lookupContainer(id)
+	if err != nil {
+		return NetworkCounters{}, err
+	}
+	stats, err := container.GetContainerStats(nil)
+	if err != nil {
+		return NetworkCounters{}, fmt.Errorf("read container %s network stats: %w", id, err)
+	}
+	var counters NetworkCounters
+	for _, network := range stats.Network {
+		if counters.RXBytes > ^uint64(0)-network.RxBytes || counters.TXBytes > ^uint64(0)-network.TxBytes {
+			return NetworkCounters{}, errors.New("container network counters overflow")
+		}
+		counters.RXBytes += network.RxBytes
+		counters.TXBytes += network.TxBytes
+	}
+	return counters, nil
 }
 
 func (e *Engine) ExecContainer(ctx context.Context, id string, request ExecRequest) (int, error) {

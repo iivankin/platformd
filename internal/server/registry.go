@@ -54,13 +54,14 @@ type registryImageResponse struct {
 }
 
 type registryCredentialResponse struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	Permission string `json:"permission"`
-	CreatedAt  int64  `json:"createdAt"`
-	LastUsedAt int64  `json:"lastUsedAt,omitempty"`
-	Username   string `json:"username,omitempty"`
-	Secret     string `json:"secret,omitempty"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Permission      string `json:"permission"`
+	CreatedAt       int64  `json:"createdAt"`
+	LastUsedAt      int64  `json:"lastUsedAt,omitempty"`
+	Username        string `json:"username"`
+	Secret          string `json:"secret,omitempty"`
+	SecretAvailable bool   `json:"secretAvailable"`
 }
 
 func registerRegistryRoutes(mux *http.ServeMux, config handlerConfig) {
@@ -145,13 +146,13 @@ func listRegistryCredentials(application *registry.Application) http.HandlerFunc
 		if _, ok := requireAccessIdentity(response, request); !ok {
 			return
 		}
-		credentials, err := application.Credentials(request.Context(), request.PathValue("repositoryID"))
+		credentials, err := application.CredentialDetails(request.Context(), request.PathValue("repositoryID"))
 		if writeRegistryAdminError(response, err) {
 			return
 		}
 		result := make([]registryCredentialResponse, 0, len(credentials))
 		for _, credential := range credentials {
-			result = append(result, publicRegistryCredential(credential, registry.CreateCredentialResult{}))
+			result = append(result, publicRegistryCredential(credential))
 		}
 		writeJSON(response, http.StatusOK, map[string]any{"credentials": result})
 	}
@@ -179,7 +180,9 @@ func createRegistryCredential(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		response.Header().Set("X-Request-ID", result.RequestID)
-		writeJSON(response, http.StatusCreated, publicRegistryCredential(result.Credential, result))
+		writeJSON(response, http.StatusCreated, publicRegistryCredential(registry.CredentialDetails{
+			Credential: result.Credential, Username: result.Username, Secret: result.Secret, SecretAvailable: true,
+		}))
 	}
 }
 
@@ -466,11 +469,12 @@ func publicRegistryImage(image registry.Image, includeManifest bool) registryIma
 	return result
 }
 
-func publicRegistryCredential(credential state.RegistryCredential, created registry.CreateCredentialResult) registryCredentialResponse {
+func publicRegistryCredential(details registry.CredentialDetails) registryCredentialResponse {
+	credential := details.Credential
 	return registryCredentialResponse{
 		ID: credential.ID, Name: credential.Name, Permission: credential.Permission,
 		CreatedAt: credential.CreatedAtMillis, LastUsedAt: credential.LastUsedAtMillis,
-		Username: created.Username, Secret: created.Secret,
+		Username: details.Username, Secret: details.Secret, SecretAvailable: details.SecretAvailable,
 	}
 }
 

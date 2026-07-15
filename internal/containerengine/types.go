@@ -72,6 +72,11 @@ type Container struct {
 	IPs       map[string][]string
 }
 
+type NetworkCounters struct {
+	RXBytes uint64
+	TXBytes uint64
+}
+
 type ExecRequest struct {
 	Command     []string
 	Environment map[string]string
@@ -96,4 +101,12 @@ type TerminalExecRequest struct {
 	Output      io.Writer
 	InitialSize TerminalSize
 	Resizes     <-chan TerminalSize
+}
+
+type ContainerFileEntry struct {
+	Path       string    `json:"path"`
+	Directory  bool      `json:"directory"`
+	SizeBytes  int64     `json:"sizeBytes"`
+	Mode       uint32    `json:"mode"`
+	ModifiedAt time.Time `json:"modifiedAt"`
 }

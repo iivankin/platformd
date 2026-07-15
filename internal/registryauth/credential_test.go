@@ -28,4 +28,15 @@ func TestRegistryCredentialRoundTripAndVerifierScope(t *testing.T) {
 	if !Verify(master, "repository", credentialID, secret, verifier) || Verify(master, "other", credentialID, secret, verifier) || Verify(master, "repository", credentialID, "wrong", verifier) {
 		t.Fatal("registry credential verifier scope is incorrect")
 	}
+	encrypted, err := SealSecret(master, "repository", credentialID, secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	opened, err := OpenSecret(master, "repository", credentialID, encrypted)
+	if err != nil || opened != secret {
+		t.Fatalf("opened secret = %q, %v", opened, err)
+	}
+	if _, err := OpenSecret(master, "other", credentialID, encrypted); err == nil {
+		t.Fatal("registry credential encryption was not scoped to its repository")
+	}
 }

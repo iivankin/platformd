@@ -141,7 +141,7 @@ export const BackupResourceDetails = ({
   retentionCount,
   selected,
 }: BackupResourceDetailsProperties) => (
-  <div className="border-t border-border bg-muted/10">
+  <div>
     <div className="grid border-b border-border md:grid-cols-[9rem_minmax(16rem,1fr)_10rem_auto]">
       <div className="border-b border-border px-5 py-4 md:border-r md:border-b-0">
         <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">

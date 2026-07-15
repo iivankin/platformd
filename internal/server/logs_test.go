@@ -16,6 +16,8 @@ import (
 
 type logRepository struct {
 	calls         int
+	resourceCalls int
+	resourceKind  string
 	downloadCalls int
 	downloadQuery containerlogs.DownloadQuery
 }
@@ -33,6 +35,15 @@ func (repository *logRepository) ServiceLogs(context.Context, string, string, st
 	return containerlogs.Window{Records: []containerlogs.Record{{
 		Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "ready",
 		DeploymentID: "deployment", AttemptID: "attempt",
+	}}}, nil
+}
+
+func (repository *logRepository) ResourceLogs(_ context.Context, _, kind, _, _, _ string, _ int) (containerlogs.Window, error) {
+	repository.resourceCalls++
+	repository.resourceKind = kind
+	return containerlogs.Window{Records: []containerlogs.Record{{
+		Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "resource ready",
+		DeploymentID: "resource", AttemptID: "attempt",
 	}}}, nil
 }
 
@@ -81,5 +92,24 @@ func TestAdminServiceLogsRequireAccessAndReturnStructuredWindow(t *testing.T) {
 	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready", ""))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stream":"stdout"`) || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.calls != 1 {
 		t.Fatalf("authenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.calls)
+	}
+}
+
+func TestAdminManagedResourceLogsRequireAccessAndUseScopedKind(t *testing.T) {
+	repository := &logRepository{}
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
+	path := "/api/v1/projects/project/postgres/database/logs?limit=20&contains=ready"
+	response := httptest.NewRecorder()
+	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusForbidden || repository.resourceCalls != 0 {
+		t.Fatalf("unauthenticated resource logs = %d/%s calls=%d", response.Code, response.Body, repository.resourceCalls)
+	}
+
+	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
+	if response.Code != http.StatusOK || repository.resourceCalls != 1 || repository.resourceKind != "postgres" ||
+		!strings.Contains(response.Body.String(), `"text":"resource ready"`) {
+		t.Fatalf("resource logs = %d/%s calls=%d kind=%q", response.Code, response.Body, repository.resourceCalls, repository.resourceKind)
 	}
 }

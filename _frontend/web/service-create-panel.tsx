@@ -8,8 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
 import { ImageCredentialForm } from "@/image-credential-form";
-
-const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/u;
+import { parseServiceEnvironment } from "@/service-environment";
 
 interface ServiceCreatePanelProperties {
   credentials: ImageCredential[];
@@ -17,23 +16,6 @@ interface ServiceCreatePanelProperties {
   onCreated: () => void;
   projectID: string;
 }
-
-const parseEnvironment = (value: string): Record<string, string> => {
-  const result: Record<string, string> = {};
-  for (const rawLine of value.split("\n")) {
-    const line = rawLine.trim();
-    if (line === "") {
-      continue;
-    }
-    const separator = line.indexOf("=");
-    const name = separator === -1 ? line : line.slice(0, separator).trim();
-    if (!environmentName.test(name) || separator === -1) {
-      throw new Error(`Invalid environment line: ${rawLine}`);
-    }
-    result[name] = line.slice(separator + 1);
-  }
-  return result;
-};
 
 export const ServiceCreatePanel = ({
   credentials: initialCredentials,
@@ -61,7 +43,7 @@ export const ServiceCreatePanel = ({
     setError(null);
     try {
       await createService(projectID, {
-        environment: parseEnvironment(environment),
+        environment: parseServiceEnvironment(environment),
         healthPath: healthPath || undefined,
         imageCredentialId: selectedCredential || undefined,
         imageReference,

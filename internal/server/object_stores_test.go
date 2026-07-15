@@ -75,7 +75,7 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 	base := "/api/v1/projects/project/object-stores/" + storeID
 	getResponse := httptest.NewRecorder()
 	handler.ServeHTTP(getResponse, projectRequest(http.MethodGet, base, ""))
-	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), "accessKey") || strings.Contains(getResponse.Body.String(), "secret") {
+	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), `"accessKey":"`+created["accessKey"].(string)+`"`) || !strings.Contains(getResponse.Body.String(), `"secret":"`+created["secret"].(string)+`"`) {
 		t.Fatalf("get = %d/%s", getResponse.Code, getResponse.Body)
 	}
 

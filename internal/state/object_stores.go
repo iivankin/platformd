@@ -291,6 +291,28 @@ FROM s3_credentials WHERE id = ?`, credentialID).Scan(
 	return result, nil
 }
 
+func (store *Store) S3CredentialsByObjectStore(ctx context.Context, objectStoreID string) ([]S3Credential, error) {
+	rows, err := store.database.QueryContext(ctx, `
+SELECT id FROM s3_credentials WHERE object_store_id = ? ORDER BY created_at, id`, objectStoreID)
+	if err != nil {
+		return nil, fmt.Errorf("list S3 credentials: %w", err)
+	}
+	defer rows.Close()
+	credentials := make([]S3Credential, 0)
+	for rows.Next() {
+		var credentialID string
+		if err := rows.Scan(&credentialID); err != nil {
+			return nil, err
+		}
+		credential, err := store.S3Credential(ctx, credentialID)
+		if err != nil {
+			return nil, err
+		}
+		credentials = append(credentials, credential)
+	}
+	return credentials, rows.Err()
+}
+
 type ObjectMetadata struct {
 	ObjectStoreID   string
 	ObjectKey       string

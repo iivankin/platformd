@@ -1,9 +1,24 @@
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
-import { fetchBackupPolicy } from "@/api";
-import type { BackupPolicy, RecoveryResourceKind } from "@/api";
+import {
+  fetchBackupGenerations,
+  fetchBackupHistory,
+  fetchBackupPolicy,
+} from "@/api";
+import type {
+  BackupGeneration,
+  BackupPolicy,
+  BackupRecord,
+  RecoveryResourceKind,
+} from "@/api";
 import { BackupResourceRow } from "@/backup-resource-row";
+
+interface BackupWorkspaceData {
+  generations: BackupGeneration[];
+  history: BackupRecord[];
+  policy: BackupPolicy;
+}
 
 export const ResourceBackupPanel = ({
   resourceID,
@@ -12,16 +27,19 @@ export const ResourceBackupPanel = ({
   resourceID: string;
   resourceKind: RecoveryResourceKind;
 }) => {
-  const [policy, setPolicy] = useState<BackupPolicy>();
+  const [data, setData] = useState<BackupWorkspaceData>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
       try {
-        setPolicy(
-          await fetchBackupPolicy(resourceKind, resourceID, controller.signal)
-        );
+        const [policy, history, generations] = await Promise.all([
+          fetchBackupPolicy(resourceKind, resourceID, controller.signal),
+          fetchBackupHistory(resourceKind, resourceID, controller.signal),
+          fetchBackupGenerations(resourceKind, resourceID, controller.signal),
+        ]);
+        setData({ generations, history, policy });
         setError(undefined);
       } catch (loadError) {
         if (
@@ -48,7 +66,7 @@ export const ResourceBackupPanel = ({
       </p>
     );
   }
-  if (!policy) {
+  if (!data) {
     return (
       <div className="flex items-center gap-2 border-b border-border px-5 py-3 text-[10px] text-muted-foreground">
         <LoaderCircle className="size-3 animate-spin" />
@@ -57,8 +75,13 @@ export const ResourceBackupPanel = ({
     );
   }
   return (
-    <div className="border-b border-border">
-      <BackupResourceRow onPolicyUpdated={setPolicy} policy={policy} />
-    </div>
+    <BackupResourceRow
+      initialGenerations={data.generations}
+      initialHistory={data.history}
+      onPolicyUpdated={(policy) =>
+        setData((current) => current && { ...current, policy })
+      }
+      policy={data.policy}
+    />
   );
 };

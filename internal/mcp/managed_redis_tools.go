@@ -10,7 +10,7 @@ import (
 func managedRedisAdminTool() Tool {
 	return Tool{
 		Name:        "create_managed_redis",
-		Description: "Create a managed RDB-only Redis resource from an official image tag and return its generated password once. Requires an admin token.",
+		Description: "Create a managed RDB-only Redis resource from an official image tag and return its persistent password. Requires an admin token.",
 		InputSchema: objectSchema(map[string]any{
 			"projectId":     map[string]any{"type": "string"},
 			"name":          map[string]any{"type": "string"},

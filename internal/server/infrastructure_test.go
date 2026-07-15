@@ -12,6 +12,7 @@ import (
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/journallogs"
+	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/server"
 )
 
@@ -40,13 +41,31 @@ func (logs *journalStub) Read(_ context.Context, query journallogs.Query) (journ
 	}}, Truncated: true}, nil
 }
 
-func (usageStub) Read(kind cgroupstats.Kind, resourceID string) (cgroupstats.Sample, error) {
+func (usageStub) Read(kind cgroupstats.Kind, resourceID string) (resourcemetrics.Current, error) {
 	if kind != cgroupstats.Service || resourceID != "api" {
-		return cgroupstats.Sample{}, cgroupstats.ErrInvalidResource
+		return resourcemetrics.Current{}, cgroupstats.ErrInvalidResource
 	}
-	return cgroupstats.Sample{
-		ObservedAtMillis: 42, CPUUsageMicros: 123_456, MemoryBytes: 64 << 20,
-		HostCPUCores: 8, HostMemoryBytes: 16 << 30, Running: true,
+	return resourcemetrics.Current{
+		Sample: cgroupstats.Sample{
+			ObservedAtMillis: 42, CPUUsageMicros: 123_456, MemoryBytes: 64 << 20,
+			HostCPUCores: 8, HostMemoryBytes: 16 << 30, Running: true,
+		},
+		NetworkRXBytes: 100, NetworkTXBytes: 200, NetworkAvailable: true,
+	}, nil
+}
+
+func (usageStub) History(_ context.Context, kind cgroupstats.Kind, resourceID string, window time.Duration) (resourcemetrics.History, error) {
+	if kind != cgroupstats.Service || resourceID != "api" || window != 6*time.Hour {
+		return resourcemetrics.History{}, cgroupstats.ErrInvalidResource
+	}
+	cpu, ingress, egress := int64(12), int64(34), int64(56)
+	return resourcemetrics.History{
+		From: 1, To: 2, StepMillis: 300_000,
+		Points: []resourcemetrics.Point{{
+			ObservedAt: 2, CPUMillicores: &cpu, MemoryBytes: 78,
+			NetworkIngressBytesPerSecond: &ingress, NetworkEgressBytesPerSecond: &egress,
+			Running: true,
+		}},
 	}, nil
 }
 
@@ -86,8 +105,30 @@ func TestInfrastructureReportsStatelessResourceCgroupUsage(t *testing.T) {
 	response = httptest.NewRecorder()
 	protected.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cpuUsageMicros":123456`) ||
-		!strings.Contains(response.Body.String(), `"memoryBytes":67108864`) || !strings.Contains(response.Body.String(), `"running":true`) {
+		!strings.Contains(response.Body.String(), `"memoryBytes":67108864`) ||
+		!strings.Contains(response.Body.String(), `"networkRxBytes":100`) ||
+		!strings.Contains(response.Body.String(), `"networkAvailable":true`) ||
+		!strings.Contains(response.Body.String(), `"running":true`) {
 		t.Fatalf("resource usage = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestInfrastructureReportsPersistedResourceUsageHistory(t *testing.T) {
+	t.Parallel()
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithResourceUsage(usageStub{}))
+	protected := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
+	path := "/api/v1/infrastructure/resources/service/api/usage/history?range=6h"
+	response := httptest.NewRecorder()
+	protected.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stepMillis":300000`) ||
+		!strings.Contains(response.Body.String(), `"cpuMillicores":12`) ||
+		!strings.Contains(response.Body.String(), `"networkIngressBytesPerSecond":34`) {
+		t.Fatalf("resource usage history = %d/%s", response.Code, response.Body)
+	}
+	response = httptest.NewRecorder()
+	protected.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/infrastructure/resources/service/api/usage/history?range=2h", ""))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid resource usage range = %d/%s", response.Code, response.Body)
 	}
 }
 

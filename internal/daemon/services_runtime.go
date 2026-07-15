@@ -8,6 +8,7 @@ import (
 	"path"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/imagecredential"
 	"github.com/iivankin/platformd/internal/registry"
@@ -21,7 +22,7 @@ const (
 	serviceLogMaxFiles     = 3
 )
 
-func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, credentials deployment.CredentialResolver, registryApplication *registry.Application) error {
+func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, registryApplication *registry.Application) error {
 	var imageSources deployment.ImageSourceResolver
 	if registryApplication != nil {
 		imageSources = embeddedImageSourceResolver{
@@ -30,6 +31,7 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 	}
 	controller, err := deployment.New(deployment.Config{
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
+		Environment:  resourceVariableResolver{store: store, master: master},
 		ImageSources: imageSources, Growth: stack.growth, Admission: stack.admission,
 		Placement: stack.servicePlacement,
 		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
@@ -188,6 +190,36 @@ func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, 
 	}
 	stack.mu.Unlock()
 	return err
+}
+
+func (stack *runtimeStack) RestartServiceDeployment(ctx context.Context, serviceID, deploymentID string) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not ready")
+	}
+	err := controller.RestartCurrent(ctx, serviceID, deploymentID)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.serviceFailures, serviceID)
+	} else {
+		stack.serviceFailures[serviceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) DeleteServiceDeploymentLogs(serviceID, deploymentID string) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not ready")
+	}
+	return controller.DeleteDeploymentLogs(serviceID, deploymentID)
 }
 
 func (stack *runtimeStack) ServiceStatus(serviceID string, enabled bool) (string, string) {

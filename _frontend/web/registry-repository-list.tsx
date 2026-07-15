@@ -20,15 +20,14 @@ const formatBytes = (bytes: number) => {
 export const RegistryRepositoryList = ({
   onSelect,
   repositories,
-  selectedID,
 }: {
   onSelect: (repository: RegistryRepository) => void;
   repositories: RegistryRepository[];
-  selectedID?: string;
 }) => (
-  <div className="min-h-0 overflow-auto border-r border-border">
-    <div className="sticky top-0 z-10 grid grid-cols-[1fr_auto] border-b border-border bg-background px-4 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+  <div className="min-h-0 overflow-auto">
+    <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_8rem_8rem] border-b border-border bg-muted/25 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
       <span>Repository</span>
+      <span>Access</span>
       <span>Storage</span>
     </div>
     {repositories.map((repository) => {
@@ -36,8 +35,7 @@ export const RegistryRepositoryList = ({
       return (
         <button
           className={cn(
-            "grid w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-4 border-b border-border px-4 py-3 text-left transition-colors hover:bg-muted/40",
-            selectedID === repository.id && "bg-muted/60"
+            "grid w-full grid-cols-[minmax(0,1fr)_8rem_8rem] items-center border-b border-border px-5 py-4 text-left transition-colors hover:bg-muted/40"
           )}
           key={repository.id}
           onClick={() => onSelect(repository)}
@@ -53,13 +51,13 @@ export const RegistryRepositoryList = ({
             <span className="mt-2 flex items-center gap-3 text-[9px] text-muted-foreground">
               <span>{repository.manifestCount} manifests</span>
               <span>{repository.tagCount} tags</span>
-              <span className="inline-flex items-center gap-1">
-                <AccessIcon className="size-2.5" />
-                {repository.publicPull ? "public pull" : "private"}
-              </span>
             </span>
           </span>
-          <span className="pt-0.5 text-[9px] text-muted-foreground tabular-nums">
+          <span className="inline-flex items-center gap-1 text-[9px] text-muted-foreground">
+            <AccessIcon className="size-2.5" />
+            {repository.publicPull ? "Public" : "Private"}
+          </span>
+          <span className="text-[9px] text-muted-foreground tabular-nums">
             {formatBytes(repository.totalBlobBytes)}
           </span>
         </button>

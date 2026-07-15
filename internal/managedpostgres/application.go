@@ -25,12 +25,16 @@ type Store interface {
 	ManagedPostgresInProject(context.Context, string, string) (state.ManagedPostgres, error)
 	ManagedPostgresByProject(context.Context, string) ([]state.ManagedPostgres, error)
 	RecordManagedPostgresQuery(context.Context, state.RecordManagedPostgresQuery) error
+	RuntimeDeployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error)
+	RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
 }
 
 type Runtime interface {
 	ResolveManagedPostgresImage(context.Context, string) (string, error)
 	StartManagedPostgres(context.Context, string) error
 	QueryManagedPostgres(context.Context, string, string) (QueryResult, error)
+	RestartManagedPostgresDeployment(context.Context, string, string) error
+	RemoveManagedPostgresDeployment(context.Context, string, string) error
 }
 
 type Actor struct {
@@ -133,8 +137,44 @@ func (application *Application) Resource(ctx context.Context, projectID, resourc
 	return application.store.ManagedPostgresInProject(ctx, projectID, resourceID)
 }
 
+func (application *Application) OwnerPassword(ctx context.Context, projectID, resourceID string) (string, error) {
+	resource, err := application.store.ManagedPostgresInProject(ctx, projectID, resourceID)
+	if err != nil {
+		return "", err
+	}
+	return OpenOwnerPassword(application.master, resource.ID, resource.OwnerPasswordEncrypted)
+}
+
 func (application *Application) Resources(ctx context.Context, projectID string) ([]state.ManagedPostgres, error) {
 	return application.store.ManagedPostgresByProject(ctx, projectID)
+}
+
+func (application *Application) Deployments(ctx context.Context, projectID, resourceID, cursor string, limit int) (state.RuntimeDeploymentPage, error) {
+	if _, err := application.store.ManagedPostgresInProject(ctx, projectID, resourceID); err != nil {
+		return state.RuntimeDeploymentPage{}, err
+	}
+	return application.store.RuntimeDeployments(ctx, "postgres", resourceID, cursor, limit)
+}
+
+func (application *Application) Deployment(ctx context.Context, projectID, resourceID, deploymentID string) (state.RuntimeDeployment, error) {
+	if _, err := application.store.ManagedPostgresInProject(ctx, projectID, resourceID); err != nil {
+		return state.RuntimeDeployment{}, err
+	}
+	return application.store.RuntimeDeployment(ctx, "postgres", resourceID, deploymentID)
+}
+
+func (application *Application) RestartDeployment(ctx context.Context, projectID, resourceID, deploymentID string) error {
+	if _, err := application.store.ManagedPostgresInProject(ctx, projectID, resourceID); err != nil {
+		return err
+	}
+	return application.runtime.RestartManagedPostgresDeployment(ctx, resourceID, deploymentID)
+}
+
+func (application *Application) RemoveDeployment(ctx context.Context, projectID, resourceID, deploymentID string) error {
+	if _, err := application.store.ManagedPostgresInProject(ctx, projectID, resourceID); err != nil {
+		return err
+	}
+	return application.runtime.RemoveManagedPostgresDeployment(ctx, resourceID, deploymentID)
 }
 
 type QueryInput struct {

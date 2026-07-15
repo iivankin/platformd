@@ -25,15 +25,20 @@ type ApplicationStore interface {
 	ManagedRedisInProject(context.Context, string, string) (state.ManagedRedis, error)
 	ManagedRedisByProject(context.Context, string) ([]state.ManagedRedis, error)
 	RecordManagedRedisDataMutation(context.Context, state.RecordManagedRedisDataMutation) error
+	RuntimeDeployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error)
+	RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
 }
 
 type ApplicationRuntime interface {
 	ResolveManagedRedisImage(context.Context, string) (string, error)
 	StartManagedRedis(context.Context, string) error
 	ManagedRedisPersistence(context.Context, string) (PersistenceStatus, error)
+	ManagedRedisStats(context.Context, string) (Stats, error)
 	ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error)
 	PreviewManagedRedisKey(context.Context, string, PreviewQuery) (Preview, error)
 	MutateManagedRedis(context.Context, string, Mutation) (MutationResult, error)
+	RestartManagedRedisDeployment(context.Context, string, string) error
+	RemoveManagedRedisDeployment(context.Context, string, string) error
 }
 
 type Actor struct {
@@ -146,8 +151,44 @@ func (application *Application) Resource(ctx context.Context, projectID, resourc
 	return application.store.ManagedRedisInProject(ctx, projectID, resourceID)
 }
 
+func (application *Application) Password(ctx context.Context, projectID, resourceID string) (string, error) {
+	resource, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID)
+	if err != nil {
+		return "", err
+	}
+	return OpenPassword(application.master, resource.ID, resource.PasswordEncrypted)
+}
+
 func (application *Application) Resources(ctx context.Context, projectID string) ([]state.ManagedRedis, error) {
 	return application.store.ManagedRedisByProject(ctx, projectID)
+}
+
+func (application *Application) Deployments(ctx context.Context, projectID, resourceID, cursor string, limit int) (state.RuntimeDeploymentPage, error) {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return state.RuntimeDeploymentPage{}, err
+	}
+	return application.store.RuntimeDeployments(ctx, "redis", resourceID, cursor, limit)
+}
+
+func (application *Application) Deployment(ctx context.Context, projectID, resourceID, deploymentID string) (state.RuntimeDeployment, error) {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return state.RuntimeDeployment{}, err
+	}
+	return application.store.RuntimeDeployment(ctx, "redis", resourceID, deploymentID)
+}
+
+func (application *Application) RestartDeployment(ctx context.Context, projectID, resourceID, deploymentID string) error {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return err
+	}
+	return application.runtime.RestartManagedRedisDeployment(ctx, resourceID, deploymentID)
+}
+
+func (application *Application) RemoveDeployment(ctx context.Context, projectID, resourceID, deploymentID string) error {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return err
+	}
+	return application.runtime.RemoveManagedRedisDeployment(ctx, resourceID, deploymentID)
 }
 
 func (application *Application) Persistence(ctx context.Context, projectID, resourceID string) (PersistenceReport, error) {
@@ -174,6 +215,15 @@ func (application *Application) Persistence(ctx context.Context, projectID, reso
 		LastBackgroundSaveSuccessful: status.LastBackgroundSaveOK,
 		NeedsAttention:               age > target || !status.LastBackgroundSaveOK,
 	}, nil
+}
+
+func (application *Application) Stats(ctx context.Context, projectID, resourceID string) (Stats, error) {
+	if _, err := application.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+		return Stats{}, err
+	}
+	readContext, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return application.runtime.ManagedRedisStats(readContext, resourceID)
 }
 
 func (application *Application) Keys(ctx context.Context, projectID, resourceID string, query ScanQuery) (KeyPage, error) {

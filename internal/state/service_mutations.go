@@ -16,6 +16,7 @@ var (
 	ErrDependencyMissing      = errors.New("service dependency is missing")
 	ErrDeploymentNotFound     = errors.New("deployment not found for service")
 	ErrDeploymentNotSuccess   = errors.New("deployment did not succeed")
+	ErrDeploymentIsActive     = errors.New("deployment is active")
 	ErrServiceReconcileFailed = errors.New("service reconcile failed")
 )
 
@@ -33,7 +34,7 @@ type UpdateServiceInput struct {
 	UpdatedAtMillis       int64
 }
 
-type RollbackServiceInput struct {
+type DeployServiceVersionInput struct {
 	ID                    string
 	ProjectID             string
 	DeploymentID          string
@@ -45,6 +46,11 @@ type RollbackServiceInput struct {
 	RequestCorrelationID  string
 	UpdatedAtMillis       int64
 }
+
+// RollbackServiceInput remains the automation API name. The operation creates
+// a new deployment from an immutable historical version; it never rewinds
+// writable volume data.
+type RollbackServiceInput = DeployServiceVersionInput
 
 type RedeployServiceInput struct {
 	ID                    string
@@ -89,9 +95,9 @@ func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput)
 	return store.DesiredService(ctx, input.ID)
 }
 
-func (store *Store) RollbackService(ctx context.Context, input RollbackServiceInput) (ServiceDesired, error) {
+func (store *Store) DeployServiceVersion(ctx context.Context, input DeployServiceVersionInput) (ServiceDesired, error) {
 	if input.DeploymentID == "" {
-		return ServiceDesired{}, errors.New("rollback deployment ID is empty")
+		return ServiceDesired{}, errors.New("deployment version ID is empty")
 	}
 	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.UpdatedAtMillis); err != nil {
 		return ServiceDesired{}, err
@@ -114,17 +120,17 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 			return ErrDeploymentNotFound
 		}
 		if err != nil {
-			return fmt.Errorf("load rollback deployment: %w", err)
+			return fmt.Errorf("load deployment version: %w", err)
 		}
 		if currentUpdated != input.ExpectedUpdatedMillis {
 			return ErrServiceChanged
 		}
-		if status != "succeeded" {
+		if status != "succeeded" && status != "failed" {
 			return ErrDeploymentNotSuccess
 		}
 		var snapshot serviceconfig.Snapshot
 		if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
-			return fmt.Errorf("decode rollback snapshot: %w", err)
+			return fmt.Errorf("decode deployment version snapshot: %w", err)
 		}
 		pinned, err := serviceconfig.PinnedReference(snapshot.ImageReference, imageDigest)
 		if err != nil {
@@ -143,7 +149,7 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.rollback", ServiceID: input.ID,
+			Action: "service.deploy_version", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: updatedAt,
 			Metadata: map[string]string{"deploymentId": input.DeploymentID},
 		})
@@ -152,6 +158,65 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 		return ServiceDesired{}, err
 	}
 	return store.DesiredService(ctx, input.ID)
+}
+
+// RollbackService is the token automation surface's historical name for
+// deploying an immutable version. The admin UI and state model use the more
+// precise deploy-version terminology.
+func (store *Store) RollbackService(ctx context.Context, input RollbackServiceInput) (ServiceDesired, error) {
+	return store.DeployServiceVersion(ctx, input)
+}
+
+type DeleteServiceDeploymentInput struct {
+	ID                    string
+	ProjectID             string
+	DeploymentID          string
+	ExpectedUpdatedMillis int64
+	AuditEventID          string
+	ActorKind             string
+	ActorID               string
+	ActorEmail            string
+	RequestCorrelationID  string
+	CreatedAtMillis       int64
+}
+
+func (store *Store) DeleteServiceDeployment(ctx context.Context, input DeleteServiceDeploymentInput) error {
+	if input.DeploymentID == "" {
+		return ErrDeploymentNotFound
+	}
+	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.CreatedAtMillis); err != nil {
+		return err
+	}
+	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var activeDeploymentID sql.NullString
+		if err := transaction.QueryRowContext(ctx, `
+SELECT active_deployment_id FROM services
+WHERE id = ? AND project_id = ? AND updated_at = ?`, input.ID, input.ProjectID, input.ExpectedUpdatedMillis).Scan(&activeDeploymentID); errors.Is(err, sql.ErrNoRows) {
+			return ErrServiceChanged
+		} else if err != nil {
+			return err
+		}
+		if activeDeploymentID.String == input.DeploymentID {
+			return ErrDeploymentIsActive
+		}
+		result, err := transaction.ExecContext(ctx, "DELETE FROM deployments WHERE id = ? AND service_id = ?", input.DeploymentID, input.ID)
+		if err != nil {
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return ErrDeploymentNotFound
+		}
+		return insertServiceAudit(ctx, transaction, serviceAudit{
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			Action: "service.deployment_remove", ServiceID: input.ID,
+			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
+			Metadata: map[string]string{"deploymentId": input.DeploymentID},
+		})
+	})
 }
 
 func (store *Store) RedeployService(ctx context.Context, input RedeployServiceInput) (ServiceDesired, error) {

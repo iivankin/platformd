@@ -16,6 +16,7 @@ import (
 
 const usernamePrefix = "prg_"
 const verifierDomain = "platformd/registry/credential/v1"
+const secretEncryptionDomain = "platformd/sqlite/registry-credential-secret/v1"
 
 func Username(credentialID string) (string, error) {
 	compact := strings.ReplaceAll(credentialID, "-", "")
@@ -71,4 +72,34 @@ func Verify(master cryptobox.MasterKey, repositoryID, credentialID, secret strin
 		return false
 	}
 	return subtle.ConstantTimeCompare(actual, expected) == 1
+}
+
+func SealSecret(master cryptobox.MasterKey, repositoryID, credentialID, secret string) ([]byte, error) {
+	if repositoryID == "" || credentialID == "" || secret == "" {
+		return nil, errors.New("registry credential secret input is incomplete")
+	}
+	box, err := cryptobox.NewBox(master, []byte(repositoryID+":"+credentialID), secretEncryptionDomain)
+	if err != nil {
+		return nil, err
+	}
+	return box.Seal([]byte(secret), []byte(repositoryID+":"+credentialID+":secret"))
+}
+
+func OpenSecret(master cryptobox.MasterKey, repositoryID, credentialID string, encrypted []byte) (string, error) {
+	if repositoryID == "" || credentialID == "" || len(encrypted) == 0 {
+		return "", errors.New("registry credential secret input is incomplete")
+	}
+	box, err := cryptobox.NewBox(master, []byte(repositoryID+":"+credentialID), secretEncryptionDomain)
+	if err != nil {
+		return "", err
+	}
+	plaintext, err := box.Open(encrypted, []byte(repositoryID+":"+credentialID+":secret"))
+	if err != nil {
+		return "", err
+	}
+	defer clear(plaintext)
+	if _, err := base64.RawURLEncoding.DecodeString(string(plaintext)); err != nil || len(plaintext) != base64.RawURLEncoding.EncodedLen(32) {
+		return "", errors.New("decrypted registry credential secret is invalid")
+	}
+	return string(plaintext), nil
 }

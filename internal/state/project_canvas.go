@@ -3,11 +3,9 @@ package state
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 )
 
 var ErrProjectNotFound = errors.New("project not found")
@@ -24,7 +22,6 @@ type CanvasResource struct {
 	StatusMessage    string
 	ActiveDeployment string
 	ImageDigest      string
-	Environment      map[string]string
 }
 
 type CanvasConnection struct {
@@ -48,10 +45,14 @@ func (store *Store) ProjectCanvas(ctx context.Context, projectID string) (Projec
 	if err != nil {
 		return ProjectCanvas{}, err
 	}
+	connections, err := store.canvasConnections(ctx, projectID)
+	if err != nil {
+		return ProjectCanvas{}, err
+	}
 	return ProjectCanvas{
 		Project:     project,
 		Resources:   resources,
-		Connections: deriveCanvasConnections(resources),
+		Connections: connections,
 	}, nil
 }
 
@@ -81,11 +82,11 @@ WHERE p.id = ?`, projectID).Scan(
 
 func (store *Store) canvasResources(ctx context.Context, project ProjectSummary) ([]CanvasResource, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, kind, name, image_reference, bucket_name, enabled, environment_json,
+SELECT id, kind, name, image_reference, bucket_name, enabled,
        active_deployment_id, image_digest, status, status_message
 FROM (
   SELECT s.id, 'service' AS kind, s.name, s.image_reference, '' AS bucket_name,
-         s.enabled, s.environment_json, COALESCE(s.active_deployment_id, '') AS active_deployment_id,
+         s.enabled, COALESCE(s.active_deployment_id, '') AS active_deployment_id,
          COALESCE(d.image_digest, '') AS image_digest,
          CASE
            WHEN s.enabled = 0 THEN 'disabled'
@@ -106,17 +107,17 @@ FROM (
   WHERE s.project_id = ?
   UNION ALL
   SELECT id, 'postgres' AS kind, name, image_tag AS image_reference,
-         '' AS bucket_name, 1 AS enabled, '{}' AS environment_json,
+         '' AS bucket_name, 1 AS enabled,
          '', image_digest, 'pending', ''
   FROM managed_postgres WHERE project_id = ?
   UNION ALL
   SELECT id, 'redis' AS kind, name, image_tag AS image_reference,
-         '' AS bucket_name, 1 AS enabled, '{}' AS environment_json,
+         '' AS bucket_name, 1 AS enabled,
          '', image_digest, 'pending', ''
   FROM managed_redis WHERE project_id = ?
   UNION ALL
   SELECT id, 'object_store' AS kind, name, '' AS image_reference,
-         bucket_name, 1 AS enabled, '{}' AS environment_json,
+         bucket_name, 1 AS enabled,
          '', '', 'pending', ''
   FROM object_stores WHERE project_id = ?
 )
@@ -130,10 +131,9 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 	for rows.Next() {
 		var resource CanvasResource
 		var enabled int
-		var environmentJSON string
 		if err := rows.Scan(
 			&resource.ID, &resource.Kind, &resource.Name, &resource.ImageReference,
-			&resource.BucketName, &enabled, &environmentJSON,
+			&resource.BucketName, &enabled,
 			&resource.ActiveDeployment, &resource.ImageDigest, &resource.Status,
 			&resource.StatusMessage,
 		); err != nil {
@@ -141,11 +141,6 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 		}
 		resource.Enabled = enabled == 1
 		resource.InternalHostname = resource.Name + "." + project.Name + ".internal"
-		if resource.Kind == "service" {
-			if err := json.Unmarshal([]byte(environmentJSON), &resource.Environment); err != nil {
-				return nil, fmt.Errorf("decode service %s environment: %w", resource.ID, err)
-			}
-		}
 		resources = append(resources, resource)
 	}
 	if err := rows.Err(); err != nil {
@@ -154,32 +149,32 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 	return resources, nil
 }
 
-func deriveCanvasConnections(resources []CanvasResource) []CanvasConnection {
-	targets := make(map[string]CanvasResource, len(resources)*2)
-	for _, resource := range resources {
-		targets[resource.Name] = resource
-		targets[resource.InternalHostname] = resource
+func (store *Store) canvasConnections(ctx context.Context, projectID string) ([]CanvasConnection, error) {
+	rows, err := store.database.QueryContext(ctx, `
+SELECT refs.service_id, refs.resource_id, refs.environment_name
+FROM service_resource_variable_refs refs
+JOIN services source ON source.id = refs.service_id
+WHERE source.project_id = ?
+ORDER BY refs.service_id, refs.resource_id, refs.environment_name`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list project canvas connections: %w", err)
 	}
-
+	defer rows.Close()
 	type connectionKey struct{ sourceID, targetID string }
 	connections := make(map[connectionKey]map[string]struct{})
-	for _, source := range resources {
-		if source.Kind != "service" {
-			continue
+	for rows.Next() {
+		var sourceID, targetID, environmentName string
+		if err := rows.Scan(&sourceID, &targetID, &environmentName); err != nil {
+			return nil, fmt.Errorf("scan project canvas connection: %w", err)
 		}
-		for environmentName, value := range source.Environment {
-			for _, hostname := range hostnameTokens(value) {
-				target, ok := targets[hostname]
-				if !ok || target.ID == source.ID {
-					continue
-				}
-				key := connectionKey{sourceID: source.ID, targetID: target.ID}
-				if connections[key] == nil {
-					connections[key] = make(map[string]struct{})
-				}
-				connections[key][environmentName] = struct{}{}
-			}
+		key := connectionKey{sourceID: sourceID, targetID: targetID}
+		if connections[key] == nil {
+			connections[key] = make(map[string]struct{})
 		}
+		connections[key][environmentName] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project canvas connections: %w", err)
 	}
 
 	result := make([]CanvasConnection, 0, len(connections))
@@ -199,32 +194,5 @@ func deriveCanvasConnections(resources []CanvasResource) []CanvasConnection {
 		}
 		return result[left].SourceID < result[right].SourceID
 	})
-	return result
-}
-
-func hostnameTokens(value string) []string {
-	lower := strings.ToLower(value)
-	result := make([]string, 0)
-	for index := 0; index < len(lower); {
-		for index < len(lower) && !hostnameByte(lower[index]) {
-			index++
-		}
-		start := index
-		for index < len(lower) && hostnameByte(lower[index]) {
-			index++
-		}
-		if start == index || strings.HasPrefix(lower[index:], "://") {
-			continue
-		}
-		token := strings.Trim(lower[start:index], ".")
-		if token != "" {
-			result = append(result, token)
-		}
-	}
-	return result
-}
-
-func hostnameByte(value byte) bool {
-	return (value >= 'a' && value <= 'z') ||
-		(value >= '0' && value <= '9') || value == '-' || value == '.'
+	return result, nil
 }

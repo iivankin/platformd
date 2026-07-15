@@ -6,6 +6,7 @@ import { createObjectStore } from "@/api";
 import type { ObjectStore } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { objectStoreConfiguration } from "@/connection-values";
 import { FormField } from "@/form-field";
 
 interface ObjectStoreCreatePanelProperties {
@@ -58,21 +59,7 @@ export const ObjectStoreCreatePanel = ({
     }
   };
 
-  const credentials = created
-    ? JSON.stringify(
-        {
-          accessKeyId: created.accessKey,
-          bucket: created.bucketName,
-          endpoint: created.publicHostname
-            ? `https://${created.publicHostname}`
-            : `http://${created.internalHostname}:9000`,
-          region: created.region,
-          secretAccessKey: created.secret,
-        },
-        null,
-        2
-      )
-    : "";
+  const credentials = created ? objectStoreConfiguration(created) : "";
 
   return (
     <aside className="absolute inset-y-0 right-0 z-20 w-full max-w-md overflow-y-auto border-l border-border bg-background shadow-[-8px_0_24px_oklch(0_0_0/5%)]">
@@ -96,8 +83,8 @@ export const ObjectStoreCreatePanel = ({
             Object storage is ready
           </div>
           <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-            Save the generated S3 credential now. Its secret is never returned
-            again. Path-style requests use the fixed {created.region} region.
+            The generated S3 configuration remains available from the storage
+            overview. Path-style requests use the fixed {created.region} region.
           </p>
           <pre className="mt-5 overflow-x-auto bg-muted px-3 py-3 font-mono text-[10px] leading-5 select-all">
             {credentials}
@@ -114,7 +101,7 @@ export const ObjectStoreCreatePanel = ({
             {copied ? "Copied" : "Copy S3 configuration"}
           </Button>
           <Button className="mt-3 w-full" onClick={onCreated}>
-            I saved the credentials
+            Open project
           </Button>
         </div>
       ) : (

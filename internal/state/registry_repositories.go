@@ -34,24 +34,26 @@ type RegistryCredential struct {
 	Name             string
 	Permission       string
 	SecretHMAC       []byte
+	SecretEncrypted  []byte
 	CreatedAtMillis  int64
 	LastUsedAtMillis int64
 }
 
 type CreateRegistryRepository struct {
-	ID                   string
-	Name                 string
-	PublicPull           bool
-	CredentialID         string
-	CredentialName       string
-	CredentialPermission string
-	CredentialSecretHMAC []byte
-	AuditEventID         string
-	ActorKind            string
-	ActorID              string
-	ActorEmail           string
-	RequestCorrelationID string
-	CreatedAtMillis      int64
+	ID                        string
+	Name                      string
+	PublicPull                bool
+	CredentialID              string
+	CredentialName            string
+	CredentialPermission      string
+	CredentialSecretHMAC      []byte
+	CredentialSecretEncrypted []byte
+	AuditEventID              string
+	ActorKind                 string
+	ActorID                   string
+	ActorEmail                string
+	RequestCorrelationID      string
+	CreatedAtMillis           int64
 }
 
 type SetRegistryRepositoryPublicPull struct {
@@ -110,7 +112,7 @@ INSERT INTO audit_events(
 }
 
 func (store *Store) CreateRegistryRepository(ctx context.Context, input CreateRegistryRepository) (RegistryRepository, RegistryCredential, error) {
-	if input.ID == "" || input.CredentialID == "" || len(input.CredentialSecretHMAC) != 32 || input.AuditEventID == "" || input.CreatedAtMillis <= 0 {
+	if input.ID == "" || input.CredentialID == "" || len(input.CredentialSecretHMAC) != 32 || len(input.CredentialSecretEncrypted) == 0 || input.AuditEventID == "" || input.CreatedAtMillis <= 0 {
 		return RegistryRepository{}, RegistryCredential{}, errors.New("create registry repository input is incomplete")
 	}
 	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
@@ -150,9 +152,9 @@ VALUES (?, ?, ?, ?, ?)`, input.ID, input.Name, publicPull, input.CreatedAtMillis
 			return fmt.Errorf("create registry repository: %w", err)
 		}
 		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, input.CredentialID, input.ID, input.CredentialName,
-			input.CredentialPermission, input.CredentialSecretHMAC, input.CreatedAtMillis); err != nil {
+INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, secret_encrypted, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, input.CredentialID, input.ID, input.CredentialName,
+			input.CredentialPermission, input.CredentialSecretHMAC, input.CredentialSecretEncrypted, input.CreatedAtMillis); err != nil {
 			return fmt.Errorf("create initial registry credential: %w", err)
 		}
 		if _, err := transaction.ExecContext(ctx, `
@@ -236,10 +238,10 @@ func (store *Store) RegistryCredential(ctx context.Context, credentialID string)
 	var result RegistryCredential
 	var lastUsed sql.NullInt64
 	err := store.database.QueryRowContext(ctx, `
-SELECT id, repository_id, name, permission, secret_hmac, created_at, last_used_at
+SELECT id, repository_id, name, permission, secret_hmac, secret_encrypted, created_at, last_used_at
 FROM registry_credentials WHERE id = ?`, credentialID).Scan(
 		&result.ID, &result.RepositoryID, &result.Name, &result.Permission,
-		&result.SecretHMAC, &result.CreatedAtMillis, &lastUsed,
+		&result.SecretHMAC, &result.SecretEncrypted, &result.CreatedAtMillis, &lastUsed,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return RegistryCredential{}, ErrRegistryCredentialNotFound

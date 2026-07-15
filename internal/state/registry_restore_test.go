@@ -18,8 +18,9 @@ func TestRestoreRegistryRepositoryRollsBackCatalogAndUploadsWhenAuditFails(t *te
 	repository, credential, err := store.CreateRegistryRepository(ctx, CreateRegistryRepository{
 		ID: "repository", Name: "team/api", CredentialID: "credential",
 		CredentialName: "default", CredentialPermission: "pull_push",
-		CredentialSecretHMAC: make([]byte, 32), AuditEventID: "duplicate-audit",
-		ActorKind: "access", ActorID: "user", ActorEmail: "admin@example.com",
+		CredentialSecretHMAC: make([]byte, 32), CredentialSecretEncrypted: []byte("encrypted"),
+		AuditEventID: "duplicate-audit",
+		ActorKind:    "access", ActorID: "user", ActorEmail: "admin@example.com",
 		CreatedAtMillis: 10,
 	})
 	if err != nil {

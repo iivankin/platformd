@@ -61,7 +61,7 @@ func TestUpdateServiceUsesOptimisticVersionAndClearsActivePointerWhenDisabled(t 
 	}
 }
 
-func TestRollbackCopiesSuccessfulSnapshotAndPinsDigest(t *testing.T) {
+func TestDeployVersionCopiesSnapshotAndPinsDigest(t *testing.T) {
 	store := serviceMutationStore(t)
 	defer store.Close()
 	service := createMutationService(t, store, "alpine:3.22")
@@ -91,23 +91,102 @@ func TestRollbackCopiesSuccessfulSnapshotAndPinsDigest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rolledBack, err := store.RollbackService(context.Background(), RollbackServiceInput{
+	deployedVersion, err := store.DeployServiceVersion(context.Background(), DeployServiceVersionInput{
 		ID: service.ID, ProjectID: service.ProjectID, DeploymentID: "deployment",
 		ExpectedUpdatedMillis: changed.UpdatedAtMillis,
-		AuditEventID:          "rollback-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
+		AuditEventID:          "deploy-version-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(rolledBack.Snapshot.ImageReference, "@"+testImageDigest) {
-		t.Fatalf("rollback image reference = %q", rolledBack.Snapshot.ImageReference)
+	if !strings.HasSuffix(deployedVersion.Snapshot.ImageReference, "@"+testImageDigest) {
+		t.Fatalf("deployed version image reference = %q", deployedVersion.Snapshot.ImageReference)
 	}
-	if rolledBack.ActiveDeploymentID != "deployment" || !rolledBack.Enabled {
-		t.Fatalf("rollback changed service-level state: %+v", rolledBack)
+	if deployedVersion.ActiveDeploymentID != "deployment" || !deployedVersion.Enabled {
+		t.Fatalf("deploying a version changed service-level state: %+v", deployedVersion)
 	}
-	var rollbackAuditCount int
-	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM audit_events WHERE id = 'rollback-audit' AND action = 'service.rollback'").Scan(&rollbackAuditCount); err != nil || rollbackAuditCount != 1 {
-		t.Fatalf("rollback audit count = %d, %v", rollbackAuditCount, err)
+	var deployVersionAuditCount int
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM audit_events WHERE id = 'deploy-version-audit' AND action = 'service.deploy_version'").Scan(&deployVersionAuditCount); err != nil || deployVersionAuditCount != 1 {
+		t.Fatalf("deploy version audit count = %d, %v", deployVersionAuditCount, err)
+	}
+}
+
+func TestDeployVersionAcceptsFailedDeploymentForRetry(t *testing.T) {
+	store := serviceMutationStore(t)
+	defer store.Close()
+	service := createMutationService(t, store, "alpine:3.22")
+	_, snapshotJSON, hash, err := serviceconfig.Canonical(service.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginDeployment(context.Background(), BeginDeployment{
+		ID: "failed-deployment", ServiceID: service.ID, ImageDigest: testImageDigest,
+		ConfigHash: hash, SnapshotJSON: snapshotJSON, CreatedAtMillis: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FailDeployment(context.Background(), "failed-deployment", "container_exit", "exit 1", 4); err != nil {
+		t.Fatal(err)
+	}
+	current, err := store.DesiredService(context.Background(), service.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retried, err := store.DeployServiceVersion(context.Background(), DeployServiceVersionInput{
+		ID: service.ID, ProjectID: service.ProjectID, DeploymentID: "failed-deployment",
+		ExpectedUpdatedMillis: current.UpdatedAtMillis,
+		AuditEventID:          "retry-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(retried.Snapshot.ImageReference, "@"+testImageDigest) || !retried.Enabled {
+		t.Fatalf("retried service = %+v", retried)
+	}
+}
+
+func TestDeleteServiceDeploymentRemovesOnlyInactiveHistory(t *testing.T) {
+	store := serviceMutationStore(t)
+	defer store.Close()
+	service := createMutationService(t, store, "alpine:3.22")
+	_, snapshotJSON, hash, err := serviceconfig.Canonical(service.Snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, deploymentID := range []string{"old-deployment", "active-deployment"} {
+		if err := store.BeginDeployment(context.Background(), BeginDeployment{
+			ID: deploymentID, ServiceID: service.ID, ImageDigest: testImageDigest,
+			ConfigHash: hash, SnapshotJSON: snapshotJSON, CreatedAtMillis: int64(3 + index*2),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		expectedActive := ""
+		if index > 0 {
+			expectedActive = "old-deployment"
+		}
+		if err := store.ActivateDeployment(context.Background(), service.ID, deploymentID, expectedActive, int64(4+index*2)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, err := store.DesiredService(context.Background(), service.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := DeleteServiceDeploymentInput{
+		ID: service.ID, ProjectID: service.ProjectID, ExpectedUpdatedMillis: current.UpdatedAtMillis,
+		AuditEventID: "remove-active-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 7,
+		DeploymentID: "active-deployment",
+	}
+	if err := store.DeleteServiceDeployment(context.Background(), input); !errors.Is(err, ErrDeploymentIsActive) {
+		t.Fatalf("delete active deployment error = %v", err)
+	}
+	input.DeploymentID = "old-deployment"
+	input.AuditEventID = "remove-old-audit"
+	if err := store.DeleteServiceDeployment(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ServiceDeployment(context.Background(), service.ProjectID, service.ID, "old-deployment"); !errors.Is(err, ErrDeploymentNotFound) {
+		t.Fatalf("load removed deployment error = %v", err)
 	}
 }
 

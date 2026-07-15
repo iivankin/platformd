@@ -18,7 +18,7 @@ import (
 
 func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryptobox.MasterKey) error {
 	controller, err := managedredis.NewController(managedredis.Config{
-		Store: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
+		Store: store, Deployments: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
 		Password: func(resource state.ManagedRedis) (string, error) {
 			return managedredis.OpenPassword(master, resource.ID, resource.PasswordEncrypted)
 		},
@@ -252,6 +252,42 @@ func (stack *runtimeStack) StartManagedRedis(ctx context.Context, resourceID str
 	return err
 }
 
+func (stack *runtimeStack) RestartManagedRedisDeployment(ctx context.Context, resourceID, deploymentID string) error {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed Redis runtime is not ready")
+	}
+	err := controller.RestartDeployment(ctx, resourceID, deploymentID)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.redisFailures, resourceID)
+	} else {
+		stack.redisFailures[resourceID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) RemoveManagedRedisDeployment(ctx context.Context, resourceID, deploymentID string) error {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed Redis runtime is not ready")
+	}
+	err := controller.RemoveDeployment(ctx, resourceID, deploymentID)
+	if err == nil {
+		stack.mu.Lock()
+		delete(stack.redisFailures, resourceID)
+		stack.mu.Unlock()
+	}
+	return err
+}
+
 func (stack *runtimeStack) ManagedRedisPersistence(ctx context.Context, resourceID string) (managedredis.PersistenceStatus, error) {
 	stack.mu.Lock()
 	controller := stack.managedRedis
@@ -261,6 +297,17 @@ func (stack *runtimeStack) ManagedRedisPersistence(ctx context.Context, resource
 		return managedredis.PersistenceStatus{}, errors.New("managed Redis runtime is not ready")
 	}
 	return controller.Persistence(ctx, resourceID)
+}
+
+func (stack *runtimeStack) ManagedRedisStats(ctx context.Context, resourceID string) (managedredis.Stats, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedredis.Stats{}, errors.New("managed Redis runtime is not ready")
+	}
+	return controller.Stats(ctx, resourceID)
 }
 
 func (stack *runtimeStack) ScanManagedRedisKeys(ctx context.Context, resourceID string, query managedredis.ScanQuery) (managedredis.KeyPage, error) {

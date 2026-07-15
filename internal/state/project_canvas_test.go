@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestProjectCanvasDerivesConnectionsFromEnvironment(t *testing.T) {
+func TestProjectCanvasReturnsExplicitResourceConnections(t *testing.T) {
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
 	if err != nil {
 		t.Fatal(err)
@@ -27,6 +27,14 @@ INSERT INTO managed_postgres(id, project_id, name, image_tag, image_digest, volu
 VALUES ('db', 'project', 'db', '17', 'sha256:db', 'db-volume', 'app', 'owner', x'01', x'02', 1, 1);
 INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_id, password_encrypted, created_at, updated_at)
 VALUES ('cache', 'project', 'cache', '8', 'sha256:cache', 'cache-volume', x'01', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.database.Exec(`
+INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
+VALUES
+  ('api', 'CACHE_HOST', 'redis', 'cache', 'REDISHOST'),
+  ('api', 'DATABASE_URL', 'postgres', 'db', 'DATABASE_URL'),
+  ('worker', 'API_URL', 'service', 'api', 'URL')`); err != nil {
 		t.Fatal(err)
 	}
 

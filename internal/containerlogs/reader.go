@@ -18,6 +18,7 @@ import (
 
 var productID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
 var segmentName = regexp.MustCompile(`^([A-Za-z0-9_-]{1,128})\.log(?:\.([1-9][0-9]*))?$`)
+var runtimeKinds = map[string]struct{}{"postgres": {}, "redis": {}}
 
 type Reader struct {
 	root          string
@@ -50,14 +51,30 @@ func (reader *Reader) Read(ctx context.Context, query Query) (Window, error) {
 	if err != nil {
 		return Window{}, err
 	}
+	return reader.readWindow(ctx, segments, query.Contains, query.Limit)
+}
+
+func (reader *Reader) ReadRuntime(ctx context.Context, query RuntimeQuery) (Window, error) {
+	query, err := validateRuntimeQuery(query)
+	if err != nil {
+		return Window{}, err
+	}
+	segments, err := reader.runtimeSegments(query)
+	if err != nil {
+		return Window{}, err
+	}
+	return reader.readWindow(ctx, segments, query.Contains, query.Limit)
+}
+
+func (reader *Reader) readWindow(ctx context.Context, segments []segment, contains string, limit int) (Window, error) {
 	remaining := reader.maximumScan
-	records := make([]Record, 0, query.Limit)
+	records := make([]Record, 0, limit)
 	truncated := false
 	for index, current := range segments {
 		if err := ctx.Err(); err != nil {
 			return Window{}, err
 		}
-		if remaining == 0 || len(records) >= query.Limit {
+		if remaining == 0 || len(records) >= limit {
 			truncated = truncated || index < len(segments)
 			break
 		}
@@ -66,7 +83,7 @@ func (reader *Reader) Read(ctx context.Context, query Query) (Window, error) {
 		if readErr != nil {
 			return Window{}, fmt.Errorf("read container log segment: %w", readErr)
 		}
-		parsed, dropped := parseRecords(data, startOffset, partialHead, current, query.Contains, query.Limit-len(records), reader.maximumRecord)
+		parsed, dropped := parseRecords(data, startOffset, partialHead, current, contains, limit-len(records), reader.maximumRecord)
 		records = append(records, parsed...)
 		truncated = truncated || dropped || partialHead
 	}
@@ -121,7 +138,7 @@ func validateQuery(query Query) (Query, error) {
 	if !productID.MatchString(query.ServiceID) || (query.DeploymentID != "" && !productID.MatchString(query.DeploymentID)) {
 		return Query{}, fmt.Errorf("%w: invalid service or deployment ID", ErrInvalidQuery)
 	}
-	if len(query.Contains) > maximumContainsBytes || strings.ContainsRune(query.Contains, '\x00') {
+	if len(query.Contains) > MaximumContainsBytes || strings.ContainsRune(query.Contains, '\x00') {
 		return Query{}, fmt.Errorf("%w: contains filter exceeds its limit or contains NUL", ErrInvalidQuery)
 	}
 	if query.Limit == 0 {
@@ -129,6 +146,22 @@ func validateQuery(query Query) (Query, error) {
 	}
 	if query.Limit < 1 || query.Limit > MaximumLimit {
 		return Query{}, fmt.Errorf("%w: log limit must be between 1 and %d", ErrInvalidQuery, MaximumLimit)
+	}
+	return query, nil
+}
+
+func validateRuntimeQuery(query RuntimeQuery) (RuntimeQuery, error) {
+	if _, ok := runtimeKinds[query.Kind]; !ok || !productID.MatchString(query.ResourceID) || (query.DeploymentID != "" && !productID.MatchString(query.DeploymentID)) {
+		return RuntimeQuery{}, fmt.Errorf("%w: invalid runtime kind or resource ID", ErrInvalidQuery)
+	}
+	if len(query.Contains) > MaximumContainsBytes || strings.ContainsRune(query.Contains, '\x00') {
+		return RuntimeQuery{}, fmt.Errorf("%w: contains filter exceeds its limit or contains NUL", ErrInvalidQuery)
+	}
+	if query.Limit == 0 {
+		query.Limit = DefaultLimit
+	}
+	if query.Limit < 1 || query.Limit > MaximumLimit {
+		return RuntimeQuery{}, fmt.Errorf("%w: log limit must be between 1 and %d", ErrInvalidQuery, MaximumLimit)
 	}
 	return query, nil
 }
@@ -169,6 +202,55 @@ func (reader *Reader) segments(query Query) ([]segment, error) {
 			}
 			result = append(result, segment{
 				path: filepath.Join(serviceRoot, deployment.Name(), file.Name()), deploymentID: deployment.Name(),
+				attemptID: match[1], rotation: rotation, modifiedNano: info.ModTime().UnixNano(), sizeBytes: info.Size(),
+			})
+		}
+	}
+	sort.Slice(result, func(left, right int) bool {
+		if result[left].modifiedNano != result[right].modifiedNano {
+			return result[left].modifiedNano > result[right].modifiedNano
+		}
+		return result[left].path > result[right].path
+	})
+	return result, nil
+}
+
+func (reader *Reader) runtimeSegments(query RuntimeQuery) ([]segment, error) {
+	resourceRoot := filepath.Join(reader.root, query.Kind, query.ResourceID)
+	deployments, err := os.ReadDir(resourceRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return []segment{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list managed resource log segments: %w", err)
+	}
+	result := make([]segment, 0)
+	for _, deployment := range deployments {
+		if !deployment.IsDir() || !productID.MatchString(deployment.Name()) || (query.DeploymentID != "" && deployment.Name() != query.DeploymentID) {
+			continue
+		}
+		files, readErr := os.ReadDir(filepath.Join(resourceRoot, deployment.Name()))
+		if readErr != nil {
+			return nil, fmt.Errorf("list managed deployment log attempts: %w", readErr)
+		}
+		for _, file := range files {
+			match := segmentName.FindStringSubmatch(file.Name())
+			if len(match) == 0 || file.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			info, infoErr := file.Info()
+			if infoErr != nil {
+				return nil, fmt.Errorf("inspect managed resource log segment: %w", infoErr)
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			rotation := 0
+			if match[2] != "" {
+				rotation, _ = strconv.Atoi(match[2])
+			}
+			result = append(result, segment{
+				path: filepath.Join(resourceRoot, deployment.Name(), file.Name()), deploymentID: deployment.Name(),
 				attemptID: match[1], rotation: rotation, modifiedNano: info.ModTime().UnixNano(), sizeBytes: info.Size(),
 			})
 		}

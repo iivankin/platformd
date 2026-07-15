@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 2
+	currentSchemaVersion = 6
 	writerQueueSize      = 128
 )
 
@@ -30,6 +30,18 @@ var (
 
 	//go:embed migration_2.sql
 	migration2 string
+
+	//go:embed migration_3.sql
+	migration3 string
+
+	//go:embed migration_4.sql
+	migration4 string
+
+	//go:embed migration_5.sql
+	migration5 string
+
+	//go:embed migration_6.sql
+	migration6 string
 )
 
 type Store struct {
@@ -266,7 +278,45 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		}
 		return nil
 	case 1:
-		return applyMigration(ctx, database, migration2, 2)
+		if err := applyMigration(ctx, database, migration2, 2); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration3, 3); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration4, 4); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration5, 5); err != nil {
+			return err
+		}
+		return applyMigration(ctx, database, migration6, 6)
+	case 2:
+		if err := applyMigration(ctx, database, migration3, 3); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration4, 4); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration5, 5); err != nil {
+			return err
+		}
+		return applyMigration(ctx, database, migration6, 6)
+	case 3:
+		if err := applyMigration(ctx, database, migration4, 4); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration5, 5); err != nil {
+			return err
+		}
+		return applyMigration(ctx, database, migration6, 6)
+	case 4:
+		if err := applyMigration(ctx, database, migration5, 5); err != nil {
+			return err
+		}
+		return applyMigration(ctx, database, migration6, 6)
+	case 5:
+		return applyMigration(ctx, database, migration6, 6)
 	default:
 		return fmt.Errorf("unsupported SQLite schema version %d; this binary supports exactly %d", version, currentSchemaVersion)
 	}

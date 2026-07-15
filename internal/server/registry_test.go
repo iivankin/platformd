@@ -2,6 +2,7 @@ package server_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -76,7 +77,7 @@ func TestRegistryAdminCreateListConfigureAndDelete(t *testing.T) {
 	}
 	repositoryID, _ := created["id"].(string)
 	if repositoryID == "" || created["username"] == "" || created["secret"] == "" {
-		t.Fatalf("one-time repository credential = %#v", created)
+		t.Fatalf("repository credential = %#v", created)
 	}
 	publicPullRequest := projectRequest(http.MethodPut, "/api/v1/registry/repositories/"+repositoryID+"/public-pull", `{"publicPull":false}`)
 	publicPullRequest.Header.Set("Origin", "https://admin.example.com")
@@ -106,11 +107,24 @@ func TestRegistryAdminCreateListConfigureAndDelete(t *testing.T) {
 	}
 	credentialID, _ := credential["id"].(string)
 	if credentialID == "" || credential["username"] == "" || credential["secret"] == "" {
-		t.Fatalf("one-time credential response = %#v", credential)
+		t.Fatalf("credential response = %#v", credential)
+	}
+	if err := store.Write(ctx, func(transaction *sql.Tx) error {
+		_, insertErr := transaction.ExecContext(ctx, `
+INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, created_at)
+VALUES (?, ?, 'legacy', 'pull', ?, ?)`, "018bcfe5-687b-7fff-bfff-ffffffffffff", repositoryID, make([]byte, 32), 1)
+		return insertErr
+	}); err != nil {
+		t.Fatal(err)
 	}
 	credentialsResponse := httptest.NewRecorder()
 	handler.ServeHTTP(credentialsResponse, projectRequest(http.MethodGet, credentialPath, ""))
-	if credentialsResponse.Code != http.StatusOK || strings.Contains(credentialsResponse.Body.String(), `"secret"`) || !strings.Contains(credentialsResponse.Body.String(), `"name":"reader"`) {
+	if credentialsResponse.Code != http.StatusOK ||
+		!strings.Contains(credentialsResponse.Body.String(), `"name":"reader"`) ||
+		!strings.Contains(credentialsResponse.Body.String(), `"secret":"`) ||
+		!strings.Contains(credentialsResponse.Body.String(), `"secretAvailable":true`) ||
+		!strings.Contains(credentialsResponse.Body.String(), `"name":"legacy"`) ||
+		!strings.Contains(credentialsResponse.Body.String(), `"secretAvailable":false`) {
 		t.Fatalf("list credentials = %d/%s", credentialsResponse.Code, credentialsResponse.Body)
 	}
 	revokeRequest := projectRequest(http.MethodDelete, credentialPath+"/"+credentialID, "")

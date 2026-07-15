@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
-	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/terminaltransport"
@@ -24,29 +23,30 @@ type Actor struct {
 }
 
 type OpenInput struct {
-	ProjectID string
-	ServiceID string
-	Command   []string
-	SourceIP  string
-	Actor     Actor
-	Size      terminaltransport.Size
+	ProjectID    string
+	ResourceKind string
+	ResourceID   string
+	Command      []string
+	SourceIP     string
+	Actor        Actor
+	Size         terminaltransport.Size
 }
 
-type ServiceRepository interface {
-	Service(context.Context, string, string) (state.ServiceDesired, error)
+type ResourceRepository interface {
+	Resource(context.Context, string, string, string) error
 }
 
 type Runtime interface {
-	TerminalTarget(string) (deployment.TerminalTarget, bool, error)
-	ExecTerminal(context.Context, string, string, containerengine.TerminalExecRequest) (int, error)
-	ProbeTerminalShell(context.Context, string, string, string) bool
+	ResourceContainer(string, string) (containerengine.Container, bool, error)
+	ExecResourceTerminal(context.Context, string, string, string, containerengine.TerminalExecRequest) (int, error)
+	ProbeResourceTerminalShell(context.Context, string, string, string, string) bool
 }
 
-func (application *Application) Shells(ctx context.Context, projectID, serviceID string) ([]string, error) {
-	if _, err := application.services.Service(ctx, projectID, serviceID); err != nil {
+func (application *Application) Shells(ctx context.Context, projectID, resourceKind, resourceID string) ([]string, error) {
+	if err := application.resources.Resource(ctx, projectID, resourceKind, resourceID); err != nil {
 		return nil, err
 	}
-	target, active, err := application.runtime.TerminalTarget(serviceID)
+	target, active, err := application.runtime.ResourceContainer(resourceKind, resourceID)
 	if err != nil {
 		return nil, fmt.Errorf("inspect service terminal target: %w", err)
 	}
@@ -55,7 +55,7 @@ func (application *Application) Shells(ctx context.Context, projectID, serviceID
 	}
 	shells := make([]string, 0, 2)
 	for _, shell := range []string{"/bin/sh", "/bin/bash"} {
-		if application.runtime.ProbeTerminalShell(ctx, serviceID, target.ContainerID, shell) {
+		if application.runtime.ProbeResourceTerminalShell(ctx, resourceKind, resourceID, target.ID, shell) {
 			shells = append(shells, shell)
 		}
 	}
@@ -67,23 +67,23 @@ type AuditRepository interface {
 }
 
 type Config struct {
-	Services ServiceRepository
-	Runtime  Runtime
-	Audit    AuditRepository
-	Now      func() time.Time
-	NewID    func(time.Time) (string, error)
+	Resources ResourceRepository
+	Runtime   Runtime
+	Audit     AuditRepository
+	Now       func() time.Time
+	NewID     func(time.Time) (string, error)
 }
 
 type Application struct {
-	services ServiceRepository
-	runtime  Runtime
-	audit    AuditRepository
-	now      func() time.Time
-	newID    func(time.Time) (string, error)
+	resources ResourceRepository
+	runtime   Runtime
+	audit     AuditRepository
+	now       func() time.Time
+	newID     func(time.Time) (string, error)
 }
 
 func New(config Config) (*Application, error) {
-	if config.Services == nil || config.Runtime == nil || config.Audit == nil {
+	if config.Resources == nil || config.Runtime == nil || config.Audit == nil {
 		return nil, errors.New("container console dependencies are incomplete")
 	}
 	now := config.Now
@@ -96,17 +96,17 @@ func New(config Config) (*Application, error) {
 			return id.NewWith(timestamp, rand.Reader)
 		}
 	}
-	return &Application{services: config.Services, runtime: config.Runtime, audit: config.Audit, now: now, newID: newID}, nil
+	return &Application{resources: config.Resources, runtime: config.Runtime, audit: config.Audit, now: now, newID: newID}, nil
 }
 
 func (application *Application) Open(ctx context.Context, input OpenInput) (terminaltransport.Session, error) {
 	if err := validateOpenInput(input); err != nil {
 		return nil, err
 	}
-	if _, err := application.services.Service(ctx, input.ProjectID, input.ServiceID); err != nil {
+	if err := application.resources.Resource(ctx, input.ProjectID, input.ResourceKind, input.ResourceID); err != nil {
 		return nil, err
 	}
-	target, active, err := application.runtime.TerminalTarget(input.ServiceID)
+	target, active, err := application.runtime.ResourceContainer(input.ResourceKind, input.ResourceID)
 	if err != nil {
 		return nil, fmt.Errorf("inspect service terminal target: %w", err)
 	}
@@ -120,18 +120,18 @@ func (application *Application) Open(ctx context.Context, input OpenInput) (term
 	}
 	if err := application.audit.AppendTerminalAudit(ctx, state.TerminalAuditInput{
 		ID: auditID, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
-		Action: "container_terminal.start", TargetKind: "service", TargetID: input.ServiceID,
-		ProjectID: input.ProjectID, ServiceID: input.ServiceID, ContainerID: target.ContainerID,
+		Action: "container_terminal.start", TargetKind: input.ResourceKind, TargetID: input.ResourceID,
+		ProjectID: input.ProjectID, ServiceID: serviceAuditID(input), ContainerID: target.ID,
 		Command: input.Command, SourceIP: input.SourceIP, Result: "succeeded",
 		StartedAtMillis: startedAt.UnixMilli(), CreatedAtMillis: startedAt.UnixMilli(),
 	}); err != nil {
 		return nil, err
 	}
 	return newSession(ctx, sessionConfig{
-		runtime: application.runtime, serviceID: input.ServiceID, containerID: target.ContainerID,
+		runtime: application.runtime, resourceKind: input.ResourceKind, resourceID: input.ResourceID, containerID: target.ID,
 		command: input.Command, size: input.Size,
 		finish: func(reason string, exitCode int, runErr error) error {
-			return application.finish(input, target.ContainerID, startedAt, reason, exitCode, runErr)
+			return application.finish(input, target.ID, startedAt, reason, exitCode, runErr)
 		},
 	}), nil
 }
@@ -156,8 +156,8 @@ func (application *Application) finish(input OpenInput, containerID string, star
 	defer cancel()
 	return application.audit.AppendTerminalAudit(ctx, state.TerminalAuditInput{
 		ID: auditID, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
-		Action: "container_terminal.end", TargetKind: "service", TargetID: input.ServiceID,
-		ProjectID: input.ProjectID, ServiceID: input.ServiceID, ContainerID: containerID,
+		Action: "container_terminal.end", TargetKind: input.ResourceKind, TargetID: input.ResourceID,
+		ProjectID: input.ProjectID, ServiceID: serviceAuditID(input), ContainerID: containerID,
 		Command: input.Command, SourceIP: input.SourceIP, Result: result,
 		StartedAtMillis: startedAt.UnixMilli(), FinishedAtMillis: finishedAt.UnixMilli(),
 		DurationMillis: finishedAt.Sub(startedAt).Milliseconds(), CloseReason: reason,
@@ -166,7 +166,7 @@ func (application *Application) finish(input OpenInput, containerID string, star
 }
 
 func validateOpenInput(input OpenInput) error {
-	if input.ProjectID == "" || input.ServiceID == "" || input.Actor.ID == "" || input.Actor.Email == "" || input.SourceIP == "" {
+	if input.ProjectID == "" || input.ResourceID == "" || !containerResourceKind(input.ResourceKind) || input.Actor.ID == "" || input.Actor.Email == "" || input.SourceIP == "" {
 		return errors.New("container console input is incomplete")
 	}
 	if len(input.Command) == 0 || len(input.Command) > 64 || input.Size.Cols < 1 || input.Size.Rows < 1 {
@@ -185,13 +185,25 @@ func validateOpenInput(input OpenInput) error {
 	return nil
 }
 
+func containerResourceKind(kind string) bool {
+	return kind == "service" || kind == "postgres" || kind == "redis"
+}
+
+func serviceAuditID(input OpenInput) string {
+	if input.ResourceKind == "service" {
+		return input.ResourceID
+	}
+	return ""
+}
+
 type sessionConfig struct {
-	runtime     Runtime
-	serviceID   string
-	containerID string
-	command     []string
-	size        terminaltransport.Size
-	finish      func(string, int, error) error
+	runtime      Runtime
+	resourceKind string
+	resourceID   string
+	containerID  string
+	command      []string
+	size         terminaltransport.Size
+	finish       func(string, int, error) error
 }
 
 type session struct {
@@ -222,7 +234,7 @@ func newSession(parent context.Context, config sessionConfig) *session {
 		done: make(chan struct{}), finish: config.finish, exitCode: -1,
 	}
 	go func() {
-		exitCode, err := config.runtime.ExecTerminal(ctx, config.serviceID, config.containerID, containerengine.TerminalExecRequest{
+		exitCode, err := config.runtime.ExecResourceTerminal(ctx, config.resourceKind, config.resourceID, config.containerID, containerengine.TerminalExecRequest{
 			Command: append([]string(nil), config.command...), Stdin: stdinReader, Output: outputWriter,
 			InitialSize: containerengine.TerminalSize{Cols: config.size.Cols, Rows: config.size.Rows},
 			Resizes:     result.resizes,

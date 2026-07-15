@@ -9,15 +9,14 @@ import (
 
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerengine"
-	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/terminaltransport"
 )
 
-type serviceRepository struct{}
+type resourceRepository struct{}
 
-func (serviceRepository) Service(_ context.Context, projectID, serviceID string) (state.ServiceDesired, error) {
-	return state.ServiceDesired{ID: serviceID, ProjectID: projectID, Enabled: true}, nil
+func (resourceRepository) Resource(_ context.Context, _, _, _ string) error {
+	return nil
 }
 
 type runtimeStub struct {
@@ -25,11 +24,11 @@ type runtimeStub struct {
 	resized chan containerengine.TerminalSize
 }
 
-func (runtime *runtimeStub) TerminalTarget(string) (deployment.TerminalTarget, bool, error) {
-	return deployment.TerminalTarget{DeploymentID: "deployment", ContainerID: "container"}, true, nil
+func (runtime *runtimeStub) ResourceContainer(_, _ string) (containerengine.Container, bool, error) {
+	return containerengine.Container{ID: "container", State: "running"}, true, nil
 }
 
-func (runtime *runtimeStub) ExecTerminal(ctx context.Context, _, containerID string, request containerengine.TerminalExecRequest) (int, error) {
+func (runtime *runtimeStub) ExecResourceTerminal(ctx context.Context, _, _, containerID string, request containerengine.TerminalExecRequest) (int, error) {
 	if containerID != "container" || request.InitialSize != (containerengine.TerminalSize{Cols: 100, Rows: 30}) {
 		return -1, io.ErrUnexpectedEOF
 	}
@@ -50,7 +49,7 @@ func (runtime *runtimeStub) ExecTerminal(ctx context.Context, _, containerID str
 	return -1, ctx.Err()
 }
 
-func (runtime *runtimeStub) ProbeTerminalShell(_ context.Context, _, _ string, shell string) bool {
+func (runtime *runtimeStub) ProbeResourceTerminalShell(_ context.Context, _, _, _ string, shell string) bool {
 	return shell == "/bin/sh"
 }
 
@@ -74,7 +73,7 @@ func TestContainerConsoleOwnsExactExecSessionAndAuditsLifecycle(t *testing.T) {
 	times := []time.Time{time.UnixMilli(1_000), time.UnixMilli(2_500)}
 	var timeMu sync.Mutex
 	application, err := containerconsole.New(containerconsole.Config{
-		Services: serviceRepository{}, Runtime: runtime, Audit: audit,
+		Resources: resourceRepository{}, Runtime: runtime, Audit: audit,
 		Now: func() time.Time {
 			timeMu.Lock()
 			defer timeMu.Unlock()
@@ -88,7 +87,7 @@ func TestContainerConsoleOwnsExactExecSessionAndAuditsLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	session, err := application.Open(context.Background(), containerconsole.OpenInput{
-		ProjectID: "project", ServiceID: "service", Command: []string{"/bin/sh"},
+		ProjectID: "project", ResourceKind: "service", ResourceID: "service", Command: []string{"/bin/sh"},
 		SourceIP: "203.0.113.9", Actor: containerconsole.Actor{ID: "subject", Email: "admin@example.com"},
 		Size: terminaltransport.Size{Cols: 100, Rows: 30},
 	})

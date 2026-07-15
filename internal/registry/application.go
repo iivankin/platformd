@@ -199,11 +199,16 @@ func (application *Application) CreateRepository(ctx context.Context, input Crea
 	if err != nil {
 		return CreateRepositoryResult{}, err
 	}
+	encrypted, err := registryauth.SealSecret(application.master, identifiers[0], identifiers[1], secret)
+	if err != nil {
+		return CreateRepositoryResult{}, err
+	}
 	repository, credential, err := application.store.CreateRegistryRepository(ctx, state.CreateRegistryRepository{
 		ID: identifiers[0], Name: input.Name, PublicPull: input.PublicPull,
 		CredentialID: identifiers[1], CredentialName: input.CredentialName,
 		CredentialPermission: input.CredentialPermission, CredentialSecretHMAC: verifier,
-		AuditEventID: identifiers[2], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
+		CredentialSecretEncrypted: encrypted,
+		AuditEventID:              identifiers[2], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
 		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[3], CreatedAtMillis: now.UnixMilli(),
 	})
 	if err != nil {

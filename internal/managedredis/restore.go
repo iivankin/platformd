@@ -69,6 +69,10 @@ func (controller *Controller) RestoreReplace(
 	if volumeID == resource.VolumeID || runtimeID == resource.ID || volumeID == runtimeID {
 		return errors.New("managed Redis restore identifiers are not unique")
 	}
+	if err := controller.beginCandidateDeployment(ctx, runtimeID, resource, timestamp.UnixMilli()); err != nil {
+		return err
+	}
+	defer controller.finishCandidateDeployment(ctx, runtimeID, &resultErr)
 	volume, err := createRestoreVolume(controller.volumeRoot, resource.ProjectID, volumeID)
 	if err != nil {
 		return err
@@ -136,6 +140,9 @@ func (controller *Controller) RestoreReplace(
 	controller.setActive(resourceID, activeRuntime{
 		resource: switched, container: candidateContainer, network: placement.NetworkName, runtimeID: runtimeID,
 	})
+	if err := controller.activateCandidateDeployment(ctx, resourceID, runtimeID); err != nil {
+		return err
+	}
 	publishErr := controller.publisher.PublishRedis(switched, candidateContainer)
 	cleanupErr := controller.removeReplacedRuntime(ctx, oldRuntime, oldRunning, resource)
 	return errors.Join(publishErr, cleanupErr)

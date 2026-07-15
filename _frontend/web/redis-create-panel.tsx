@@ -6,6 +6,7 @@ import { createManagedRedis, fetchManagedImageTags } from "@/api";
 import type { ManagedRedis } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { redisConnectionURL } from "@/connection-values";
 import { FormField } from "@/form-field";
 
 interface RedisCreatePanelProperties {
@@ -98,7 +99,7 @@ export const RedisCreatePanel = ({
             Redis desired state created
           </div>
           <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-            Save this password now. Platformd will not reveal it again.
+            Connection details remain available from the Redis overview.
           </p>
           <dl className="mt-5 border-t border-border">
             <div className="border-b border-border py-3">
@@ -107,6 +108,14 @@ export const RedisCreatePanel = ({
               </dt>
               <dd className="mt-1 text-[10px] break-all">
                 {created.hostname}:{created.port}
+              </dd>
+            </div>
+            <div className="border-b border-border py-3">
+              <dt className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
+                Connection URL
+              </dt>
+              <dd className="mt-1 text-[10px] break-all select-all">
+                {redisConnectionURL(created)}
               </dd>
             </div>
             <div className="border-b border-border py-3">
@@ -134,7 +143,7 @@ export const RedisCreatePanel = ({
             </div>
           </dl>
           <Button className="mt-5 w-full" onClick={onCreated}>
-            I saved the password
+            Open project
           </Button>
         </div>
       ) : (

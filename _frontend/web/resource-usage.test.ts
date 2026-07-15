@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 
 import type { ResourceUsage } from "@/api";
-import { cpuMillicoresBetween } from "@/resource-usage";
+import {
+  cpuMillicoresBetween,
+  networkBytesPerSecondBetween,
+} from "@/resource-usage";
 
 const sample = (
   observedAt: number,
@@ -12,8 +15,20 @@ const sample = (
   hostCpuCores: 8,
   hostMemoryBytes: 16 * 1024 ** 3,
   memoryBytes: 64 * 1024 ** 2,
+  networkAvailable: true,
+  networkRxBytes: cpuUsageMicros * 2,
+  networkTxBytes: cpuUsageMicros,
   observedAt,
   running,
+});
+
+test("derives network ingress and egress rates from cumulative counters", () => {
+  expect(
+    networkBytesPerSecondBetween(sample(1000, 10_000), sample(6000, 20_000))
+  ).toEqual({ egress: 2000, ingress: 4000 });
+  expect(
+    networkBytesPerSecondBetween(sample(6000, 20_000), sample(1000, 10_000))
+  ).toBeUndefined();
 });
 
 test("derives instantaneous CPU millicores from cumulative cgroup counters", () => {

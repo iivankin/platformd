@@ -37,6 +37,14 @@ func (store *applicationStore) RecordManagedRedisDataMutation(_ context.Context,
 	return nil
 }
 
+func (*applicationStore) RuntimeDeployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error) {
+	return state.RuntimeDeploymentPage{}, nil
+}
+
+func (*applicationStore) RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error) {
+	return state.RuntimeDeployment{}, nil
+}
+
 type applicationRuntime struct {
 	tag           string
 	startedID     string
@@ -56,9 +64,21 @@ func (runtime *applicationRuntime) StartManagedRedis(_ context.Context, id strin
 	return nil
 }
 
+func (*applicationRuntime) RestartManagedRedisDeployment(context.Context, string, string) error {
+	return nil
+}
+
+func (*applicationRuntime) RemoveManagedRedisDeployment(context.Context, string, string) error {
+	return nil
+}
+
 func (runtime *applicationRuntime) ManagedRedisPersistence(_ context.Context, id string) (PersistenceStatus, error) {
 	runtime.persistenceID = id
 	return runtime.persistence, nil
+}
+
+func (*applicationRuntime) ManagedRedisStats(context.Context, string) (Stats, error) {
+	return Stats{}, nil
 }
 
 func (*applicationRuntime) ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error) {

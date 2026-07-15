@@ -129,6 +129,8 @@ func (connection *testConnection) PersistenceStatus(context.Context) (Persistenc
 	return status, nil
 }
 
+func (*testConnection) Stats(context.Context) (Stats, error) { return Stats{}, nil }
+
 func (*testConnection) ScanKeys(context.Context, ScanQuery) (KeyPage, error) {
 	return KeyPage{}, nil
 }

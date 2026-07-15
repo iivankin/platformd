@@ -2,11 +2,16 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
 )
+
+const objectStoreLogLimit = state.MaximumAuditPageSize
 
 type liveLogRepository struct {
 	store  *state.Store
@@ -41,4 +46,61 @@ func (repository liveLogRepository) ServiceLogRevision(ctx context.Context, proj
 	return repository.reader.Revision(ctx, containerlogs.Query{
 		ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains,
 	})
+}
+
+func (repository liveLogRepository) ResourceLogs(ctx context.Context, projectID, kind, resourceID, deploymentID, contains string, limit int) (containerlogs.Window, error) {
+	switch kind {
+	case "postgres":
+		if _, err := repository.store.ManagedPostgresInProject(ctx, projectID, resourceID); err != nil {
+			return containerlogs.Window{}, err
+		}
+	case "redis":
+		if _, err := repository.store.ManagedRedisInProject(ctx, projectID, resourceID); err != nil {
+			return containerlogs.Window{}, err
+		}
+	case "object_store":
+		if _, err := repository.store.ObjectStoreInProject(ctx, projectID, resourceID); err != nil {
+			return containerlogs.Window{}, err
+		}
+		return repository.objectStoreLogs(ctx, resourceID, contains, limit)
+	default:
+		return containerlogs.Window{}, fmt.Errorf("%w: unsupported resource log kind", containerlogs.ErrInvalidQuery)
+	}
+	return repository.reader.ReadRuntime(ctx, containerlogs.RuntimeQuery{
+		Kind: kind, ResourceID: resourceID, DeploymentID: deploymentID, Contains: contains, Limit: limit,
+	})
+}
+
+func (repository liveLogRepository) objectStoreLogs(ctx context.Context, resourceID, contains string, limit int) (containerlogs.Window, error) {
+	if limit == 0 {
+		limit = containerlogs.DefaultLimit
+	}
+	if limit < 1 || limit > containerlogs.MaximumLimit || len(contains) > containerlogs.MaximumContainsBytes || strings.ContainsRune(contains, '\x00') {
+		return containerlogs.Window{}, containerlogs.ErrInvalidQuery
+	}
+	// Object storage runs in-process, so its resource log surface is the
+	// authoritative audit activity stream rather than container log files.
+	page, err := repository.store.AuditEvents(ctx, state.AuditQuery{
+		TargetKind: "object_store", TargetID: resourceID, Limit: min(limit, objectStoreLogLimit),
+	})
+	if err != nil {
+		return containerlogs.Window{}, err
+	}
+	records := make([]containerlogs.Record, 0, len(page.Events))
+	for index := len(page.Events) - 1; index >= 0; index-- {
+		event := page.Events[index]
+		text := event.Action + " " + event.Result
+		if contains != "" && !strings.Contains(text, contains) {
+			continue
+		}
+		stream := "stdout"
+		if event.Result == "failed" {
+			stream = "stderr"
+		}
+		records = append(records, containerlogs.Record{
+			Timestamp: time.UnixMilli(event.CreatedAtMillis), Stream: stream, Text: text,
+			DeploymentID: resourceID, AttemptID: event.ID,
+		})
+	}
+	return containerlogs.Window{Records: records, Truncated: page.NextCursor != ""}, nil
 }

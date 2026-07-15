@@ -10,7 +10,7 @@ import (
 func managedPostgresAdminTool() Tool {
 	return Tool{
 		Name:        "create_managed_postgres",
-		Description: "Create a managed PostgreSQL owner database from an official image tag and return its owner password once. Requires an admin token.",
+		Description: "Create a managed PostgreSQL owner database from an official image tag and return its persistent owner password. Requires an admin token.",
 		InputSchema: objectSchema(map[string]any{
 			"projectId": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"},
 			"imageTag": map[string]any{"type": "string"}, "cpuMillicores": map[string]any{"type": "integer", "minimum": 0},

@@ -95,7 +95,8 @@ func validateTerminalAudit(input TerminalAuditInput) error {
 		"server_terminal.start":    true,
 		"server_terminal.end":      true,
 	}
-	if !allowedActions[input.Action] || (input.TargetKind != "service" && input.TargetKind != "installation") {
+	validTarget := input.TargetKind == "service" || input.TargetKind == "postgres" || input.TargetKind == "redis" || input.TargetKind == "installation"
+	if !allowedActions[input.Action] || !validTarget {
 		return errors.New("terminal audit action or target is invalid")
 	}
 	if input.Result != "succeeded" && input.Result != "failed" {

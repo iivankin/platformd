@@ -1,13 +1,16 @@
-import { Power, RefreshCw, Server, SquareTerminal, X } from "lucide-react";
+import { Power, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 
 import {
+  deployServiceVersion,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
   fetchVolumes,
   redeployService,
-  rollbackService,
+  removeServiceDeployment,
+  restartServiceDeployment,
   updateService,
 } from "@/api";
 import type {
@@ -18,19 +21,31 @@ import type {
   Volume,
 } from "@/api";
 import { Button } from "@/components/ui/button";
-import { ContainerTerminalOverlay } from "@/container-terminal-overlay";
 import { DeploymentHistory } from "@/deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
+import { deploymentPath } from "@/project-resource-path";
+import { ResourceConsole } from "@/resource-console";
 import { ResourceUsage } from "@/resource-usage";
+import { ServiceConfiguration } from "@/service-configuration";
+import type { ServiceConfigurationValues } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
+import { ServiceVariables } from "@/service-variables";
 import { ServiceVolumes } from "@/service-volumes";
+import { WorkspaceView } from "@/workspace-view";
+
+export type ServiceWorkspaceView =
+  | "deployments"
+  | "metrics"
+  | "variables"
+  | "console"
+  | "settings";
 
 interface ServiceDetailPanelProperties {
   data: ResourceNodeData;
   onChanged: () => void;
-  onClose: () => void;
   projectID: string;
   serviceID: string;
+  view: ServiceWorkspaceView;
 }
 
 const serviceUpdate = (
@@ -48,6 +63,7 @@ const serviceUpdate = (
   imageCredentialId: service.imageCredentialId,
   imageReference: service.imageReference,
   memoryMaxBytes: service.memoryMaxBytes,
+  resourceReferences: service.resourceReferences,
   secretReferences: service.secretReferences,
   startupTimeoutSeconds: service.startupTimeoutSeconds,
   targetPort: service.targetPort,
@@ -74,22 +90,38 @@ const Detail = ({ label, value }: { label: string; value?: string }) => (
   </div>
 );
 
+const ServicePanelError = ({
+  error,
+  hidden,
+}: {
+  error: string | null;
+  hidden: boolean;
+}) => {
+  if (!(error && !hidden)) {
+    return null;
+  }
+  return (
+    <p className="border-b border-destructive/30 bg-destructive/5 px-5 py-3 text-[10px] text-destructive">
+      {error}
+    </p>
+  );
+};
+
 export const ServiceDetailPanel = ({
   data,
   onChanged,
-  onClose,
   projectID,
   serviceID,
+  view,
 }: ServiceDetailPanelProperties) => {
+  const navigate = useNavigate();
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [domains, setDomains] = useState<ServiceDomain[]>([]);
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [nextCursor, setNextCursor] = useState<string>();
-  const [rollbackCandidate, setRollbackCandidate] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string | null>(null);
-  const [terminalOpen, setTerminalOpen] = useState(false);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -147,7 +179,6 @@ export const ServiceDetailPanel = ({
       const page = await fetchServiceDeployments(projectID, serviceID);
       setDeployments(page.deployments);
       setNextCursor(page.nextCursor);
-      setRollbackCandidate(undefined);
       onChanged();
       return true;
     } catch (actionError) {
@@ -186,180 +217,248 @@ export const ServiceDetailPanel = ({
     }
   };
 
+  const saveConfiguration = (values: ServiceConfigurationValues) => {
+    if (!service) {
+      return Promise.resolve(false);
+    }
+    return apply("save configuration", () =>
+      updateService(projectID, serviceID, {
+        ...serviceUpdate(service, service.enabled),
+        ...values,
+      })
+    );
+  };
+
+  const saveVariables = (
+    environment: Record<string, string>,
+    resourceReferences: Service["resourceReferences"]
+  ) => {
+    if (!service) {
+      return Promise.resolve(false);
+    }
+    return apply("save variables", () =>
+      updateService(projectID, serviceID, {
+        ...serviceUpdate(service, service.enabled),
+        environment,
+        resourceReferences,
+      })
+    );
+  };
+
   return (
-    <>
-      <aside className="absolute inset-y-0 right-0 z-20 w-full max-w-lg overflow-y-auto border-l border-border bg-background shadow-[-8px_0_24px_oklch(0_0_0/5%)]">
-        <div className="flex h-12 items-center border-b border-border px-4">
-          <Server className="size-4 text-muted-foreground" />
-          <div className="ml-2 min-w-0">
-            <h2 className="truncate text-xs font-medium">{data.name}</h2>
-            <p className="text-[9px] text-muted-foreground">Service</p>
-          </div>
-          <Button
-            aria-label="Close service details"
-            className="ml-auto"
-            onClick={onClose}
-            size="icon"
-            variant="ghost"
-          >
-            <X />
-          </Button>
-        </div>
-
-        <section className="border-b border-border px-4 py-4">
-          <div className="flex items-center gap-2">
-            <span className={`size-1.5 ${statusColor(data.status)}`} />
-            <span className="text-[10px] font-medium capitalize">
-              {data.status}
-            </span>
-          </div>
-          {data.statusMessage ? (
-            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-              {data.statusMessage}
-            </p>
-          ) : null}
-        </section>
-
-        <ResourceUsage
-          cpuMillicores={service?.cpuMillicores}
-          kind="service"
-          memoryBytes={service?.memoryMaxBytes}
-          resourceID={serviceID}
-        />
-
-        <section className="border-b border-border px-4 py-4">
-          <div className="flex flex-wrap gap-2">
-            <Button
-              disabled={!service || Boolean(busy)}
-              onClick={() => {
+    <div>
+      <WorkspaceView
+        active={view}
+        views={{
+          console: (
+            <ResourceConsole
+              projectID={projectID}
+              resourceID={serviceID}
+              resourceKind="service"
+              resourceName={data.name}
+            />
+          ),
+          deployments: (
+            <DeploymentHistory
+              activeDeploymentID={service?.activeDeploymentId}
+              busy={Boolean(busy)}
+              deployments={deployments}
+              nextCursor={nextCursor}
+              onDeployVersion={(deployment) => {
                 if (service) {
-                  void apply(service.enabled ? "disable" : "enable", () =>
-                    updateService(
+                  void apply("deploy version", () =>
+                    deployServiceVersion(
                       projectID,
                       serviceID,
-                      serviceUpdate(service, !service.enabled)
+                      deployment.id,
+                      service.updatedAt
                     )
                   );
                 }
               }}
-              size="sm"
-              variant={service?.enabled ? "destructive" : "default"}
-            >
-              <Power />
-              {service?.enabled ? "Disable" : "Enable"}
-            </Button>
-            <Button
-              disabled={!service?.enabled || Boolean(busy)}
-              onClick={() => {
+              onLoadOlder={() => void loadOlder()}
+              onRedeploy={() => {
                 if (service) {
                   void apply("redeploy", () =>
                     redeployService(projectID, serviceID, service.updatedAt)
                   );
                 }
               }}
-              size="sm"
-              variant="outline"
-            >
-              <RefreshCw />
-              Redeploy
-            </Button>
-            <Button
-              disabled={data.status !== "running"}
-              onClick={() => setTerminalOpen(true)}
-              size="sm"
-              variant="outline"
-            >
-              <SquareTerminal />
-              Terminal
-            </Button>
-          </div>
-          {error ? (
-            <p aria-live="polite" className="mt-3 text-[10px] text-destructive">
-              {error}
-            </p>
-          ) : null}
-        </section>
-
-        <section className="border-b border-border px-4 py-4">
-          <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
-            Runtime configuration
-          </h3>
-          <dl className="mt-2">
-            <Detail label="Internal DNS" value={data.internalHostname} />
-            <Detail label="Image" value={service?.imageReference} />
-            <Detail label="Digest" value={service?.activeImageDigest} />
-            <Detail
-              label="Target port"
-              value={service?.targetPort?.toString()}
-            />
-            <Detail
-              label="Updated"
-              value={
-                service
-                  ? new Date(service.updatedAt).toLocaleString()
-                  : "Loading…"
+              onRemove={(deployment) => {
+                if (service) {
+                  void apply("remove deployment", () =>
+                    removeServiceDeployment(
+                      projectID,
+                      serviceID,
+                      deployment.id,
+                      service.updatedAt
+                    )
+                  );
+                }
+              }}
+              onRestart={(deployment) => {
+                if (service) {
+                  void apply("restart", () =>
+                    restartServiceDeployment(
+                      projectID,
+                      serviceID,
+                      deployment.id,
+                      service.updatedAt
+                    )
+                  );
+                }
+              }}
+              onViewLogs={(deployment) =>
+                void navigate(
+                  deploymentPath(projectID, serviceID, deployment.id)
+                )
               }
             />
-          </dl>
-        </section>
+          ),
+          metrics: (
+            <ResourceUsage
+              cpuMillicores={service?.cpuMillicores}
+              kind="service"
+              memoryBytes={service?.memoryMaxBytes}
+              resourceID={serviceID}
+            />
+          ),
+          settings: (
+            <>
+              <section className="border-b border-border px-4 py-4">
+                <div className="flex items-center gap-2">
+                  <span className={`size-1.5 ${statusColor(data.status)}`} />
+                  <span className="text-[10px] font-medium capitalize">
+                    {data.status}
+                  </span>
+                </div>
+                {data.statusMessage ? (
+                  <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+                    {data.statusMessage}
+                  </p>
+                ) : null}
+              </section>
 
-        {service ? (
-          <ServiceVolumes
-            onMountsChange={(mounts) =>
-              apply("update volume mounts", () =>
-                updateService(
-                  projectID,
-                  serviceID,
-                  serviceUpdate(service, service.enabled, mounts)
-                )
-              )
-            }
-            onVolumesChange={setVolumes}
-            projectID={projectID}
-            service={service}
-            serviceID={serviceID}
-            volumes={volumes}
-          />
-        ) : null}
+              <section className="border-b border-border px-4 py-4">
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={!service || Boolean(busy)}
+                    onClick={() => {
+                      if (service) {
+                        void apply(service.enabled ? "disable" : "enable", () =>
+                          updateService(
+                            projectID,
+                            serviceID,
+                            serviceUpdate(service, !service.enabled)
+                          )
+                        );
+                      }
+                    }}
+                    size="sm"
+                    variant={service?.enabled ? "destructive" : "default"}
+                  >
+                    <Power />
+                    {service?.enabled ? "Disable" : "Enable"}
+                  </Button>
+                  <Button
+                    disabled={!service?.enabled || Boolean(busy)}
+                    onClick={() => {
+                      if (service) {
+                        void apply("redeploy", () =>
+                          redeployService(
+                            projectID,
+                            serviceID,
+                            service.updatedAt
+                          )
+                        );
+                      }
+                    }}
+                    size="sm"
+                    variant="outline"
+                  >
+                    <RefreshCw />
+                    Redeploy
+                  </Button>
+                </div>
+                {error ? (
+                  <p
+                    aria-live="polite"
+                    className="mt-3 text-[10px] text-destructive"
+                  >
+                    {error}
+                  </p>
+                ) : null}
+              </section>
 
-        <ServiceDomains
-          domains={domains}
-          onChanged={setDomains}
-          projectID={projectID}
-          serviceID={serviceID}
-          targetPort={service?.targetPort}
-        />
-
-        <DeploymentHistory
-          busy={Boolean(busy)}
-          deployments={deployments}
-          nextCursor={nextCursor}
-          onCancelRollback={() => setRollbackCandidate(undefined)}
-          onLoadOlder={() => void loadOlder()}
-          onRollback={(deployment) => {
-            if (service) {
-              void apply("rollback", () =>
-                rollbackService(
-                  projectID,
-                  serviceID,
-                  deployment.id,
-                  service.updatedAt
-                )
-              );
-            }
-          }}
-          onSelectRollback={setRollbackCandidate}
-          rollbackCandidate={rollbackCandidate}
-        />
-      </aside>
-      {terminalOpen ? (
-        <ContainerTerminalOverlay
-          onClose={() => setTerminalOpen(false)}
-          projectID={projectID}
-          serviceID={serviceID}
-          serviceName={data.name}
-        />
-      ) : null}
-    </>
+              <section className="border-b border-border px-4 py-4">
+                <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
+                  Runtime configuration
+                </h3>
+                <dl className="mt-2">
+                  <Detail label="Internal DNS" value={data.internalHostname} />
+                  <Detail label="Image" value={service?.imageReference} />
+                  <Detail label="Digest" value={service?.activeImageDigest} />
+                  <Detail
+                    label="Target port"
+                    value={service?.targetPort?.toString()}
+                  />
+                  <Detail
+                    label="Updated"
+                    value={
+                      service
+                        ? new Date(service.updatedAt).toLocaleString()
+                        : "Loading…"
+                    }
+                  />
+                </dl>
+              </section>
+              {service ? (
+                <>
+                  <ServiceConfiguration
+                    busy={Boolean(busy)}
+                    key={service.updatedAt}
+                    onSave={saveConfiguration}
+                    service={service}
+                  />
+                  <ServiceVolumes
+                    onMountsChange={(mounts) =>
+                      apply("update volume mounts", () =>
+                        updateService(
+                          projectID,
+                          serviceID,
+                          serviceUpdate(service, service.enabled, mounts)
+                        )
+                      )
+                    }
+                    onVolumesChange={setVolumes}
+                    projectID={projectID}
+                    service={service}
+                    serviceID={serviceID}
+                    volumes={volumes}
+                  />
+                  <ServiceDomains
+                    domains={domains}
+                    onChanged={setDomains}
+                    projectID={projectID}
+                    serviceID={serviceID}
+                    targetPort={service.targetPort}
+                  />
+                </>
+              ) : null}
+            </>
+          ),
+          variables: service ? (
+            <ServiceVariables
+              busy={Boolean(busy)}
+              key={service.updatedAt}
+              onSave={saveVariables}
+              projectID={projectID}
+              service={service}
+            />
+          ) : null,
+        }}
+      />
+      <ServicePanelError error={error} hidden={view === "settings"} />
+    </div>
   );
 };

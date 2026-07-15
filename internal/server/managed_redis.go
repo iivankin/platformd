@@ -23,11 +23,17 @@ const maximumManagedRedisRequestBytes = 16 << 10
 type ManagedRedisRepository interface {
 	Create(context.Context, managedredis.CreateInput) (managedredis.CreateResult, error)
 	Resource(context.Context, string, string) (state.ManagedRedis, error)
+	Password(context.Context, string, string) (string, error)
 	Resources(context.Context, string) ([]state.ManagedRedis, error)
 	Persistence(context.Context, string, string) (managedredis.PersistenceReport, error)
+	Stats(context.Context, string, string) (managedredis.Stats, error)
 	Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error)
 	Preview(context.Context, string, string, managedredis.PreviewQuery) (managedredis.Preview, error)
 	Mutate(context.Context, managedredis.DataMutationInput) (managedredis.DataMutationResult, error)
+	Deployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error)
+	Deployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
+	RestartDeployment(context.Context, string, string, string) error
+	RemoveDeployment(context.Context, string, string, string) error
 }
 
 type managedRedisResponse struct {
@@ -63,9 +69,25 @@ func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepos
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/persistence", getManagedRedisPersistence(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/stats", getManagedRedisStats(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis/{redisID}/data/mutations", mutateManagedRedisData(repository))
+	registerManagedDeploymentRoutes(mux, "redis", repository, writeManagedRedisError)
+}
+
+func getManagedRedisStats(repository ManagedRedisRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		stats, err := repository.Stats(request.Context(), request.PathValue("projectID"), request.PathValue("redisID"))
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, stats)
+	}
 }
 
 func getManagedRedisPersistence(repository ManagedRedisRepository) http.HandlerFunc {
@@ -236,7 +258,12 @@ func getManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 			writeManagedRedisError(response, err)
 			return
 		}
-		writeJSON(response, http.StatusOK, publicManagedRedis(resource, ""))
+		password, err := repository.Password(request.Context(), request.PathValue("projectID"), request.PathValue("redisID"))
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicManagedRedis(resource, password))
 	}
 }
 

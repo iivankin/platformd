@@ -20,7 +20,7 @@ import type {
   RecoveryResourceKind,
   RecoveryStatus,
 } from "@/api";
-import { BackupsPage } from "@/backups-page";
+import { BackupStoragePage } from "@/backup-storage-page";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useResourceRestore } from "@/use-resource-restore";
@@ -425,7 +425,7 @@ export const RecoveryPage = () => {
         )}
       </section>
 
-      <BackupsPage targetOnly />
+      <BackupStoragePage />
     </div>
   );
 };

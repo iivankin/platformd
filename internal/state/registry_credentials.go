@@ -18,6 +18,7 @@ type CreateRegistryCredential struct {
 	Name                 string
 	Permission           string
 	SecretHMAC           []byte
+	SecretEncrypted      []byte
 	AuditEventID         string
 	ActorKind            string
 	ActorID              string
@@ -27,7 +28,7 @@ type CreateRegistryCredential struct {
 }
 
 func (store *Store) CreateRegistryCredential(ctx context.Context, input CreateRegistryCredential) (RegistryCredential, error) {
-	if input.ID == "" || input.RepositoryID == "" || len(input.SecretHMAC) != 32 || input.AuditEventID == "" || input.CreatedAtMillis <= 0 {
+	if input.ID == "" || input.RepositoryID == "" || len(input.SecretHMAC) != 32 || len(input.SecretEncrypted) == 0 || input.AuditEventID == "" || input.CreatedAtMillis <= 0 {
 		return RegistryCredential{}, errors.New("create registry credential input is incomplete")
 	}
 	if err := validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail); err != nil {
@@ -56,9 +57,9 @@ SELECT EXISTS(SELECT 1 FROM registry_credentials WHERE repository_id = ? AND nam
 			return ErrRegistryCredentialNameConflict
 		}
 		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, input.ID, input.RepositoryID, input.Name,
-			input.Permission, input.SecretHMAC, input.CreatedAtMillis); err != nil {
+INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, secret_encrypted, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`, input.ID, input.RepositoryID, input.Name,
+			input.Permission, input.SecretHMAC, input.SecretEncrypted, input.CreatedAtMillis); err != nil {
 			return fmt.Errorf("create registry credential: %w", err)
 		}
 		metadata, err := json.Marshal(map[string]string{
@@ -85,7 +86,7 @@ INSERT INTO audit_events(
 
 func (store *Store) RegistryCredentials(ctx context.Context, repositoryID string) ([]RegistryCredential, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, repository_id, name, permission, secret_hmac, created_at, last_used_at
+SELECT id, repository_id, name, permission, secret_hmac, secret_encrypted, created_at, last_used_at
 FROM registry_credentials WHERE repository_id = ? ORDER BY name, id`, repositoryID)
 	if err != nil {
 		return nil, err
@@ -97,7 +98,7 @@ FROM registry_credentials WHERE repository_id = ? ORDER BY name, id`, repository
 		var lastUsed sql.NullInt64
 		if err := rows.Scan(
 			&credential.ID, &credential.RepositoryID, &credential.Name, &credential.Permission,
-			&credential.SecretHMAC, &credential.CreatedAtMillis, &lastUsed,
+			&credential.SecretHMAC, &credential.SecretEncrypted, &credential.CreatedAtMillis, &lastUsed,
 		); err != nil {
 			return nil, err
 		}

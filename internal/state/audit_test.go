@@ -35,6 +35,10 @@ INSERT INTO audit_events(id, actor_kind, actor_id, action, target_kind, target_i
 	if err != nil || len(filtered.Events) != 1 || filtered.Events[0].ID != "b" {
 		t.Fatalf("filtered page = %+v, %v", filtered, err)
 	}
+	targeted, err := store.AuditEvents(context.Background(), AuditQuery{TargetKind: "service", TargetID: "s"})
+	if err != nil || len(targeted.Events) != 2 || targeted.Events[0].ID != "c" || targeted.Events[1].ID != "b" {
+		t.Fatalf("targeted page = %+v, %v", targeted, err)
+	}
 	deleted, err := store.CleanupAuditEvents(context.Background(), 25, 1)
 	if err != nil || deleted != 1 {
 		t.Fatalf("cleanup = %d, %v", deleted, err)

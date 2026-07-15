@@ -13,14 +13,22 @@ const (
 	DefaultScanBytes     = 4 << 20
 	DefaultRecordBytes   = 64 << 10
 	MaximumDownloadBytes = 100 << 20
+	MaximumContainsBytes = 256
 	truncationMarker     = "… [truncated]"
-	maximumContainsBytes = 256
 )
 
 const MaximumDownloadRange = 24 * time.Hour
 
 type Query struct {
 	ServiceID    string
+	DeploymentID string
+	Contains     string
+	Limit        int
+}
+
+type RuntimeQuery struct {
+	Kind         string
+	ResourceID   string
 	DeploymentID string
 	Contains     string
 	Limit        int

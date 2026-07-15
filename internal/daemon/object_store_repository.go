@@ -80,6 +80,10 @@ func (repository *liveObjectStoreRepository) S3Credential(ctx context.Context, c
 	return repository.store.S3Credential(ctx, credentialID)
 }
 
+func (repository *liveObjectStoreRepository) S3CredentialsByObjectStore(ctx context.Context, objectStoreID string) ([]state.S3Credential, error) {
+	return repository.store.S3CredentialsByObjectStore(ctx, objectStoreID)
+}
+
 func (repository *liveObjectStoreRepository) CommitObject(ctx context.Context, input state.CommitObject) (state.ObjectMetadata, error) {
 	return repository.store.CommitObject(ctx, input)
 }

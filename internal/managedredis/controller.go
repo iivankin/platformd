@@ -36,6 +36,17 @@ type Store interface {
 	SwitchManagedRedisVolume(context.Context, state.SwitchManagedRedisVolume) error
 }
 
+type DeploymentStore interface {
+	BeginRuntimeDeployment(context.Context, state.RuntimeDeployment) error
+	ActivateRuntimeDeployment(context.Context, string, string, string, int64) error
+	FailRuntimeDeployment(context.Context, string, string, string, int64) error
+	StopRuntimeDeployment(context.Context, string, string, string, int64) error
+	DeleteRuntimeDeployment(context.Context, string, string, string) error
+	RestartRuntimeDeployment(context.Context, string, string, string) error
+	ActiveRuntimeDeployment(context.Context, string, string) (state.RuntimeDeployment, error)
+	RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
+}
+
 type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
 	InspectImage(context.Context, string) (containerengine.Image, error)
@@ -60,6 +71,7 @@ type RedisConnection interface {
 	KillNormalClients(context.Context) error
 	BeginBackgroundSave(context.Context) error
 	PersistenceStatus(context.Context) (PersistenceStatus, error)
+	Stats(context.Context) (Stats, error)
 	ScanKeys(context.Context, ScanQuery) (KeyPage, error)
 	PreviewKey(context.Context, PreviewQuery) (Preview, error)
 	Mutate(context.Context, Mutation) (MutationResult, error)
@@ -86,6 +98,7 @@ type Publisher interface {
 
 type Config struct {
 	Store            Store
+	Deployments      DeploymentStore
 	Engine           Engine
 	Publisher        Publisher
 	Growth           GrowthGate
@@ -115,6 +128,7 @@ type activeRuntime struct {
 
 type Controller struct {
 	store            Store
+	deployments      DeploymentStore
 	engine           Engine
 	publisher        Publisher
 	growth           GrowthGate
@@ -180,7 +194,7 @@ func NewController(config Config) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
+		store: config.Store, deployments: config.Deployments, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		password: config.Password, placement: config.Placement, dial: dial,
 		generatedRoot: config.GeneratedRoot, volumeRoot: config.VolumeRoot, logRoot: config.LogRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -203,7 +217,7 @@ func (controller *Controller) RestoreAll(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
-func (controller *Controller) Start(ctx context.Context, resourceID string) error {
+func (controller *Controller) Start(ctx context.Context, resourceID string) (resultErr error) {
 	lease, err := controller.admission.Begin("redis_start", resourceID)
 	if err != nil {
 		return err
@@ -218,6 +232,20 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	resource, err := controller.store.ManagedRedis(ctx, resourceID)
 	if err != nil {
 		return err
+	}
+	runtimeID, stopped, err := controller.prepareRuntimeDeployment(ctx, resource)
+	if err != nil {
+		return err
+	}
+	if stopped {
+		return nil
+	}
+	if controller.deployments != nil {
+		defer func() {
+			if resultErr != nil {
+				resultErr = errors.Join(resultErr, controller.recordDeploymentFailure(runtimeID, "start_failed", resultErr.Error()))
+			}
+		}()
 	}
 	password, err := controller.password(resource)
 	if err != nil {
@@ -242,7 +270,7 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err != nil {
 		return err
 	}
-	container, err := controller.createContainer(ctx, resource, image.ID, placement, volume, configPath)
+	container, err := controller.createContainerAttempt(ctx, resource, runtimeID, image.ID, placement, volume, configPath)
 	if err != nil {
 		return err
 	}
@@ -262,8 +290,13 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) erro
 	if err := controller.publisher.PublishRedis(resource, ready); err != nil {
 		return fmt.Errorf("publish managed Redis: %w", err)
 	}
+	if controller.deployments != nil {
+		if err := controller.deployments.ActivateRuntimeDeployment(ctx, "redis", resource.ID, runtimeID, controller.now().UnixMilli()); err != nil {
+			return errors.Join(fmt.Errorf("activate managed Redis deployment: %w", err), controller.publisher.WithdrawRedis(resource))
+		}
+	}
 	controller.setActive(resource.ID, activeRuntime{
-		resource: resource, container: ready, network: placement.NetworkName, runtimeID: resource.ID,
+		resource: resource, container: ready, network: placement.NetworkName, runtimeID: runtimeID,
 	})
 	remove = false
 	return nil
@@ -273,6 +306,10 @@ func (controller *Controller) Stop(ctx context.Context, resourceID string) error
 	lock := controller.resourceLock(resourceID)
 	lock.Lock()
 	defer lock.Unlock()
+	return controller.stopLocked(ctx, resourceID)
+}
+
+func (controller *Controller) stopLocked(ctx context.Context, resourceID string) error {
 	active, ok := controller.activeRuntime(resourceID)
 	if !ok {
 		return nil
@@ -585,6 +622,34 @@ func (controller *Controller) Persistence(ctx context.Context, resourceID string
 	return connection.PersistenceStatus(ctx)
 }
 
+func (controller *Controller) Stats(ctx context.Context, resourceID string) (Stats, error) {
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return Stats{}, ErrMaintenance
+	}
+	if !ok {
+		return Stats{}, ErrNotRunning
+	}
+	password, err := controller.password(active.resource)
+	if err != nil {
+		return Stats{}, err
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return Stats{}, err
+	}
+	addresses := container.IPs[active.network]
+	if container.State != "running" || len(addresses) != 1 {
+		return Stats{}, ErrNotRunning
+	}
+	connection, err := controller.dial(ctx, net.JoinHostPort(addresses[0], fmt.Sprint(Port)), password)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer connection.Close()
+	return connection.Stats(ctx)
+}
+
 func (controller *Controller) PreviewKey(ctx context.Context, resourceID string, query PreviewQuery) (Preview, error) {
 	active, ok, maintenance := controller.availableRuntime(resourceID)
 	if maintenance {
@@ -666,7 +731,7 @@ func (controller *Controller) createContainerAttempt(
 	if err != nil {
 		return containerengine.Container{}, fmt.Errorf("allocate managed Redis runtime attempt ID: %w", err)
 	}
-	logPath := filepath.Join(controller.logRoot, "redis", resource.ID, attemptID+".log")
+	logPath := filepath.Join(controller.logRoot, "redis", resource.ID, runtimeID, attemptID+".log")
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return containerengine.Container{}, fmt.Errorf("create managed Redis log directory: %w", err)
 	}

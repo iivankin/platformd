@@ -17,6 +17,7 @@ func adminTools() []Tool {
 			"command":               map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"args":                  map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"environment":           map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"resourceReferences":    map[string]any{"type": "array"},
 			"secretReferences":      map[string]any{"type": "array"},
 			"targetPort":            map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
 			"healthPath":            map[string]any{"type": "string"},

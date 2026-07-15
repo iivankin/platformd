@@ -40,6 +40,7 @@ func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostg
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres/{postgresID}/query", queryManagedPostgres(application))
+	registerManagedDeploymentRoutes(mux, "postgres", application, writeManagedPostgresError)
 }
 
 func listManagedPostgres(application *managedpostgres.Application) http.HandlerFunc {
@@ -70,7 +71,12 @@ func getManagedPostgres(application *managedpostgres.Application) http.HandlerFu
 			writeManagedPostgresError(response, err)
 			return
 		}
-		writeJSON(response, http.StatusOK, publicManagedPostgres(resource, ""))
+		password, err := application.OwnerPassword(request.Context(), request.PathValue("projectID"), request.PathValue("postgresID"))
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicManagedPostgres(resource, password))
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/imagecredential"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/resourcevariables"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
@@ -122,6 +123,11 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 				return fmt.Errorf("secret %s belongs to another project", reference.SecretID)
 			}
 		}
+		for _, reference := range snapshot.ResourceReferences {
+			if err := validateResourceVariableReference(ctx, transaction, input.ProjectID, input.ID, reference); err != nil {
+				return err
+			}
+		}
 
 		var targetPort any
 		if snapshot.TargetPort != nil {
@@ -165,6 +171,13 @@ INSERT INTO services(
 INSERT INTO service_secret_refs(service_id, environment_name, secret_id)
 VALUES (?, ?, ?)`, input.ID, reference.EnvironmentName, reference.SecretID); err != nil {
 				return fmt.Errorf("create service secret reference: %w", err)
+			}
+		}
+		for _, reference := range snapshot.ResourceReferences {
+			if _, err := transaction.ExecContext(ctx, `
+INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
+VALUES (?, ?, ?, ?, ?)`, input.ID, reference.EnvironmentName, reference.ResourceKind, reference.ResourceID, reference.OutputName); err != nil {
+				return fmt.Errorf("create service resource variable reference: %w", err)
 			}
 		}
 		var correlationID any
@@ -270,6 +283,28 @@ WHERE service_id = ? ORDER BY environment_name, secret_id`, serviceID)
 	if err := secretRows.Close(); err != nil {
 		return ServiceDesired{}, fmt.Errorf("close service secret references: %w", err)
 	}
+	resourceRows, err := store.database.QueryContext(ctx, `
+SELECT environment_name, resource_kind, resource_id, output_name
+FROM service_resource_variable_refs
+WHERE service_id = ? ORDER BY environment_name`, serviceID)
+	if err != nil {
+		return ServiceDesired{}, fmt.Errorf("list service resource variable references: %w", err)
+	}
+	for resourceRows.Next() {
+		var reference serviceconfig.ResourceReference
+		if err := resourceRows.Scan(&reference.EnvironmentName, &reference.ResourceKind, &reference.ResourceID, &reference.OutputName); err != nil {
+			resourceRows.Close()
+			return ServiceDesired{}, fmt.Errorf("scan service resource variable reference: %w", err)
+		}
+		service.Snapshot.ResourceReferences = append(service.Snapshot.ResourceReferences, reference)
+	}
+	if err := resourceRows.Err(); err != nil {
+		resourceRows.Close()
+		return ServiceDesired{}, fmt.Errorf("iterate service resource variable references: %w", err)
+	}
+	if err := resourceRows.Close(); err != nil {
+		return ServiceDesired{}, fmt.Errorf("close service resource variable references: %w", err)
+	}
 	volumeRows, err := store.database.QueryContext(ctx, `
 SELECT m.volume_id, m.container_path FROM service_volume_mounts m
 WHERE m.service_id = ? ORDER BY m.container_path, m.volume_id`, serviceID)
@@ -297,6 +332,40 @@ WHERE m.service_id = ? ORDER BY m.container_path, m.volume_id`, serviceID)
 	}
 	service.Snapshot = normalized
 	return service, nil
+}
+
+func validateResourceVariableReference(ctx context.Context, transaction *sql.Tx, projectID, serviceID string, reference serviceconfig.ResourceReference) error {
+	if !resourcevariables.Supports(reference.ResourceKind, reference.OutputName) {
+		return fmt.Errorf("%w: %s does not export %s", ErrDependencyMissing, reference.ResourceKind, reference.OutputName)
+	}
+	var dependencyProjectID string
+	var query string
+	switch reference.ResourceKind {
+	case "service":
+		if reference.ResourceID == serviceID {
+			return fmt.Errorf("%w: service cannot reference itself", ErrDependencyMissing)
+		}
+		query = "SELECT project_id FROM services WHERE id = ?"
+	case "postgres":
+		query = "SELECT project_id FROM managed_postgres WHERE id = ?"
+	case "redis":
+		query = "SELECT project_id FROM managed_redis WHERE id = ?"
+	case "object_store":
+		query = "SELECT project_id FROM object_stores WHERE id = ?"
+	default:
+		return fmt.Errorf("%w: unsupported resource kind %s", ErrDependencyMissing, reference.ResourceKind)
+	}
+	err := transaction.QueryRowContext(ctx, query, reference.ResourceID).Scan(&dependencyProjectID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: %s %s", ErrDependencyMissing, reference.ResourceKind, reference.ResourceID)
+	}
+	if err != nil {
+		return fmt.Errorf("load resource variable dependency: %w", err)
+	}
+	if dependencyProjectID != projectID {
+		return fmt.Errorf("%w: %s %s", ErrDependencyMissing, reference.ResourceKind, reference.ResourceID)
+	}
+	return nil
 }
 
 func (store *Store) EnabledServiceIDs(ctx context.Context) ([]string, error) {

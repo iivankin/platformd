@@ -1,10 +1,62 @@
-import { Activity, AlertTriangle, LoaderCircle } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Activity, LoaderCircle } from "lucide-react";
+import { useState } from "react";
 
-import { fetchResourceUsage } from "@/api";
-import type { ResourceUsage as Usage, ResourceUsageKind } from "@/api";
+import type {
+  ResourceUsage as Usage,
+  ResourceUsageHistory,
+  ResourceUsageKind,
+  ResourceUsageRange,
+} from "@/api";
+import { MetricChart } from "@/metric-chart";
+import type { MetricSeries } from "@/metric-chart";
+import {
+  useCurrentResourceUsage,
+  useResourceUsageHistory,
+} from "@/use-resource-usage";
 
-const refreshMillis = 5000;
+export {
+  cpuMillicoresBetween,
+  networkBytesPerSecondBetween,
+} from "@/resource-usage-rates";
+
+const emptyPoints: ResourceUsageHistory["points"] = [];
+
+const ranges: { label: string; value: ResourceUsageRange }[] = [
+  { label: "1h", value: "1h" },
+  { label: "6h", value: "6h" },
+  { label: "1d", value: "1d" },
+  { label: "7d", value: "7d" },
+  { label: "30d", value: "30d" },
+];
+
+const cpuSeries: MetricSeries[] = [
+  {
+    color: "var(--chart-2)",
+    label: "Usage",
+    value: (point) => point.cpuMillicores,
+  },
+];
+
+const memorySeries: MetricSeries[] = [
+  {
+    color: "var(--chart-1)",
+    label: "Working set",
+    value: (point) => point.memoryBytes,
+  },
+];
+
+const networkSeries: MetricSeries[] = [
+  {
+    color: "var(--chart-3)",
+    label: "Ingress",
+    value: (point) => point.networkIngressBytesPerSecond,
+  },
+  {
+    color: "var(--chart-1)",
+    label: "Egress",
+    value: (point) => point.networkEgressBytesPerSecond,
+  },
+];
 
 const formatBytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -17,18 +69,55 @@ const formatBytes = (value: number) => {
   return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
 };
 
-export const cpuMillicoresBetween = (
-  previous: Usage,
-  current: Usage
-): number | undefined => {
-  const elapsedMillis = current.observedAt - previous.observedAt;
-  const reset = current.cpuUsageMicros < previous.cpuUsageMicros;
-  if (elapsedMillis <= 0 || reset || !(previous.running && current.running)) {
-    return undefined;
+const formatRate = (value: number) => `${formatBytes(value)}/s`;
+
+const formatMillicores = (value: number) =>
+  value >= 1000 ? `${(value / 1000).toFixed(1)} vCPU` : `${Math.round(value)}m`;
+
+const statusFor = (usage: Usage | null) => {
+  if (!usage) {
+    return "Reading current usage…";
   }
-  return Math.round(
-    (current.cpuUsageMicros - previous.cpuUsageMicros) / elapsedMillis
-  );
+  return usage.running ? "Live" : "Stopped";
+};
+
+const cpuValueFor = (usage: Usage | null, cpuMillicores?: number) => {
+  if (!usage?.running) {
+    return "—";
+  }
+  return cpuMillicores === undefined
+    ? "Sampling…"
+    : formatMillicores(cpuMillicores);
+};
+
+const networkValueFor = (
+  usage: Usage | null,
+  network?: { egress: number; ingress: number }
+) => {
+  if (network) {
+    return `${formatRate(network.ingress)} ↓  ${formatRate(network.egress)} ↑`;
+  }
+  return usage?.running && usage.networkAvailable ? "Sampling…" : "—";
+};
+
+const emptyLabelFor = (
+  history: ResourceUsageHistory | null,
+  error?: string
+) => {
+  if (error) {
+    return error;
+  }
+  return history ? "Collecting samples…" : "Loading history…";
+};
+
+const historyStatusFor = (
+  history: ResourceUsageHistory | null,
+  error?: string
+) => {
+  if (error) {
+    return error;
+  }
+  return history ? `${history.points.length} samples` : "Loading…";
 };
 
 const Metric = ({
@@ -49,6 +138,156 @@ const Metric = ({
   </div>
 );
 
+const UsageHeader = ({
+  error,
+  loading,
+  state,
+}: {
+  error?: string;
+  loading: boolean;
+  state: string;
+}) => (
+  <div className="flex min-h-11 flex-wrap items-center gap-2 border-b border-border px-4 py-2.5 text-[9px] text-muted-foreground">
+    {loading ? (
+      <LoaderCircle className="size-3 animate-spin" />
+    ) : (
+      <Activity className="size-3" />
+    )}
+    <span className="tracking-[0.12em] uppercase">Resource usage</span>
+    <span className="ml-auto">{error ?? state}</span>
+  </div>
+);
+
+const UsageSummary = ({
+  actualCPU,
+  actualNetwork,
+  cpuLimit,
+  memoryLimit,
+  usage,
+}: {
+  actualCPU?: number;
+  actualNetwork?: { egress: number; ingress: number };
+  cpuLimit?: number;
+  memoryLimit?: number;
+  usage: Usage | null;
+}) => {
+  const actualMemory = usage?.running ? formatBytes(usage.memoryBytes) : "—";
+  return (
+    <div className="grid sm:grid-cols-2 lg:grid-cols-4">
+      <Metric
+        detail={`Limit ${cpuLimit ? `${cpuLimit.toLocaleString()}m` : "unlimited"}`}
+        label="CPU now"
+        value={cpuValueFor(usage, actualCPU)}
+      />
+      <Metric
+        detail={`Limit ${memoryLimit ? formatBytes(memoryLimit) : "unlimited"}`}
+        label="Memory now"
+        value={actualMemory}
+      />
+      <Metric
+        detail="Ingress ↓  Egress ↑"
+        label="Network now"
+        value={networkValueFor(usage, actualNetwork)}
+      />
+      <Metric
+        detail={
+          usage ? `${usage.hostCpuCores.toLocaleString()} vCPU` : "Reading…"
+        }
+        label="Host capacity"
+        value={usage ? formatBytes(usage.hostMemoryBytes) : "—"}
+      />
+    </div>
+  );
+};
+
+const RangeSelector = ({
+  history,
+  historyError,
+  onChange,
+  range,
+}: {
+  history: ResourceUsageHistory | null;
+  historyError?: string;
+  onChange: (range: ResourceUsageRange) => void;
+  range: ResourceUsageRange;
+}) => (
+  <div className="flex items-center gap-1 border-t border-border px-4 py-2.5">
+    <span className="mr-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+      Range
+    </span>
+    {ranges.map((option) => (
+      <button
+        className={`h-7 border px-2.5 text-[9px] transition-colors ${
+          range === option.value
+            ? "border-foreground bg-foreground text-background"
+            : "border-border text-muted-foreground hover:bg-muted hover:text-foreground"
+        }`}
+        key={option.value}
+        onClick={() => onChange(option.value)}
+        type="button"
+      >
+        {option.label}
+      </button>
+    ))}
+    <span className="ml-auto text-[8px] text-muted-foreground">
+      {historyStatusFor(history, historyError)}
+    </span>
+  </div>
+);
+
+const UsageCharts = ({
+  history,
+  historyError,
+}: {
+  history: ResourceUsageHistory | null;
+  historyError?: string;
+}) => {
+  const points = history?.points ?? emptyPoints;
+  const emptyLabel = emptyLabelFor(history, historyError);
+  const from = history?.from ?? 0;
+  const to = history?.to ?? 0;
+  return (
+    <div className="grid border-t border-border lg:grid-cols-2">
+      <div className="min-w-0 lg:border-r lg:border-border">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={formatMillicores}
+          from={from}
+          minimumMaximum={100}
+          points={points}
+          series={cpuSeries}
+          title="CPU"
+          to={to}
+        />
+      </div>
+      <div className="min-w-0 border-t border-border lg:border-t-0">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={formatBytes}
+          from={from}
+          minimumMaximum={1024 ** 2}
+          points={points}
+          series={memorySeries}
+          title="Memory"
+          to={to}
+        />
+      </div>
+      <div className="min-w-0 border-t border-border lg:col-span-2">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={formatRate}
+          from={from}
+          minimumMaximum={1024}
+          points={points}
+          series={networkSeries}
+          title="Network traffic"
+          to={to}
+        />
+      </div>
+    </div>
+  );
+};
+
 export const ResourceUsage = ({
   cpuMillicores,
   kind,
@@ -60,106 +299,40 @@ export const ResourceUsage = ({
   memoryBytes?: number;
   resourceID: string;
 }) => {
-  const previous = useRef<Usage | null>(null);
-  const inFlight = useRef(false);
-  const [usage, setUsage] = useState<Usage | null>(null);
-  const [actualCPU, setActualCPU] = useState<number>();
-  const [error, setError] = useState<string>();
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      if (inFlight.current) {
-        return;
-      }
-      inFlight.current = true;
-      try {
-        const current = await fetchResourceUsage(
-          kind,
-          resourceID,
-          controller.signal
-        );
-        setActualCPU(
-          previous.current
-            ? cpuMillicoresBetween(previous.current, current)
-            : undefined
-        );
-        previous.current = current;
-        setUsage(current);
-        setError(undefined);
-      } catch (loadError) {
-        if (
-          loadError instanceof DOMException &&
-          loadError.name === "AbortError"
-        ) {
-          return;
-        }
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Unable to read resource usage"
-        );
-      } finally {
-        inFlight.current = false;
-      }
-    };
-    void load();
-    const interval = globalThis.setInterval(() => void load(), refreshMillis);
-    return () => {
-      controller.abort();
-      globalThis.clearInterval(interval);
-      previous.current = null;
-    };
-  }, [kind, resourceID]);
-
-  let state = "Reading current counters…";
-  if (usage) {
-    state = usage.running ? "Live cgroup" : "Stopped";
-  }
-  const actualMemory = usage?.running ? formatBytes(usage.memoryBytes) : "—";
-  let cpu = "—";
-  if (usage?.running) {
-    cpu =
-      actualCPU === undefined ? "Sampling…" : `${actualCPU.toLocaleString()}m`;
-  }
+  const [range, setRange] = useState<ResourceUsageRange>("1h");
+  const {
+    cpuMillicores: actualCPU,
+    error: currentError,
+    network: actualNetwork,
+    usage,
+  } = useCurrentResourceUsage(kind, resourceID);
+  const { error: historyError, history } = useResourceUsageHistory(
+    kind,
+    resourceID,
+    range
+  );
 
   return (
     <section className="border-b border-border">
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2.5 text-[9px] text-muted-foreground">
-        {usage || error ? (
-          <Activity className="size-3" />
-        ) : (
-          <LoaderCircle className="size-3 animate-spin" />
-        )}
-        <span className="tracking-[0.12em] uppercase">Resource usage</span>
-        <span className="ml-auto">{error ?? state}</span>
-      </div>
-      <div className="grid sm:grid-cols-3">
-        <Metric
-          detail={`Limit ${cpuMillicores ? `${cpuMillicores.toLocaleString()}m` : "unlimited"}`}
-          label="CPU now"
-          value={cpu}
-        />
-        <Metric
-          detail={`Limit ${memoryBytes ? formatBytes(memoryBytes) : "unlimited"}`}
-          label="Memory now"
-          value={actualMemory}
-        />
-        <Metric
-          detail={
-            usage
-              ? `${usage.hostCpuCores.toLocaleString()} vCPU`
-              : "Reading capacity…"
-          }
-          label="Host capacity"
-          value={usage ? formatBytes(usage.hostMemoryBytes) : "—"}
-        />
-      </div>
-      <p className="flex items-start gap-2 px-4 py-2.5 text-[9px] leading-4 text-amber-700 dark:text-amber-400">
-        <AlertTriangle className="mt-0.5 size-3 shrink-0" />
-        Hard limits are not reservations. Configured totals may exceed host
-        capacity.
-      </p>
+      <UsageHeader
+        error={currentError}
+        loading={!usage && !currentError}
+        state={statusFor(usage)}
+      />
+      <UsageSummary
+        actualCPU={actualCPU}
+        actualNetwork={actualNetwork}
+        cpuLimit={cpuMillicores}
+        memoryLimit={memoryBytes}
+        usage={usage}
+      />
+      <RangeSelector
+        history={history}
+        historyError={historyError}
+        onChange={setRange}
+        range={range}
+      />
+      <UsageCharts history={history} historyError={historyError} />
     </section>
   );
 };

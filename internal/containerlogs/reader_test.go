@@ -88,6 +88,26 @@ func TestReaderRejectsTraversalAndSymlinkSegments(t *testing.T) {
 	}
 }
 
+func TestReaderReturnsManagedRuntimeLogs(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, "postgres", "database", "deployment")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeLog(t, filepath.Join(directory, "attempt.log"), "2026-07-12T10:00:00Z stderr F database ready\n", time.Now())
+	reader, err := NewReader(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := reader.ReadRuntime(context.Background(), RuntimeQuery{Kind: "postgres", ResourceID: "database", Contains: "ready", Limit: 10})
+	if err != nil || len(window.Records) != 1 || window.Records[0].Text != "database ready" || window.Records[0].DeploymentID != "deployment" {
+		t.Fatalf("managed runtime logs = %+v, %v", window, err)
+	}
+	if _, err := reader.ReadRuntime(context.Background(), RuntimeQuery{Kind: "../services", ResourceID: "database"}); err == nil {
+		t.Fatal("invalid managed runtime kind was accepted")
+	}
+}
+
 func TestReaderRevisionChangesOnlyWithSegmentMetadata(t *testing.T) {
 	t.Parallel()
 

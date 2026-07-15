@@ -8,16 +8,18 @@ import {
 } from "@xyflow/react";
 import { Plus, Waypoints } from "lucide-react";
 import { useEffect, useState } from "react";
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 
 import { fetchImageCredentials, fetchProjectCanvas } from "@/api";
 import type { ImageCredential, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
 import type { CreateKind } from "@/project-create-overlays";
-import { ProjectDetailOverlays } from "@/project-detail-overlays";
+import { ProjectDeploymentPage } from "@/project-deployment-page";
 import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
 import type { ResourceFlowEdge, ResourceFlowNode } from "@/project-flow";
+import { ProjectResourcePage } from "@/project-resource-page";
+import { resourcePath } from "@/project-resource-path";
 import { ResourceNode } from "@/resource-node";
 
 const nodeTypes = { resource: ResourceNode };
@@ -36,7 +38,7 @@ const EmptyCanvas = ({ visible }: { visible: boolean }) => {
         <h2 className="mt-5 text-sm font-medium">Empty project canvas</h2>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
           Add a service, PostgreSQL, Redis, or object store. Connections appear
-          automatically from service environment values.
+          from explicit references configured in service Variables.
         </p>
       </div>
     </div>
@@ -44,19 +46,24 @@ const EmptyCanvas = ({ visible }: { visible: boolean }) => {
 };
 
 export const ProjectCanvasPage = () => {
-  const { projectID = "" } = useParams();
+  const navigate = useNavigate();
+  const { deploymentID = "", projectID = "", resourceID = "" } = useParams();
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<ImageCredential[]>([]);
   const [createKind, setCreateKind] = useState<CreateKind>(null);
-  const [selectedNodeID, setSelectedNodeID] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [nodes, setNodes, onNodesChange] =
     useNodesState<ResourceFlowNode>(emptyNodes);
   const [edges, setEdges, onEdgesChange] =
     useEdgesState<ResourceFlowEdge>(emptyEdges);
-  const selectedNode = nodes.find((node) => node.id === selectedNodeID);
   const isCanvasEmpty = canvas?.resources.length === 0;
+  let resourceOverlay = null;
+  if (deploymentID) {
+    resourceOverlay = <ProjectDeploymentPage canvas={canvas} />;
+  } else if (resourceID) {
+    resourceOverlay = <ProjectResourcePage />;
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -138,13 +145,6 @@ export const ProjectCanvasPage = () => {
           onSelect={setCreateKind}
           projectID={projectID}
         />
-        <ProjectDetailOverlays
-          createOpen={createKind !== null}
-          onChanged={() => setRefreshVersion((value) => value + 1)}
-          onClose={() => setSelectedNodeID(null)}
-          projectID={projectID}
-          selectedNode={selectedNode}
-        />
         <EmptyCanvas visible={isCanvasEmpty === true} />
         <ReactFlow<ResourceFlowNode, ResourceFlowEdge>
           edges={edges}
@@ -160,9 +160,10 @@ export const ProjectCanvasPage = () => {
           nodes={nodes}
           nodesConnectable={false}
           onEdgesChange={onEdgesChange}
-          onNodeClick={(_event, node) => setSelectedNodeID(node.id)}
+          onNodeClick={(_event, node) =>
+            void navigate(resourcePath(projectID, node.id, node.data.kind))
+          }
           onNodesChange={onNodesChange}
-          onPaneClick={() => setSelectedNodeID(null)}
           onlyRenderVisibleElements
           panOnScroll
           proOptions={{ hideAttribution: true }}
@@ -181,6 +182,7 @@ export const ProjectCanvasPage = () => {
             showInteractive={false}
           />
         </ReactFlow>
+        {resourceOverlay}
       </section>
     </div>
   );

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/journallogs"
+	"github.com/iivankin/platformd/internal/resourcemetrics"
 )
 
 type DiskPressure interface {
@@ -17,7 +19,8 @@ type DiskPressure interface {
 }
 
 type ResourceUsage interface {
-	Read(cgroupstats.Kind, string) (cgroupstats.Sample, error)
+	Read(cgroupstats.Kind, string) (resourcemetrics.Current, error)
+	History(context.Context, cgroupstats.Kind, string, time.Duration) (resourcemetrics.History, error)
 }
 
 type InfrastructureLogs interface {
@@ -37,12 +40,31 @@ type diskPressureResponse struct {
 }
 
 type resourceUsageResponse struct {
-	ObservedAt      int64  `json:"observedAt"`
-	CPUUsageMicros  uint64 `json:"cpuUsageMicros"`
-	MemoryBytes     uint64 `json:"memoryBytes"`
-	HostCPUCores    int    `json:"hostCpuCores"`
-	HostMemoryBytes uint64 `json:"hostMemoryBytes"`
-	Running         bool   `json:"running"`
+	ObservedAt       int64  `json:"observedAt"`
+	CPUUsageMicros   uint64 `json:"cpuUsageMicros"`
+	MemoryBytes      uint64 `json:"memoryBytes"`
+	HostCPUCores     int    `json:"hostCpuCores"`
+	HostMemoryBytes  uint64 `json:"hostMemoryBytes"`
+	NetworkRXBytes   uint64 `json:"networkRxBytes"`
+	NetworkTXBytes   uint64 `json:"networkTxBytes"`
+	NetworkAvailable bool   `json:"networkAvailable"`
+	Running          bool   `json:"running"`
+}
+
+type resourceUsageHistoryPointResponse struct {
+	ObservedAt                   int64  `json:"observedAt"`
+	CPUMillicores                *int64 `json:"cpuMillicores,omitempty"`
+	MemoryBytes                  uint64 `json:"memoryBytes"`
+	NetworkIngressBytesPerSecond *int64 `json:"networkIngressBytesPerSecond,omitempty"`
+	NetworkEgressBytesPerSecond  *int64 `json:"networkEgressBytesPerSecond,omitempty"`
+	Running                      bool   `json:"running"`
+}
+
+type resourceUsageHistoryResponse struct {
+	From       int64                               `json:"from"`
+	To         int64                               `json:"to"`
+	StepMillis int64                               `json:"stepMillis"`
+	Points     []resourceUsageHistoryPointResponse `json:"points"`
 }
 
 func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usage ResourceUsage, logs InfrastructureLogs) {
@@ -68,6 +90,7 @@ func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usa
 	}
 	if usage != nil {
 		mux.HandleFunc("GET /api/v1/infrastructure/resources/{kind}/{resourceID}/usage", resourceUsageHandler(usage))
+		mux.HandleFunc("GET /api/v1/infrastructure/resources/{kind}/{resourceID}/usage/history", resourceUsageHistoryHandler(usage))
 	}
 	if logs != nil {
 		mux.HandleFunc("GET /api/v1/infrastructure/logs", infrastructureLogsHandler(logs))
@@ -92,9 +115,57 @@ func resourceUsageHandler(usage ResourceUsage) http.HandlerFunc {
 		writeJSON(response, http.StatusOK, resourceUsageResponse{
 			ObservedAt: sample.ObservedAtMillis, CPUUsageMicros: sample.CPUUsageMicros,
 			MemoryBytes: sample.MemoryBytes, HostCPUCores: sample.HostCPUCores,
-			HostMemoryBytes: sample.HostMemoryBytes, Running: sample.Running,
+			HostMemoryBytes: sample.HostMemoryBytes, NetworkRXBytes: sample.NetworkRXBytes,
+			NetworkTXBytes: sample.NetworkTXBytes, NetworkAvailable: sample.NetworkAvailable,
+			Running: sample.Running,
 		})
 	}
+}
+
+func resourceUsageHistoryHandler(usage ResourceUsage) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		window, ok := resourceMetricWindows[request.URL.Query().Get("range")]
+		if !ok {
+			writeAPIError(response, http.StatusBadRequest, "invalid_resource_usage_range", "range must be one of 1h, 6h, 1d, 7d, or 30d")
+			return
+		}
+		history, err := usage.History(
+			request.Context(), cgroupstats.Kind(request.PathValue("kind")), request.PathValue("resourceID"), window,
+		)
+		if errors.Is(err, cgroupstats.ErrInvalidResource) || errors.Is(err, resourcemetrics.ErrInvalidRange) {
+			writeAPIError(response, http.StatusBadRequest, "invalid_resource_usage", err.Error())
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "resource_usage_unavailable", "Resource usage is unavailable")
+			return
+		}
+		points := make([]resourceUsageHistoryPointResponse, 0, len(history.Points))
+		for _, point := range history.Points {
+			points = append(points, resourceUsageHistoryPointResponse{
+				ObservedAt: point.ObservedAt, CPUMillicores: point.CPUMillicores,
+				MemoryBytes:                  point.MemoryBytes,
+				NetworkIngressBytesPerSecond: point.NetworkIngressBytesPerSecond,
+				NetworkEgressBytesPerSecond:  point.NetworkEgressBytesPerSecond,
+				Running:                      point.Running,
+			})
+		}
+		writeJSON(response, http.StatusOK, resourceUsageHistoryResponse{
+			From: history.From, To: history.To, StepMillis: history.StepMillis, Points: points,
+		})
+	}
+}
+
+var resourceMetricWindows = map[string]time.Duration{
+	"1h":  time.Hour,
+	"6h":  6 * time.Hour,
+	"1d":  24 * time.Hour,
+	"7d":  7 * 24 * time.Hour,
+	"30d": 30 * 24 * time.Hour,
 }
 
 func infrastructureLogsHandler(logs InfrastructureLogs) http.HandlerFunc {

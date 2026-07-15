@@ -98,6 +98,10 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 		return errors.New("managed PostgreSQL version-change identifiers are not unique")
 	}
 	target.VolumeID = volumeID
+	if err := controller.beginCandidateDeployment(ctx, runtimeID, target, timestamp.UnixMilli()); err != nil {
+		return err
+	}
+	defer controller.finishCandidateDeployment(ctx, runtimeID, &resultErr)
 	candidate := containerengine.Container{}
 	candidateStarted := false
 	oldWithdrawn := false
@@ -190,8 +194,11 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	committed = true
 	target.UpdatedAtMillis = timestamp.UnixMilli()
 	controller.setActive(resource.ID, activeRuntime{
-		resource: target, container: candidate, network: placement.NetworkName,
+		resource: target, container: candidate, network: placement.NetworkName, runtimeID: runtimeID,
 	})
+	if err := controller.activateCandidateDeployment(ctx, resource.ID, runtimeID); err != nil {
+		return err
+	}
 	publishErr := controller.publisher.PublishPostgres(target, candidate)
 	cleanupErr := controller.removeReplacedPostgres(ctx, oldRuntime, true, resource)
 	progress("complete")

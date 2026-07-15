@@ -70,6 +70,10 @@ func (controller *Controller) RestoreReplace(
 	if volumeID == resource.VolumeID || runtimeID == resource.ID || volumeID == runtimeID {
 		return errors.New("managed PostgreSQL restore identifiers are not unique")
 	}
+	if err := controller.beginCandidateDeployment(ctx, runtimeID, resource, timestamp.UnixMilli()); err != nil {
+		return err
+	}
+	defer controller.finishCandidateDeployment(ctx, runtimeID, &resultErr)
 	volume, err := createPostgresRestoreVolume(controller.volumeRoot, resource.ProjectID, volumeID)
 	if err != nil {
 		return err
@@ -135,8 +139,11 @@ func (controller *Controller) RestoreReplace(
 	switched.VolumeID = volumeID
 	switched.UpdatedAtMillis = timestamp.UnixMilli()
 	controller.setActive(resourceID, activeRuntime{
-		resource: switched, container: candidate, network: placement.NetworkName,
+		resource: switched, container: candidate, network: placement.NetworkName, runtimeID: runtimeID,
 	})
+	if err := controller.activateCandidateDeployment(ctx, resourceID, runtimeID); err != nil {
+		return err
+	}
 	publishErr := controller.publisher.PublishPostgres(switched, candidate)
 	cleanupErr := controller.removeReplacedPostgres(ctx, oldRuntime, oldRunning, resource)
 	return errors.Join(publishErr, cleanupErr)

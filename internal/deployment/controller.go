@@ -95,6 +95,10 @@ type CredentialResolver interface {
 	Resolve(context.Context, state.ServiceDesired) (ImageCredential, error)
 }
 
+type EnvironmentResolver interface {
+	Resolve(context.Context, state.ServiceDesired) (map[string]string, error)
+}
+
 type ImageSourceResolver interface {
 	Resolve(context.Context, string) (reference string, close func(), handled bool, err error)
 }
@@ -108,6 +112,7 @@ type Config struct {
 	Engine       Engine
 	Publisher    Publisher
 	Credentials  CredentialResolver
+	Environment  EnvironmentResolver
 	ImageSources ImageSourceResolver
 	Growth       GrowthGate
 	Admission    *admission.Gate
@@ -133,6 +138,7 @@ type Controller struct {
 	engine       Engine
 	publisher    Publisher
 	credentials  CredentialResolver
+	environment  EnvironmentResolver
 	imageSources ImageSourceResolver
 	growth       GrowthGate
 	admission    *admission.Gate
@@ -186,6 +192,7 @@ func New(config Config) (*Controller, error) {
 	}
 	return &Controller{
 		store: config.Store, engine: config.Engine, publisher: config.Publisher, credentials: config.Credentials,
+		environment:  config.Environment,
 		imageSources: config.ImageSources,
 		growth:       config.Growth,
 		admission:    config.Admission,
@@ -323,6 +330,56 @@ func (controller *Controller) RestoreCurrent(ctx context.Context, serviceID, exp
 	lock.Lock()
 	defer lock.Unlock()
 	return controller.restoreCurrentLocked(ctx, serviceID, expectedDeploymentID)
+}
+
+// RestartCurrent replaces only the runtime attempt. The logical deployment ID,
+// immutable snapshot, and deployment history remain unchanged.
+func (controller *Controller) RestartCurrent(ctx context.Context, serviceID, expectedDeploymentID string) error {
+	lease, err := controller.admission.Begin("service_restart", serviceID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
+	lock := controller.serviceLock(serviceID)
+	lock.Lock()
+	defer lock.Unlock()
+	desired, err := controller.store.DesiredService(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	if !desired.Enabled || desired.ActiveDeploymentID == "" || desired.ActiveDeploymentID != expectedDeploymentID {
+		return state.ErrDeploymentNotFound
+	}
+	if active, exists := controller.activeContainer(serviceID); exists {
+		if active.deploymentID != expectedDeploymentID {
+			return state.ErrServiceChanged
+		}
+		if err := controller.publisher.Withdraw(desired); err != nil {
+			return err
+		}
+		if err := controller.engine.StopContainer(active.container.ID, stopTimeoutSeconds); err != nil {
+			return errors.Join(err, controller.publisher.Publish(desired, active.container))
+		}
+		if err := controller.engine.RemoveContainer(ctx, active.container.ID, true); err != nil {
+			return err
+		}
+		controller.clearActive(serviceID)
+	}
+	restored, err := controller.restoreCurrentLocked(ctx, serviceID, expectedDeploymentID)
+	if err != nil {
+		return err
+	}
+	if !restored {
+		return errors.New("active service deployment was not restarted")
+	}
+	return nil
+}
+
+func (controller *Controller) DeleteDeploymentLogs(serviceID, deploymentID string) error {
+	if serviceID == "" || deploymentID == "" || filepath.Base(serviceID) != serviceID || filepath.Base(deploymentID) != deploymentID {
+		return errors.New("service deployment log identity is invalid")
+	}
+	return os.RemoveAll(filepath.Join(controller.logRoot, "services", serviceID, deploymentID))
 }
 
 // QuiesceAll stops active service containers without deleting their libpod
@@ -544,6 +601,21 @@ func (controller *Controller) Status(serviceID string) (RuntimeStatus, bool, err
 	}, true, nil
 }
 
+func (controller *Controller) Container(serviceID string) (containerengine.Container, bool, error) {
+	active, ok := controller.activeContainer(serviceID)
+	if !ok {
+		return containerengine.Container{}, false, nil
+	}
+	container, err := controller.engine.InspectContainer(active.container.ID)
+	if err != nil {
+		return containerengine.Container{}, true, err
+	}
+	if container.State != "running" {
+		return containerengine.Container{}, false, nil
+	}
+	return container, true, nil
+}
+
 func (controller *Controller) Backend(serviceID string) (Backend, bool, error) {
 	active, ok := controller.activeContainer(serviceID)
 	if !ok || active.targetPort == 0 {
@@ -673,10 +745,26 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 			Destination: mount.ContainerPath,
 		})
 	}
+	environment := make(map[string]string, len(desired.Snapshot.Environment)+len(desired.Snapshot.ResourceReferences))
+	for name, value := range desired.Snapshot.Environment {
+		environment[name] = value
+	}
+	if len(desired.Snapshot.ResourceReferences) > 0 {
+		if controller.environment == nil {
+			return containerengine.Container{}, Placement{}, errors.New("resource variable resolution is not configured")
+		}
+		resolved, resolveErr := controller.environment.Resolve(ctx, desired)
+		if resolveErr != nil {
+			return containerengine.Container{}, Placement{}, fmt.Errorf("resolve service resource variables: %w", resolveErr)
+		}
+		for name, value := range resolved {
+			environment[name] = value
+		}
+	}
 	container, err := controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID: imageID, Name: "platformd-service-" + deploymentID,
 		Entrypoint: desired.Snapshot.Command, Command: desired.Snapshot.Args,
-		Environment: desired.Snapshot.Environment,
+		Environment: environment,
 		Labels: map[string]string{
 			"io.platformd.owner": "service", "io.platformd.project-id": desired.ProjectID,
 			"io.platformd.service-id": desired.ID, "io.platformd.deployment-id": deploymentID,

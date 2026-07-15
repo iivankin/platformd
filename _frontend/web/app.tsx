@@ -16,7 +16,6 @@ import { BackupsPage } from "@/backups-page";
 import { Button } from "@/components/ui/button";
 import { InfrastructurePage } from "@/infrastructure-page";
 import { cn } from "@/lib/utils";
-import { LogsPage } from "@/logs-page";
 import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectsPage } from "@/projects-page";
 import { RecoveryPage } from "@/recovery-page";
@@ -27,12 +26,10 @@ import type { NavigationItem } from "@/sidebar";
 
 const pageDescriptions: Record<string, string> = {
   "/audit": "Administrative history retained for seven days.",
-  "/backups": "Per-resource backup schedules, runs, and restores.",
-  "/infrastructure": "Host, runtime, network, and disk pressure.",
-  "/logs": "Deployment, managed resource, and job output.",
-  "/registry": "OCI repositories, images, tags, and credentials.",
-  "/settings":
-    "Installation hostnames, Access identity, and Origin certificates.",
+  "/backups": "Backup schedules, restore points, and storage.",
+  "/infrastructure": "Server health, maintenance, and platform activity.",
+  "/registry": "Private images used by your services.",
+  "/settings": "Installation access and secure hostnames.",
   "/tokens": "Scoped REST and MCP automation credentials.",
 };
 
@@ -152,7 +149,7 @@ export const App = () => {
         recovery={recovering}
       />
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="relative flex min-w-0 flex-1 flex-col">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
           <h1 className="truncate text-xs font-semibold tracking-[0.15em] uppercase">
             {activeLabel}
@@ -202,6 +199,14 @@ export const App = () => {
               />
               <Route
                 element={<ProjectCanvasPage />}
+                path="/projects/:projectID/:resourceCollection/:resourceID/deployments/:deploymentID/:deploymentView?"
+              />
+              <Route
+                element={<ProjectCanvasPage />}
+                path="/projects/:projectID/:resourceCollection/:resourceID/:view?"
+              />
+              <Route
+                element={<ProjectCanvasPage />}
                 path="/projects/:projectID"
               />
               <Route
@@ -209,19 +214,17 @@ export const App = () => {
                 path="/tokens"
               />
               <Route
-                element={<LogsPage projects={data.projects} />}
-                path="/logs"
+                element={<InfrastructurePage />}
+                path="/infrastructure/*"
               />
-              <Route element={<InfrastructurePage />} path="/infrastructure" />
               <Route element={<AuditPage />} path="/audit" />
-              <Route element={<BackupsPage />} path="/backups" />
-              <Route element={<RegistryPage />} path="/registry" />
-              <Route element={<SettingsPage />} path="/settings" />
+              <Route element={<BackupsPage />} path="/backups/*" />
+              <Route element={<RegistryPage />} path="/registry/*" />
+              <Route element={<SettingsPage />} path="/settings/*" />
               {globalNavigation
                 .filter(
                   (item) =>
                     item.path !== "/tokens" &&
-                    item.path !== "/logs" &&
                     item.path !== "/audit" &&
                     item.path !== "/backups" &&
                     item.path !== "/registry" &&

@@ -5,7 +5,6 @@ import {
   FileClock,
   FolderKanban,
   KeyRound,
-  Logs,
   Network,
   PackageOpen,
   Plus,
@@ -29,7 +28,6 @@ export interface NavigationItem {
 export const globalNavigation: NavigationItem[] = [
   { icon: FileClock, label: "Backups", path: "/backups" },
   { icon: PackageOpen, label: "Registry", path: "/registry" },
-  { icon: Logs, label: "Logs", path: "/logs" },
   { icon: KeyRound, label: "API Tokens", path: "/tokens" },
   { icon: Network, label: "Infrastructure", path: "/infrastructure" },
   { icon: ShieldCheck, label: "Audit", path: "/audit" },

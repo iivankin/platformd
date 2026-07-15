@@ -36,6 +36,7 @@ type Repository interface {
 	ObjectStoreInProject(context.Context, string, string) (state.ObjectStore, error)
 	ObjectStoresByProject(context.Context, string) ([]state.ObjectStore, error)
 	S3Credential(context.Context, string) (state.S3Credential, error)
+	S3CredentialsByObjectStore(context.Context, string) ([]state.S3Credential, error)
 	CommitObject(context.Context, state.CommitObject) (state.ObjectMetadata, error)
 	Object(context.Context, string, string) (state.ObjectMetadata, error)
 	ObjectPayload(context.Context, string, string) (state.ObjectPayload, error)
@@ -74,6 +75,13 @@ type CreateResult struct {
 	AccessKey  string
 	Secret     string
 	RequestID  string
+}
+
+type StoreDetails struct {
+	Store      state.ObjectStore
+	Credential state.S3Credential
+	AccessKey  string
+	Secret     string
 }
 
 type PutInput struct {
@@ -193,6 +201,30 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 
 func (application *Application) Store(ctx context.Context, projectID, storeID string) (state.ObjectStore, error) {
 	return application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+}
+
+func (application *Application) Details(ctx context.Context, projectID, storeID string) (StoreDetails, error) {
+	store, err := application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+	if err != nil {
+		return StoreDetails{}, err
+	}
+	credentials, err := application.repository.S3CredentialsByObjectStore(ctx, store.ID)
+	if err != nil {
+		return StoreDetails{}, err
+	}
+	if len(credentials) != 1 {
+		return StoreDetails{}, errors.New("object store must have exactly one S3 credential")
+	}
+	credential := credentials[0]
+	accessKey, err := AccessKeyID(credential.ID)
+	if err != nil {
+		return StoreDetails{}, err
+	}
+	secret, err := OpenSecret(application.master, store.ID, credential.ID, credential.SecretEncrypted)
+	if err != nil {
+		return StoreDetails{}, err
+	}
+	return StoreDetails{Store: store, Credential: credential, AccessKey: accessKey, Secret: secret}, nil
 }
 
 func (application *Application) Stores(ctx context.Context, projectID string) ([]state.ObjectStore, error) {

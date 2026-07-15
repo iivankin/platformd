@@ -83,12 +83,14 @@ func getObjectStore(application *objectstore.Application) http.HandlerFunc {
 		if _, ok := requireAccessIdentity(response, request); !ok {
 			return
 		}
-		store, err := application.Store(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+		details, err := application.Details(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
 		if err != nil {
 			writeObjectStoreError(response, err)
 			return
 		}
-		writeJSON(response, http.StatusOK, publicObjectStore(store, objectstore.CreateResult{}))
+		writeJSON(response, http.StatusOK, publicObjectStore(details.Store, objectstore.CreateResult{
+			Store: details.Store, Credential: details.Credential, AccessKey: details.AccessKey, Secret: details.Secret,
+		}))
 	}
 }
 

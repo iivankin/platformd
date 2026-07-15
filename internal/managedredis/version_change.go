@@ -82,6 +82,10 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 		return errors.New("managed Redis version-change identifiers are not unique")
 	}
 	target.VolumeID = volumeID
+	if err := controller.beginCandidateDeployment(ctx, runtimeID, target, timestamp.UnixMilli()); err != nil {
+		return err
+	}
+	defer controller.finishCandidateDeployment(ctx, runtimeID, &resultErr)
 	password, err := controller.password(resource)
 	if err != nil {
 		return fmt.Errorf("open managed Redis password: %w", err)
@@ -195,6 +199,9 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	controller.setActive(resource.ID, activeRuntime{
 		resource: target, container: candidate, network: placement.NetworkName, runtimeID: runtimeID,
 	})
+	if err := controller.activateCandidateDeployment(ctx, resource.ID, runtimeID); err != nil {
+		return err
+	}
 	publishErr := controller.publisher.PublishRedis(target, candidate)
 	cleanupErr := controller.removeReplacedRuntime(ctx, oldRuntime, true, resource)
 	progress("complete")

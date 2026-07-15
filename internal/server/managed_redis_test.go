@@ -24,7 +24,7 @@ type managedRedisRepository struct {
 
 func (repository *managedRedisRepository) Create(_ context.Context, input managedredis.CreateInput) (managedredis.CreateResult, error) {
 	repository.input = input
-	return managedredis.CreateResult{Resource: repository.resource, Password: "shown-once", RequestID: "request-id"}, nil
+	return managedredis.CreateResult{Resource: repository.resource, Password: "created-password", RequestID: "request-id"}, nil
 }
 
 func (repository *managedRedisRepository) Resource(_ context.Context, projectID, resourceID string) (state.ManagedRedis, error) {
@@ -32,6 +32,13 @@ func (repository *managedRedisRepository) Resource(_ context.Context, projectID,
 		return state.ManagedRedis{}, state.ErrManagedRedisNotFound
 	}
 	return repository.resource, nil
+}
+
+func (repository *managedRedisRepository) Password(_ context.Context, projectID, resourceID string) (string, error) {
+	if projectID != repository.resource.ProjectID || resourceID != repository.resource.ID {
+		return "", state.ErrManagedRedisNotFound
+	}
+	return "always-visible", nil
 }
 
 func (repository *managedRedisRepository) Resources(_ context.Context, projectID string) ([]state.ManagedRedis, error) {
@@ -47,6 +54,10 @@ func (*managedRedisRepository) Persistence(context.Context, string, string) (man
 		ActualRPOMillis: 600_000, TargetRPOMillis: 300_000,
 		LastBackgroundSaveSuccessful: true, NeedsAttention: true,
 	}, nil
+}
+
+func (*managedRedisRepository) Stats(context.Context, string, string) (managedredis.Stats, error) {
+	return managedredis.Stats{}, nil
 }
 
 func (*managedRedisRepository) Keys(context.Context, string, string, managedredis.ScanQuery) (managedredis.KeyPage, error) {
@@ -65,7 +76,23 @@ func (repository *managedRedisRepository) Mutate(_ context.Context, input manage
 	return managedredis.DataMutationResult{MutationResult: managedredis.MutationResult{Affected: 1}, RequestID: "mutation-request", AuditRecorded: true}, nil
 }
 
-func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
+func (*managedRedisRepository) Deployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error) {
+	return state.RuntimeDeploymentPage{}, nil
+}
+
+func (*managedRedisRepository) Deployment(context.Context, string, string, string) (state.RuntimeDeployment, error) {
+	return state.RuntimeDeployment{}, nil
+}
+
+func (*managedRedisRepository) RestartDeployment(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*managedRedisRepository) RemoveDeployment(context.Context, string, string, string) error {
+	return nil
+}
+
+func TestManagedRedisAPIReturnsPasswordFromCreateAndResourceDetails(t *testing.T) {
 	t.Parallel()
 	repository := &managedRedisRepository{resource: state.ManagedRedis{
 		ID: "redis", ProjectID: "project", ProjectName: "shop", Name: "cache",
@@ -90,7 +117,7 @@ func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
 		t.Fatal(err)
 	}
-	if created["password"] != "shown-once" || created["hostname"] != "cache.shop.internal" || created["port"] != float64(6379) {
+	if created["password"] != "created-password" || created["hostname"] != "cache.shop.internal" || created["port"] != float64(6379) {
 		t.Fatalf("create response = %v", created)
 	}
 	if repository.input.Actor != (managedredis.Actor{Kind: "access", ID: "subject", Email: "admin@example.com"}) || repository.input.ImageTag != "7.4" {
@@ -100,7 +127,7 @@ func TestManagedRedisAPIReturnsGeneratedPasswordOnlyFromCreate(t *testing.T) {
 	get := projectRequest(http.MethodGet, "/api/v1/projects/project/redis/redis", "")
 	getResponse := httptest.NewRecorder()
 	handler.ServeHTTP(getResponse, get)
-	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), "password") {
+	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), `"password":"always-visible"`) {
 		t.Fatalf("get status/body = %d/%s", getResponse.Code, getResponse.Body)
 	}
 	list := projectRequest(http.MethodGet, "/api/v1/projects/project/redis", "")

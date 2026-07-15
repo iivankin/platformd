@@ -130,6 +130,11 @@ func resourceComponent(kind Kind, resourceID string) (string, error) {
 	}
 }
 
+func ValidateResource(kind Kind, resourceID string) error {
+	_, err := resourceComponent(kind, resourceID)
+	return err
+}
+
 func validResourceID(value string) bool {
 	if value == "" || value == "." || value == ".." {
 		return false

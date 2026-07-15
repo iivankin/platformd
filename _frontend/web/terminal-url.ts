@@ -1,13 +1,16 @@
-export const serviceTerminalSocketURL = (
+import type { ContainerResourceKind } from "@/api";
+
+export const resourceTerminalSocketURL = (
   projectID: string,
-  serviceID: string,
+  resourceKind: ContainerResourceKind,
+  resourceID: string,
   command: string[],
   cols: number,
   rows: number,
   origin = window.location.origin
 ) => {
   const url = new URL(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/terminal`,
+    `/api/v1/projects/${encodeURIComponent(projectID)}/resources/${encodeURIComponent(resourceKind)}/${encodeURIComponent(resourceID)}/terminal`,
     origin
   );
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";

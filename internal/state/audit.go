@@ -33,11 +33,13 @@ type AuditEvent struct {
 }
 
 type AuditQuery struct {
-	ActorKind string
-	Action    string
-	Result    string
-	Cursor    string
-	Limit     int
+	ActorKind  string
+	Action     string
+	Result     string
+	TargetKind string
+	TargetID   string
+	Cursor     string
+	Limit      int
 }
 
 type AuditPage struct {
@@ -50,7 +52,7 @@ func (store *Store) AuditEvents(ctx context.Context, query AuditQuery) (AuditPag
 		query.Limit = DefaultAuditPageSize
 	}
 	if query.Limit < 1 || query.Limit > MaximumAuditPageSize || !validAuditFilter("actor", query.ActorKind) ||
-		!validAuditFilter("result", query.Result) || len(query.Action) > 128 {
+		!validAuditFilter("result", query.Result) || len(query.Action) > 128 || len(query.TargetKind) > 128 || len(query.TargetID) > 128 {
 		return AuditPage{}, fmt.Errorf("%w: invalid filters or page size", ErrAuditPageInvalid)
 	}
 	var cursorCreated int64
@@ -70,10 +72,13 @@ FROM audit_events
 WHERE (? = '' OR actor_kind = ?)
   AND (? = '' OR action = ?)
   AND (? = '' OR result = ?)
+  AND (? = '' OR target_kind = ?)
+  AND (? = '' OR target_id = ?)
   AND (? = '' OR created_at < ? OR (created_at = ? AND id < ?))
 ORDER BY created_at DESC, id DESC
 LIMIT ?`,
 		query.ActorKind, query.ActorKind, query.Action, query.Action, query.Result, query.Result,
+		query.TargetKind, query.TargetKind, query.TargetID, query.TargetID,
 		query.Cursor, cursorCreated, cursorCreated, query.Cursor, query.Limit+1,
 	)
 	if err != nil {

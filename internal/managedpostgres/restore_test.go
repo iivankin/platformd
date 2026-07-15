@@ -255,7 +255,7 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 	}
 	spec := fixture.engine.created[0]
 	if spec.Name != "platformd-postgres-runtime-id" || spec.Labels["io.platformd.postgres-id"] != "postgres-id" ||
-		!strings.HasSuffix(spec.LogPath, "/postgres/postgres-id/attempt-id.log") {
+		!strings.HasSuffix(spec.LogPath, "/postgres/postgres-id/runtime-id/attempt-id.log") {
 		t.Fatalf("candidate identity/profile = %+v", spec)
 	}
 	if !reflect.DeepEqual(fixture.publisher.events, []string{"withdraw:postgres-id", "publish:" + candidateID}) {

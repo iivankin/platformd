@@ -25,6 +25,13 @@ type CreateCredentialResult struct {
 	RequestID  string
 }
 
+type CredentialDetails struct {
+	Credential      state.RegistryCredential
+	Username        string
+	Secret          string
+	SecretAvailable bool
+}
+
 func (application *Application) MarkCredentialUsed(ctx context.Context, credentialID string) error {
 	return application.store.TouchRegistryCredentialLastUsed(ctx, credentialID, application.now().UnixMilli())
 }
@@ -34,6 +41,30 @@ func (application *Application) Credentials(ctx context.Context, repositoryID st
 		return nil, err
 	}
 	return application.store.RegistryCredentials(ctx, repositoryID)
+}
+
+func (application *Application) CredentialDetails(ctx context.Context, repositoryID string) ([]CredentialDetails, error) {
+	credentials, err := application.Credentials(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	details := make([]CredentialDetails, 0, len(credentials))
+	for _, credential := range credentials {
+		username, err := registryauth.Username(credential.ID)
+		if err != nil {
+			return nil, err
+		}
+		entry := CredentialDetails{Credential: credential, Username: username}
+		if len(credential.SecretEncrypted) != 0 {
+			entry.Secret, err = registryauth.OpenSecret(application.master, repositoryID, credential.ID, credential.SecretEncrypted)
+			if err != nil {
+				return nil, err
+			}
+			entry.SecretAvailable = true
+		}
+		details = append(details, entry)
+	}
+	return details, nil
 }
 
 func (application *Application) CreateCredential(ctx context.Context, input CreateCredentialInput) (CreateCredentialResult, error) {
@@ -66,10 +97,15 @@ func (application *Application) CreateCredential(ctx context.Context, input Crea
 	if err != nil {
 		return CreateCredentialResult{}, err
 	}
+	encrypted, err := registryauth.SealSecret(application.master, input.RepositoryID, identifiers[0], secret)
+	if err != nil {
+		return CreateCredentialResult{}, err
+	}
 	credential, err := application.store.CreateRegistryCredential(ctx, state.CreateRegistryCredential{
 		ID: identifiers[0], RepositoryID: input.RepositoryID, Name: input.Name,
-		Permission: input.Permission, SecretHMAC: verifier, AuditEventID: identifiers[1],
-		ActorKind: input.Actor.Kind, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
+		Permission: input.Permission, SecretHMAC: verifier, SecretEncrypted: encrypted,
+		AuditEventID: identifiers[1],
+		ActorKind:    input.Actor.Kind, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
 		RequestCorrelationID: identifiers[2], CreatedAtMillis: now.UnixMilli(),
 	})
 	if err != nil {

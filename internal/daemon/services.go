@@ -14,8 +14,52 @@ type liveServiceRepository struct {
 
 type serviceRuntime interface {
 	DeployService(context.Context, string, bool) error
+	RestartServiceDeployment(context.Context, string, string) error
+	DeleteServiceDeploymentLogs(string, string) error
 	TrackService(context.Context, string, bool) error
 	recordServiceFailure(string, error)
+}
+
+func (repository liveServiceRepository) RestartServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return state.ServiceDesired{}, err
+	}
+	if service.UpdatedAtMillis != input.ExpectedUpdatedMillis || service.ActiveDeploymentID != input.DeploymentID || !service.Enabled {
+		return state.ServiceDesired{}, state.ErrServiceChanged
+	}
+	if err := repository.runtime.RestartServiceDeployment(ctx, input.ID, input.DeploymentID); err != nil {
+		return state.ServiceDesired{}, err
+	}
+	return repository.store.DesiredService(ctx, input.ID)
+}
+
+func (repository liveServiceRepository) RemoveServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return state.ServiceDesired{}, err
+	}
+	if service.UpdatedAtMillis != input.ExpectedUpdatedMillis {
+		return state.ServiceDesired{}, state.ErrServiceChanged
+	}
+	if service.ActiveDeploymentID == input.DeploymentID {
+		return repository.UpdateService(ctx, state.UpdateServiceInput{
+			ID: service.ID, ProjectID: service.ProjectID, Enabled: false, Snapshot: service.Snapshot,
+			ExpectedUpdatedMillis: service.UpdatedAtMillis,
+			AuditEventID:          input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			RequestCorrelationID: input.RequestCorrelationID, UpdatedAtMillis: input.CreatedAtMillis,
+		})
+	}
+	if _, err := repository.store.ServiceDeployment(ctx, input.ProjectID, input.ID, input.DeploymentID); err != nil {
+		return state.ServiceDesired{}, err
+	}
+	if err := repository.runtime.DeleteServiceDeploymentLogs(input.ID, input.DeploymentID); err != nil {
+		return state.ServiceDesired{}, err
+	}
+	if err := repository.store.DeleteServiceDeployment(ctx, input); err != nil {
+		return state.ServiceDesired{}, err
+	}
+	return repository.store.DesiredService(ctx, input.ID)
 }
 
 func (repository liveServiceRepository) Service(ctx context.Context, projectID, serviceID string) (state.ServiceDesired, error) {
@@ -24,6 +68,10 @@ func (repository liveServiceRepository) Service(ctx context.Context, projectID, 
 
 func (repository liveServiceRepository) ServiceDeployments(ctx context.Context, projectID, serviceID, cursor string, limit int) (state.DeploymentPage, error) {
 	return repository.store.ServiceDeployments(ctx, projectID, serviceID, cursor, limit)
+}
+
+func (repository liveServiceRepository) ServiceDeployment(ctx context.Context, projectID, serviceID, deploymentID string) (state.DeploymentRecord, error) {
+	return repository.store.ServiceDeployment(ctx, projectID, serviceID, deploymentID)
 }
 
 func (repository liveServiceRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -51,8 +99,8 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 	return repository.store.DesiredService(ctx, updated.ID)
 }
 
-func (repository liveServiceRepository) RollbackService(ctx context.Context, input state.RollbackServiceInput) (state.ServiceDesired, error) {
-	updated, err := repository.store.RollbackService(ctx, input)
+func (repository liveServiceRepository) DeployServiceVersion(ctx context.Context, input state.DeployServiceVersionInput) (state.ServiceDesired, error) {
+	updated, err := repository.store.DeployServiceVersion(ctx, input)
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}

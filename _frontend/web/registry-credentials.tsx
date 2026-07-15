@@ -1,4 +1,4 @@
-import { Check, Clipboard, KeyRound, Plus, Trash2, X } from "lucide-react";
+import { Clipboard, KeyRound, Plus, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -29,7 +29,6 @@ export const RegistryCredentials = ({
   const [permission, setPermission] = useState<"pull" | "pull_push">(
     "pull_push"
   );
-  const [revealed, setRevealed] = useState<RegistryCredential>();
   const [busy, setBusy] = useState("");
   const [error, setError] = useState<string>();
 
@@ -66,11 +65,7 @@ export const RegistryCredentials = ({
         name,
         permission,
       });
-      setCredentials((current) => [
-        ...current,
-        { ...credential, secret: undefined, username: undefined },
-      ]);
-      setRevealed(credential);
+      setCredentials((current) => [...current, credential]);
       setName("");
       setPermission("pull_push");
       setCreating(false);
@@ -99,13 +94,8 @@ export const RegistryCredentials = ({
     }
   };
 
-  const secret =
-    revealed?.username && revealed.secret
-      ? `${revealed.username}:${revealed.secret}`
-      : "";
-
   return (
-    <section className="border-b border-border">
+    <div className="border-b border-border">
       <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
         <KeyRound className="size-3.5 text-muted-foreground" />
         <p className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
@@ -121,38 +111,6 @@ export const RegistryCredentials = ({
           Robot
         </Button>
       </div>
-      {revealed && secret ? (
-        <div className="flex items-start gap-3 border-b border-emerald-500/30 bg-emerald-500/5 px-4 py-3">
-          <Check className="mt-0.5 size-3.5 text-emerald-600" />
-          <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-medium">Save this credential now</p>
-            <code className="mt-2 block overflow-x-auto border border-emerald-500/30 bg-background px-2 py-1.5 text-[9px] select-all">
-              {secret}
-            </code>
-            {hostname ? (
-              <code className="mt-1 block text-[8px] text-muted-foreground">
-                docker login {hostname} -u {revealed.username} --password-stdin
-              </code>
-            ) : null}
-          </div>
-          <Button
-            aria-label="Copy Registry credential"
-            onClick={() => void navigator.clipboard.writeText(secret)}
-            size="icon"
-            variant="outline"
-          >
-            <Clipboard />
-          </Button>
-          <Button
-            aria-label="Dismiss Registry credential"
-            onClick={() => setRevealed(undefined)}
-            size="icon"
-            variant="ghost"
-          >
-            <X />
-          </Button>
-        </div>
-      ) : null}
       {creating ? (
         <form
           className="grid grid-cols-[minmax(10rem,1fr)_150px_auto] items-center gap-2 border-b border-border bg-muted/20 px-4 py-2"
@@ -194,32 +152,89 @@ export const RegistryCredentials = ({
           </div>
         </form>
       ) : null}
-      <div className="divide-y divide-border">
+      <div>
         {credentials.map((credential) => (
-          <div
-            className="grid grid-cols-[minmax(0,1fr)_100px_150px_32px] items-center gap-3 px-4 py-2.5 text-[9px]"
+          <section
+            className="border-b border-border last:border-b-0"
             key={credential.id}
           >
-            <span className="truncate font-medium">{credential.name}</span>
-            <span className="text-muted-foreground">
-              {credential.permission === "pull_push" ? "pull + push" : "pull"}
-            </span>
-            <span className="text-muted-foreground">
-              Last used{" "}
-              {credential.lastUsedAt
-                ? new Date(credential.lastUsedAt).toLocaleString()
-                : "never"}
-            </span>
-            <Button
-              aria-label={`Revoke ${credential.name}`}
-              disabled={Boolean(busy)}
-              onClick={() => void revoke(credential.id)}
-              size="icon"
-              variant="ghost"
-            >
-              <Trash2 />
-            </Button>
-          </div>
+            <header className="grid min-h-11 grid-cols-[minmax(0,1fr)_100px_160px_32px] items-center gap-3 px-4 text-[9px]">
+              <span className="truncate font-medium">{credential.name}</span>
+              <span className="text-muted-foreground">
+                {credential.permission === "pull_push" ? "pull + push" : "pull"}
+              </span>
+              <span className="text-muted-foreground">
+                Last used{" "}
+                {credential.lastUsedAt
+                  ? new Date(credential.lastUsedAt).toLocaleString()
+                  : "never"}
+              </span>
+              <Button
+                aria-label={`Revoke ${credential.name}`}
+                disabled={Boolean(busy)}
+                onClick={() => void revoke(credential.id)}
+                size="icon"
+                variant="ghost"
+              >
+                <Trash2 />
+              </Button>
+            </header>
+            <dl className="border-t border-border bg-muted/10">
+              {[
+                { label: "Username", value: credential.username },
+                ...(credential.secretAvailable && credential.secret
+                  ? [
+                      { label: "Password", value: credential.secret },
+                      {
+                        label: "Credential",
+                        value: `${credential.username}:${credential.secret}`,
+                      },
+                      ...(hostname
+                        ? [
+                            {
+                              label: "Docker login",
+                              value: `printf '%s' '${credential.secret}' | docker login ${hostname} --username ${credential.username} --password-stdin`,
+                            },
+                          ]
+                        : []),
+                    ]
+                  : []),
+              ].map((detail) => (
+                <div
+                  className="grid min-h-10 grid-cols-[8rem_minmax(0,1fr)_2rem] items-center border-b border-border last:border-b-0"
+                  key={detail.label}
+                >
+                  <dt className="px-4 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                    {detail.label}
+                  </dt>
+                  <dd className="min-w-0 border-x border-border px-3 py-2">
+                    <code className="block overflow-x-auto text-[9px] whitespace-nowrap select-all">
+                      {detail.value}
+                    </code>
+                  </dd>
+                  <dd className="grid place-items-center">
+                    <Button
+                      aria-label={`Copy ${detail.label}`}
+                      onClick={() =>
+                        void navigator.clipboard.writeText(detail.value)
+                      }
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <Clipboard />
+                    </Button>
+                  </dd>
+                </div>
+              ))}
+              {credential.secretAvailable ? null : (
+                <div className="border-t border-amber-500/20 bg-amber-500/5 px-4 py-3 text-[9px] leading-4 text-muted-foreground">
+                  This legacy credential remains valid, but its password was
+                  created before persistent reveal was available. Create a new
+                  credential to get complete connection details.
+                </div>
+              )}
+            </dl>
+          </section>
         ))}
       </div>
       {error ? (
@@ -230,6 +245,6 @@ export const RegistryCredentials = ({
           {error}
         </p>
       ) : null}
-    </section>
+    </div>
   );
 };

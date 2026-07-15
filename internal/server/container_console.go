@@ -16,7 +16,7 @@ import (
 
 type ContainerConsole interface {
 	Open(context.Context, containerconsole.OpenInput) (terminaltransport.Session, error)
-	Shells(context.Context, string, string) ([]string, error)
+	Shells(context.Context, string, string, string) ([]string, error)
 }
 
 func registerContainerConsoleRoute(mux *http.ServeMux, hostname string, application ContainerConsole, gate *admission.Gate) error {
@@ -30,8 +30,9 @@ func registerContainerConsoleRoute(mux *http.ServeMux, hostname string, applicat
 			return nil, err
 		}
 		return application.Open(ctx, containerconsole.OpenInput{
-			ProjectID: open.HTTP.PathValue("projectID"), ServiceID: open.HTTP.PathValue("serviceID"),
-			Command: command, SourceIP: sourceIP,
+			ProjectID: open.HTTP.PathValue("projectID"), ResourceKind: open.HTTP.PathValue("resourceKind"),
+			ResourceID: open.HTTP.PathValue("resourceID"),
+			Command:    command, SourceIP: sourceIP,
 			Actor: containerconsole.Actor{ID: open.Identity.Subject, Email: open.Identity.Email}, Size: size,
 		})
 	}, 0, 0)
@@ -40,20 +41,22 @@ func registerContainerConsoleRoute(mux *http.ServeMux, hostname string, applicat
 	}
 	if gate != nil {
 		handler.SetAdmission(func(request *http.Request) (func(), error) {
-			lease, err := gate.Begin("container_console", request.PathValue("serviceID"))
+			lease, err := gate.Begin("container_console", request.PathValue("resourceKind")+":"+request.PathValue("resourceID"))
 			if err != nil {
 				return nil, err
 			}
 			return lease.Release, nil
 		})
 	}
-	mux.Handle("GET /api/v1/projects/{projectID}/services/{serviceID}/terminal", handler)
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/terminal/shells", func(response http.ResponseWriter, request *http.Request) {
+	mux.Handle("GET /api/v1/projects/{projectID}/resources/{resourceKind}/{resourceID}/terminal", handler)
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/resources/{resourceKind}/{resourceID}/terminal/shells", func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := access.IdentityFromContext(request.Context()); !ok {
 			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
 			return
 		}
-		shells, err := application.Shells(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+		shells, err := application.Shells(
+			request.Context(), request.PathValue("projectID"), request.PathValue("resourceKind"), request.PathValue("resourceID"),
+		)
 		if err != nil {
 			writeAPIError(response, http.StatusConflict, "terminal_shell_probe_failed", "Unable to inspect terminal shells")
 			return

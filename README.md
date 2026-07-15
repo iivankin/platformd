@@ -44,3 +44,30 @@ make build
 ```
 
 Release builds and their signed manifests are produced by the release workflow. Never commit installation credentials, private keys, API tokens, or backup secrets.
+
+### UI development with mock data
+
+Run the frontend by itself with Bun's local server and an in-memory mock API:
+
+```bash
+bun --cwd=_frontend run dev:mock
+```
+
+The default `demo` scenario includes a project, managed resources, Registry
+images, backups, tokens, certificates, logs, and audit events. Mutations update
+the in-memory state until the server restarts. The browser UI hot reloads when
+frontend files change.
+
+Two additional scenarios cover empty and failed states:
+
+```bash
+bun --cwd=_frontend run dev:mock:empty
+bun --cwd=_frontend run dev:mock:error
+```
+
+Use `PORT=3200` to change the default `http://127.0.0.1:3100` address, or pass
+`--scenario demo|empty|error` to `dev:mock` directly.
+
+## License
+
+platformd is available under the [Apache License 2.0](LICENSE).

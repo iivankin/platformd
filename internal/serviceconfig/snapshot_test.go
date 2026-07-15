@@ -14,6 +14,9 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 			{EnvironmentName: "TOKEN", SecretID: "secret-2"},
 			{EnvironmentName: "PASSWORD", SecretID: "secret-1"},
 		},
+		ResourceReferences: []ResourceReference{
+			{EnvironmentName: "REDIS_URL", ResourceKind: "redis", ResourceID: "cache", OutputName: "REDIS_URL"},
+		},
 		TargetPort: &port,
 		HealthPath: "/healthz?ready=1",
 		VolumeMounts: []VolumeMount{
@@ -38,6 +41,9 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 			{EnvironmentName: "PASSWORD", SecretID: "secret-1"},
 			{EnvironmentName: "TOKEN", SecretID: "secret-2"},
 		},
+		ResourceReferences: []ResourceReference{
+			{EnvironmentName: "REDIS_URL", ResourceKind: "redis", ResourceID: "cache", OutputName: "REDIS_URL"},
+		},
 		TargetPort: &port, HealthPath: "/healthz?ready=1", StartupTimeoutSeconds: 60,
 		VolumeMounts: []VolumeMount{
 			{VolumeID: "volume-1", ContainerPath: "/var/lib/a"},
@@ -55,6 +61,8 @@ func TestSnapshotValidationRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 		{ImageReference: "UPPERCASE/image:tag"},
 		{ImageReference: "alpine", Environment: map[string]string{"BAD-NAME": "value"}},
 		{ImageReference: "alpine", Environment: map[string]string{"TOKEN": "plain"}, SecretReferences: []SecretReference{{EnvironmentName: "TOKEN", SecretID: "secret"}}},
+		{ImageReference: "alpine", Environment: map[string]string{"REDIS_URL": "plain"}, ResourceReferences: []ResourceReference{{EnvironmentName: "REDIS_URL", ResourceKind: "redis", ResourceID: "cache", OutputName: "REDIS_URL"}}},
+		{ImageReference: "alpine", ResourceReferences: []ResourceReference{{EnvironmentName: "CACHE", ResourceKind: "unknown", ResourceID: "cache", OutputName: "URL"}}},
 		{ImageReference: "alpine", HealthPath: "/healthz"},
 		{ImageReference: "alpine", TargetPort: &port, HealthPath: "https://example.com/health"},
 		{ImageReference: "alpine", VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/"}}},

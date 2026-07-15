@@ -35,10 +35,11 @@ import {
   fetchBackupTarget,
   fetchBackupGenerations,
   fetchService,
+  fetchServiceDeployment,
   fetchServiceDeployments,
   fetchServiceDomains,
   fetchServiceLogs,
-  fetchServiceTerminalShells,
+  fetchResourceTerminalShells,
   issueServerTerminalToken,
   fetchVolumeOwnerSuggestion,
   fetchVolumes,
@@ -66,7 +67,10 @@ import {
   fetchRegistryRepositories,
   fetchRegistrySettings,
   fetchRecoveryStatus,
+  fetchResourceLogs,
   fetchResourceUsage,
+  fetchResourceUsageHistory,
+  deployServiceVersion,
   mutateManagedRedis,
   objectDownloadURL,
   previewObject,
@@ -74,7 +78,6 @@ import {
   queryManagedPostgres,
   redeployService,
   revokeAPIToken,
-  rollbackService,
   runBackupNow,
   scanManagedRedisKeys,
   setRegistryHostname,
@@ -295,6 +298,7 @@ test("lists credentials and creates a service", async () => {
             imageReference: "registry.example.com/acme/api:latest",
             name: "api",
             projectId: "project",
+            resourceReferences: [],
             secretReferences: [],
             startupTimeoutSeconds: 60,
             targetPort: 8080,
@@ -319,6 +323,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     imageReference: "docker.io/library/alpine:latest",
     name: "api",
     projectId: "project",
+    resourceReferences: [],
     secretReferences: [],
     startupTimeoutSeconds: 60,
     updatedAt: 2,
@@ -339,6 +344,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       environment: {},
       expectedUpdatedAt: 2,
       imageReference: service.imageReference,
+      resourceReferences: [],
       secretReferences: [],
       startupTimeoutSeconds: 60,
       volumeMounts: [],
@@ -355,6 +361,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     environment: {},
     expectedUpdatedAt: 2,
     imageReference: service.imageReference,
+    resourceReferences: [],
     secretReferences: [],
     startupTimeoutSeconds: 60,
     volumeMounts: [],
@@ -366,7 +373,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     )
   ).resolves.toEqual(service);
   await expect(
-    rollbackService("project", "service", "deployment", 2, () =>
+    deployServiceVersion("project", "service", "deployment", 2, () =>
       Promise.resolve(Response.json({ ...service, updatedAt: 3 }))
     )
   ).resolves.toMatchObject({ updatedAt: 3 });
@@ -448,6 +455,7 @@ test("validates bounded deployment history pages", async () => {
               snapshot: {
                 environment: {},
                 imageReference: "docker.io/library/alpine:latest",
+                resourceReferences: [],
                 secretReferences: [],
                 startupTimeoutSeconds: 60,
                 volumeMounts: [],
@@ -460,6 +468,42 @@ test("validates bounded deployment history pages", async () => {
       )
     )
   ).resolves.toMatchObject({ nextCursor: "deployment" });
+});
+
+test("loads one deployment by its stable route", async () => {
+  let requested = "";
+  await expect(
+    fetchServiceDeployment(
+      "project/id",
+      "service/id",
+      "deployment/id",
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            createdAt: 1,
+            id: "deployment/id",
+            imageDigest: "sha256:image",
+            serviceConfigHash: "config",
+            serviceId: "service/id",
+            snapshot: {
+              environment: {},
+              imageReference: "docker.io/library/alpine:latest",
+              resourceReferences: [],
+              secretReferences: [],
+              startupTimeoutSeconds: 60,
+              volumeMounts: [],
+            },
+            status: "succeeded",
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ id: "deployment/id" });
+  expect(requested).toBe(
+    "/api/v1/projects/project%2Fid/services/service%2Fid/deployments/deployment%2Fid"
+  );
 });
 
 test("reads a validated bounded structured log window", async () => {
@@ -494,16 +538,55 @@ test("reads a validated bounded structured log window", async () => {
   );
 });
 
-test("discovers only allowlisted shells in the running service", async () => {
+test("reads logs from the selected managed resource route", async () => {
   let requested = "";
   await expect(
-    fetchServiceTerminalShells("project", "service", undefined, (input) => {
-      requested = input.toString();
-      return Promise.resolve(Response.json({ shells: ["/bin/sh"] }));
-    })
+    fetchResourceLogs(
+      "project",
+      "object_store",
+      "assets",
+      { contains: "PUT", limit: 25 },
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            records: [
+              {
+                attemptId: "activity",
+                deploymentId: "assets",
+                stream: "stdout",
+                text: "PUT catalog.json",
+                timestamp: "2026-07-12T10:00:00Z",
+              },
+            ],
+            truncated: false,
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ records: [{ text: "PUT catalog.json" }] });
+  expect(requested).toBe(
+    "/api/v1/projects/project/object-stores/assets/logs?limit=25&contains=PUT"
+  );
+});
+
+test("discovers only allowlisted shells in a running resource", async () => {
+  let requested = "";
+  await expect(
+    fetchResourceTerminalShells(
+      "project",
+      "service",
+      "service",
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(Response.json({ shells: ["/bin/sh"] }));
+      }
+    )
   ).resolves.toEqual(["/bin/sh"]);
   expect(requested).toBe(
-    "/api/v1/projects/project/services/service/terminal/shells"
+    "/api/v1/projects/project/resources/service/service/terminal/shells"
   );
 });
 
@@ -583,6 +666,9 @@ test("reads stateless resource cgroup usage", async () => {
           hostCpuCores: 8,
           hostMemoryBytes: 16 * 1024 ** 3,
           memoryBytes: 64 * 1024 ** 2,
+          networkAvailable: true,
+          networkRxBytes: 100,
+          networkTxBytes: 200,
           observedAt: 42,
           running: true,
         })
@@ -591,6 +677,35 @@ test("reads stateless resource cgroup usage", async () => {
   ).resolves.toMatchObject({ memoryBytes: 64 * 1024 ** 2, running: true });
   expect(requested).toBe(
     "/api/v1/infrastructure/resources/service/api%2Fid/usage"
+  );
+});
+
+test("reads persisted resource usage history", async () => {
+  let requested = "";
+  await expect(
+    fetchResourceUsageHistory("redis", "cache/id", "7d", undefined, (input) => {
+      requested = input.toString();
+      return Promise.resolve(
+        Response.json({
+          from: 1,
+          points: [
+            {
+              cpuMillicores: 12,
+              memoryBytes: 64 * 1024 ** 2,
+              networkEgressBytesPerSecond: 34,
+              networkIngressBytesPerSecond: 56,
+              observedAt: 2,
+              running: true,
+            },
+          ],
+          stepMillis: 3_600_000,
+          to: 3,
+        })
+      );
+    })
+  ).resolves.toMatchObject({ points: [{ cpuMillicores: 12 }] });
+  expect(requested).toBe(
+    "/api/v1/infrastructure/resources/redis/cache%2Fid/usage/history?range=7d"
   );
 });
 
@@ -768,6 +883,7 @@ test("uses Access-only managed Redis data routes with encoded values unchanged",
     imageDigest: "sha256:redis",
     imageTag: "7.4",
     name: "cache",
+    password: "redis-password",
     port: 6379 as const,
     projectId: "project/id",
     updatedAt: 1,
@@ -994,7 +1110,7 @@ test("uses the Access-only object storage browser contract", async () => {
     name: "assets",
     projectId: "project/id",
     region: "us-east-1" as const,
-    secret: "shown-once",
+    secret: "stored-secret",
     updatedAt: 1,
   };
   await expect(
@@ -1019,15 +1135,14 @@ test("uses the Access-only object storage browser contract", async () => {
     )
   ).resolves.toEqual(resource);
 
-  const persisted = { ...resource, accessKey: undefined, secret: undefined };
   await expect(
     fetchObjectStore(resource.projectId, resource.id, undefined, (input) => {
       expect(input.toString()).toBe(
         "/api/v1/projects/project%2Fid/object-stores/store%2Fid"
       );
-      return Promise.resolve(Response.json(persisted));
+      return Promise.resolve(Response.json(resource));
     })
-  ).resolves.toEqual(persisted);
+  ).resolves.toEqual(resource);
 
   const metadata = {
     contentType: "text/plain",
@@ -1319,6 +1434,8 @@ test("uses the Registry settings, repository, image, and deletion contracts", as
     id: "credential/id",
     name: "reader",
     permission: "pull" as const,
+    secretAvailable: false,
+    username: "robot",
   };
   await expect(
     fetchRegistryCredentials(repository.id, undefined, () =>
@@ -1332,7 +1449,7 @@ test("uses the Registry settings, repository, image, and deletion contracts", as
       () =>
         Promise.resolve(
           Response.json(
-            { ...credential, secret: "secret", username: "robot" },
+            { ...credential, secret: "secret", secretAvailable: true },
             { status: 201 }
           )
         )

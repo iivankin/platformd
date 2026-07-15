@@ -85,6 +85,20 @@ LIMIT ?`, serviceID, cursor, cursorCreated, cursorCreated, cursor, limit+1)
 	return page, nil
 }
 
+func (store *Store) ServiceDeployment(ctx context.Context, projectID, serviceID, deploymentID string) (DeploymentRecord, error) {
+	if _, err := store.Service(ctx, projectID, serviceID); err != nil {
+		return DeploymentRecord{}, err
+	}
+	deployment, err := scanDeploymentRecord(store.database.QueryRowContext(ctx, `
+SELECT id, service_id, image_digest, service_config_hash, snapshot_json, status,
+       error_code, error_message, created_at, finished_at
+FROM deployments WHERE id = ? AND service_id = ?`, deploymentID, serviceID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return DeploymentRecord{}, ErrDeploymentNotFound
+	}
+	return deployment, err
+}
+
 type deploymentScanner interface {
 	Scan(...any) error
 }

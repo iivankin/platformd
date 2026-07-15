@@ -17,7 +17,23 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func TestServiceLifecycleAPIUpdatesListsDeploymentsAndRollsBack(t *testing.T) {
+type serviceDeploymentActionRepository struct {
+	*state.Store
+	restarted string
+	removed   string
+}
+
+func (repository *serviceDeploymentActionRepository) RestartServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	repository.restarted = input.DeploymentID
+	return repository.DesiredService(ctx, input.ID)
+}
+
+func (repository *serviceDeploymentActionRepository) RemoveServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	repository.removed = input.DeploymentID
+	return repository.DesiredService(ctx, input.ID)
+}
+
+func TestServiceLifecycleAPIUpdatesListsDeploymentsAndDeploysVersion(t *testing.T) {
 	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
 	if err != nil {
 		t.Fatal(err)
@@ -102,14 +118,63 @@ func TestServiceLifecycleAPIUpdatesListsDeploymentsAndRollsBack(t *testing.T) {
 		t.Fatalf("deployments status/body = %d/%s", deploymentsResponse.Code, deploymentsResponse.Body)
 	}
 
-	rollback := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/rollback", `{
-  "deploymentId":"deployment",
+	deploymentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deploymentResponse, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/deployments/deployment", ""))
+	if deploymentResponse.Code != http.StatusOK || !strings.Contains(deploymentResponse.Body.String(), `"id":"deployment"`) {
+		t.Fatalf("deployment status/body = %d/%s", deploymentResponse.Code, deploymentResponse.Body)
+	}
+	missingDeploymentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingDeploymentResponse, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/deployments/missing", ""))
+	if missingDeploymentResponse.Code != http.StatusNotFound || !strings.Contains(missingDeploymentResponse.Body.String(), `"code":"deployment_not_found"`) {
+		t.Fatalf("missing deployment status/body = %d/%s", missingDeploymentResponse.Code, missingDeploymentResponse.Body)
+	}
+
+	deployVersion := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/deployments/deployment/deploy", `{
 	"expectedUpdatedAt":`+strconv.FormatInt(updatedAt, 10)+`
 }`)
-	rollback.Header.Set("Origin", "https://admin.example.com")
-	rollbackResponse := httptest.NewRecorder()
-	handler.ServeHTTP(rollbackResponse, rollback)
-	if rollbackResponse.Code != http.StatusOK || !strings.Contains(rollbackResponse.Body.String(), "@"+digest) || !strings.Contains(rollbackResponse.Body.String(), `"enabled":false`) {
-		t.Fatalf("rollback status/body = %d/%s", rollbackResponse.Code, rollbackResponse.Body)
+	deployVersion.Header.Set("Origin", "https://admin.example.com")
+	deployVersionResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deployVersionResponse, deployVersion)
+	if deployVersionResponse.Code != http.StatusOK || !strings.Contains(deployVersionResponse.Body.String(), "@"+digest) || !strings.Contains(deployVersionResponse.Body.String(), `"enabled":false`) {
+		t.Fatalf("deploy version status/body = %d/%s", deployVersionResponse.Code, deployVersionResponse.Body)
+	}
+}
+
+func TestServiceDeploymentRestartAndRemoveRoutesTargetExactDeployment(t *testing.T) {
+	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(context.Background(), state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := store.CreateService(context.Background(), state.CreateService{
+		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
+		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine:3.22"},
+		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &serviceDeploymentActionRepository{Store: store}
+	handler := access.ProtectAdmin(
+		"admin.example.com", projectVerifier{},
+		server.Handler(server.DefaultMeta("ready"), server.WithServices(repository)),
+	)
+	for _, action := range []string{"restart", "remove"} {
+		request := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/deployments/deployment/"+action, `{"expectedUpdatedAt":`+strconv.FormatInt(service.UpdatedAtMillis, 10)+`}`)
+		request.Header.Set("Origin", "https://admin.example.com")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s deployment = %d/%s", action, response.Code, response.Body)
+		}
+	}
+	if repository.restarted != "deployment" || repository.removed != "deployment" {
+		t.Fatalf("deployment actions = restart %q, remove %q", repository.restarted, repository.removed)
 	}
 }

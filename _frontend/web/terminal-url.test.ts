@@ -2,13 +2,14 @@ import { expect, test } from "bun:test";
 
 import {
   serverTerminalSocketURL,
-  serviceTerminalSocketURL,
+  resourceTerminalSocketURL,
 } from "@/terminal-url";
 
 test("builds bounded terminal websocket URLs without credentials", () => {
   expect(
-    serviceTerminalSocketURL(
+    resourceTerminalSocketURL(
       "project/id",
+      "service",
       "service/id",
       ["/bin/sh"],
       2000,
@@ -16,7 +17,7 @@ test("builds bounded terminal websocket URLs without credentials", () => {
       "https://admin.example.com"
     )
   ).toBe(
-    "wss://admin.example.com/api/v1/projects/project%2Fid/services/service%2Fid/terminal?cols=1000&rows=1&arg=%2Fbin%2Fsh"
+    "wss://admin.example.com/api/v1/projects/project%2Fid/resources/service/service%2Fid/terminal?cols=1000&rows=1&arg=%2Fbin%2Fsh"
   );
   expect(serverTerminalSocketURL(120, 40, "https://admin.example.com")).toBe(
     "wss://admin.example.com/api/v1/server/terminal?cols=120&rows=40"

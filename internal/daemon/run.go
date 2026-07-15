@@ -27,6 +27,7 @@ import (
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerconsole"
+	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
@@ -43,6 +44,7 @@ import (
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/releaseconfig"
+	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/sdnotify"
 	"github.com/iivankin/platformd/internal/selfupdate"
 	"github.com/iivankin/platformd/internal/server"
@@ -97,7 +99,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := prepareRuntimeHost(ctx, paths, cgroups.WorkloadRoot()); err != nil {
 		return fmt.Errorf("clean runtime before state migration: %w", err)
 	}
-	resourceUsage, err := cgroupstats.NewProduction(cgroups.WorkloadRoot())
+	cgroupUsage, err := cgroupstats.NewProduction(cgroups.WorkloadRoot())
 	if err != nil {
 		return fmt.Errorf("configure resource usage reader: %w", err)
 	}
@@ -256,7 +258,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := runtime.ConfigureManagedRedis(store, key); err != nil {
 		return fmt.Errorf("configure managed Redis: %w", err)
 	}
-	if err := runtime.ConfigureDeployments(ctx, store, imageCredentials, registryApplication); err != nil {
+	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, registryApplication); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
 	if !installation.RecoveryMode {
@@ -270,11 +272,34 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return fmt.Errorf("reconcile service deployments: %w", err)
 		}
 	}
+	resourceMetrics, err := resourcemetrics.NewApplication(store, cgroupUsage, runtime, resourcemetrics.Config{})
+	if err != nil {
+		return fmt.Errorf("configure resource metrics: %w", err)
+	}
+	metricsContext, cancelMetrics := context.WithCancel(ctx)
+	metricsDone := make(chan struct{})
+	defer func() {
+		cancelMetrics()
+		<-metricsDone
+	}()
+	go func() {
+		defer close(metricsDone)
+		err := resourceMetrics.Run(metricsContext, func(metricErr error) {
+			log.Printf("resource metrics: %v", metricErr)
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("resource metrics collector stopped: %v", err)
+		}
+	}()
 	containerConsole, err := containerconsole.New(containerconsole.Config{
-		Services: store, Runtime: runtime.deployments, Audit: store,
+		Resources: liveContainerResourceRepository{store: store}, Runtime: runtime, Audit: store,
 	})
 	if err != nil {
 		return fmt.Errorf("configure container console: %w", err)
+	}
+	containerFiles, err := containerfiles.New(liveContainerResourceRepository{store: store}, runtime, runtime.engine)
+	if err != nil {
+		return fmt.Errorf("configure container files: %w", err)
 	}
 	volumeApplication, err := volume.New(volume.Config{
 		Repository: store, Filesystem: volume.NewLocalFilesystem(paths.VolumesRoot), Images: runtime.engine,
@@ -578,13 +603,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithBackupResources(backupResources),
 		server.WithDatabaseVersions(databaseVersions),
 		server.WithContainerConsole(installation.AdminHostname, containerConsole),
+		server.WithContainerFiles(containerFiles),
 		server.WithServerTerminalAuth(serverTerminalAuth),
 		server.WithServerTerminal(
 			installation.AdminHostname, hostTerminal,
 			serverTerminalIdleTimeout, serverTerminalAbsoluteLifetime,
 		),
 		server.WithDiskPressure(pressure),
-		server.WithResourceUsage(resourceUsage),
+		server.WithResourceUsage(resourceMetrics),
 		server.WithInfrastructureLogs(infrastructureLogs),
 		server.WithAdmission(mutationAdmission),
 		server.WithSelfUpdate(platformUpdater, func() {

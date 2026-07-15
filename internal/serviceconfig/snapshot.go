@@ -31,24 +31,32 @@ type SecretReference struct {
 	SecretID        string `json:"secretId"`
 }
 
+type ResourceReference struct {
+	EnvironmentName string `json:"environmentName"`
+	ResourceKind    string `json:"resourceKind"`
+	ResourceID      string `json:"resourceId"`
+	OutputName      string `json:"outputName"`
+}
+
 type VolumeMount struct {
 	VolumeID      string `json:"volumeId"`
 	ContainerPath string `json:"containerPath"`
 }
 
 type Snapshot struct {
-	ImageReference        string            `json:"imageReference"`
-	ImageCredentialID     string            `json:"imageCredentialId,omitempty"`
-	Command               []string          `json:"command,omitempty"`
-	Args                  []string          `json:"args,omitempty"`
-	Environment           map[string]string `json:"environment"`
-	SecretReferences      []SecretReference `json:"secretReferences"`
-	TargetPort            *int              `json:"targetPort,omitempty"`
-	HealthPath            string            `json:"healthPath,omitempty"`
-	StartupTimeoutSeconds int               `json:"startupTimeoutSeconds"`
-	CPUMillicores         int64             `json:"cpuMillicores,omitempty"`
-	MemoryMaxBytes        int64             `json:"memoryMaxBytes,omitempty"`
-	VolumeMounts          []VolumeMount     `json:"volumeMounts"`
+	ImageReference        string              `json:"imageReference"`
+	ImageCredentialID     string              `json:"imageCredentialId,omitempty"`
+	Command               []string            `json:"command,omitempty"`
+	Args                  []string            `json:"args,omitempty"`
+	Environment           map[string]string   `json:"environment"`
+	SecretReferences      []SecretReference   `json:"secretReferences"`
+	ResourceReferences    []ResourceReference `json:"resourceReferences"`
+	TargetPort            *int                `json:"targetPort,omitempty"`
+	HealthPath            string              `json:"healthPath,omitempty"`
+	StartupTimeoutSeconds int                 `json:"startupTimeoutSeconds"`
+	CPUMillicores         int64               `json:"cpuMillicores,omitempty"`
+	MemoryMaxBytes        int64               `json:"memoryMaxBytes,omitempty"`
+	VolumeMounts          []VolumeMount       `json:"volumeMounts"`
 }
 
 func Normalize(input Snapshot) (Snapshot, error) {
@@ -73,12 +81,25 @@ func Normalize(input Snapshot) (Snapshot, error) {
 	}
 	normalized.Environment = cloneMap(input.Environment)
 	normalized.SecretReferences = append([]SecretReference(nil), input.SecretReferences...)
+	normalized.ResourceReferences = append([]ResourceReference(nil), input.ResourceReferences...)
 	normalized.VolumeMounts = append([]VolumeMount(nil), input.VolumeMounts...)
 	sort.Slice(normalized.SecretReferences, func(left, right int) bool {
 		if normalized.SecretReferences[left].EnvironmentName == normalized.SecretReferences[right].EnvironmentName {
 			return normalized.SecretReferences[left].SecretID < normalized.SecretReferences[right].SecretID
 		}
 		return normalized.SecretReferences[left].EnvironmentName < normalized.SecretReferences[right].EnvironmentName
+	})
+	sort.Slice(normalized.ResourceReferences, func(left, right int) bool {
+		if normalized.ResourceReferences[left].EnvironmentName == normalized.ResourceReferences[right].EnvironmentName {
+			if normalized.ResourceReferences[left].ResourceKind == normalized.ResourceReferences[right].ResourceKind {
+				if normalized.ResourceReferences[left].ResourceID == normalized.ResourceReferences[right].ResourceID {
+					return normalized.ResourceReferences[left].OutputName < normalized.ResourceReferences[right].OutputName
+				}
+				return normalized.ResourceReferences[left].ResourceID < normalized.ResourceReferences[right].ResourceID
+			}
+			return normalized.ResourceReferences[left].ResourceKind < normalized.ResourceReferences[right].ResourceKind
+		}
+		return normalized.ResourceReferences[left].EnvironmentName < normalized.ResourceReferences[right].EnvironmentName
 	})
 	sort.Slice(normalized.VolumeMounts, func(left, right int) bool {
 		if normalized.VolumeMounts[left].ContainerPath == normalized.VolumeMounts[right].ContainerPath {
@@ -91,6 +112,9 @@ func Normalize(input Snapshot) (Snapshot, error) {
 	}
 	if normalized.SecretReferences == nil {
 		normalized.SecretReferences = make([]SecretReference, 0)
+	}
+	if normalized.ResourceReferences == nil {
+		normalized.ResourceReferences = make([]ResourceReference, 0)
 	}
 	if normalized.VolumeMounts == nil {
 		normalized.VolumeMounts = make([]VolumeMount, 0)
@@ -147,7 +171,7 @@ func validateSnapshot(snapshot Snapshot) error {
 	if err := validateProcess(snapshot.Command, snapshot.Args); err != nil {
 		return err
 	}
-	if err := validateEnvironment(snapshot.Environment, snapshot.SecretReferences); err != nil {
+	if err := validateEnvironment(snapshot.Environment, snapshot.SecretReferences, snapshot.ResourceReferences); err != nil {
 		return err
 	}
 	if snapshot.TargetPort != nil && (*snapshot.TargetPort < 1 || *snapshot.TargetPort > 65535) {
@@ -188,11 +212,11 @@ func validateProcess(command, arguments []string) error {
 	return nil
 }
 
-func validateEnvironment(environment map[string]string, secretReferences []SecretReference) error {
-	if len(environment)+len(secretReferences) > maximumEnvironmentVariables {
+func validateEnvironment(environment map[string]string, secretReferences []SecretReference, resourceReferences []ResourceReference) error {
+	if len(environment)+len(secretReferences)+len(resourceReferences) > maximumEnvironmentVariables {
 		return errors.New("environment contains too many variables")
 	}
-	seen := make(map[string]struct{}, len(environment)+len(secretReferences))
+	seen := make(map[string]struct{}, len(environment)+len(secretReferences)+len(resourceReferences))
 	bytes := 0
 	for name, value := range environment {
 		if !environmentName.MatchString(name) {
@@ -214,10 +238,32 @@ func validateEnvironment(environment map[string]string, secretReferences []Secre
 		seen[reference.EnvironmentName] = struct{}{}
 		bytes += len(reference.EnvironmentName) + len(reference.SecretID)
 	}
+	for _, reference := range resourceReferences {
+		if !environmentName.MatchString(reference.EnvironmentName) ||
+			!validResourceKind(reference.ResourceKind) ||
+			reference.ResourceID == "" || strings.ContainsRune(reference.ResourceID, '\x00') ||
+			reference.OutputName == "" || strings.ContainsRune(reference.OutputName, '\x00') {
+			return errors.New("invalid resource environment reference")
+		}
+		if _, exists := seen[reference.EnvironmentName]; exists {
+			return fmt.Errorf("duplicate environment name %q", reference.EnvironmentName)
+		}
+		seen[reference.EnvironmentName] = struct{}{}
+		bytes += len(reference.EnvironmentName) + len(reference.ResourceKind) + len(reference.ResourceID) + len(reference.OutputName)
+	}
 	if bytes > maximumEnvironmentBytes {
 		return errors.New("environment exceeds 256 KiB")
 	}
 	return nil
+}
+
+func validResourceKind(kind string) bool {
+	switch kind {
+	case "service", "postgres", "redis", "object_store":
+		return true
+	default:
+		return false
+	}
 }
 
 func validateVolumeMounts(mounts []VolumeMount) error {

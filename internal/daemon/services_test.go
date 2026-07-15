@@ -23,6 +23,12 @@ func (runtime *fakeServiceRuntime) DeployService(_ context.Context, _ string, fo
 	return runtime.deployErr
 }
 
+func (*fakeServiceRuntime) RestartServiceDeployment(context.Context, string, string) error {
+	return nil
+}
+
+func (*fakeServiceRuntime) DeleteServiceDeploymentLogs(string, string) error { return nil }
+
 func (runtime *fakeServiceRuntime) TrackService(_ context.Context, _ string, retry bool) error {
 	runtime.trackRetry = append(runtime.trackRetry, retry)
 	return nil
