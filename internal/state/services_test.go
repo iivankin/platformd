@@ -20,13 +20,12 @@ func TestCreateAndReadDesiredService(t *testing.T) {
 	if _, err := store.database.Exec(`INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
-	port := 8080
 	created, err := store.CreateService(context.Background(), CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{
 			ImageReference: "alpine:3.22", Command: []string{"/bin/server"}, Args: []string{"--port", "8080"},
 			Environment: map[string]string{"DATABASE_URL": "postgres://db:5432/app"},
-			TargetPort:  &port, HealthPath: "/healthz", CPUMillicores: 250, MemoryMaxBytes: 64 << 20,
+			HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz"}, CPUMillicores: 250, MemoryMaxBytes: 64 << 20,
 		},
 		AuditEventID: "audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
 		RequestCorrelationID: "request", CreatedAtMillis: 2,
@@ -41,7 +40,7 @@ func TestCreateAndReadDesiredService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.ProjectName != "shop" || loaded.Snapshot.HealthPath != "/healthz" || loaded.Snapshot.CPUMillicores != 250 || loaded.Snapshot.TargetPort == nil || *loaded.Snapshot.TargetPort != 8080 {
+	if loaded.ProjectName != "shop" || loaded.Snapshot.HealthCheck == nil || loaded.Snapshot.HealthCheck.Path != "/healthz" || loaded.Snapshot.HealthCheck.Port != 8080 || loaded.Snapshot.CPUMillicores != 250 {
 		t.Fatalf("loaded service = %+v / %+v", loaded, loaded.Snapshot)
 	}
 	var auditCount int
@@ -123,5 +122,60 @@ VALUES ('store', 'project', 'assets', 'assets', 1, 1)`); err != nil {
 	})
 	if !errors.Is(err, ErrResourceNameConflict) {
 		t.Fatalf("error = %v, want ErrResourceNameConflict", err)
+	}
+}
+
+func TestDeleteServiceRemovesOwnedStateAndRecordsAudit(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.database.Exec(`INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	service, err := store.CreateService(context.Background(), CreateService{
+		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
+		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine"},
+		AuditEventID: "create-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.database.Exec(`
+INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at)
+VALUES ('volume', 'project', 'service', 'data', 1000, 1000, 3);
+INSERT INTO service_volume_mounts(service_id, volume_id, container_path)
+VALUES ('service', 'volume', '/data');
+INSERT INTO deployments(id, service_id, image_digest, service_config_hash, snapshot_json, status, created_at)
+VALUES ('deployment', 'service', 'sha256:image', 'config', '{}', 'failed', 3);
+INSERT INTO service_domains(hostname, service_id, target_port, created_at)
+VALUES ('api.example.com', 'service', 8080, 3);
+INSERT INTO service_listeners(protocol, public_port, service_id, target_port, created_at)
+VALUES ('tcp', 3000, 'service', 8080, 3);
+INSERT INTO resource_metric_samples(resource_kind, resource_id, observed_at, cpu_usage_micros, memory_bytes, running)
+VALUES ('service', 'service', 3, 10, 20, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := store.DeleteService(context.Background(), DeleteServiceInput{
+		ID: service.ID, ProjectID: service.ProjectID, ExpectedUpdatedMillis: service.UpdatedAtMillis,
+		AuditEventID: "delete-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
+		RequestCorrelationID: "request", DeletedAtMillis: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(deleted.Volumes) != 1 || deleted.Volumes[0].ID != "volume" {
+		t.Fatalf("deleted volumes = %+v", deleted.Volumes)
+	}
+	for _, table := range []string{"services", "volumes", "deployments", "service_domains", "service_listeners", "resource_metric_samples"} {
+		var count int
+		if err := store.database.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s count = %d, %v", table, count, err)
+		}
+	}
+	var auditCount int
+	if err := store.database.QueryRow("SELECT count(*) FROM audit_events WHERE id = 'delete-audit' AND action = 'service.delete'").Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("delete audit count = %d, %v", auditCount, err)
 	}
 }

@@ -130,7 +130,6 @@ type activeContainer struct {
 	deploymentID string
 	container    containerengine.Container
 	networkName  string
-	targetPort   int
 }
 
 type Controller struct {
@@ -382,6 +381,28 @@ func (controller *Controller) DeleteDeploymentLogs(serviceID, deploymentID strin
 	return os.RemoveAll(filepath.Join(controller.logRoot, "services", serviceID, deploymentID))
 }
 
+// DeleteService removes the live container. State deletion is committed by the
+// caller only after this runtime cutover succeeds, so a deleted service can
+// never keep serving traffic.
+func (controller *Controller) DeleteService(ctx context.Context, desired state.ServiceDesired) error {
+	lease, err := controller.admission.Begin("service_delete", desired.ID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
+	lock := controller.serviceLock(desired.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return controller.stopDisabled(ctx, desired)
+}
+
+func (controller *Controller) DeleteServiceLogs(serviceID string) error {
+	if serviceID == "" || filepath.Base(serviceID) != serviceID {
+		return errors.New("service log identity is invalid")
+	}
+	return os.RemoveAll(filepath.Join(controller.logRoot, "services", serviceID))
+}
+
 // QuiesceAll stops active service containers without deleting their libpod
 // records. The returned closure recreates the exact active pointers if update
 // cutover aborts after this point.
@@ -532,7 +553,7 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 	}
 	controller.setActive(desired.ID, activeContainer{
 		deploymentID: activeDeployment.ID, container: ready,
-		networkName: placement.NetworkName, targetPort: targetPort(desired.Snapshot.TargetPort),
+		networkName: placement.NetworkName,
 	})
 	remove = false
 	if err := controller.publisher.Publish(desired, ready); err != nil {
@@ -616,9 +637,9 @@ func (controller *Controller) Container(serviceID string) (containerengine.Conta
 	return container, true, nil
 }
 
-func (controller *Controller) Backend(serviceID string) (Backend, bool, error) {
+func (controller *Controller) Backend(serviceID string, targetPort int) (Backend, bool, error) {
 	active, ok := controller.activeContainer(serviceID)
-	if !ok || active.targetPort == 0 {
+	if !ok || targetPort < 1 || targetPort > 65535 {
 		return Backend{}, false, nil
 	}
 	container, err := controller.engine.InspectContainer(active.container.ID)
@@ -633,7 +654,7 @@ func (controller *Controller) Backend(serviceID string) (Backend, bool, error) {
 		return Backend{}, true, fmt.Errorf("service container has %d backend addresses, want one", len(addresses))
 	}
 	return Backend{
-		DeploymentID: active.deploymentID, Address: addresses[0], Port: active.targetPort,
+		DeploymentID: active.deploymentID, Address: addresses[0], Port: targetPort,
 	}, true, nil
 }
 
@@ -713,7 +734,7 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 	desired.ActiveDeploymentID = deploymentID
 	controller.setActive(desired.ID, activeContainer{
 		deploymentID: deploymentID, container: ready,
-		networkName: placement.NetworkName, targetPort: targetPort(desired.Snapshot.TargetPort),
+		networkName: placement.NetworkName,
 	})
 	candidateActive = false
 	if err := controller.publisher.Publish(desired, ready); err != nil {
@@ -745,21 +766,13 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 			Destination: mount.ContainerPath,
 		})
 	}
-	environment := make(map[string]string, len(desired.Snapshot.Environment)+len(desired.Snapshot.ResourceReferences))
-	for name, value := range desired.Snapshot.Environment {
-		environment[name] = value
-	}
-	if len(desired.Snapshot.ResourceReferences) > 0 {
-		if controller.environment == nil {
-			return containerengine.Container{}, Placement{}, errors.New("resource variable resolution is not configured")
-		}
+	environment := desired.Snapshot.Environment
+	if controller.environment != nil {
 		resolved, resolveErr := controller.environment.Resolve(ctx, desired)
 		if resolveErr != nil {
-			return containerengine.Container{}, Placement{}, fmt.Errorf("resolve service resource variables: %w", resolveErr)
+			return containerengine.Container{}, Placement{}, fmt.Errorf("resolve service variables: %w", resolveErr)
 		}
-		for name, value := range resolved {
-			environment[name] = value
-		}
+		environment = resolved
 	}
 	container, err := controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID: imageID, Name: "platformd-service-" + deploymentID,
@@ -782,9 +795,13 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 }
 
 func (controller *Controller) waitReady(ctx context.Context, desired state.ServiceDesired, containerID, networkName string) (containerengine.Container, error) {
-	timeout := time.Duration(desired.Snapshot.StartupTimeoutSeconds) * time.Second
+	healthCheck := desired.Snapshot.HealthCheck
+	timeout := time.Duration(serviceconfig.DefaultHealthTimeoutSeconds) * time.Second
+	if healthCheck != nil {
+		timeout = time.Duration(healthCheck.TimeoutSeconds) * time.Second
+	}
 	deadline := controller.now().Add(timeout)
-	if desired.Snapshot.HealthPath == "" {
+	if healthCheck == nil {
 		deadline = controller.now().Add(processStartupGrace)
 	}
 	ticker := time.NewTicker(probeInterval)
@@ -797,14 +814,14 @@ func (controller *Controller) waitReady(ctx context.Context, desired state.Servi
 		if container.State != "running" {
 			return containerengine.Container{}, fmt.Errorf("container state is %s", container.State)
 		}
-		if desired.Snapshot.HealthPath == "" {
+		if healthCheck == nil {
 			if !controller.now().Before(deadline) {
 				return container, nil
 			}
 		} else {
 			addresses := container.IPs[networkName]
 			if len(addresses) == 1 {
-				ready, probeErr := controller.probeHTTP(ctx, addresses[0], *desired.Snapshot.TargetPort, desired.Snapshot.HealthPath)
+				ready, probeErr := controller.probeHTTP(ctx, addresses[0], healthCheck.Port, healthCheck.Path)
 				if ready {
 					return container, nil
 				}
@@ -909,11 +926,4 @@ func (controller *Controller) clearActive(serviceID string) {
 
 func safeRoot(value string) bool {
 	return filepath.IsAbs(value) && filepath.Clean(value) == value && value != string(filepath.Separator)
-}
-
-func targetPort(value *int) int {
-	if value == nil {
-		return 0
-	}
-	return *value
 }

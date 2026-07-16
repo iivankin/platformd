@@ -138,6 +138,22 @@ func TestServiceLifecycleAPIUpdatesListsDeploymentsAndDeploysVersion(t *testing.
 	if deployVersionResponse.Code != http.StatusOK || !strings.Contains(deployVersionResponse.Body.String(), "@"+digest) || !strings.Contains(deployVersionResponse.Body.String(), `"enabled":false`) {
 		t.Fatalf("deploy version status/body = %d/%s", deployVersionResponse.Code, deployVersionResponse.Body)
 	}
+	var deployed map[string]any
+	if err := json.NewDecoder(deployVersionResponse.Body).Decode(&deployed); err != nil {
+		t.Fatal(err)
+	}
+	deleteRequest := projectRequest(http.MethodDelete, "/api/v1/projects/project/services/service", `{"expectedUpdatedAt":`+strconv.FormatInt(int64(deployed["updatedAt"].(float64)), 10)+`}`)
+	deleteRequest.Header.Set("Origin", "https://admin.example.com")
+	deleteResponse := httptest.NewRecorder()
+	handler.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusNoContent {
+		t.Fatalf("delete status/body = %d/%s", deleteResponse.Code, deleteResponse.Body)
+	}
+	missingService := httptest.NewRecorder()
+	handler.ServeHTTP(missingService, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service", ""))
+	if missingService.Code != http.StatusNotFound {
+		t.Fatalf("deleted service get = %d/%s", missingService.Code, missingService.Body)
+	}
 }
 
 func TestServiceDeploymentRestartAndRemoveRoutesTargetExactDeployment(t *testing.T) {

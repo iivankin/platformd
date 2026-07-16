@@ -213,12 +213,11 @@ func (function roundTripFunc) RoundTrip(request *http.Request) (*http.Response, 
 }
 
 func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing.T) {
-	port := 8080
 	store := &fakeStore{
 		service: state.ServiceDesired{
 			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
 			Snapshot: serviceconfig.Snapshot{
-				ImageReference: "alpine:3.22", TargetPort: &port, HealthPath: "/healthz", StartupTimeoutSeconds: 1,
+				ImageReference: "alpine:3.22", HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
 			},
 		},
 		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
@@ -294,13 +293,12 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 }
 
 func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.T) {
-	port := 8080
 	store := &fakeStore{
 		service: state.ServiceDesired{
 			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
 			Snapshot: serviceconfig.Snapshot{
 				ImageReference: "registry.example.com/acme/api:latest", ImageCredentialID: "credential",
-				TargetPort: &port, HealthPath: "/healthz", StartupTimeoutSeconds: 1,
+				HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
 			},
 		},
 		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
@@ -397,10 +395,9 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 }
 
 func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
-	port := 8080
 	snapshot := serviceconfig.Snapshot{
-		ImageReference: "registry.example.com/acme/api:latest", TargetPort: &port,
-		HealthPath: "/healthz", StartupTimeoutSeconds: 1,
+		ImageReference: "registry.example.com/acme/api:latest",
+		HealthCheck:    &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
 	}
 	normalized, snapshotJSON, configHash, err := serviceconfig.Canonical(snapshot)
 	if err != nil {

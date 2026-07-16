@@ -6,19 +6,17 @@ import (
 )
 
 func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
-	port := 8080
 	input := Snapshot{
 		ImageReference: "alpine",
-		Environment:    map[string]string{"DATABASE_URL": "postgres://db:5432/app"},
+		Environment: map[string]string{
+			"DATABASE_URL": "postgres://db:5432/app",
+			"REDIS_URL":    "${{cache.REDIS_URL}}",
+		},
 		SecretReferences: []SecretReference{
 			{EnvironmentName: "TOKEN", SecretID: "secret-2"},
 			{EnvironmentName: "PASSWORD", SecretID: "secret-1"},
 		},
-		ResourceReferences: []ResourceReference{
-			{EnvironmentName: "REDIS_URL", ResourceKind: "redis", ResourceID: "cache", OutputName: "REDIS_URL"},
-		},
-		TargetPort: &port,
-		HealthPath: "/healthz?ready=1",
+		HealthCheck: &HealthCheck{Port: 8080, Path: "/healthz?ready=1"},
 		VolumeMounts: []VolumeMount{
 			{VolumeID: "volume-2", ContainerPath: "/var/lib/z"},
 			{VolumeID: "volume-1", ContainerPath: "/var/lib/a"},
@@ -28,7 +26,7 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normalized.ImageReference != "docker.io/library/alpine:latest" || normalized.StartupTimeoutSeconds != 60 {
+	if normalized.ImageReference != "docker.io/library/alpine:latest" || normalized.HealthCheck == nil || normalized.HealthCheck.TimeoutSeconds != 60 {
 		t.Fatalf("normalized snapshot = %+v", normalized)
 	}
 	if len(hash) != 64 || !strings.Contains(string(encoded), `"containerPath":"/var/lib/a"`) {
@@ -36,15 +34,15 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 	}
 	_, secondEncoded, secondHash, err := Canonical(Snapshot{
 		ImageReference: "docker.io/library/alpine:latest",
-		Environment:    map[string]string{"DATABASE_URL": "postgres://db:5432/app"},
+		Environment: map[string]string{
+			"DATABASE_URL": "postgres://db:5432/app",
+			"REDIS_URL":    "${{cache.REDIS_URL}}",
+		},
 		SecretReferences: []SecretReference{
 			{EnvironmentName: "PASSWORD", SecretID: "secret-1"},
 			{EnvironmentName: "TOKEN", SecretID: "secret-2"},
 		},
-		ResourceReferences: []ResourceReference{
-			{EnvironmentName: "REDIS_URL", ResourceKind: "redis", ResourceID: "cache", OutputName: "REDIS_URL"},
-		},
-		TargetPort: &port, HealthPath: "/healthz?ready=1", StartupTimeoutSeconds: 60,
+		HealthCheck: &HealthCheck{Port: 8080, Path: "/healthz?ready=1", TimeoutSeconds: 60},
 		VolumeMounts: []VolumeMount{
 			{VolumeID: "volume-1", ContainerPath: "/var/lib/a"},
 			{VolumeID: "volume-2", ContainerPath: "/var/lib/z"},
@@ -56,15 +54,12 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 }
 
 func TestSnapshotValidationRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
-	port := 8080
 	tests := []Snapshot{
 		{ImageReference: "UPPERCASE/image:tag"},
 		{ImageReference: "alpine", Environment: map[string]string{"BAD-NAME": "value"}},
 		{ImageReference: "alpine", Environment: map[string]string{"TOKEN": "plain"}, SecretReferences: []SecretReference{{EnvironmentName: "TOKEN", SecretID: "secret"}}},
-		{ImageReference: "alpine", Environment: map[string]string{"REDIS_URL": "plain"}, ResourceReferences: []ResourceReference{{EnvironmentName: "REDIS_URL", ResourceKind: "redis", ResourceID: "cache", OutputName: "REDIS_URL"}}},
-		{ImageReference: "alpine", ResourceReferences: []ResourceReference{{EnvironmentName: "CACHE", ResourceKind: "unknown", ResourceID: "cache", OutputName: "URL"}}},
-		{ImageReference: "alpine", HealthPath: "/healthz"},
-		{ImageReference: "alpine", TargetPort: &port, HealthPath: "https://example.com/health"},
+		{ImageReference: "alpine", HealthCheck: &HealthCheck{Path: "/healthz"}},
+		{ImageReference: "alpine", HealthCheck: &HealthCheck{Port: 8080, Path: "https://example.com/health"}},
 		{ImageReference: "alpine", VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/"}}},
 		{ImageReference: "alpine", VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/data"}, {VolumeID: "volume", ContainerPath: "/other"}}},
 	}

@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/domainvariables"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -18,12 +19,15 @@ type DomainRepository interface {
 }
 
 type serviceDomainResponse struct {
-	Hostname    string `json:"hostname"`
-	ServiceID   string `json:"serviceId"`
-	ServiceName string `json:"serviceName,omitempty"`
-	ProjectID   string `json:"projectId,omitempty"`
-	ProjectName string `json:"projectName,omitempty"`
-	CreatedAt   int64  `json:"createdAt"`
+	Hostname           string `json:"hostname"`
+	ServiceID          string `json:"serviceId"`
+	ServiceName        string `json:"serviceName,omitempty"`
+	ProjectID          string `json:"projectId,omitempty"`
+	ProjectName        string `json:"projectName,omitempty"`
+	TargetPort         int    `json:"targetPort"`
+	PublicOutputName   string `json:"publicOutputName"`
+	InternalOutputName string `json:"internalOutputName"`
+	CreatedAt          int64  `json:"createdAt"`
 }
 
 func registerServiceDomainRoutes(mux *http.ServeMux, config handlerConfig) {
@@ -58,8 +62,9 @@ func listServiceDomains(repository DomainRepository) http.HandlerFunc {
 
 func attachServiceDomain(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
-		Hostname string `json:"hostname"`
-		Move     bool   `json:"move"`
+		Hostname   string `json:"hostname"`
+		TargetPort int    `json:"targetPort"`
+		Move       bool   `json:"move"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := access.IdentityFromContext(request.Context())
@@ -79,7 +84,7 @@ func attachServiceDomain(config handlerConfig) http.HandlerFunc {
 		}
 		domain, err := config.domains.AttachServiceDomain(request.Context(), state.AttachServiceDomainInput{
 			ProjectID: request.PathValue("projectID"), ServiceID: request.PathValue("serviceID"),
-			Hostname: body.Hostname, Move: body.Move,
+			Hostname: body.Hostname, TargetPort: body.TargetPort, Move: body.Move,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
@@ -149,8 +154,6 @@ func writeDomainMutationError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrDomainNotFound):
 		writeAPIError(response, http.StatusNotFound, "domain_not_found", "Domain not found on this service")
-	case errors.Is(err, state.ErrServiceTargetPortNeeded):
-		writeAPIError(response, http.StatusConflict, "target_port_required", err.Error())
 	case errors.Is(err, state.ErrHostnameInUse):
 		writeAPIError(response, http.StatusConflict, "hostname_in_use", err.Error())
 	case errors.Is(err, state.ErrCertificateCoverage):
@@ -162,8 +165,10 @@ func writeDomainMutationError(response http.ResponseWriter, err error) bool {
 }
 
 func publicServiceDomain(domain state.ServiceDomain) serviceDomainResponse {
+	names, _ := domainvariables.OutputNames(domain.Hostname)
 	return serviceDomainResponse{
 		Hostname: domain.Hostname, ServiceID: domain.ServiceID, ServiceName: domain.ServiceName,
-		ProjectID: domain.ProjectID, ProjectName: domain.ProjectName, CreatedAt: domain.CreatedAt,
+		ProjectID: domain.ProjectID, ProjectName: domain.ProjectName, TargetPort: domain.TargetPort,
+		PublicOutputName: names.Public, InternalOutputName: names.Internal, CreatedAt: domain.CreatedAt,
 	}
 }

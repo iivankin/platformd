@@ -42,6 +42,7 @@ import (
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/origin"
+	"github.com/iivankin/platformd/internal/portproxy"
 	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/releaseconfig"
 	"github.com/iivankin/platformd/internal/resourcemetrics"
@@ -301,9 +302,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure container files: %w", err)
 	}
+	volumeFilesystem := volume.NewLocalFilesystem(paths.VolumesRoot)
+	volumeCleanupError := func(cleanupErr error) { log.Printf("volume cleanup: %v", cleanupErr) }
 	volumeApplication, err := volume.New(volume.Config{
-		Repository: store, Filesystem: volume.NewLocalFilesystem(paths.VolumesRoot), Images: runtime.engine,
-		OnCleanupError: func(cleanupErr error) { log.Printf("volume cleanup: %v", cleanupErr) },
+		Repository: store, Filesystem: volumeFilesystem, Images: runtime.engine,
+		OnCleanupError: volumeCleanupError,
 	})
 	if err != nil {
 		return fmt.Errorf("configure ordinary volumes: %w", err)
@@ -503,6 +506,23 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		store: store, runtime: runtime, certificates: certificates, publicMu: publicMutationMu,
 	}
 	domains := &liveDomainRepository{store: store, certificates: certificates, publicMu: publicMutationMu}
+	var serviceListeners server.ServiceListenerRepository
+	var liveServiceListeners *liveServiceListenerRepository
+	if !installation.RecoveryMode {
+		publicPorts, proxyErr := portproxy.New(portproxy.Config{
+			Backends: runtime,
+			OnError:  func(proxyErr error) { log.Printf("public service listener: %v", proxyErr) },
+		})
+		if proxyErr != nil {
+			return fmt.Errorf("configure public service listeners: %w", proxyErr)
+		}
+		defer func() { returnErr = errors.Join(returnErr, publicPorts.Close()) }()
+		liveServiceListeners = &liveServiceListenerRepository{store: store, proxy: publicPorts}
+		if err := liveServiceListeners.Restore(ctx); err != nil {
+			return err
+		}
+		serviceListeners = liveServiceListeners
+	}
 	var automationHostname string
 	if installation.AutomationHostname != nil {
 		automationHostname = *installation.AutomationHostname
@@ -586,10 +606,15 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	adminApplicationHandler := server.Handler(
 		server.DefaultMeta(status(installation.RecoveryMode)),
 		server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
-		server.WithServices(liveServiceRepository{store: store, runtime: runtime}),
+		server.WithServices(liveServiceRepository{
+			store: store, runtime: runtime, domains: domains, volumeFilesystem: volumeFilesystem,
+			onCleanupError: volumeCleanupError, listeners: liveServiceListeners,
+		}),
+		server.WithServiceEnvironment(resourceVariableResolver{store: store, master: key}),
 		server.WithVolumes(volumeApplication),
 		server.WithImageCredentials(imageCredentials),
 		server.WithDomains(domains),
+		server.WithServiceListeners(serviceListeners),
 		server.WithAPITokens(apiTokens),
 		server.WithLogs(installation.AdminHostname, logs),
 		server.WithAudit(store),

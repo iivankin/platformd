@@ -3,9 +3,12 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+
+	"github.com/iivankin/platformd/internal/variableexpression"
 )
 
 var ErrProjectNotFound = errors.New("project not found")
@@ -150,12 +153,17 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 }
 
 func (store *Store) canvasConnections(ctx context.Context, projectID string) ([]CanvasConnection, error) {
+	resources, err := store.ProjectResources(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	resourceIDs := make(map[string]string, len(resources))
+	for _, resource := range resources {
+		resourceIDs[resource.Name] = resource.ID
+	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT refs.service_id, refs.resource_id, refs.environment_name
-FROM service_resource_variable_refs refs
-JOIN services source ON source.id = refs.service_id
-WHERE source.project_id = ?
-ORDER BY refs.service_id, refs.resource_id, refs.environment_name`, projectID)
+SELECT id, environment_json FROM services
+WHERE project_id = ? ORDER BY id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list project canvas connections: %w", err)
 	}
@@ -163,15 +171,31 @@ ORDER BY refs.service_id, refs.resource_id, refs.environment_name`, projectID)
 	type connectionKey struct{ sourceID, targetID string }
 	connections := make(map[connectionKey]map[string]struct{})
 	for rows.Next() {
-		var sourceID, targetID, environmentName string
-		if err := rows.Scan(&sourceID, &targetID, &environmentName); err != nil {
+		var sourceID, environmentJSON string
+		if err := rows.Scan(&sourceID, &environmentJSON); err != nil {
 			return nil, fmt.Errorf("scan project canvas connection: %w", err)
 		}
-		key := connectionKey{sourceID: sourceID, targetID: targetID}
-		if connections[key] == nil {
-			connections[key] = make(map[string]struct{})
+		var environment map[string]string
+		if err := json.Unmarshal([]byte(environmentJSON), &environment); err != nil {
+			return nil, fmt.Errorf("decode project service environment: %w", err)
 		}
-		connections[key][environmentName] = struct{}{}
+		for environmentName, value := range environment {
+			references, parseErr := variableexpression.References(value)
+			if parseErr != nil {
+				continue
+			}
+			for _, reference := range references {
+				targetID := resourceIDs[reference.Resource]
+				if targetID == "" {
+					continue
+				}
+				key := connectionKey{sourceID: sourceID, targetID: targetID}
+				if connections[key] == nil {
+					connections[key] = make(map[string]struct{})
+				}
+				connections[key][environmentName] = struct{}{}
+			}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate project canvas connections: %w", err)

@@ -7,14 +7,17 @@ import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
 
 export const ImageCredentialForm = ({
+  onCancel,
   onCreated,
   projectID,
+  registryHost,
 }: {
+  onCancel: () => void;
   onCreated: (credential: ImageCredential) => void;
   projectID: string;
+  registryHost: string;
 }) => {
   const [name, setName] = useState("");
-  const [registryHost, setRegistryHost] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [saving, setSaving] = useState(false);
@@ -24,7 +27,7 @@ export const ImageCredentialForm = ({
     if (saving) {
       return;
     }
-    if (!(name.trim() && registryHost.trim() && username.trim() && password)) {
+    if (!(name.trim() && username.trim() && password)) {
       setError("All credential fields are required");
       return;
     }
@@ -51,25 +54,24 @@ export const ImageCredentialForm = ({
   };
 
   return (
-    <div className="mb-4 border-y border-border bg-muted/20 py-4">
-      <p className="mb-3 text-[10px] font-medium">Private remote registry</p>
-      <div className="grid grid-cols-2 gap-3">
+    <div className="mt-2 border-t border-border bg-muted/20 py-4">
+      <div className="mb-3 flex items-baseline justify-between gap-3">
+        <div>
+          <p className="text-[10px] font-medium">
+            New credential for {registryHost}
+          </p>
+          <p className="mt-1 text-[9px] text-muted-foreground">
+            It will be selected for this service after it is saved.
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-3 md:grid-cols-3">
         <FormField label="Credential name" name="credential-name">
           <Input
             id="credential-name"
             onChange={(event) => setName(event.target.value)}
             placeholder="production"
             value={name}
-          />
-        </FormField>
-        <FormField label="Registry host" name="credential-host">
-          <Input
-            autoCapitalize="none"
-            id="credential-host"
-            onChange={(event) => setRegistryHost(event.target.value)}
-            placeholder="registry.example.com"
-            spellCheck={false}
-            value={registryHost}
           />
         </FormField>
         <FormField label="Username" name="credential-username">
@@ -94,7 +96,16 @@ export const ImageCredentialForm = ({
           {error}
         </p>
       ) : null}
-      <div className="flex justify-end">
+      <div className="mt-3 flex justify-end gap-2">
+        <Button
+          disabled={saving}
+          onClick={onCancel}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          Cancel
+        </Button>
         <Button
           disabled={saving}
           onClick={() => void submit()}

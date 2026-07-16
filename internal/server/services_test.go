@@ -35,14 +35,13 @@ func TestServiceAPICommitsCanonicalDesiredConfigAndCanvasNode(t *testing.T) {
   "name":"api",
   "imageReference":"alpine:3.22",
   "environment":{"APP_ENV":"production"},
-  "targetPort":8080,
-  "healthPath":"/healthz",
+  "healthCheck":{"port":8080,"path":"/healthz","timeoutSeconds":60},
   "enabled":false
 }`)
 	create.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, create)
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"imageReference":"docker.io/library/alpine:3.22"`) || !strings.Contains(response.Body.String(), `"startupTimeoutSeconds":60`) {
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"imageReference":"docker.io/library/alpine:3.22"`) || !strings.Contains(response.Body.String(), `"healthCheck":{"port":8080,"path":"/healthz","timeoutSeconds":60}`) {
 		t.Fatalf("create status/body = %d/%s", response.Code, response.Body)
 	}
 	canvas := projectRequest(http.MethodGet, "/api/v1/projects/"+project.ID+"/canvas", "")

@@ -18,7 +18,7 @@ func TestDeploymentPublicationIsAtomicAndOptimistic(t *testing.T) {
 	defer store.Close()
 	if _, err := store.database.Exec(`
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
-INSERT INTO services(id, project_id, name, image_reference, environment_json, startup_timeout_seconds, enabled, created_at, updated_at)
+INSERT INTO services(id, project_id, name, image_reference, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
 VALUES ('service', 'project', 'api', 'docker.io/library/alpine:3.22', '{}', 60, 1, 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestFailedDeploymentPairBlocksAutomaticRetry(t *testing.T) {
 	defer store.Close()
 	if _, err := store.database.Exec(`
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
-INSERT INTO services(id, project_id, name, image_reference, environment_json, startup_timeout_seconds, enabled, created_at, updated_at)
+INSERT INTO services(id, project_id, name, image_reference, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
 VALUES ('service', 'project', 'api', 'docker.io/library/alpine:3.22', '{}', 60, 1, 1, 1)`); err != nil {
 		t.Fatal(err)
 	}

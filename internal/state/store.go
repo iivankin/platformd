@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 6
+	currentSchemaVersion = 8
 	writerQueueSize      = 128
 )
 
@@ -42,6 +42,18 @@ var (
 
 	//go:embed migration_6.sql
 	migration6 string
+
+	//go:embed migration_7.sql
+	migration7 string
+
+	//go:embed migration_7_without_domains.sql
+	migration7WithoutDomains string
+
+	//go:embed migration_8.sql
+	migration8 string
+
+	//go:embed migration_8_without_services.sql
+	migration8WithoutServices string
 )
 
 type Store struct {
@@ -264,6 +276,8 @@ func migrate(ctx context.Context, database *sql.DB) error {
 	switch version {
 	case currentSchemaVersion:
 		return nil
+	case 7:
+		return applyMigration8(ctx, database)
 	case 0:
 		transaction, err := database.BeginTx(ctx, nil)
 		if err != nil {
@@ -290,7 +304,10 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration5, 5); err != nil {
 			return err
 		}
-		return applyMigration(ctx, database, migration6, 6)
+		if err := applyMigration(ctx, database, migration6, 6); err != nil {
+			return err
+		}
+		return applyMigrations7And8(ctx, database)
 	case 2:
 		if err := applyMigration(ctx, database, migration3, 3); err != nil {
 			return err
@@ -301,7 +318,10 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration5, 5); err != nil {
 			return err
 		}
-		return applyMigration(ctx, database, migration6, 6)
+		if err := applyMigration(ctx, database, migration6, 6); err != nil {
+			return err
+		}
+		return applyMigrations7And8(ctx, database)
 	case 3:
 		if err := applyMigration(ctx, database, migration4, 4); err != nil {
 			return err
@@ -309,17 +329,65 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration5, 5); err != nil {
 			return err
 		}
-		return applyMigration(ctx, database, migration6, 6)
+		if err := applyMigration(ctx, database, migration6, 6); err != nil {
+			return err
+		}
+		return applyMigrations7And8(ctx, database)
 	case 4:
 		if err := applyMigration(ctx, database, migration5, 5); err != nil {
 			return err
 		}
-		return applyMigration(ctx, database, migration6, 6)
+		if err := applyMigration(ctx, database, migration6, 6); err != nil {
+			return err
+		}
+		return applyMigrations7And8(ctx, database)
 	case 5:
-		return applyMigration(ctx, database, migration6, 6)
+		if err := applyMigration(ctx, database, migration6, 6); err != nil {
+			return err
+		}
+		return applyMigrations7And8(ctx, database)
+	case 6:
+		return applyMigrations7And8(ctx, database)
 	default:
 		return fmt.Errorf("unsupported SQLite schema version %d; this binary supports exactly %d", version, currentSchemaVersion)
 	}
+}
+
+func applyMigrations7And8(ctx context.Context, database *sql.DB) error {
+	if err := applyMigration7(ctx, database); err != nil {
+		return err
+	}
+	return applyMigration8(ctx, database)
+}
+
+func applyMigration8(ctx context.Context, database *sql.DB) error {
+	var serviceTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'services'`).Scan(&serviceTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 8: %w", err)
+	}
+	statements := migration8
+	if serviceTableCount == 0 {
+		// Registry-only installations from the earliest releases have no service
+		// tables to transform, but still need a coherent global schema version.
+		statements = migration8WithoutServices
+	}
+	return applyMigration(ctx, database, statements, 8)
+}
+
+func applyMigration7(ctx context.Context, database *sql.DB) error {
+	var domainTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'service_domains'`).Scan(&domainTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 7: %w", err)
+	}
+	statements := migration7
+	if domainTableCount == 0 {
+		// Early schema versions did not backfill newer product tables. Keep the
+		// version-7 migration atomic even for those valid on-disk states.
+		statements = migration7WithoutDomains
+	}
+	return applyMigration(ctx, database, statements, 7)
 }
 
 func applyMigration(ctx context.Context, database *sql.DB, statements string, version int) error {

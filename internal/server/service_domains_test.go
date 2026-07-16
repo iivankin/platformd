@@ -21,7 +21,6 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	port := 8080
 	for index, projectID := range []string{"project-a", "project-b"} {
 		if _, err := store.CreateProject(context.Background(), state.CreateProject{
 			ID: projectID, Name: projectID, AuditEventID: "project-audit-" + projectID,
@@ -31,7 +30,7 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 		}
 		if _, err := store.CreateService(context.Background(), state.CreateService{
 			ID: "service-" + projectID, ProjectID: projectID, Name: "api", Enabled: true,
-			Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine", TargetPort: &port},
+			Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine"},
 			AuditEventID: "service-audit-" + projectID, ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
 			CreatedAtMillis: int64(index + 3),
 		}); err != nil {
@@ -43,16 +42,16 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 		server.Handler(server.DefaultMeta("ready"), server.WithDomains(store)),
 	)
 	pathA := "/api/v1/projects/project-a/services/service-project-a/domains"
-	attach := projectRequest(http.MethodPost, pathA, `{"hostname":"App.Example.com"}`)
+	attach := projectRequest(http.MethodPost, pathA, `{"hostname":"App.Example.com","targetPort":8080}`)
 	attach.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, attach)
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"hostname":"app.example.com"`) {
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"hostname":"app.example.com"`) || !strings.Contains(response.Body.String(), `"publicOutputName":"APP_URL"`) || !strings.Contains(response.Body.String(), `"internalOutputName":"APP_URL_INTERNAL"`) {
 		t.Fatalf("attach = %d/%s", response.Code, response.Body)
 	}
 
 	pathB := "/api/v1/projects/project-b/services/service-project-b/domains"
-	conflict := projectRequest(http.MethodPost, pathB, `{"hostname":"app.example.com"}`)
+	conflict := projectRequest(http.MethodPost, pathB, `{"hostname":"app.example.com","targetPort":8081}`)
 	conflict.Header.Set("Origin", "https://admin.example.com")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, conflict)
@@ -60,7 +59,7 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 		t.Fatalf("conflict = %d/%s", response.Code, response.Body)
 	}
 
-	move := projectRequest(http.MethodPost, pathB, `{"hostname":"app.example.com","move":true}`)
+	move := projectRequest(http.MethodPost, pathB, `{"hostname":"app.example.com","targetPort":9090,"move":true}`)
 	move.Header.Set("Origin", "https://admin.example.com")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, move)

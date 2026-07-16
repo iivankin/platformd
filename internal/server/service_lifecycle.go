@@ -34,6 +34,7 @@ type deploymentPageResponse struct {
 func registerServiceLifecycleRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config.services))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/services/{serviceID}", deleteService(config))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments", listServiceDeployments(config.services))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}", getServiceDeployment(config.services))
@@ -41,6 +42,44 @@ func registerServiceLifecycleRoutes(mux *http.ServeMux, config handlerConfig) {
 	if actions, ok := config.services.(ServiceDeploymentActionRepository); ok {
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/restart", restartServiceDeployment(config, actions))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/remove", removeServiceDeployment(config, actions))
+	}
+}
+
+func deleteService(config handlerConfig) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := access.IdentityFromContext(request.Context())
+		if !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		var body requestBody
+		if !decodeServiceJSON(response, request, &body) {
+			return
+		}
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_delete", "expectedUpdatedAt is required")
+			return
+		}
+		timestamp := config.now()
+		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service deletion identifiers")
+			return
+		}
+		_, err = config.services.DeleteService(request.Context(), state.DeleteServiceInput{
+			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
+			ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
+			AuditEventID:          auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
+			RequestCorrelationID: correlationID, DeletedAtMillis: timestamp.UnixMilli(),
+		})
+		if writeServiceMutationError(response, err) {
+			return
+		}
+		response.Header().Set("X-Request-ID", correlationID)
+		response.WriteHeader(http.StatusNoContent)
 	}
 }
 

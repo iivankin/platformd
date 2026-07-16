@@ -14,6 +14,7 @@ type serviceDomainResponse struct {
 	ServiceName string `json:"serviceName,omitempty"`
 	ProjectID   string `json:"projectId,omitempty"`
 	ProjectName string `json:"projectName,omitempty"`
+	TargetPort  int    `json:"targetPort"`
 	CreatedAt   int64  `json:"createdAt"`
 }
 
@@ -37,8 +38,9 @@ func listServiceDomains(application *automation.DomainApplication) http.HandlerF
 
 func attachServiceDomain(application *automation.DomainApplication) http.HandlerFunc {
 	type requestBody struct {
-		Hostname string `json:"hostname"`
-		Move     bool   `json:"move"`
+		Hostname   string `json:"hostname"`
+		TargetPort int    `json:"targetPort"`
+		Move       bool   `json:"move"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAdminProject(response, request, request.PathValue("projectID"))
@@ -51,7 +53,7 @@ func attachServiceDomain(application *automation.DomainApplication) http.Handler
 		}
 		result, err := application.Attach(request.Context(), identity, automation.AttachDomainInput{
 			ProjectID: request.PathValue("projectID"), ServiceID: request.PathValue("serviceID"),
-			Hostname: body.Hostname, Move: body.Move,
+			Hostname: body.Hostname, TargetPort: body.TargetPort, Move: body.Move,
 		})
 		if writeDomainError(response, err) {
 			return
@@ -99,8 +101,6 @@ func writeDomainError(response http.ResponseWriter, err error) bool {
 		writeError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrDomainNotFound):
 		writeError(response, http.StatusNotFound, "domain_not_found", "Domain not found on this service")
-	case errors.Is(err, state.ErrServiceTargetPortNeeded):
-		writeError(response, http.StatusConflict, "target_port_required", err.Error())
 	case errors.Is(err, state.ErrHostnameInUse):
 		writeError(response, http.StatusConflict, "hostname_in_use", err.Error())
 	case errors.Is(err, state.ErrCertificateCoverage):
@@ -114,6 +114,6 @@ func writeDomainError(response http.ResponseWriter, err error) bool {
 func publicServiceDomain(domain state.ServiceDomain) serviceDomainResponse {
 	return serviceDomainResponse{
 		Hostname: domain.Hostname, ServiceID: domain.ServiceID, ServiceName: domain.ServiceName,
-		ProjectID: domain.ProjectID, ProjectName: domain.ProjectName, CreatedAt: domain.CreatedAt,
+		ProjectID: domain.ProjectID, ProjectName: domain.ProjectName, TargetPort: domain.TargetPort, CreatedAt: domain.CreatedAt,
 	}
 }

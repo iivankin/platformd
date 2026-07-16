@@ -16,6 +16,8 @@ type fakeServiceRuntime struct {
 	deployForce []bool
 	trackRetry  []bool
 	failures    []error
+	deleted     []string
+	logsDeleted []string
 }
 
 func (runtime *fakeServiceRuntime) DeployService(_ context.Context, _ string, force bool) error {
@@ -28,6 +30,16 @@ func (*fakeServiceRuntime) RestartServiceDeployment(context.Context, string, str
 }
 
 func (*fakeServiceRuntime) DeleteServiceDeploymentLogs(string, string) error { return nil }
+
+func (runtime *fakeServiceRuntime) DeleteService(_ context.Context, service state.ServiceDesired) error {
+	runtime.deleted = append(runtime.deleted, service.ID)
+	return nil
+}
+
+func (runtime *fakeServiceRuntime) DeleteServiceLogs(serviceID string) error {
+	runtime.logsDeleted = append(runtime.logsDeleted, serviceID)
+	return nil
+}
 
 func (runtime *fakeServiceRuntime) TrackService(_ context.Context, _ string, retry bool) error {
 	runtime.trackRetry = append(runtime.trackRetry, retry)
@@ -99,5 +111,18 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	}
 	if len(runtime.deployForce) != 3 || !runtime.deployForce[2] || len(runtime.trackRetry) != 3 || !runtime.trackRetry[2] {
 		t.Fatalf("runtime calls = force %v, retry %v", runtime.deployForce, runtime.trackRetry)
+	}
+	current, err = store.DesiredService(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repository.DeleteService(context.Background(), state.DeleteServiceInput{
+		ID: current.ID, ProjectID: current.ProjectID, ExpectedUpdatedMillis: current.UpdatedAtMillis,
+		AuditEventID: "delete-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", DeletedAtMillis: 6,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.deleted) != 1 || runtime.deleted[0] != created.ID || len(runtime.logsDeleted) != 1 {
+		t.Fatalf("delete runtime calls = services %v logs %v", runtime.deleted, runtime.logsDeleted)
 	}
 }

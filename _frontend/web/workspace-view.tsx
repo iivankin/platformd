@@ -6,4 +6,8 @@ export const WorkspaceView = ({
 }: {
   active: string;
   views: Record<string, ReactNode>;
-}) => views[active] ?? null;
+}) => (
+  <div className="workspace-section-stack min-h-full">
+    {views[active] ?? null}
+  </div>
+);

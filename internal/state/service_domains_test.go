@@ -24,10 +24,9 @@ func TestServiceDomainAttachRequiresExplicitMoveAndTargetPort(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	port := 8080
 	for _, service := range []CreateService{
-		{ID: "service-a", ProjectID: "project-a", Name: "api", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine", TargetPort: &port}, AuditEventID: "service-audit-a", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 3},
-		{ID: "service-b", ProjectID: "project-b", Name: "web", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine", TargetPort: &port}, AuditEventID: "service-audit-b", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 4},
+		{ID: "service-a", ProjectID: "project-a", Name: "api", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit-a", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 3},
+		{ID: "service-b", ProjectID: "project-b", Name: "web", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit-b", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 4},
 		{ID: "service-no-port", ProjectID: "project-a", Name: "worker", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit-worker", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 5},
 	} {
 		if _, err := store.CreateService(context.Background(), service); err != nil {
@@ -35,14 +34,14 @@ func TestServiceDomainAttachRequiresExplicitMoveAndTargetPort(t *testing.T) {
 		}
 	}
 	attached, err := store.AttachServiceDomain(context.Background(), AttachServiceDomainInput{
-		ProjectID: "project-a", ServiceID: "service-a", Hostname: "App.Example.com",
+		ProjectID: "project-a", ServiceID: "service-a", Hostname: "App.Example.com", TargetPort: 8080,
 		AuditEventID: "attach-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 6,
 	})
-	if err != nil || attached.Hostname != "app.example.com" || attached.ServiceID != "service-a" {
+	if err != nil || attached.Hostname != "app.example.com" || attached.ServiceID != "service-a" || attached.TargetPort != 8080 {
 		t.Fatalf("attached domain = %+v, %v", attached, err)
 	}
 	_, err = store.AttachServiceDomain(context.Background(), AttachServiceDomainInput{
-		ProjectID: "project-b", ServiceID: "service-b", Hostname: "app.example.com",
+		ProjectID: "project-b", ServiceID: "service-b", Hostname: "app.example.com", TargetPort: 8081,
 		AuditEventID: "conflict-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 7,
 	})
 	var conflict *DomainConflict
@@ -50,10 +49,10 @@ func TestServiceDomainAttachRequiresExplicitMoveAndTargetPort(t *testing.T) {
 		t.Fatalf("domain conflict = %#v, %v", conflict, err)
 	}
 	moved, err := store.AttachServiceDomain(context.Background(), AttachServiceDomainInput{
-		ProjectID: "project-b", ServiceID: "service-b", Hostname: "app.example.com", Move: true,
+		ProjectID: "project-b", ServiceID: "service-b", Hostname: "app.example.com", TargetPort: 9090, Move: true,
 		AuditEventID: "move-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 8,
 	})
-	if err != nil || moved.ServiceID != "service-b" {
+	if err != nil || moved.ServiceID != "service-b" || moved.TargetPort != 9090 {
 		t.Fatalf("moved domain = %+v, %v", moved, err)
 	}
 	if err := store.DetachServiceDomain(context.Background(), DetachServiceDomainInput{
@@ -63,9 +62,9 @@ func TestServiceDomainAttachRequiresExplicitMoveAndTargetPort(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.AttachServiceDomain(context.Background(), AttachServiceDomainInput{
-		ProjectID: "project-a", ServiceID: "service-no-port", Hostname: "worker.example.com",
+		ProjectID: "project-a", ServiceID: "service-no-port", Hostname: "worker.example.com", TargetPort: 7070,
 		AuditEventID: "port-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 10,
-	}); !errors.Is(err, ErrServiceTargetPortNeeded) {
-		t.Fatalf("missing target port error = %v", err)
+	}); err != nil {
+		t.Fatalf("explicit route for service without default port = %v", err)
 	}
 }

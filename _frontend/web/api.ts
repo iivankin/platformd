@@ -31,24 +31,42 @@ const projectsSchema = z.array(projectSchema);
 const serviceDomainSchema = z.object({
   createdAt: z.number().int().positive(),
   hostname: z.string().min(1),
+  internalOutputName: z.string().min(1),
   projectId: z.string().min(1).optional(),
   projectName: z.string().min(1).optional(),
+  publicOutputName: z.string().min(1),
   serviceId: z.string().min(1),
   serviceName: z.string().min(1).optional(),
+  targetPort: z.number().int().min(1).max(65_535),
 });
 const serviceDomainsSchema = z.object({
   domains: z.array(serviceDomainSchema),
+});
+const serviceListenerSchema = z.object({
+  createdAt: z.number().int().positive(),
+  projectId: z.string().min(1).optional(),
+  projectName: z.string().min(1).optional(),
+  protocol: z.enum(["tcp", "udp"]),
+  publicPort: z.number().int().min(1).max(65_535),
+  serviceId: z.string().min(1),
+  serviceName: z.string().min(1).optional(),
+  targetPort: z.number().int().min(1).max(65_535),
+});
+const serviceListenersSchema = z.object({
+  listeners: z.array(serviceListenerSchema),
 });
 const apiErrorSchema = z.object({
   error: z.object({
     code: z.string(),
     domain: serviceDomainSchema.optional(),
+    listener: serviceListenerSchema.optional(),
     message: z.string(),
   }),
 });
 
 export type Project = z.infer<typeof projectSchema>;
 export type ServiceDomain = z.infer<typeof serviceDomainSchema>;
+export type ServiceListener = z.infer<typeof serviceListenerSchema>;
 
 const apiTokenSchema = z.object({
   createdAt: z.number().int().positive(),
@@ -102,6 +120,12 @@ const imageCredentialSchema = z.object({
 const imageCredentialsSchema = z.array(imageCredentialSchema);
 export type ImageCredential = z.infer<typeof imageCredentialSchema>;
 
+const healthCheckSchema = z.object({
+  path: z.string().min(1),
+  port: z.number().int().min(1).max(65_535),
+  timeoutSeconds: z.number().int().min(1).max(3600),
+});
+
 const serviceSchema = z.object({
   activeConfigHash: z.string().min(1).optional(),
   activeDeploymentId: z.string().min(1).optional(),
@@ -112,29 +136,19 @@ const serviceSchema = z.object({
   createdAt: z.number().int().positive(),
   enabled: z.boolean(),
   environment: z.record(z.string(), z.string()),
-  healthPath: z.string().optional(),
+  healthCheck: healthCheckSchema.optional(),
   id: z.string().min(1),
   imageCredentialId: z.string().min(1).optional(),
   imageReference: z.string().min(1),
   memoryMaxBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
   projectId: z.string().min(1),
-  resourceReferences: z.array(
-    z.object({
-      environmentName: z.string().min(1),
-      outputName: z.string().min(1),
-      resourceId: z.string().min(1),
-      resourceKind: z.enum(["service", "postgres", "redis", "object_store"]),
-    })
-  ),
   secretReferences: z.array(
     z.object({
       environmentName: z.string().min(1),
       secretId: z.string().min(1),
     })
   ),
-  startupTimeoutSeconds: z.number().int().positive(),
-  targetPort: z.number().int().min(1).max(65_535).optional(),
   updatedAt: z.number().int().positive(),
   volumeMounts: z.array(
     z.object({ containerPath: z.string().min(1), volumeId: z.string().min(1) })
@@ -171,11 +185,10 @@ export interface CreateVolumeInput {
 
 export interface CreateServiceInput {
   environment: Record<string, string>;
-  healthPath?: string;
+  healthCheck?: z.infer<typeof healthCheckSchema>;
   imageCredentialId?: string;
   imageReference: string;
   name: string;
-  targetPort?: number;
 }
 
 export interface UpdateServiceInput {
@@ -185,14 +198,11 @@ export interface UpdateServiceInput {
   enabled: boolean;
   environment: Record<string, string>;
   expectedUpdatedAt: number;
-  healthPath?: string;
+  healthCheck?: z.infer<typeof healthCheckSchema>;
   imageCredentialId?: string;
   imageReference: string;
   memoryMaxBytes?: number;
   secretReferences: Service["secretReferences"];
-  resourceReferences: Service["resourceReferences"];
-  startupTimeoutSeconds: number;
-  targetPort?: number;
   volumeMounts: Service["volumeMounts"];
 }
 
@@ -210,14 +220,11 @@ const deploymentSchema = z.object({
     command: true,
     cpuMillicores: true,
     environment: true,
-    healthPath: true,
+    healthCheck: true,
     imageCredentialId: true,
     imageReference: true,
     memoryMaxBytes: true,
-    resourceReferences: true,
     secretReferences: true,
-    startupTimeoutSeconds: true,
-    targetPort: true,
     volumeMounts: true,
   }),
   status: z.enum(["failed", "interrupted", "running", "succeeded"]),
@@ -884,12 +891,19 @@ type Fetcher = (
 export class APIError extends Error {
   readonly code: string;
   readonly domain?: ServiceDomain;
+  readonly listener?: ServiceListener;
 
-  constructor(code: string, message: string, domain?: ServiceDomain) {
+  constructor(
+    code: string,
+    message: string,
+    domain?: ServiceDomain,
+    listener?: ServiceListener
+  ) {
     super(message);
     this.name = "APIError";
     this.code = code;
     this.domain = domain;
+    this.listener = listener;
   }
 }
 
@@ -901,7 +915,8 @@ const apiError = async (response: Response, fallback: string) => {
     ? new APIError(
         parsed.data.error.code,
         parsed.data.error.message,
-        parsed.data.error.domain
+        parsed.data.error.domain,
+        parsed.data.error.listener
       )
     : new Error(fallback);
 };
@@ -1087,6 +1102,29 @@ export const fetchService = async (
   return serviceSchema.parse(await response.json());
 };
 
+const resolvedEnvironmentSchema = z.object({
+  environment: z.record(z.string(), z.string()),
+});
+
+export const fetchResolvedServiceEnvironment = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Record<string, string>> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/variables/resolved`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `resolved variables request failed with ${response.status}`
+    );
+  }
+  return resolvedEnvironmentSchema.parse(await response.json()).environment;
+};
+
 export const updateService = async (
   projectID: string,
   serviceID: string,
@@ -1111,6 +1149,31 @@ export const updateService = async (
     );
   }
   return serviceSchema.parse(await response.json());
+};
+
+export const deleteService = async (
+  projectID: string,
+  serviceID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}`,
+    {
+      body: JSON.stringify({ expectedUpdatedAt }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "DELETE",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service deletion failed with ${response.status}`
+    );
+  }
 };
 
 const volumePath = (projectID: string, serviceID: string) =>
@@ -2806,11 +2869,12 @@ export const attachServiceDomain = async (
   projectID: string,
   serviceID: string,
   hostname: string,
+  targetPort: number,
   move = false,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceDomain> => {
   const response = await fetcher(serviceDomainsPath(projectID, serviceID), {
-    body: JSON.stringify({ hostname, move }),
+    body: JSON.stringify({ hostname, move, targetPort }),
     headers: {
       Accept: "application/json",
       "Content-Type": "application/json",
@@ -2824,6 +2888,70 @@ export const attachServiceDomain = async (
     );
   }
   return serviceDomainSchema.parse(await response.json());
+};
+
+const serviceListenersPath = (projectID: string, serviceID: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/listeners`;
+
+export const fetchServiceListeners = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceListener[]> => {
+  const response = await fetcher(serviceListenersPath(projectID, serviceID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `service listeners request failed with ${response.status}`
+    );
+  }
+  return serviceListenersSchema.parse(await response.json()).listeners;
+};
+
+export const attachServiceListener = async (
+  projectID: string,
+  serviceID: string,
+  input: Pick<ServiceListener, "protocol" | "publicPort" | "targetPort">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceListener> => {
+  const response = await fetcher(serviceListenersPath(projectID, serviceID), {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `listener attachment failed with ${response.status}`
+    );
+  }
+  return serviceListenerSchema.parse(await response.json());
+};
+
+export const detachServiceListener = async (
+  projectID: string,
+  serviceID: string,
+  protocol: ServiceListener["protocol"],
+  publicPort: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${serviceListenersPath(projectID, serviceID)}/${protocol}/${publicPort}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `listener removal failed with ${response.status}`
+    );
+  }
 };
 
 export const detachServiceDomain = async (

@@ -15,6 +15,7 @@ export type CreateKind =
 
 interface ProjectCreateOverlaysProperties {
   credentials: ImageCredential[];
+  embeddedRegistryHost: string;
   kind: CreateKind;
   onClose: () => void;
   onCreated: () => void;
@@ -24,6 +25,7 @@ interface ProjectCreateOverlaysProperties {
 
 export const ProjectCreateOverlays = ({
   credentials,
+  embeddedRegistryHost,
   kind,
   onClose,
   onCreated,
@@ -37,6 +39,7 @@ export const ProjectCreateOverlays = ({
     {kind === "service" ? (
       <ServiceCreatePanel
         credentials={credentials}
+        embeddedRegistryHost={embeddedRegistryHost}
         onClose={onClose}
         onCreated={onCreated}
         projectID={projectID}

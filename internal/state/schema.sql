@@ -117,9 +117,9 @@ CREATE TABLE services (
   command_json TEXT CHECK (command_json IS NULL OR json_valid(command_json)),
   args_json TEXT CHECK (args_json IS NULL OR json_valid(args_json)),
   environment_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(environment_json)),
-  target_port INTEGER CHECK (target_port BETWEEN 1 AND 65535),
+  health_port INTEGER CHECK (health_port BETWEEN 1 AND 65535),
   health_path TEXT,
-  startup_timeout_seconds INTEGER NOT NULL DEFAULT 60 CHECK (startup_timeout_seconds BETWEEN 1 AND 3600),
+  health_timeout_seconds INTEGER NOT NULL DEFAULT 60 CHECK (health_timeout_seconds BETWEEN 1 AND 3600),
   cpu_millis INTEGER CHECK (cpu_millis > 0),
   memory_bytes INTEGER CHECK (memory_bytes > 0),
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
@@ -136,18 +136,6 @@ CREATE TABLE service_secret_refs (
   secret_id TEXT NOT NULL REFERENCES secrets(id) ON DELETE RESTRICT,
   PRIMARY KEY (service_id, environment_name)
 ) WITHOUT ROWID, STRICT;
-
-CREATE TABLE service_resource_variable_refs (
-  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-  environment_name TEXT NOT NULL,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis', 'object_store')),
-  resource_id TEXT NOT NULL,
-  output_name TEXT NOT NULL,
-  PRIMARY KEY (service_id, environment_name)
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX service_resource_variable_refs_target_idx
-  ON service_resource_variable_refs(resource_kind, resource_id);
 
 CREATE TABLE volumes (
   id TEXT PRIMARY KEY,
@@ -206,8 +194,21 @@ CREATE UNIQUE INDEX runtime_deployments_active_idx
 CREATE TABLE service_domains (
   hostname TEXT PRIMARY KEY,
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
   created_at INTEGER NOT NULL
 ) WITHOUT ROWID, STRICT;
+
+CREATE TABLE service_listeners (
+  protocol TEXT NOT NULL CHECK (protocol IN ('tcp', 'udp')),
+  public_port INTEGER NOT NULL CHECK (public_port BETWEEN 1 AND 65535),
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (protocol, public_port)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX service_listeners_service_idx
+  ON service_listeners(service_id, protocol, public_port);
 
 CREATE TABLE object_stores (
   id TEXT PRIMARY KEY,
@@ -401,6 +402,6 @@ CREATE INDEX resource_metric_samples_retention_idx
   ON resource_metric_samples(observed_at);
 
 INSERT INTO schema_migrations(version, applied_at)
-VALUES (6, unixepoch('subsec') * 1000);
+VALUES (8, unixepoch('subsec') * 1000);
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 8;

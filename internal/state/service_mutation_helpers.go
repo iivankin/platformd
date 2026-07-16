@@ -70,11 +70,6 @@ SELECT project_id, registry_host FROM image_registry_credentials WHERE id = ?`, 
 			return fmt.Errorf("%w: secret %s", ErrDependencyMissing, reference.SecretID)
 		}
 	}
-	for _, reference := range snapshot.ResourceReferences {
-		if err := validateResourceVariableReference(ctx, transaction, projectID, serviceID, reference); err != nil {
-			return err
-		}
-	}
 	for _, mount := range snapshot.VolumeMounts {
 		var dependencyProjectID string
 		var dependencyServiceID string
@@ -106,16 +101,24 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	if err != nil {
 		return fmt.Errorf("encode service environment: %w", err)
 	}
+	var healthPort any
+	var healthPath any
+	healthTimeout := serviceconfig.DefaultHealthTimeoutSeconds
+	if snapshot.HealthCheck != nil {
+		healthPort = snapshot.HealthCheck.Port
+		healthPath = snapshot.HealthCheck.Path
+		healthTimeout = snapshot.HealthCheck.TimeoutSeconds
+	}
 	result, err := transaction.ExecContext(ctx, `
-UPDATE services SET
-  image_reference = ?, image_credential_id = ?, command_json = ?, args_json = ?,
-  environment_json = ?, target_port = ?, health_path = ?, startup_timeout_seconds = ?,
+	UPDATE services SET
+	  image_reference = ?, image_credential_id = ?, command_json = ?, args_json = ?,
+	  environment_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
   cpu_millis = ?, memory_bytes = ?, enabled = ?,
   active_deployment_id = CASE WHEN ? = 0 THEN NULL ELSE active_deployment_id END,
   updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
 		snapshot.ImageReference, nullableString(snapshot.ImageCredentialID), commandJSON, argsJSON,
-		string(environmentJSON), nullableInt(snapshot.TargetPort), nullableString(snapshot.HealthPath), snapshot.StartupTimeoutSeconds,
+		string(environmentJSON), healthPort, healthPath, healthTimeout,
 		nullablePositive(snapshot.CPUMillicores), nullablePositive(snapshot.MemoryMaxBytes), boolInteger(enabled),
 		boolInteger(enabled), updatedAt, serviceID, projectID, expectedUpdated,
 	)
@@ -138,16 +141,6 @@ INSERT INTO service_secret_refs(service_id, environment_name, secret_id) VALUES 
 			serviceID, reference.EnvironmentName, reference.SecretID,
 		); err != nil {
 			return fmt.Errorf("replace service secret reference: %w", err)
-		}
-	}
-	if _, err := transaction.ExecContext(ctx, "DELETE FROM service_resource_variable_refs WHERE service_id = ?", serviceID); err != nil {
-		return fmt.Errorf("clear service resource variable references: %w", err)
-	}
-	for _, reference := range snapshot.ResourceReferences {
-		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
-VALUES (?, ?, ?, ?, ?)`, serviceID, reference.EnvironmentName, reference.ResourceKind, reference.ResourceID, reference.OutputName); err != nil {
-			return fmt.Errorf("replace service resource variable reference: %w", err)
 		}
 	}
 	if _, err := transaction.ExecContext(ctx, "DELETE FROM service_volume_mounts WHERE service_id = ?", serviceID); err != nil {

@@ -64,6 +64,90 @@ type RedeployServiceInput struct {
 	CreatedAtMillis       int64
 }
 
+type DeleteServiceInput struct {
+	ID                    string
+	ProjectID             string
+	ExpectedUpdatedMillis int64
+	AuditEventID          string
+	ActorKind             string
+	ActorID               string
+	ActorEmail            string
+	RequestCorrelationID  string
+	DeletedAtMillis       int64
+}
+
+type DeleteServiceResult struct {
+	Service ServiceDesired
+	Volumes []Volume
+}
+
+func (store *Store) DeleteService(ctx context.Context, input DeleteServiceInput) (DeleteServiceResult, error) {
+	if err := validateServiceMutationIdentity(
+		input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID,
+		input.ActorKind, input.ActorID, input.ActorEmail, input.DeletedAtMillis,
+	); err != nil {
+		return DeleteServiceResult{}, err
+	}
+	service, err := store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return DeleteServiceResult{}, err
+	}
+	result := DeleteServiceResult{Service: service, Volumes: make([]Volume, 0)}
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		if err := validateServiceVersion(ctx, transaction, input.ID, input.ProjectID, input.ExpectedUpdatedMillis); err != nil {
+			return err
+		}
+		rows, err := transaction.QueryContext(ctx, `
+SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY id`, input.ProjectID, input.ID)
+		if err != nil {
+			return fmt.Errorf("list service volumes for deletion: %w", err)
+		}
+		for rows.Next() {
+			var volume Volume
+			if err := rows.Scan(
+				&volume.ID, &volume.ProjectID, &volume.ServiceID, &volume.Name,
+				&volume.OwnerUID, &volume.OwnerGID, &volume.CreatedAtMillis,
+			); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan service volume for deletion: %w", err)
+			}
+			result.Volumes = append(result.Volumes, volume)
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close service volume rows: %w", err)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate service volumes for deletion: %w", err)
+		}
+		statements := []struct {
+			query string
+			args  []any
+		}{
+			{query: "UPDATE services SET active_deployment_id = NULL WHERE id = ?", args: []any{input.ID}},
+			{query: "DELETE FROM resource_metric_samples WHERE resource_kind = 'service' AND resource_id = ?", args: []any{input.ID}},
+			{query: "DELETE FROM service_volume_mounts WHERE service_id = ?", args: []any{input.ID}},
+			{query: "DELETE FROM volumes WHERE project_id = ? AND service_id = ?", args: []any{input.ProjectID, input.ID}},
+			{query: "DELETE FROM services WHERE id = ? AND project_id = ?", args: []any{input.ID, input.ProjectID}},
+		}
+		for _, statement := range statements {
+			if _, err := transaction.ExecContext(ctx, statement.query, statement.args...); err != nil {
+				return fmt.Errorf("delete service state: %w", err)
+			}
+		}
+		return insertServiceAudit(ctx, transaction, serviceAudit{
+			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+			Action: "service.delete", ServiceID: input.ID,
+			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.DeletedAtMillis,
+			Metadata: map[string]string{"name": service.Name, "volumeCount": fmt.Sprintf("%d", len(result.Volumes))},
+		})
+	})
+	if err != nil {
+		return DeleteServiceResult{}, err
+	}
+	return result, nil
+}
+
 func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput) (ServiceDesired, error) {
 	if err := validateServiceMutationIdentity(input.ID, input.ProjectID, input.ExpectedUpdatedMillis, input.AuditEventID, input.ActorKind, input.ActorID, input.ActorEmail, input.UpdatedAtMillis); err != nil {
 		return ServiceDesired{}, err

@@ -2,22 +2,72 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/volume"
 )
 
 type liveServiceRepository struct {
-	store   *state.Store
-	runtime serviceRuntime
+	store            *state.Store
+	runtime          serviceRuntime
+	domains          *liveDomainRepository
+	listeners        *liveServiceListenerRepository
+	volumeFilesystem volume.Filesystem
+	onCleanupError   func(error)
 }
 
 type serviceRuntime interface {
 	DeployService(context.Context, string, bool) error
 	RestartServiceDeployment(context.Context, string, string) error
 	DeleteServiceDeploymentLogs(string, string) error
+	DeleteService(context.Context, state.ServiceDesired) error
+	DeleteServiceLogs(string) error
 	TrackService(context.Context, string, bool) error
 	recordServiceFailure(string, error)
+}
+
+func (repository liveServiceRepository) DeleteService(ctx context.Context, input state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return state.DeleteServiceResult{}, err
+	}
+	if service.UpdatedAtMillis != input.ExpectedUpdatedMillis {
+		return state.DeleteServiceResult{}, state.ErrServiceChanged
+	}
+	if err := repository.runtime.DeleteService(ctx, service); err != nil {
+		return state.DeleteServiceResult{}, err
+	}
+	if repository.listeners != nil {
+		if err := repository.listeners.WithdrawService(ctx, service.ID); err != nil {
+			return state.DeleteServiceResult{}, errors.Join(err, repository.runtime.DeployService(ctx, service.ID, false))
+		}
+	}
+	deleted, err := repository.store.DeleteService(ctx, input)
+	if err != nil {
+		var restoreListeners error
+		if repository.listeners != nil {
+			restoreListeners = repository.listeners.Restore(ctx)
+		}
+		return state.DeleteServiceResult{}, errors.Join(err, restoreListeners, repository.runtime.DeployService(ctx, service.ID, false))
+	}
+	if repository.domains != nil {
+		repository.reportCleanupError(repository.domains.reload(ctx))
+	}
+	repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
+	if repository.volumeFilesystem != nil {
+		for _, item := range deleted.Volumes {
+			repository.reportCleanupError(repository.volumeFilesystem.Remove(item.ProjectID, item.ID))
+		}
+	}
+	return deleted, nil
+}
+
+func (repository liveServiceRepository) reportCleanupError(err error) {
+	if err != nil && repository.onCleanupError != nil {
+		repository.onCleanupError(err)
+	}
 }
 
 func (repository liveServiceRepository) RestartServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {

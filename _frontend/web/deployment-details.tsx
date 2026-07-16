@@ -54,13 +54,9 @@ export const DeploymentDetails = ({
 }) => {
   const { snapshot } = deployment;
   const variables = [
-    ...Object.keys(snapshot.environment).map((name) => ({
+    ...Object.entries(snapshot.environment).map(([name, value]) => ({
       name,
-      source: "Literal",
-    })),
-    ...snapshot.resourceReferences.map((reference) => ({
-      name: reference.environmentName,
-      source: `${reference.resourceKind} / ${reference.resourceId}`,
+      source: value.includes("${{") ? "Expression" : "Literal",
     })),
     ...snapshot.secretReferences.map((reference) => ({
       name: reference.environmentName,
@@ -124,12 +120,12 @@ export const DeploymentDetails = ({
             value={snapshot.args?.join(" ") || "None"}
           />
           <Detail
-            label="Target port"
-            value={snapshot.targetPort?.toString() ?? "Not exposed"}
-          />
-          <Detail
-            label="Health path"
-            value={snapshot.healthPath || "Not configured"}
+            label="Health check"
+            value={
+              snapshot.healthCheck
+                ? `HTTP :${snapshot.healthCheck.port.toString()}${snapshot.healthCheck.path}`
+                : "Off"
+            }
           />
           <Detail
             label="CPU limit"
@@ -143,10 +139,12 @@ export const DeploymentDetails = ({
             label="Memory limit"
             value={formatBytes(snapshot.memoryMaxBytes)}
           />
-          <Detail
-            label="Startup timeout"
-            value={`${snapshot.startupTimeoutSeconds.toString()} seconds`}
-          />
+          {snapshot.healthCheck ? (
+            <Detail
+              label="Health timeout"
+              value={`${snapshot.healthCheck.timeoutSeconds.toString()} seconds`}
+            />
+          ) : null}
         </dl>
       </section>
 

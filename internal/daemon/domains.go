@@ -43,6 +43,8 @@ func (repository liveDomainRepository) AttachServiceDomain(ctx context.Context, 
 }
 
 func (repository liveDomainRepository) DetachServiceDomain(ctx context.Context, input state.DetachServiceDomainInput) error {
+	repository.publicMu.Lock()
+	defer repository.publicMu.Unlock()
 	if err := repository.store.DetachServiceDomain(ctx, input); err != nil {
 		return err
 	}
@@ -54,9 +56,9 @@ func (repository liveDomainRepository) reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	routes := make(map[string]string, len(domains))
+	routes := make(map[string]ingress.Route, len(domains))
 	for _, domain := range domains {
-		routes[domain.Hostname] = domain.ServiceID
+		routes[domain.Hostname] = ingress.Route{ServiceID: domain.ServiceID, TargetPort: domain.TargetPort}
 	}
 	repository.router.Reload(routes)
 	return nil

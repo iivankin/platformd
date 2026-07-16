@@ -25,10 +25,11 @@ type DomainApplication struct {
 }
 
 type AttachDomainInput struct {
-	ProjectID string
-	ServiceID string
-	Hostname  string
-	Move      bool
+	ProjectID  string
+	ServiceID  string
+	Hostname   string
+	TargetPort int
+	Move       bool
 }
 
 type DetachDomainInput struct {
@@ -69,15 +70,15 @@ func (application *DomainApplication) Attach(ctx context.Context, identity Ident
 	if err := authorizeServiceMutation(identity, input.ProjectID); err != nil {
 		return DomainMutationResult{}, err
 	}
-	if input.ServiceID == "" || input.Hostname == "" {
-		return DomainMutationResult{}, fmt.Errorf("%w: serviceId and hostname are required", ErrInvalidInput)
+	if input.ServiceID == "" || input.Hostname == "" || input.TargetPort < 1 || input.TargetPort > 65535 {
+		return DomainMutationResult{}, fmt.Errorf("%w: serviceId, hostname, and targetPort are required", ErrInvalidInput)
 	}
 	auditID, requestID, timestamp, err := application.identifiers()
 	if err != nil {
 		return DomainMutationResult{}, err
 	}
 	domain, err := application.repository.AttachServiceDomain(ctx, state.AttachServiceDomainInput{
-		ProjectID: input.ProjectID, ServiceID: input.ServiceID, Hostname: input.Hostname, Move: input.Move,
+		ProjectID: input.ProjectID, ServiceID: input.ServiceID, Hostname: input.Hostname, TargetPort: input.TargetPort, Move: input.Move,
 		AuditEventID: auditID, ActorKind: "token", ActorID: identity.TokenID,
 		RequestCorrelationID: requestID, CreatedAtMillis: timestamp,
 	})

@@ -35,8 +35,10 @@ type Meta struct {
 type handlerConfig struct {
 	projects             ProjectRepository
 	services             ServiceRepository
+	serviceEnvironment   ServiceEnvironmentResolver
 	volumes              *volume.Application
 	domains              DomainRepository
+	listeners            ServiceListenerRepository
 	tokens               APITokenRepository
 	imageCredentials     ImageCredentialRepository
 	logs                 LogRepository
@@ -90,6 +92,12 @@ func WithServices(repository ServiceRepository) Option {
 	}
 }
 
+func WithServiceEnvironment(resolver ServiceEnvironmentResolver) Option {
+	return func(config *handlerConfig) {
+		config.serviceEnvironment = resolver
+	}
+}
+
 func WithVolumes(application *volume.Application) Option {
 	return func(config *handlerConfig) {
 		config.volumes = application
@@ -99,6 +107,12 @@ func WithVolumes(application *volume.Application) Option {
 func WithDomains(repository DomainRepository) Option {
 	return func(config *handlerConfig) {
 		config.domains = repository
+	}
+}
+
+func WithServiceListeners(repository ServiceListenerRepository) Option {
+	return func(config *handlerConfig) {
+		config.listeners = repository
 	}
 }
 
@@ -265,6 +279,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.domains != nil {
 		registerServiceDomainRoutes(mux, config)
+	}
+	if config.listeners != nil {
+		registerServiceListenerRoutes(mux, config)
 	}
 	if config.tokens != nil {
 		registerAPITokenRoutes(mux, config)

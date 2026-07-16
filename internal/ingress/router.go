@@ -18,7 +18,12 @@ import (
 )
 
 type BackendResolver interface {
-	ServiceBackend(string) (deployment.Backend, bool, error)
+	ServiceBackend(string, int) (deployment.Backend, bool, error)
+}
+
+type Route struct {
+	ServiceID  string
+	TargetPort int
 }
 
 type Config struct {
@@ -33,7 +38,7 @@ type Config struct {
 }
 
 type routeSnapshot struct {
-	services           map[string]string
+	services           map[string]Route
 	objectStores       map[string]struct{}
 	registryHostname   string
 	automationHostname string
@@ -104,7 +109,7 @@ func New(config Config) (*Router, error) {
 		},
 	}
 	router.routes.Store(&routeSnapshot{
-		services: map[string]string{}, objectStores: map[string]struct{}{}, registryHostname: registryHostname,
+		services: map[string]Route{}, objectStores: map[string]struct{}{}, registryHostname: registryHostname,
 		automationHostname: automationHostname, automationHandler: config.AutomationHandler,
 	})
 	return router, nil
@@ -112,10 +117,10 @@ func New(config Config) (*Router, error) {
 
 // Reload replaces the complete immutable route view in one atomic store. A
 // request therefore sees either the old or new domain set, never a partial move.
-func (router *Router) Reload(routes map[string]string) {
+func (router *Router) Reload(routes map[string]Route) {
 	router.reloadMu.Lock()
 	defer router.reloadMu.Unlock()
-	cloned := make(map[string]string, len(routes))
+	cloned := make(map[string]Route, len(routes))
 	for hostname, serviceID := range routes {
 		cloned[hostname] = serviceID
 	}
@@ -242,12 +247,12 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.objectStoreHandler.ServeHTTP(response, request)
 		return
 	}
-	serviceID, exists := routes.services[hostname]
+	serviceRoute, exists := routes.services[hostname]
 	if !exists {
 		misdirected(response)
 		return
 	}
-	backend, available, err := router.backends.ServiceBackend(serviceID)
+	backend, available, err := router.backends.ServiceBackend(serviceRoute.ServiceID, serviceRoute.TargetPort)
 	if err != nil || !available {
 		unavailable(response)
 		return
@@ -255,8 +260,8 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	router.proxy(backend, hostname).ServeHTTP(response, request)
 }
 
-func cloneMap(input map[string]string) map[string]string {
-	result := make(map[string]string, len(input))
+func cloneMap(input map[string]Route) map[string]Route {
+	result := make(map[string]Route, len(input))
 	for key, value := range input {
 		result[key] = value
 	}

@@ -10,7 +10,7 @@ interface ServiceVolumeRowProperties {
   item: Volume;
   mount?: Service["volumeMounts"][number];
   onDeleted: () => void;
-  onMountChange: (containerPath?: string) => Promise<boolean>;
+  onMountChange: (containerPath?: string) => void;
   projectID: string;
   serviceID: string;
 }
@@ -29,22 +29,10 @@ export const ServiceVolumeRow = ({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
-  const updateMount = async (containerPath?: string) => {
-    setBusy(true);
+  const updateMount = (containerPath?: string) => {
     setError(undefined);
-    try {
-      if (await onMountChange(containerPath?.trim())) {
-        setMountPath("");
-      }
-    } catch (mountError) {
-      setError(
-        mountError instanceof Error
-          ? mountError.message
-          : "Unable to update volume mount"
-      );
-    } finally {
-      setBusy(false);
-    }
+    onMountChange(containerPath?.trim());
+    setMountPath("");
   };
 
   const remove = async () => {
@@ -70,14 +58,13 @@ export const ServiceVolumeRow = ({
         <div className="min-w-0 flex-1">
           <p className="truncate text-[10px] font-medium">{item.name}</p>
           <p className="mt-1 font-mono text-[9px] text-muted-foreground">
-            {item.ownerUid}:{item.ownerGid}
-            {mount ? ` → ${mount.containerPath}` : " · unmounted"}
+            {mount ? mount.containerPath : "Not mounted"}
           </p>
         </div>
         {mount ? (
           <Button
             disabled={busy}
-            onClick={() => void updateMount()}
+            onClick={() => updateMount()}
             size="sm"
             variant="outline"
           >
@@ -110,7 +97,7 @@ export const ServiceVolumeRow = ({
           />
           <Button
             disabled={busy || !mountPath.trim()}
-            onClick={() => void updateMount(mountPath)}
+            onClick={() => updateMount(mountPath)}
             size="sm"
             variant="outline"
           >

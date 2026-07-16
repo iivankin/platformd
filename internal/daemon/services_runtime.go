@@ -222,6 +222,36 @@ func (stack *runtimeStack) DeleteServiceDeploymentLogs(serviceID, deploymentID s
 	return controller.DeleteDeploymentLogs(serviceID, deploymentID)
 }
 
+func (stack *runtimeStack) DeleteService(ctx context.Context, service state.ServiceDesired) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not ready")
+	}
+	err := controller.DeleteService(ctx, service)
+	stack.mu.Lock()
+	if err == nil {
+		delete(stack.serviceFailures, service.ID)
+	} else {
+		stack.serviceFailures[service.ID] = err
+	}
+	stack.mu.Unlock()
+	return err
+}
+
+func (stack *runtimeStack) DeleteServiceLogs(serviceID string) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not ready")
+	}
+	return controller.DeleteServiceLogs(serviceID)
+}
+
 func (stack *runtimeStack) ServiceStatus(serviceID string, enabled bool) (string, string) {
 	if !enabled {
 		return "disabled", ""
@@ -330,7 +360,7 @@ func (stack *runtimeStack) Withdraw(service state.ServiceDesired) error {
 	return zone.Delete(service.Name + "." + service.ProjectName + ".internal")
 }
 
-func (stack *runtimeStack) ServiceBackend(serviceID string) (deployment.Backend, bool, error) {
+func (stack *runtimeStack) ServiceBackend(serviceID string, targetPort int) (deployment.Backend, bool, error) {
 	stack.mu.Lock()
 	controller := stack.deployments
 	published := stack.publishedServices[serviceID]
@@ -339,7 +369,7 @@ func (stack *runtimeStack) ServiceBackend(serviceID string) (deployment.Backend,
 	if closed || controller == nil || !published {
 		return deployment.Backend{}, false, nil
 	}
-	return controller.Backend(serviceID)
+	return controller.Backend(serviceID, targetPort)
 }
 
 func (stack *runtimeStack) recordServiceFailure(serviceID string, err error) {

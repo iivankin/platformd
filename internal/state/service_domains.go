@@ -10,10 +10,9 @@ import (
 )
 
 var (
-	ErrDomainNotFound          = errors.New("service domain not found")
-	ErrHostnameInUse           = errors.New("hostname is already used by another public role")
-	ErrServiceTargetPortNeeded = errors.New("service target port is required for a public domain")
-	ErrCertificateCoverage     = errors.New("no configured Origin certificate covers this hostname")
+	ErrDomainNotFound      = errors.New("service domain not found")
+	ErrHostnameInUse       = errors.New("hostname is already used by another public role")
+	ErrCertificateCoverage = errors.New("no configured Origin certificate covers this hostname")
 )
 
 type ServiceDomain struct {
@@ -22,6 +21,7 @@ type ServiceDomain struct {
 	ServiceName string
 	ProjectID   string
 	ProjectName string
+	TargetPort  int
 	CreatedAt   int64
 }
 
@@ -37,6 +37,7 @@ type AttachServiceDomainInput struct {
 	ProjectID            string
 	ServiceID            string
 	Hostname             string
+	TargetPort           int
 	Move                 bool
 	AuditEventID         string
 	ActorKind            string
@@ -63,7 +64,7 @@ func (store *Store) ServiceDomains(ctx context.Context, projectID, serviceID str
 		return nil, err
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.created_at
+SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at
 FROM service_domains d
 JOIN services s ON s.id = d.service_id
 JOIN projects p ON p.id = s.project_id
@@ -78,7 +79,7 @@ ORDER BY d.hostname`, serviceID)
 
 func (store *Store) ApplicationDomains(ctx context.Context) ([]ServiceDomain, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.created_at
+SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at
 FROM service_domains d
 JOIN services s ON s.id = d.service_id
 JOIN projects p ON p.id = s.project_id
@@ -91,7 +92,7 @@ ORDER BY d.hostname`)
 }
 
 func (store *Store) AttachServiceDomain(ctx context.Context, input AttachServiceDomainInput) (ServiceDomain, error) {
-	if input.ProjectID == "" || input.ServiceID == "" || input.AuditEventID == "" || input.CreatedAtMillis <= 0 || validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail) != nil {
+	if input.ProjectID == "" || input.ServiceID == "" || input.TargetPort < 1 || input.TargetPort > 65535 || input.AuditEventID == "" || input.CreatedAtMillis <= 0 || validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail) != nil {
 		return ServiceDomain{}, errors.New("attach service domain input is incomplete")
 	}
 	hostname, err := publichostname.Normalize(input.Hostname)
@@ -109,7 +110,7 @@ func (store *Store) AttachServiceDomain(ctx context.Context, input AttachService
 			return err
 		}
 		action := "service.domain.attach"
-		metadata := map[string]string{"hostname": hostname}
+		metadata := map[string]string{"hostname": hostname, "targetPort": fmt.Sprintf("%d", input.TargetPort)}
 		createdAt := input.CreatedAtMillis
 		if exists && existing.ServiceID != input.ServiceID {
 			if !input.Move {
@@ -119,8 +120,8 @@ func (store *Store) AttachServiceDomain(ctx context.Context, input AttachService
 			metadata["sourceProjectId"] = existing.ProjectID
 			metadata["sourceServiceId"] = existing.ServiceID
 			if _, err := transaction.ExecContext(ctx, `
-UPDATE service_domains SET service_id = ?, created_at = ? WHERE hostname = ?`,
-				input.ServiceID, input.CreatedAtMillis, hostname,
+UPDATE service_domains SET service_id = ?, target_port = ?, created_at = ? WHERE hostname = ?`,
+				input.ServiceID, input.TargetPort, input.CreatedAtMillis, hostname,
 			); err != nil {
 				return fmt.Errorf("move service domain: %w", err)
 			}
@@ -133,16 +134,24 @@ UPDATE service_domains SET service_id = ?, created_at = ? WHERE hostname = ?`,
 				return ErrHostnameInUse
 			}
 			if _, err := transaction.ExecContext(ctx, `
-INSERT INTO service_domains(hostname, service_id, created_at) VALUES (?, ?, ?)`,
-				hostname, input.ServiceID, input.CreatedAtMillis,
+INSERT INTO service_domains(hostname, service_id, target_port, created_at) VALUES (?, ?, ?, ?)`,
+				hostname, input.ServiceID, input.TargetPort, input.CreatedAtMillis,
 			); err != nil {
 				return fmt.Errorf("attach service domain: %w", err)
 			}
 		} else {
 			createdAt = existing.CreatedAt
+			if existing.TargetPort != input.TargetPort {
+				action = "service.domain.update"
+				if _, err := transaction.ExecContext(ctx, `
+UPDATE service_domains SET target_port = ? WHERE hostname = ?`, input.TargetPort, hostname); err != nil {
+					return fmt.Errorf("update service domain target port: %w", err)
+				}
+			}
 		}
 		route = target
 		route.Hostname = hostname
+		route.TargetPort = input.TargetPort
 		route.CreatedAt = createdAt
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
@@ -192,12 +201,11 @@ DELETE FROM service_domains WHERE hostname = ? AND service_id = ?`, hostname, in
 
 func loadDomainTarget(ctx context.Context, transaction *sql.Tx, projectID, serviceID string) (ServiceDomain, error) {
 	var target ServiceDomain
-	var targetPort sql.NullInt64
 	err := transaction.QueryRowContext(ctx, `
-SELECT s.id, s.name, s.project_id, p.name, s.target_port
+SELECT s.id, s.name, s.project_id, p.name
 FROM services s JOIN projects p ON p.id = s.project_id
 WHERE s.id = ? AND s.project_id = ?`, serviceID, projectID).Scan(
-		&target.ServiceID, &target.ServiceName, &target.ProjectID, &target.ProjectName, &targetPort,
+		&target.ServiceID, &target.ServiceName, &target.ProjectID, &target.ProjectName,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDomain{}, ErrServiceNotFound
@@ -205,22 +213,19 @@ WHERE s.id = ? AND s.project_id = ?`, serviceID, projectID).Scan(
 	if err != nil {
 		return ServiceDomain{}, fmt.Errorf("load domain target service: %w", err)
 	}
-	if !targetPort.Valid {
-		return ServiceDomain{}, ErrServiceTargetPortNeeded
-	}
 	return target, nil
 }
 
 func loadServiceDomain(ctx context.Context, transaction *sql.Tx, hostname string) (ServiceDomain, bool, error) {
 	var domain ServiceDomain
 	err := transaction.QueryRowContext(ctx, `
-SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.created_at
+SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at
 FROM service_domains d
 JOIN services s ON s.id = d.service_id
 JOIN projects p ON p.id = s.project_id
 WHERE d.hostname = ?`, hostname).Scan(
 		&domain.Hostname, &domain.ServiceID, &domain.ServiceName,
-		&domain.ProjectID, &domain.ProjectName, &domain.CreatedAt,
+		&domain.ProjectID, &domain.ProjectName, &domain.TargetPort, &domain.CreatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDomain{}, false, nil
@@ -252,7 +257,7 @@ func scanServiceDomains(rows *sql.Rows) ([]ServiceDomain, error) {
 		var domain ServiceDomain
 		if err := rows.Scan(
 			&domain.Hostname, &domain.ServiceID, &domain.ServiceName,
-			&domain.ProjectID, &domain.ProjectName, &domain.CreatedAt,
+			&domain.ProjectID, &domain.ProjectName, &domain.TargetPort, &domain.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan service domain: %w", err)
 		}

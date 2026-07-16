@@ -358,24 +358,21 @@ func serviceMutationSchemas() map[string]any {
 			"command":           map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"args":              map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"environment":       map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
-			"resourceReferences": map[string]any{"type": "array", "items": map[string]any{
-				"type": "object", "required": []string{"environmentName", "resourceKind", "resourceId", "outputName"},
-				"properties": map[string]any{
-					"environmentName": map[string]string{"type": "string"},
-					"resourceKind":    map[string]any{"type": "string", "enum": []string{"service", "postgres", "redis", "object_store"}},
-					"resourceId":      map[string]string{"type": "string"},
-					"outputName":      map[string]string{"type": "string"},
-				},
-			}},
 			"secretReferences": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "required": []string{"environmentName", "secretId"},
 				"properties": map[string]any{"environmentName": map[string]string{"type": "string"}, "secretId": map[string]string{"type": "string"}},
 			}},
-			"targetPort":            map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
-			"healthPath":            map[string]string{"type": "string"},
-			"startupTimeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600},
-			"cpuMillicores":         map[string]any{"type": "integer", "minimum": 0},
-			"memoryMaxBytes":        map[string]any{"type": "integer", "minimum": 0},
+			"healthCheck": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"port", "path", "timeoutSeconds"},
+				"properties": map[string]any{
+					"port":           map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
+					"path":           map[string]string{"type": "string"},
+					"timeoutSeconds": map[string]any{"type": "integer", "minimum": 1, "maximum": 3600},
+				},
+			},
+			"cpuMillicores":  map[string]any{"type": "integer", "minimum": 0},
+			"memoryMaxBytes": map[string]any{"type": "integer", "minimum": 0},
 			"volumeMounts": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "required": []string{"volumeId", "containerPath"},
 				"properties": map[string]any{"volumeId": map[string]string{"type": "string"}, "containerPath": map[string]string{"type": "string"}},
@@ -401,10 +398,11 @@ func serviceMutationSchemas() map[string]any {
 		},
 		"DomainAttachRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
-			"required": []string{"hostname"},
+			"required": []string{"hostname", "targetPort"},
 			"properties": map[string]any{
-				"hostname": map[string]string{"type": "string"},
-				"move":     map[string]any{"type": "boolean", "default": false},
+				"hostname":   map[string]string{"type": "string"},
+				"targetPort": map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
+				"move":       map[string]any{"type": "boolean", "default": false},
 			},
 		},
 		"VolumeCreateRequest": map[string]any{

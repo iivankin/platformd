@@ -24,7 +24,6 @@ export const ServiceVolumeCreateForm = ({
   const [name, setName] = useState("");
   const [ownerUID, setOwnerUID] = useState("0");
   const [ownerGID, setOwnerGID] = useState("0");
-  const [ownerNote, setOwnerNote] = useState("Loading the active image user…");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -39,19 +38,6 @@ export const ServiceVolumeCreateForm = ({
         );
         setOwnerUID(String(result.ownerUid));
         setOwnerGID(String(result.ownerGid));
-        if (result.exactNumeric) {
-          setOwnerNote(
-            `Image declares numeric user ${result.ownerUid}:${result.ownerGid}. You can edit it before creation.`
-          );
-        } else if (result.imageUser) {
-          setOwnerNote(
-            `Image user “${result.imageUser}” is not an exact uid:gid pair. Defaulting to 0:0.`
-          );
-        } else {
-          setOwnerNote(
-            "The active image does not declare an exact numeric uid:gid pair. Defaulting to 0:0."
-          );
-        }
       } catch (suggestionError) {
         if (
           !(
@@ -59,9 +45,8 @@ export const ServiceVolumeCreateForm = ({
             suggestionError.name === "AbortError"
           )
         ) {
-          setOwnerNote(
-            "Image ownership could not be inspected. Defaulting to 0:0."
-          );
+          setOwnerUID("0");
+          setOwnerGID("0");
         }
       }
     };
@@ -114,32 +99,6 @@ export const ServiceVolumeCreateForm = ({
           value={name}
         />
       </FormField>
-      <div className="grid grid-cols-2 gap-3">
-        <FormField label="Owner UID" name="new-volume-uid">
-          <Input
-            id="new-volume-uid"
-            max={maximumOwnerID}
-            min="0"
-            onChange={(event) => setOwnerUID(event.target.value)}
-            type="number"
-            value={ownerUID}
-          />
-        </FormField>
-        <FormField label="Owner GID" name="new-volume-gid">
-          <Input
-            id="new-volume-gid"
-            max={maximumOwnerID}
-            min="0"
-            onChange={(event) => setOwnerGID(event.target.value)}
-            type="number"
-            value={ownerGID}
-          />
-        </FormField>
-      </div>
-      <p className="text-[9px] leading-4 text-muted-foreground">
-        {ownerNote} Ownership is applied once to the empty directory; deploys
-        never recursively chown existing data.
-      </p>
       <div className="mt-3 flex gap-2">
         <Button
           disabled={busy || !name.trim()}

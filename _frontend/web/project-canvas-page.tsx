@@ -10,7 +10,11 @@ import { Plus, Waypoints } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
-import { fetchImageCredentials, fetchProjectCanvas } from "@/api";
+import {
+  fetchImageCredentials,
+  fetchProjectCanvas,
+  fetchRegistrySettings,
+} from "@/api";
 import type { ImageCredential, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
@@ -51,6 +55,7 @@ export const ProjectCanvasPage = () => {
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<ImageCredential[]>([]);
+  const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [createKind, setCreateKind] = useState<CreateKind>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [nodes, setNodes, onNodesChange] =
@@ -70,15 +75,19 @@ export const ProjectCanvasPage = () => {
     let refreshTimer: ReturnType<typeof setTimeout> | undefined;
     const load = async () => {
       try {
-        const [loaded, loadedCredentials] = await Promise.all([
-          fetchProjectCanvas(projectID, controller.signal),
-          fetchImageCredentials(projectID, controller.signal).catch(() => []),
-        ]);
+        const [loaded, loadedCredentials, registrySettings] = await Promise.all(
+          [
+            fetchProjectCanvas(projectID, controller.signal),
+            fetchImageCredentials(projectID, controller.signal).catch(() => []),
+            fetchRegistrySettings(controller.signal),
+          ]
+        );
         const flow = projectFlowElements(loaded);
         setCanvas(loaded);
         setNodes((current) => mergeResourceNodeData(current, flow.nodes));
         setEdges(flow.edges);
         setCredentials(loadedCredentials);
+        setEmbeddedRegistryHost(registrySettings.hostname);
         setError(null);
       } catch (loadError) {
         if (
@@ -136,6 +145,7 @@ export const ProjectCanvasPage = () => {
       <section className="relative min-h-0 flex-1 bg-background">
         <ProjectCreateOverlays
           credentials={credentials}
+          embeddedRegistryHost={embeddedRegistryHost}
           kind={createKind}
           onClose={() => setCreateKind(null)}
           onCreated={() => {

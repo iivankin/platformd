@@ -274,12 +274,12 @@ func TestAutomationAPIManagesServiceDomainsWithinTokenBoundary(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := automationHandler(t, repository)
 	path := "https://api.example.com/api/v1/projects/project/services/service/domains"
-	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"hostname":"app.example.com","move":true}`))
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"hostname":"app.example.com","targetPort":8080,"move":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated || repository.domainAttach.ActorKind != "token" || repository.domainAttach.ActorID != "admin" || !repository.domainAttach.Move {
+	if response.Code != http.StatusCreated || repository.domainAttach.ActorKind != "token" || repository.domainAttach.ActorID != "admin" || repository.domainAttach.TargetPort != 8080 || !repository.domainAttach.Move {
 		t.Fatalf("attach domain = %d/%s input=%+v", response.Code, response.Body, repository.domainAttach)
 	}
 	bound := "other"

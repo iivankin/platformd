@@ -168,6 +168,35 @@
   contain-intrinsic-size: 0 42px;
 }
 
+/* Flat pages still need a clear visual rhythm. A narrow surface gutter separates
+   sibling sections without turning either section into a nested card. */
+.workspace-section-stack,
+[data-section-stack] {
+  background: color-mix(in oklab, var(--muted) 42%, var(--background));
+}
+
+.workspace-section-stack > section,
+.workspace-section-stack > [data-section-stack] > section,
+[data-section-stack] > section,
+.workspace-section-stack section.border-b,
+[data-section-stack] section.border-b {
+  background: var(--background);
+}
+
+.workspace-section-stack section.border-b,
+[data-section-stack] section.border-b,
+main section.border-b + section.border-b {
+  border-top: 6px solid color-mix(in oklab, var(--muted) 58%, var(--background));
+  box-shadow: inset 0 1px 0 var(--border);
+}
+
+.workspace-section-stack > section:first-child,
+.workspace-section-stack > [data-section-stack] > section:first-child,
+[data-section-stack] > section:first-child {
+  border-top-width: 0;
+  box-shadow: none;
+}
+
 .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--border);

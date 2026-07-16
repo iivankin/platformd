@@ -16,9 +16,13 @@ type backendStub struct {
 	backend deployment.Backend
 	present bool
 	err     error
+	ports   chan<- int
 }
 
-func (stub backendStub) ServiceBackend(string) (deployment.Backend, bool, error) {
+func (stub backendStub) ServiceBackend(_ string, targetPort int) (deployment.Backend, bool, error) {
+	if stub.ports != nil {
+		stub.ports <- targetPort
+	}
 	return stub.backend, stub.present, stub.err
 }
 
@@ -76,7 +80,7 @@ func TestRouterReloadsAutomationAtomicallyWithoutLosingOtherRoutes(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	if err := router.ReloadRegistry("registry.example.com"); err != nil {
 		t.Fatal(err)
 	}
@@ -107,7 +111,7 @@ func TestRouterReloadsAutomationAtomicallyWithoutLosingOtherRoutes(t *testing.T)
 	if response.Code != http.StatusNoContent {
 		t.Fatalf("new automation status = %d", response.Code)
 	}
-	if router.routes.Load().services["app.example.com"] != "service-a" || router.routes.Load().registryHostname != "registry.example.com" {
+	if router.routes.Load().services["app.example.com"].ServiceID != "service-a" || router.routes.Load().registryHostname != "registry.example.com" {
 		t.Fatalf("automation reload lost routes: %+v", router.routes.Load())
 	}
 	if err := router.ReloadAutomation("", nil); err != nil {
@@ -126,16 +130,16 @@ func TestRouterDispatchesObjectStoreAndPreservesIndependentRouteViews(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	router.ReloadObjectStores([]string{"objects.example.com"})
-	router.Reload(map[string]string{"app.example.com": "service-b"})
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-b", TargetPort: 8081}})
 
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, tlsRequest("objects.example.com", "objects.example.com"))
 	if response.Code != http.StatusCreated {
 		t.Fatalf("object store status = %d", response.Code)
 	}
-	if router.routes.Load().services["app.example.com"] != "service-b" {
+	if router.routes.Load().services["app.example.com"].ServiceID != "service-b" {
 		t.Fatalf("service routes were lost: %#v", router.routes.Load().services)
 	}
 }
@@ -151,7 +155,7 @@ func TestRouterReloadsRegistryWithoutLosingOtherRoutes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	router.ReloadObjectStores([]string{"objects.example.com"})
 	if err := router.ReloadRegistry("Registry.Example.com"); err != nil {
 		t.Fatal(err)
@@ -161,7 +165,7 @@ func TestRouterReloadsRegistryWithoutLosingOtherRoutes(t *testing.T) {
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("registry status = %d", response.Code)
 	}
-	if router.routes.Load().services["app.example.com"] != "service-a" || len(router.routes.Load().objectStores) != 1 {
+	if router.routes.Load().services["app.example.com"].ServiceID != "service-a" || len(router.routes.Load().objectStores) != 1 {
 		t.Fatalf("registry reload lost routes: %+v", router.routes.Load())
 	}
 	if err := router.ReloadRegistry(""); err != nil {
@@ -189,14 +193,15 @@ func TestRouterProxiesApplicationAndReplacesForwardingHeaders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	requestedPorts := make(chan int, 1)
 	router, err := New(Config{
 		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
-		Backends: backendStub{backend: deployment.Backend{Address: host, Port: port}, present: true},
+		Backends: backendStub{backend: deployment.Backend{Address: host, Port: port}, present: true, ports: requestedPorts},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: port}})
 	request := tlsRequest("app.example.com", "app.example.com")
 	request.RemoteAddr = "192.0.2.7:1234"
 	request.Header.Set("CF-Connecting-IP", "203.0.113.9")
@@ -206,6 +211,9 @@ func TestRouterProxiesApplicationAndReplacesForwardingHeaders(t *testing.T) {
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != "proxied" {
 		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
+	}
+	if requested := <-requestedPorts; requested != port {
+		t.Fatalf("requested target port = %d, want %d", requested, port)
 	}
 	proxied := <-received
 	if proxied.Host != "app.example.com" || proxied.Header.Get("X-Forwarded-For") != "203.0.113.9" || proxied.Header.Get("X-Forwarded-Proto") != "https" {
@@ -221,7 +229,7 @@ func TestRouterReturnsUnavailableWithoutPublishedBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	router.Reload(map[string]string{"app.example.com": "service-a"})
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, tlsRequest("app.example.com", "app.example.com"))
 	if response.Code != http.StatusServiceUnavailable {

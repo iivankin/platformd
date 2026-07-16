@@ -9,8 +9,21 @@ import {
   stringField,
 } from "./http";
 import { stringRecord } from "./project-helpers";
+import {
+  mockDomainOutputs,
+  referencedResourceNames,
+  resolveMockEnvironment,
+} from "./service-variables";
 import type { MockState } from "./state";
 import { mockNow, nextMockID } from "./state";
+
+const withoutRecordKey = <Value>(
+  record: Record<string, Value>,
+  key: string
+): Record<string, Value> =>
+  Object.fromEntries(
+    Object.entries(record).filter(([candidate]) => candidate !== key)
+  );
 
 const handleService = async (
   request: Request,
@@ -28,6 +41,29 @@ const handleService = async (
   if (request.method === "GET") {
     return json(service);
   }
+  if (request.method === "DELETE") {
+    state.services = withoutRecordKey(state.services, serviceID);
+    state.deployments = withoutRecordKey(state.deployments, serviceID);
+    state.domains = withoutRecordKey(state.domains, serviceID);
+    state.listeners = withoutRecordKey(state.listeners, serviceID);
+    state.logs = withoutRecordKey(state.logs, serviceID);
+    state.volumes = withoutRecordKey(state.volumes, serviceID);
+    const canvas = state.canvases[service.projectId];
+    if (canvas) {
+      canvas.resources = canvas.resources.filter(
+        (resource) => resource.id !== serviceID
+      );
+      canvas.connections = canvas.connections.filter(
+        (connection) =>
+          connection.sourceId !== serviceID && connection.targetId !== serviceID
+      );
+      canvas.project.serviceCount = Math.max(
+        0,
+        canvas.project.serviceCount - 1
+      );
+    }
+    return noContent();
+  }
   if (request.method !== "PUT") {
     return undefined;
   }
@@ -38,22 +74,36 @@ const handleService = async (
     "imageReference",
     service.imageReference
   );
+  service.imageCredentialId =
+    typeof input.imageCredentialId === "string" && input.imageCredentialId
+      ? input.imageCredentialId
+      : undefined;
   service.environment = stringRecord(input.environment);
-  service.resourceReferences = Array.isArray(input.resourceReferences)
-    ? (input.resourceReferences as Service["resourceReferences"])
-    : [];
-  service.healthPath = stringField(input, "healthPath") || undefined;
-  service.targetPort =
-    typeof input.targetPort === "number" ? input.targetPort : undefined;
+  service.healthCheck =
+    typeof input.healthCheck === "object" && input.healthCheck !== null
+      ? (input.healthCheck as Service["healthCheck"])
+      : undefined;
+  service.volumeMounts = Array.isArray(input.volumeMounts)
+    ? (input.volumeMounts as Service["volumeMounts"])
+    : service.volumeMounts;
   service.updatedAt = mockNow();
   const canvas = state.canvases[service.projectId];
   if (canvas) {
     const references = new Map<string, string[]>();
-    for (const reference of service.resourceReferences) {
-      references.set(reference.resourceId, [
-        ...(references.get(reference.resourceId) ?? []),
-        reference.environmentName,
-      ]);
+    for (const [environmentName, value] of Object.entries(
+      service.environment
+    )) {
+      for (const resourceName of referencedResourceNames(value)) {
+        const resource = canvas.resources.find(
+          (candidate) => candidate.name === resourceName
+        );
+        if (resource) {
+          references.set(resource.id, [
+            ...(references.get(resource.id) ?? []),
+            environmentName,
+          ]);
+        }
+      }
     }
     canvas.connections = [
       ...canvas.connections.filter(
@@ -157,6 +207,42 @@ const handleServiceDeploymentAction = (
   return json(service);
 };
 
+const resolvedVariablesResponse = (
+  state: MockState,
+  serviceID: string
+): Response => {
+  const service = state.services[serviceID];
+  if (!service) {
+    return mockError("not_found", "Service not found", 404);
+  }
+  try {
+    return json({ environment: resolveMockEnvironment(state, serviceID) });
+  } catch (error) {
+    return mockError(
+      "variable_resolution_failed",
+      error instanceof Error ? error.message : "Unable to resolve variables",
+      422
+    );
+  }
+};
+
+const deploymentsResponse = (
+  state: MockState,
+  serviceID: string,
+  deploymentID?: string
+): Response => {
+  const deployments = state.deployments[serviceID] ?? [];
+  if (!deploymentID) {
+    return json({ deployments });
+  }
+  const deployment = deployments.find(
+    (candidate) => candidate.id === deploymentID
+  );
+  return deployment
+    ? json(deployment)
+    : mockError("deployment_not_found", "Deployment not found", 404);
+};
+
 const handleServiceReadModels = (
   request: Request,
   state: MockState,
@@ -168,16 +254,11 @@ const handleServiceReadModels = (
   if (request.method !== "GET" || tail.length > 0) {
     return undefined;
   }
-  if (resource === "deployments" && !detail) {
-    return json({ deployments: state.deployments[serviceID] ?? [] });
+  if (resource === "deployments") {
+    return deploymentsResponse(state, serviceID, detail);
   }
-  if (resource === "deployments" && detail) {
-    const deployment = (state.deployments[serviceID] ?? []).find(
-      (candidate) => candidate.id === detail
-    );
-    return deployment
-      ? json(deployment)
-      : mockError("deployment_not_found", "Deployment not found", 404);
+  if (resource === "variables" && detail === "resolved") {
+    return resolvedVariablesResponse(state, serviceID);
   }
   if (resource === "logs" && !detail) {
     const window = state.logs[serviceID] ?? { records: [], truncated: false };
@@ -276,14 +357,87 @@ const handleDomains = async (
     return undefined;
   }
   const input = await readObject(request);
+  const hostnameValue = stringField(input, "hostname", "app.mock.local");
   const domain = {
     createdAt: mockNow(),
-    hostname: stringField(input, "hostname", "app.mock.local"),
+    hostname: hostnameValue,
+    ...mockDomainOutputs(hostnameValue),
     projectId: projectID,
     serviceId: serviceID,
+    targetPort: numberField(input, "targetPort", 8080),
   };
-  state.domains[serviceID] = [...(state.domains[serviceID] ?? []), domain];
+  state.domains[serviceID] = [
+    ...(state.domains[serviceID] ?? []).filter(
+      (current) => current.hostname !== domain.hostname
+    ),
+    domain,
+  ];
   return json(domain, 201);
+};
+
+const handleListeners = async (
+  request: Request,
+  state: MockState,
+  projectID: string,
+  serviceID: string,
+  rest: string[]
+): Promise<Response | undefined> => {
+  const [resource, protocol, publicPortValue, ...tail] = rest;
+  if (resource !== "listeners" || tail.length > 0) {
+    return undefined;
+  }
+  if (request.method === "GET" && !protocol) {
+    return json({ listeners: state.listeners[serviceID] ?? [] });
+  }
+  if (request.method === "DELETE" && protocol && publicPortValue) {
+    const publicPort = Number(publicPortValue);
+    state.listeners[serviceID] = (state.listeners[serviceID] ?? []).filter(
+      (listener) =>
+        listener.protocol !== protocol || listener.publicPort !== publicPort
+    );
+    return noContent();
+  }
+  if (request.method !== "POST" || protocol || publicPortValue) {
+    return undefined;
+  }
+  const input = await readObject(request);
+  const listener = {
+    createdAt: mockNow(),
+    projectId: projectID,
+    protocol: stringField(input, "protocol", "tcp") as "tcp" | "udp",
+    publicPort: numberField(input, "publicPort", 3000),
+    serviceId: serviceID,
+    targetPort: numberField(input, "targetPort", 8080),
+  };
+  const conflict = Object.values(state.listeners)
+    .flat()
+    .find(
+      (current) =>
+        current.protocol === listener.protocol &&
+        current.publicPort === listener.publicPort &&
+        current.serviceId !== serviceID
+    );
+  if (conflict) {
+    return json(
+      {
+        error: {
+          code: "listener_conflict",
+          listener: conflict,
+          message: "Public listener belongs to another service",
+        },
+      },
+      409
+    );
+  }
+  state.listeners[serviceID] = [
+    ...(state.listeners[serviceID] ?? []).filter(
+      (current) =>
+        current.protocol !== listener.protocol ||
+        current.publicPort !== listener.publicPort
+    ),
+    listener,
+  ];
+  return json(listener, 201);
 };
 
 export const handleServicesAPI = async (
@@ -307,6 +461,7 @@ export const handleServicesAPI = async (
     handleServiceDeploymentAction(request, state, serviceID, rest) ??
     handleServiceReadModels(request, state, serviceID, rest, url) ??
     (await handleVolumes(request, state, projectID, serviceID, rest)) ??
-    (await handleDomains(request, state, projectID, serviceID, rest))
+    (await handleDomains(request, state, projectID, serviceID, rest)) ??
+    (await handleListeners(request, state, projectID, serviceID, rest))
   );
 };

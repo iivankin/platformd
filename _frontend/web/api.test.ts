@@ -8,6 +8,7 @@ import {
   replaceOriginCertificate,
   setAutomationHostname,
   attachServiceDomain,
+  attachServiceListener,
   createAPIToken,
   createObjectStore,
   createManagedRedis,
@@ -20,12 +21,14 @@ import {
   createService,
   createVolume,
   detachServiceDomain,
+  detachServiceListener,
   deleteObject,
   deleteBackupTarget,
   deleteRegistryImage,
   deleteRegistryCredential,
   deleteRegistryRepository,
   deleteRegistryTag,
+  deleteService,
   deleteVolume,
   fetchAPITokens,
   fetchAuditEvents,
@@ -38,6 +41,7 @@ import {
   fetchServiceDeployment,
   fetchServiceDeployments,
   fetchServiceDomains,
+  fetchServiceListeners,
   fetchServiceLogs,
   fetchResourceTerminalShells,
   issueServerTerminalToken,
@@ -280,10 +284,10 @@ test("lists credentials and creates a service", async () => {
     "project",
     {
       environment: { APP_ENV: "production" },
+      healthCheck: { path: "/healthz", port: 8080, timeoutSeconds: 60 },
       imageCredentialId: "credential",
       imageReference: "registry.example.com/acme/api:latest",
       name: "api",
-      targetPort: 8080,
     },
     (_input, init) => {
       requestInit = init;
@@ -293,15 +297,17 @@ test("lists credentials and creates a service", async () => {
             createdAt: 1,
             enabled: true,
             environment: { APP_ENV: "production" },
+            healthCheck: {
+              path: "/healthz",
+              port: 8080,
+              timeoutSeconds: 60,
+            },
             id: "service",
             imageCredentialId: "credential",
             imageReference: "registry.example.com/acme/api:latest",
             name: "api",
             projectId: "project",
-            resourceReferences: [],
             secretReferences: [],
-            startupTimeoutSeconds: 60,
-            targetPort: 8080,
             updatedAt: 1,
             volumeMounts: [],
           },
@@ -323,9 +329,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     imageReference: "docker.io/library/alpine:latest",
     name: "api",
     projectId: "project",
-    resourceReferences: [],
     secretReferences: [],
-    startupTimeoutSeconds: 60,
     updatedAt: 2,
     volumeMounts: [],
   };
@@ -344,9 +348,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       environment: {},
       expectedUpdatedAt: 2,
       imageReference: service.imageReference,
-      resourceReferences: [],
       secretReferences: [],
-      startupTimeoutSeconds: 60,
       volumeMounts: [],
     },
     (_input, init) => {
@@ -361,9 +363,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     environment: {},
     expectedUpdatedAt: 2,
     imageReference: service.imageReference,
-    resourceReferences: [],
     secretReferences: [],
-    startupTimeoutSeconds: 60,
     volumeMounts: [],
   });
 
@@ -377,6 +377,18 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       Promise.resolve(Response.json({ ...service, updatedAt: 3 }))
     )
   ).resolves.toMatchObject({ updatedAt: 3 });
+  await expect(
+    deleteService("project/id", "service/id", 2, (input, init) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/services/service%2Fid"
+      );
+      expect(init?.method).toBe("DELETE");
+      expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+        expectedUpdatedAt: 2,
+      });
+      return Promise.resolve(new Response(null, { status: 204 }));
+    })
+  ).resolves.toBeUndefined();
 });
 
 test("manages service-owned volumes and reads the image owner suggestion", async () => {
@@ -455,9 +467,7 @@ test("validates bounded deployment history pages", async () => {
               snapshot: {
                 environment: {},
                 imageReference: "docker.io/library/alpine:latest",
-                resourceReferences: [],
                 secretReferences: [],
-                startupTimeoutSeconds: 60,
                 volumeMounts: [],
               },
               status: "succeeded",
@@ -490,9 +500,7 @@ test("loads one deployment by its stable route", async () => {
             snapshot: {
               environment: {},
               imageReference: "docker.io/library/alpine:latest",
-              resourceReferences: [],
               secretReferences: [],
-              startupTimeoutSeconds: 60,
               volumeMounts: [],
             },
             status: "succeeded",
@@ -1223,10 +1231,13 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
   const domain = {
     createdAt: 1,
     hostname: "api.example.com",
+    internalOutputName: "API_URL_INTERNAL",
     projectId: "project",
     projectName: "shop",
+    publicOutputName: "API_URL",
     serviceId: "service",
     serviceName: "api",
+    targetPort: 8080,
   };
   await expect(
     fetchServiceDomains("project", "service", undefined, () =>
@@ -1240,6 +1251,7 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
       "project",
       "service",
       domain.hostname,
+      domain.targetPort,
       true,
       (_input, init) => {
         attachBody = init?.body?.toString() ?? "";
@@ -1250,6 +1262,7 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
   expect(JSON.parse(attachBody)).toEqual({
     hostname: domain.hostname,
     move: true,
+    targetPort: domain.targetPort,
   });
 
   let detachURL = "";
@@ -1273,6 +1286,7 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
     "project",
     "service",
     domain.hostname,
+    domain.targetPort,
     false,
     () =>
       Bun.sleep(0).then(() =>
@@ -1290,6 +1304,59 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
   ).catch((error: unknown) => error);
   expect(conflict).toBeInstanceOf(APIError);
   expect((conflict as APIError).domain).toEqual(domain);
+});
+
+test("lists, attaches, and detaches public service listeners", async () => {
+  const listener = {
+    createdAt: 1,
+    projectId: "project",
+    projectName: "shop",
+    protocol: "udp" as const,
+    publicPort: 53_000,
+    serviceId: "service",
+    serviceName: "api",
+    targetPort: 5300,
+  };
+  await expect(
+    fetchServiceListeners("project", "service", undefined, () =>
+      Promise.resolve(Response.json({ listeners: [listener] }))
+    )
+  ).resolves.toEqual([listener]);
+
+  let attachBody = "";
+  await expect(
+    attachServiceListener(
+      "project",
+      "service",
+      {
+        protocol: listener.protocol,
+        publicPort: listener.publicPort,
+        targetPort: listener.targetPort,
+      },
+      (_input, init) => {
+        attachBody = init?.body?.toString() ?? "";
+        return Promise.resolve(Response.json(listener, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(listener);
+  expect(JSON.parse(attachBody)).toEqual({
+    protocol: listener.protocol,
+    publicPort: listener.publicPort,
+    targetPort: listener.targetPort,
+  });
+
+  let detachURL = "";
+  await detachServiceListener(
+    "project",
+    "service",
+    listener.protocol,
+    listener.publicPort,
+    (input) => {
+      detachURL = input.toString();
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+  );
+  expect(detachURL).toEndWith("/listeners/udp/53000");
 });
 
 test("creates and revokes one-time API tokens", async () => {

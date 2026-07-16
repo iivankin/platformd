@@ -3,6 +3,7 @@ package state_test
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -34,7 +35,7 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 {
+	if version != 8 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int
@@ -177,7 +178,7 @@ SELECT count(*) FROM sqlite_schema
 WHERE type = 'table' AND name IN ('registry_manifests', 'registry_tags', 'registry_uploads')`).Scan(&tables); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 || tables != 3 {
+	if version != 8 || tables != 3 {
 		t.Fatalf("migrated version/tables = %d/%d", version, tables)
 	}
 }
@@ -230,8 +231,84 @@ PRAGMA user_version = 2;`)
 SELECT secret_hmac, secret_encrypted FROM registry_credentials WHERE id = 'credential'`).Scan(&verifier, &encrypted); err != nil {
 		t.Fatal(err)
 	}
-	if version != 6 || len(verifier) != 32 || len(encrypted) != 0 {
+	if version != 8 || len(verifier) != 32 || len(encrypted) != 0 {
 		t.Fatalf("migrated legacy credential = version %d, verifier %d bytes, encrypted %d bytes", version, len(verifier), len(encrypted))
+	}
+}
+
+func TestVersionEightMigrationMovesResourceReferencesIntoEnvironmentValues(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "platformd.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.Exec(`
+CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
+CREATE TABLE services(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, environment_json TEXT NOT NULL,
+  target_port INTEGER, health_path TEXT, startup_timeout_seconds INTEGER NOT NULL
+) STRICT;
+CREATE TABLE managed_postgres(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE managed_redis(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE object_stores(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
+CREATE TABLE service_resource_variable_refs(
+  service_id TEXT NOT NULL, environment_name TEXT NOT NULL,
+  resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, output_name TEXT NOT NULL
+) STRICT;
+INSERT INTO services(id, name, environment_json, target_port, health_path, startup_timeout_seconds)
+VALUES ('worker', 'worker', '{"PLAIN":"value"}', 8080, NULL, 60);
+INSERT INTO managed_postgres(id, name) VALUES ('postgres-id', 'main');
+INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
+VALUES ('worker', 'POSTGRES_URL', 'postgres', 'postgres-id', 'POSTGRES_URL');
+INSERT INTO schema_migrations(version, applied_at) VALUES (7, 1);
+PRAGMA user_version = 7;`)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.Open(context.Background(), path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var environmentJSON string
+	if err := store.QueryRowContext(context.Background(), `
+SELECT environment_json FROM services WHERE id = 'worker'`).Scan(&environmentJSON); err != nil {
+		t.Fatal(err)
+	}
+	var environment map[string]string
+	if err := json.Unmarshal([]byte(environmentJSON), &environment); err != nil {
+		t.Fatal(err)
+	}
+	if environment["PLAIN"] != "value" || environment["POSTGRES_URL"] != "${{main.POSTGRES_URL}}" {
+		t.Fatalf("migrated environment = %#v", environment)
+	}
+	var version, oldReferenceTables int
+	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QueryRowContext(context.Background(), `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'service_resource_variable_refs'`).Scan(&oldReferenceTables); err != nil {
+		t.Fatal(err)
+	}
+	if version != 8 || oldReferenceTables != 0 {
+		t.Fatalf("schema version/reference tables = %d/%d", version, oldReferenceTables)
+	}
+	var healthPort any
+	if err := store.QueryRowContext(context.Background(), `
+SELECT health_port FROM services WHERE id = 'worker'`).Scan(&healthPort); err != nil {
+		t.Fatal(err)
+	}
+	if healthPort != nil {
+		t.Fatalf("health port = %v, want NULL when the old health path was disabled", healthPort)
 	}
 }
 

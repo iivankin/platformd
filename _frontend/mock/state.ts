@@ -26,6 +26,7 @@ import type {
   RuntimeDeployment,
   Service,
   ServiceDomain,
+  ServiceListener,
   Volume,
 } from "../web/api";
 import { mockContainerFiles } from "./container-resources";
@@ -43,6 +44,7 @@ export interface MockState {
   deployments: Record<string, Deployment[]>;
   diskPressure: DiskPressure;
   domains: Record<string, ServiceDomain[]>;
+  listeners: Record<string, ServiceListener[]>;
   identity: Identity;
   imageCredentials: Record<string, ImageCredential[]>;
   infrastructureLogs: InfrastructureLogWindow;
@@ -71,6 +73,8 @@ const now = Date.UTC(2026, 6, 14, 12, 0, 0);
 const iso = (offsetMinutes: number) =>
   new Date(now + offsetMinutes * 60_000).toISOString();
 const resourceKey = (kind: string, id: string) => `${kind}:${id}`;
+const reference = (resource: string, output: string) =>
+  `\${{${resource}.${output}}}`;
 
 const project: Project = {
   createdAt: now - 45 * 86_400_000,
@@ -90,30 +94,18 @@ const service: Service = {
   cpuMillicores: 500,
   createdAt: project.createdAt,
   enabled: true,
-  environment: { LOG_LEVEL: "info" },
-  healthPath: "/health",
+  environment: {
+    LOG_LEVEL: "info",
+    POSTGRES_URL: reference("main", "POSTGRES_URL"),
+    REDIS_URL: reference("cache", "REDIS_URL"),
+  },
+  healthCheck: { path: "/health", port: 8080, timeoutSeconds: 30 },
   id: "service-api",
   imageReference: "registry.mock.local/storefront/api:stable",
   memoryMaxBytes: 536_870_912,
   name: "api",
   projectId: project.id,
-  resourceReferences: [
-    {
-      environmentName: "DATABASE_URL",
-      outputName: "DATABASE_URL",
-      resourceId: "postgres-main",
-      resourceKind: "postgres",
-    },
-    {
-      environmentName: "REDIS_URL",
-      outputName: "REDIS_URL",
-      resourceId: "redis-cache",
-      resourceKind: "redis",
-    },
-  ],
   secretReferences: [],
-  startupTimeoutSeconds: 30,
-  targetPort: 8080,
   updatedAt: now - 90_000,
   volumeMounts: [],
 };
@@ -178,7 +170,7 @@ const objectStore: ObjectStore = {
 const canvas: ProjectCanvas = {
   connections: [
     {
-      environmentNames: ["DATABASE_URL"],
+      environmentNames: ["POSTGRES_URL"],
       sourceId: service.id,
       targetId: postgres.id,
     },
@@ -313,6 +305,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   identity: { email: "developer@mock.local", subject: "mock-developer" },
   imageCredentials: {},
   infrastructureLogs: { records: [], truncated: false },
+  listeners: {},
   logs: {},
   meta: {
     architecture: "arm64",
@@ -382,13 +375,10 @@ export const createMockState = (scenario: MockScenario): MockState => {
       snapshot: {
         cpuMillicores: service.cpuMillicores,
         environment: service.environment,
-        healthPath: service.healthPath,
+        healthCheck: service.healthCheck,
         imageReference: service.imageReference,
         memoryMaxBytes: service.memoryMaxBytes,
-        resourceReferences: service.resourceReferences,
         secretReferences: [],
-        startupTimeoutSeconds: service.startupTimeoutSeconds,
-        targetPort: service.targetPort,
         volumeMounts: [],
       },
       status: "succeeded",
@@ -405,13 +395,10 @@ export const createMockState = (scenario: MockScenario): MockState => {
       snapshot: {
         cpuMillicores: service.cpuMillicores,
         environment: service.environment,
-        healthPath: service.healthPath,
+        healthCheck: service.healthCheck,
         imageReference: "registry.mock.local/storefront/api:candidate",
         memoryMaxBytes: service.memoryMaxBytes,
-        resourceReferences: service.resourceReferences,
         secretReferences: [],
-        startupTimeoutSeconds: service.startupTimeoutSeconds,
-        targetPort: service.targetPort,
         volumeMounts: [],
       },
       status: "failed",
@@ -426,13 +413,10 @@ export const createMockState = (scenario: MockScenario): MockState => {
       snapshot: {
         cpuMillicores: 400,
         environment: { LOG_LEVEL: "warn" },
-        healthPath: service.healthPath,
+        healthCheck: service.healthCheck,
         imageReference: "registry.mock.local/storefront/api:previous",
         memoryMaxBytes: service.memoryMaxBytes,
-        resourceReferences: service.resourceReferences,
         secretReferences: [],
-        startupTimeoutSeconds: service.startupTimeoutSeconds,
-        targetPort: service.targetPort,
         volumeMounts: [],
       },
       status: "succeeded",
@@ -492,10 +476,25 @@ export const createMockState = (scenario: MockScenario): MockState => {
     {
       createdAt: now - 20 * 86_400_000,
       hostname: "shop.mock.local",
+      internalOutputName: "SHOP_URL_INTERNAL",
       projectId: project.id,
       projectName: project.name,
+      publicOutputName: "SHOP_URL",
       serviceId: service.id,
       serviceName: service.name,
+      targetPort: 8080,
+    },
+  ];
+  state.listeners[service.id] = [
+    {
+      createdAt: now - 10 * 86_400_000,
+      projectId: project.id,
+      projectName: project.name,
+      protocol: "tcp",
+      publicPort: 9000,
+      serviceId: service.id,
+      serviceName: service.name,
+      targetPort: 8080,
     },
   ];
   state.volumes[service.id] = [];

@@ -28,16 +28,16 @@ const createService: ResourceCreator = (state, projectID, input) => {
     createdAt: mockNow(),
     enabled: true,
     environment: stringRecord(input.environment),
-    healthPath: stringField(input, "healthPath") || undefined,
+    healthCheck:
+      typeof input.healthCheck === "object" && input.healthCheck !== null
+        ? (input.healthCheck as Service["healthCheck"])
+        : undefined,
     id,
     imageReference: stringField(input, "imageReference", "nginx:stable"),
     memoryMaxBytes: 536_870_912,
     name,
     projectId: projectID,
-    resourceReferences: [],
     secretReferences: [],
-    startupTimeoutSeconds: 30,
-    targetPort: numberField(input, "targetPort", 8080),
     updatedAt: mockNow(),
     volumeMounts: [],
   };

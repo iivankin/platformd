@@ -1,47 +1,39 @@
-import { Copy, Plus, Trash2 } from "lucide-react";
+import { Menu } from "@base-ui/react/menu";
+import {
+  Braces,
+  Check,
+  Copy,
+  MoreVertical,
+  Plus,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
-import { fetchProjectCanvas } from "@/api";
-import type { ProjectCanvas, Service } from "@/api";
+import {
+  fetchProjectCanvas,
+  fetchResolvedServiceEnvironment,
+  fetchService,
+  fetchServiceDomains,
+} from "@/api";
+import type { ProjectCanvas, Service, ServiceDomain } from "@/api";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import {
+  VariableNameCombobox,
+  VariableValueCombobox,
+} from "@/service-variable-combobox";
+import {
+  environmentName,
+  serviceVariableRows,
+  variableSuggestions,
+} from "@/service-variable-model";
+import type { VariableRow } from "@/service-variable-model";
 
-const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/u;
-
-const resourceOutputs: Record<
-  ProjectCanvas["resources"][number]["kind"],
-  string[]
-> = {
-  object_store: [
-    "S3_ENDPOINT",
-    "S3_REGION",
-    "S3_BUCKET",
-    "S3_ACCESS_KEY_ID",
-    "S3_SECRET_ACCESS_KEY",
-  ],
-  postgres: [
-    "PGHOST",
-    "PGPORT",
-    "PGDATABASE",
-    "PGUSER",
-    "PGPASSWORD",
-    "DATABASE_URL",
-  ],
-  redis: ["REDISHOST", "REDISPORT", "REDISPASSWORD", "REDIS_URL"],
-  service: ["HOST", "PORT", "URL"],
-};
-
-interface LiteralVariable {
-  id: string;
-  name: string;
-  value: string;
-}
-
-const literalRows = (environment: Record<string, string>) =>
+const rawEnvironment = (environment: Record<string, string>) =>
   Object.entries(environment)
     .toSorted(([left], [right]) => left.localeCompare(right))
-    .map(([name, value]) => ({ id: crypto.randomUUID(), name, value }));
-
+    .map(([name, value]) => `${name}=${value}`)
+    .join("\n");
 export const ServiceVariables = ({
   busy,
   onSave,
@@ -49,20 +41,20 @@ export const ServiceVariables = ({
   service,
 }: {
   busy: boolean;
-  onSave: (
-    environment: Record<string, string>,
-    references: Service["resourceReferences"]
-  ) => Promise<boolean>;
+  onSave: (environment: Record<string, string>) => Promise<boolean>;
   projectID: string;
   service: Service;
 }) => {
-  const [literals, setLiterals] = useState<LiteralVariable[]>(() =>
-    literalRows(service.environment)
+  const [rows, setRows] = useState<VariableRow[]>(() =>
+    serviceVariableRows(service)
   );
-  const [references, setReferences] = useState(service.resourceReferences);
   const [resources, setResources] = useState<ProjectCanvas["resources"]>([]);
-  const [newName, setNewName] = useState("");
-  const [selectedOutput, setSelectedOutput] = useState("");
+  const [services, setServices] = useState<Map<string, Service>>(new Map());
+  const [domains, setDomains] = useState<Map<string, ServiceDomain[]>>(
+    new Map()
+  );
+  const [raw, setRaw] = useState<string>();
+  const [resolving, setResolving] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -70,8 +62,32 @@ export const ServiceVariables = ({
     const loadResources = async () => {
       try {
         const canvas = await fetchProjectCanvas(projectID, controller.signal);
-        setResources(
-          canvas.resources.filter((resource) => resource.id !== service.id)
+        const available = canvas.resources;
+        setResources(available);
+        const serviceResources = available.filter(
+          (resource) => resource.kind === "service"
+        );
+        const loaded = await Promise.all(
+          serviceResources.map(async (resource) => ({
+            domains: await fetchServiceDomains(
+              projectID,
+              resource.id,
+              controller.signal
+            ),
+            service: await fetchService(
+              projectID,
+              resource.id,
+              controller.signal
+            ),
+          }))
+        );
+        setServices(
+          new Map(loaded.map((entry) => [entry.service.id, entry.service]))
+        );
+        setDomains(
+          new Map(
+            loaded.map((entry) => [entry.service.id, entry.domains] as const)
+          )
         );
       } catch (loadError) {
         if (
@@ -83,7 +99,7 @@ export const ServiceVariables = ({
         setError(
           loadError instanceof Error
             ? loadError.message
-            : "Unable to load resource variables"
+            : "Unable to load variable suggestions"
         );
       }
     };
@@ -91,236 +107,218 @@ export const ServiceVariables = ({
     return () => controller.abort();
   }, [projectID, service.id]);
 
-  const outputs = useMemo(
-    () =>
-      resources.flatMap((resource) =>
-        resourceOutputs[resource.kind].map((outputName) => ({
-          label: `${resource.name}.${outputName}`,
-          outputName,
-          resourceId: resource.id,
-          resourceKind: resource.kind,
-        }))
-      ),
-    [resources]
+  const suggestions = useMemo(
+    () => variableSuggestions(resources, services, domains, service.id),
+    [domains, resources, service.id, services]
   );
 
-  const addLiteral = () => {
-    setLiterals((current) => [
-      ...current,
-      { id: crypto.randomUUID(), name: "", value: "" },
-    ]);
+  const updateRow = (rowID: string, update: Partial<VariableRow>) => {
+    setRows((current) =>
+      current.map((row) => (row.id === rowID ? { ...row, ...update } : row))
+    );
+    setRaw(undefined);
   };
 
-  const addReference = () => {
-    const output = outputs.find(
-      (candidate) =>
-        `${candidate.resourceKind}:${candidate.resourceId}:${candidate.outputName}` ===
-        selectedOutput
-    );
-    if (!(environmentName.test(newName) && output)) {
-      setError("Choose a resource output and enter a valid variable name.");
-      return;
-    }
-    setReferences((current) => [
+  const addVariable = () => {
+    setRows((current) => [
+      { id: crypto.randomUUID(), name: "", value: "" },
       ...current,
-      { environmentName: newName, ...output },
     ]);
-    setNewName("");
-    setSelectedOutput("");
-    setError(undefined);
+    setRaw(undefined);
   };
 
   const save = async () => {
     const environment: Record<string, string> = {};
-    const names = new Set<string>();
-    for (const row of literals) {
+    for (const row of rows) {
       if (!environmentName.test(row.name)) {
         setError(`Invalid environment name: ${row.name || "(empty)"}`);
         return;
       }
-      if (names.has(row.name)) {
+      if (row.name in environment) {
         setError(`Duplicate environment name: ${row.name}`);
         return;
       }
-      names.add(row.name);
       environment[row.name] = row.value;
     }
-    for (const reference of references) {
-      if (names.has(reference.environmentName)) {
-        setError(`Duplicate environment name: ${reference.environmentName}`);
-        return;
-      }
-      names.add(reference.environmentName);
-    }
-    if (await onSave(environment, references)) {
+    if (await onSave(environment)) {
       setError(undefined);
+      setRaw(undefined);
     }
   };
 
+  const resolveRaw = async () => {
+    setResolving(true);
+    setError(undefined);
+    try {
+      setRaw(
+        rawEnvironment(
+          await fetchResolvedServiceEnvironment(projectID, service.id)
+        )
+      );
+    } catch (resolveError) {
+      setError(
+        resolveError instanceof Error
+          ? resolveError.message
+          : "Unable to resolve variables"
+      );
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  const toggleRaw = async () => {
+    if (raw === undefined) {
+      await resolveRaw();
+      return;
+    }
+    setRaw(undefined);
+  };
+  const copyRaw = async () => {
+    await navigator.clipboard.writeText(raw ?? "");
+  };
+  let rawButtonLabel = "Rows";
+  if (resolving) {
+    rawButtonLabel = "Resolving…";
+  } else if (raw === undefined) {
+    rawButtonLabel = "Resolved raw";
+  }
+
   return (
-    <div>
-      <section className="flex min-h-14 items-center justify-between gap-4 border-b border-border px-5 py-3">
+    <section className="border-b border-border">
+      <header className="flex min-h-16 items-center justify-between gap-4 bg-muted/25 px-5 py-3">
         <div>
-          <h3 className="text-[10px] font-medium">Service variables</h3>
+          <h3 className="text-[10px] font-medium">
+            {rows.length} service variables
+          </h3>
           <p className="mt-1 text-[9px] text-muted-foreground">
-            Literal values stay here. References resolve when a deployment
-            starts.
+            References are ordinary values resolved when a deployment starts.
           </p>
         </div>
-        <Button onClick={addLiteral} size="sm" variant="outline">
-          <Plus /> Variable
-        </Button>
-      </section>
-
-      <div className="border-b border-border">
-        {literals.map((row) => (
-          <div
-            className="grid grid-cols-[minmax(10rem,0.8fr)_minmax(16rem,1.4fr)_2.5rem] border-b border-border last:border-b-0"
-            key={row.id}
+        <div className="flex items-center gap-2">
+          <Button
+            disabled={busy || resolving}
+            onClick={toggleRaw}
+            size="sm"
+            variant="ghost"
           >
-            <Input
-              aria-label="Variable name"
-              className="h-11 border-0 border-r px-5 font-mono focus-visible:ring-0"
-              onChange={(event) =>
-                setLiterals((current) =>
-                  current.map((candidate) =>
-                    candidate.id === row.id
-                      ? { ...candidate, name: event.target.value }
-                      : candidate
-                  )
-                )
-              }
-              placeholder="VARIABLE_NAME"
-              value={row.name}
-            />
-            <Input
-              aria-label={`${row.name || "Variable"} value`}
-              className="h-11 border-0 border-r px-5 font-mono focus-visible:ring-0"
-              onChange={(event) =>
-                setLiterals((current) =>
-                  current.map((candidate) =>
-                    candidate.id === row.id
-                      ? { ...candidate, value: event.target.value }
-                      : candidate
-                  )
-                )
-              }
-              placeholder="value"
-              value={row.value}
-            />
+            <Braces /> {rawButtonLabel}
+          </Button>
+          <Button onClick={addVariable} size="sm" variant="outline">
+            <Plus /> New variable
+          </Button>
+        </div>
+      </header>
+
+      {raw === undefined ? (
+        <>
+          <div className="grid grid-cols-[minmax(11rem,0.8fr)_minmax(16rem,1.2fr)_2.5rem] border-y border-border bg-muted/10 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+            <span>Name</span>
+            <span>Value</span>
+            <span />
+          </div>
+
+          {rows.length ? (
+            rows.map((row) => (
+              <div
+                className="grid min-h-12 grid-cols-[minmax(11rem,0.8fr)_minmax(16rem,1.2fr)_2.5rem] border-b border-border last:border-b-0"
+                key={row.id}
+              >
+                <div className="min-w-0 border-r border-border">
+                  <VariableNameCombobox
+                    busy={busy}
+                    onChange={(name) => updateRow(row.id, { name })}
+                    onSelect={(suggestion) =>
+                      updateRow(row.id, {
+                        name: suggestion.variableName,
+                        value: suggestion.expression,
+                      })
+                    }
+                    row={row}
+                    suggestions={suggestions}
+                  />
+                </div>
+
+                <VariableValueCombobox
+                  busy={busy}
+                  onChange={(value) => updateRow(row.id, { value })}
+                  row={row}
+                  suggestions={suggestions}
+                />
+
+                <Menu.Root>
+                  <Menu.Trigger
+                    aria-label={`Actions for ${row.name || "variable"}`}
+                    className="grid h-full min-h-12 place-items-center text-muted-foreground hover:bg-muted hover:text-foreground"
+                    disabled={busy}
+                  >
+                    <MoreVertical className="size-3.5" />
+                  </Menu.Trigger>
+                  <Menu.Portal>
+                    <Menu.Positioner
+                      align="end"
+                      className="z-50"
+                      sideOffset={4}
+                    >
+                      <Menu.Popup className="min-w-44 border border-border bg-popover p-1 text-[10px] text-popover-foreground shadow-lg">
+                        <Menu.Item
+                          className="flex cursor-default items-center gap-2 px-2.5 py-2 text-destructive outline-none data-[highlighted]:bg-destructive/10"
+                          onClick={() => {
+                            setRows((current) =>
+                              current.filter(
+                                (candidate) => candidate.id !== row.id
+                              )
+                            );
+                            setRaw(undefined);
+                          }}
+                        >
+                          <Trash2 className="size-3.5" /> Remove
+                        </Menu.Item>
+                      </Menu.Popup>
+                    </Menu.Positioner>
+                  </Menu.Portal>
+                </Menu.Root>
+              </div>
+            ))
+          ) : (
+            <p className="border-b border-dashed border-border px-5 py-6 text-[10px] text-muted-foreground">
+              No variables configured.
+            </p>
+          )}
+        </>
+      ) : (
+        <div className="border-t border-border">
+          <div className="flex min-h-10 items-center border-b border-border bg-muted/10 px-5 text-[9px] text-muted-foreground">
+            Resolved deployment values
             <Button
-              aria-label={`Remove ${row.name || "variable"}`}
-              className="h-11 w-full"
-              onClick={() =>
-                setLiterals((current) =>
-                  current.filter((candidate) => candidate.id !== row.id)
-                )
-              }
+              aria-label="Copy resolved variables"
+              className="ml-auto"
+              onClick={copyRaw}
               size="icon"
               variant="ghost"
             >
-              <Trash2 />
+              <Copy />
             </Button>
           </div>
-        ))}
-      </div>
-
-      <section className="border-b border-border">
-        <div className="border-b border-border px-5 py-3">
-          <h3 className="text-[10px] font-medium">References</h3>
-          <p className="mt-1 text-[9px] text-muted-foreground">
-            Values follow the selected resource without copying credentials into
-            service state.
-          </p>
+          <pre className="min-h-64 overflow-auto px-5 py-4 text-[10px] leading-5 break-all whitespace-pre-wrap">
+            {raw || "No variables configured."}
+          </pre>
         </div>
-        {references.map((reference) => {
-          const resource = resources.find(
-            (candidate) => candidate.id === reference.resourceId
-          );
-          return (
-            <div
-              className="grid min-h-11 grid-cols-[minmax(10rem,0.8fr)_minmax(16rem,1.4fr)_2.5rem] items-center border-b border-border last:border-b-0"
-              key={reference.environmentName}
-            >
-              <code className="px-5 text-[10px]">
-                {reference.environmentName}
-              </code>
-              <div className="flex min-w-0 items-center gap-2 border-l border-border px-5 text-[10px]">
-                <span className="truncate text-muted-foreground">
-                  {resource?.name ?? reference.resourceId}
-                </span>
-                <span aria-hidden="true">→</span>
-                <code>{reference.outputName}</code>
-                <Button
-                  aria-label={`Copy ${reference.environmentName} reference`}
-                  className="ml-auto"
-                  onClick={() =>
-                    void navigator.clipboard.writeText(
-                      `\${{${resource?.name ?? reference.resourceId}.${reference.outputName}}}`
-                    )
-                  }
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Copy />
-                </Button>
-              </div>
-              <Button
-                aria-label={`Remove ${reference.environmentName} reference`}
-                className="h-11 w-full border-l border-border"
-                onClick={() =>
-                  setReferences((current) =>
-                    current.filter(
-                      (candidate) =>
-                        candidate.environmentName !== reference.environmentName
-                    )
-                  )
-                }
-                size="icon"
-                variant="ghost"
-              >
-                <Trash2 />
-              </Button>
-            </div>
-          );
-        })}
-        <div className="grid grid-cols-[minmax(10rem,0.8fr)_minmax(16rem,1.4fr)_auto] gap-2 px-5 py-3">
-          <Input
-            aria-label="Referenced variable name"
-            onChange={(event) => setNewName(event.target.value)}
-            placeholder="DATABASE_URL"
-            value={newName}
-          />
-          <select
-            aria-label="Resource output"
-            className="h-8 border border-input bg-background px-2 text-[10px] outline-none focus-visible:border-ring"
-            onChange={(event) => setSelectedOutput(event.target.value)}
-            value={selectedOutput}
-          >
-            <option value="">Select resource output…</option>
-            {outputs.map((output) => {
-              const value = `${output.resourceKind}:${output.resourceId}:${output.outputName}`;
-              return (
-                <option key={value} value={value}>
-                  {output.label}
-                </option>
-              );
-            })}
-          </select>
-          <Button onClick={addReference} size="sm">
-            <Plus /> Reference
-          </Button>
-        </div>
-      </section>
+      )}
 
-      <div className="flex items-center justify-end gap-3 border-b border-border px-5 py-3">
+      <footer className="flex min-h-14 items-center justify-end gap-3 border-t border-border bg-muted/15 px-5 py-3">
         {error ? (
           <p className="mr-auto text-[10px] text-destructive">{error}</p>
         ) : null}
-        <Button disabled={busy} onClick={() => void save()}>
-          {busy ? "Saving…" : "Save variables"}
-        </Button>
-      </div>
-    </div>
+        {raw === undefined ? (
+          <Button disabled={busy} onClick={() => void save()}>
+            <Check /> {busy ? "Saving…" : "Save variables"}
+          </Button>
+        ) : (
+          <Button onClick={() => setRaw(undefined)} variant="outline">
+            <X /> Close raw view
+          </Button>
+        )}
+      </footer>
+    </section>
   );
 };

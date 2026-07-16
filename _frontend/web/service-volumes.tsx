@@ -7,19 +7,19 @@ import { ServiceVolumeCreateForm } from "@/service-volume-create-form";
 import { ServiceVolumeRow } from "@/service-volume-row";
 
 interface ServiceVolumesProperties {
-  onMountsChange: (mounts: Service["volumeMounts"]) => Promise<boolean>;
+  mounts: Service["volumeMounts"];
+  onMountsChange: (mounts: Service["volumeMounts"]) => void;
   onVolumesChange: (volumes: Volume[]) => void;
   projectID: string;
-  service: Service;
   serviceID: string;
   volumes: Volume[];
 }
 
 export const ServiceVolumes = ({
+  mounts,
   onMountsChange,
   onVolumesChange,
   projectID,
-  service,
   serviceID,
   volumes,
 }: ServiceVolumesProperties) => {
@@ -34,7 +34,7 @@ export const ServiceVolumes = ({
             Writable volumes
           </h3>
           <p className="mt-0.5 text-[9px] text-muted-foreground">
-            Owned by this service · immutable UID/GID
+            Persistent data mounted into this service.
           </p>
         </div>
         <Button
@@ -47,12 +47,6 @@ export const ServiceVolumes = ({
           Add
         </Button>
       </div>
-
-      <p className="border-t border-border px-4 py-2 text-[9px] leading-4 text-muted-foreground">
-        Mount changes trigger a stop-first redeploy. If the candidate changes
-        writable data and then fails, restarting the old container does not roll
-        that data back.
-      </p>
 
       {creating ? (
         <ServiceVolumeCreateForm
@@ -68,7 +62,7 @@ export const ServiceVolumes = ({
 
       {volumes.length === 0 ? (
         <p className="border-t border-border px-4 py-5 text-[10px] text-muted-foreground">
-          No persistent volumes. Image-declared VOLUME paths remain ephemeral.
+          No persistent volumes.
         </p>
       ) : (
         <div className="border-t border-border">
@@ -76,22 +70,20 @@ export const ServiceVolumes = ({
             <ServiceVolumeRow
               item={item}
               key={item.id}
-              mount={service.volumeMounts.find(
-                (candidate) => candidate.volumeId === item.id
-              )}
+              mount={mounts.find((candidate) => candidate.volumeId === item.id)}
               onDeleted={() =>
                 onVolumesChange(
                   volumes.filter((volume) => volume.id !== item.id)
                 )
               }
               onMountChange={(containerPath) => {
-                const mounts = service.volumeMounts.filter(
+                const nextMounts = mounts.filter(
                   (mount) => mount.volumeId !== item.id
                 );
                 if (containerPath) {
-                  mounts.push({ containerPath, volumeId: item.id });
+                  nextMounts.push({ containerPath, volumeId: item.id });
                 }
-                return onMountsChange(mounts);
+                onMountsChange(nextMounts);
               }}
               projectID={projectID}
               serviceID={serviceID}

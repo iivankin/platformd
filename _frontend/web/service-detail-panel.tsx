@@ -1,12 +1,17 @@
-import { Power, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
 import {
+  attachServiceDomain,
+  attachServiceListener,
+  deleteService,
   deployServiceVersion,
+  fetchImageCredentials,
+  fetchRegistrySettings,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
+  fetchServiceListeners,
   fetchVolumes,
   redeployService,
   removeServiceDeployment,
@@ -15,22 +20,22 @@ import {
 } from "@/api";
 import type {
   Deployment,
+  ImageCredential,
   Service,
   ServiceDomain,
+  ServiceListener,
   UpdateServiceInput,
   Volume,
 } from "@/api";
-import { Button } from "@/components/ui/button";
 import { DeploymentHistory } from "@/deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
 import { deploymentPath } from "@/project-resource-path";
 import { ResourceConsole } from "@/resource-console";
 import { ResourceUsage } from "@/resource-usage";
-import { ServiceConfiguration } from "@/service-configuration";
-import type { ServiceConfigurationValues } from "@/service-configuration";
-import { ServiceDomains } from "@/service-domains";
+import { serviceListenerKey } from "@/service-listeners";
+import { ServiceSettings } from "@/service-settings";
+import type { ServiceSettingsValues } from "@/service-settings";
 import { ServiceVariables } from "@/service-variables";
-import { ServiceVolumes } from "@/service-volumes";
 import { WorkspaceView } from "@/workspace-view";
 
 export type ServiceWorkspaceView =
@@ -59,36 +64,13 @@ const serviceUpdate = (
   enabled,
   environment: service.environment,
   expectedUpdatedAt: service.updatedAt,
-  healthPath: service.healthPath,
+  healthCheck: service.healthCheck,
   imageCredentialId: service.imageCredentialId,
   imageReference: service.imageReference,
   memoryMaxBytes: service.memoryMaxBytes,
-  resourceReferences: service.resourceReferences,
   secretReferences: service.secretReferences,
-  startupTimeoutSeconds: service.startupTimeoutSeconds,
-  targetPort: service.targetPort,
   volumeMounts,
 });
-
-const statusColor = (status: ResourceNodeData["status"]) => {
-  const colors: Record<ResourceNodeData["status"], string> = {
-    degraded: "bg-amber-500",
-    disabled: "bg-muted-foreground",
-    failed: "bg-destructive",
-    pending: "bg-sky-500",
-    running: "bg-emerald-500",
-  };
-  return colors[status];
-};
-
-const Detail = ({ label, value }: { label: string; value?: string }) => (
-  <div className="grid grid-cols-[7rem_minmax(0,1fr)] gap-3 border-b border-border py-2.5 last:border-b-0">
-    <dt className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
-      {label}
-    </dt>
-    <dd className="min-w-0 text-[10px] leading-4 break-all">{value ?? "—"}</dd>
-  </div>
-);
 
 const ServicePanelError = ({
   error,
@@ -118,25 +100,41 @@ export const ServiceDetailPanel = ({
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [domains, setDomains] = useState<ServiceDomain[]>([]);
+  const [listeners, setListeners] = useState<ServiceListener[]>([]);
   const [volumes, setVolumes] = useState<Volume[]>([]);
+  const [credentials, setCredentials] = useState<ImageCredential[]>([]);
+  const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [nextCursor, setNextCursor] = useState<string>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
-      const [loadedService, page, loadedDomains, loadedVolumes] =
-        await Promise.all([
-          fetchService(projectID, serviceID, signal),
-          fetchServiceDeployments(projectID, serviceID, undefined, signal),
-          fetchServiceDomains(projectID, serviceID, signal),
-          fetchVolumes(projectID, serviceID, signal),
-        ]);
+      const [
+        loadedService,
+        page,
+        loadedDomains,
+        loadedListeners,
+        loadedVolumes,
+        loadedCredentials,
+        registrySettings,
+      ] = await Promise.all([
+        fetchService(projectID, serviceID, signal),
+        fetchServiceDeployments(projectID, serviceID, undefined, signal),
+        fetchServiceDomains(projectID, serviceID, signal),
+        fetchServiceListeners(projectID, serviceID, signal),
+        fetchVolumes(projectID, serviceID, signal),
+        fetchImageCredentials(projectID, signal),
+        fetchRegistrySettings(signal),
+      ]);
       setService(loadedService);
       setDeployments(page.deployments);
       setNextCursor(page.nextCursor);
       setDomains(loadedDomains);
+      setListeners(loadedListeners);
       setVolumes(loadedVolumes);
+      setCredentials(loadedCredentials);
+      setEmbeddedRegistryHost(registrySettings.hostname);
       setError(null);
     },
     [projectID, serviceID]
@@ -217,22 +215,103 @@ export const ServiceDetailPanel = ({
     }
   };
 
-  const saveConfiguration = (values: ServiceConfigurationValues) => {
-    if (!service) {
-      return Promise.resolve(false);
+  const saveSettings = async (
+    values: ServiceSettingsValues
+  ): Promise<boolean> => {
+    if (!service || busy) {
+      return false;
     }
-    return apply("save configuration", () =>
-      updateService(projectID, serviceID, {
-        ...serviceUpdate(service, service.enabled),
-        ...values,
-      })
-    );
+    setBusy("save settings");
+    setError(null);
+    try {
+      const updated = await updateService(projectID, serviceID, {
+        ...serviceUpdate(service, service.enabled, values.volumeMounts),
+        healthCheck: values.healthCheck,
+        imageCredentialId: values.imageCredentialId,
+        imageReference: values.imageReference,
+      });
+      const domainUpdates = values.domains
+        .filter(
+          (domain) =>
+            domains.find((current) => current.hostname === domain.hostname)
+              ?.targetPort !== domain.targetPort
+        )
+        .map((domain) =>
+          attachServiceDomain(
+            projectID,
+            serviceID,
+            domain.hostname,
+            domain.targetPort
+          )
+        );
+      const listenerUpdates = values.listeners
+        .filter(
+          (listener) =>
+            listeners.find(
+              (current) =>
+                serviceListenerKey(current) === serviceListenerKey(listener)
+            )?.targetPort !== listener.targetPort
+        )
+        .map((listener) =>
+          attachServiceListener(projectID, serviceID, {
+            protocol: listener.protocol,
+            publicPort: listener.publicPort,
+            targetPort: listener.targetPort,
+          })
+        );
+      const [, page] = await Promise.all([
+        Promise.all([...domainUpdates, ...listenerUpdates]),
+        fetchServiceDeployments(projectID, serviceID),
+      ]);
+      setService(updated);
+      setDomains(values.domains);
+      setListeners(values.listeners);
+      setDeployments(page.deployments);
+      setNextCursor(page.nextCursor);
+      onChanged();
+      return true;
+    } catch (saveError) {
+      try {
+        await load();
+      } catch {
+        // The original mutation error is more useful than a follow-up refresh
+        // failure and the next page load will reconcile the visible state.
+      }
+      setError(
+        saveError instanceof Error
+          ? saveError.message
+          : "Unable to save service settings"
+      );
+      return false;
+    } finally {
+      setBusy(undefined);
+    }
   };
 
-  const saveVariables = (
-    environment: Record<string, string>,
-    resourceReferences: Service["resourceReferences"]
-  ) => {
+  const deleteCurrentService = async (): Promise<boolean> => {
+    if (!service || busy) {
+      return false;
+    }
+    setBusy("delete service");
+    setError(null);
+    try {
+      await deleteService(projectID, serviceID, service.updatedAt);
+      onChanged();
+      void navigate(`/projects/${encodeURIComponent(projectID)}`);
+      return true;
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Unable to delete service"
+      );
+      return false;
+    } finally {
+      setBusy(undefined);
+    }
+  };
+
+  const saveVariables = (environment: Record<string, string>) => {
     if (!service) {
       return Promise.resolve(false);
     }
@@ -240,7 +319,6 @@ export const ServiceDetailPanel = ({
       updateService(projectID, serviceID, {
         ...serviceUpdate(service, service.enabled),
         environment,
-        resourceReferences,
       })
     );
   };
@@ -323,130 +401,30 @@ export const ServiceDetailPanel = ({
               resourceID={serviceID}
             />
           ),
-          settings: (
-            <>
-              <section className="border-b border-border px-4 py-4">
-                <div className="flex items-center gap-2">
-                  <span className={`size-1.5 ${statusColor(data.status)}`} />
-                  <span className="text-[10px] font-medium capitalize">
-                    {data.status}
-                  </span>
-                </div>
-                {data.statusMessage ? (
-                  <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
-                    {data.statusMessage}
-                  </p>
-                ) : null}
-              </section>
-
-              <section className="border-b border-border px-4 py-4">
-                <div className="flex flex-wrap gap-2">
-                  <Button
-                    disabled={!service || Boolean(busy)}
-                    onClick={() => {
-                      if (service) {
-                        void apply(service.enabled ? "disable" : "enable", () =>
-                          updateService(
-                            projectID,
-                            serviceID,
-                            serviceUpdate(service, !service.enabled)
-                          )
-                        );
-                      }
-                    }}
-                    size="sm"
-                    variant={service?.enabled ? "destructive" : "default"}
-                  >
-                    <Power />
-                    {service?.enabled ? "Disable" : "Enable"}
-                  </Button>
-                  <Button
-                    disabled={!service?.enabled || Boolean(busy)}
-                    onClick={() => {
-                      if (service) {
-                        void apply("redeploy", () =>
-                          redeployService(
-                            projectID,
-                            serviceID,
-                            service.updatedAt
-                          )
-                        );
-                      }
-                    }}
-                    size="sm"
-                    variant="outline"
-                  >
-                    <RefreshCw />
-                    Redeploy
-                  </Button>
-                </div>
-                {error ? (
-                  <p
-                    aria-live="polite"
-                    className="mt-3 text-[10px] text-destructive"
-                  >
-                    {error}
-                  </p>
-                ) : null}
-              </section>
-
-              <section className="border-b border-border px-4 py-4">
-                <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
-                  Runtime configuration
-                </h3>
-                <dl className="mt-2">
-                  <Detail label="Internal DNS" value={data.internalHostname} />
-                  <Detail label="Image" value={service?.imageReference} />
-                  <Detail label="Digest" value={service?.activeImageDigest} />
-                  <Detail
-                    label="Target port"
-                    value={service?.targetPort?.toString()}
-                  />
-                  <Detail
-                    label="Updated"
-                    value={
-                      service
-                        ? new Date(service.updatedAt).toLocaleString()
-                        : "Loading…"
-                    }
-                  />
-                </dl>
-              </section>
-              {service ? (
-                <>
-                  <ServiceConfiguration
-                    busy={Boolean(busy)}
-                    key={service.updatedAt}
-                    onSave={saveConfiguration}
-                    service={service}
-                  />
-                  <ServiceVolumes
-                    onMountsChange={(mounts) =>
-                      apply("update volume mounts", () =>
-                        updateService(
-                          projectID,
-                          serviceID,
-                          serviceUpdate(service, service.enabled, mounts)
-                        )
-                      )
-                    }
-                    onVolumesChange={setVolumes}
-                    projectID={projectID}
-                    service={service}
-                    serviceID={serviceID}
-                    volumes={volumes}
-                  />
-                  <ServiceDomains
-                    domains={domains}
-                    onChanged={setDomains}
-                    projectID={projectID}
-                    serviceID={serviceID}
-                    targetPort={service.targetPort}
-                  />
-                </>
-              ) : null}
-            </>
-          ),
+          settings: service ? (
+            <ServiceSettings
+              actionError={error}
+              busy={Boolean(busy)}
+              credentials={credentials}
+              domains={domains}
+              embeddedRegistryHost={embeddedRegistryHost}
+              internalHostname={data.internalHostname}
+              key={service.updatedAt}
+              listeners={listeners}
+              onCredentialCreated={(credential) =>
+                setCredentials((current) => [...current, credential])
+              }
+              onDelete={deleteCurrentService}
+              onDomainsChange={setDomains}
+              onListenersChange={setListeners}
+              onSave={saveSettings}
+              onVolumesChange={setVolumes}
+              projectID={projectID}
+              service={service}
+              serviceID={serviceID}
+              volumes={volumes}
+            />
+          ) : null,
           variables: service ? (
             <ServiceVariables
               busy={Boolean(busy)}

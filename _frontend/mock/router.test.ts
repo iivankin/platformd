@@ -4,6 +4,7 @@ import {
   createAPIToken,
   createProject,
   createRegistryRepository,
+  deleteService,
   fetchAPITokens,
   fetchBackupGenerations,
   fetchBackupHistory,
@@ -31,10 +32,12 @@ import {
   fetchResourceUsage,
   fetchResourceUsageHistory,
   fetchResourceTerminalShells,
+  fetchResolvedServiceEnvironment,
   fetchService,
   fetchServiceDeployment,
   fetchServiceDeployments,
   fetchServiceDomains,
+  fetchServiceListeners,
   fetchVolumes,
   scanManagedRedisKeys,
   setAutomationHostname,
@@ -60,6 +63,35 @@ const fetcher =
   };
 
 describe("mock API", () => {
+  test("deletes a service and its canvas-owned state", async () => {
+    const state = createMockState("demo");
+    const mockFetch = fetcher(state);
+    const service = await fetchService(
+      "project-demo",
+      "service-api",
+      undefined,
+      mockFetch
+    );
+    await deleteService(
+      "project-demo",
+      service.id,
+      service.updatedAt,
+      mockFetch
+    );
+    await expect(
+      fetchService("project-demo", service.id, undefined, mockFetch)
+    ).rejects.toMatchObject({ code: "not_found" });
+    const canvas = await fetchProjectCanvas(
+      "project-demo",
+      undefined,
+      mockFetch
+    );
+    expect(
+      canvas.resources.some((resource) => resource.id === service.id)
+    ).toBe(false);
+    expect(canvas.project.serviceCount).toBe(0);
+  });
+
   test("demo fixtures satisfy the frontend response contracts", async () => {
     const state = createMockState("demo");
     const mockFetch = fetcher(state);
@@ -120,6 +152,7 @@ describe("mock API", () => {
       service,
       deployments,
       domains,
+      listeners,
       volumes,
       redis,
       redisKeys,
@@ -135,6 +168,7 @@ describe("mock API", () => {
       objectStoreLogs,
       serviceUsage,
       serviceUsageHistory,
+      resolvedEnvironment,
     ] = await Promise.all([
       fetchService("project-demo", "service-api", undefined, mockFetch),
       fetchServiceDeployments(
@@ -145,6 +179,12 @@ describe("mock API", () => {
         mockFetch
       ),
       fetchServiceDomains("project-demo", "service-api", undefined, mockFetch),
+      fetchServiceListeners(
+        "project-demo",
+        "service-api",
+        undefined,
+        mockFetch
+      ),
       fetchVolumes("project-demo", "service-api", undefined, mockFetch),
       fetchManagedRedis("project-demo", "redis-cache", undefined, mockFetch),
       scanManagedRedisKeys(
@@ -198,11 +238,18 @@ describe("mock API", () => {
         undefined,
         mockFetch
       ),
+      fetchResolvedServiceEnvironment(
+        "project-demo",
+        "service-api",
+        undefined,
+        mockFetch
+      ),
     ]);
 
     expect(service.name).toBe("api");
     expect(deployments.deployments).toHaveLength(3);
     expect(domains).toHaveLength(1);
+    expect(listeners).toHaveLength(1);
     expect(volumes).toEqual([]);
     expect(redis.name).toBe("cache");
     expect(redisKeys.keys).toHaveLength(1);
@@ -219,6 +266,10 @@ describe("mock API", () => {
     expect(serviceUsage.running).toBe(true);
     expect(serviceUsage.networkAvailable).toBe(true);
     expect(serviceUsageHistory.points).not.toHaveLength(0);
+    expect(resolvedEnvironment.POSTGRES_URL).toContain(
+      "postgresql://app_owner:mock-only-postgres-password@postgres-main.storefront.internal:5432/app"
+    );
+    expect(resolvedEnvironment.REDIS_URL).not.toContain("${{");
 
     const selectedDeployment = await fetchServiceDeployment(
       "project-demo",
