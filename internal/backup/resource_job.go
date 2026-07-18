@@ -76,31 +76,31 @@ func NewResourceJob(config ResourceJobConfig) (*ResourceJob, error) {
 
 func (job *ResourceJob) RunResource(
 	ctx context.Context,
-	resourceKind, resourceID string,
+	resourceKind, resourceID, targetID string,
 	scheduledOccurrenceMillis *int64,
 	retentionCount int,
 ) (state.BackupRecord, error) {
-	return job.runResource(ctx, resourceKind, resourceID, scheduledOccurrenceMillis, retentionCount, nil)
+	return job.runResource(ctx, resourceKind, resourceID, targetID, scheduledOccurrenceMillis, retentionCount, nil)
 }
 
 func (job *ResourceJob) RunResourceStarted(
 	ctx context.Context,
-	resourceKind, resourceID string,
+	resourceKind, resourceID, targetID string,
 	scheduledOccurrenceMillis *int64,
 	retentionCount int,
 	onStarted func(state.BackupRecord),
 ) (state.BackupRecord, error) {
-	return job.runResource(ctx, resourceKind, resourceID, scheduledOccurrenceMillis, retentionCount, onStarted)
+	return job.runResource(ctx, resourceKind, resourceID, targetID, scheduledOccurrenceMillis, retentionCount, onStarted)
 }
 
 func (job *ResourceJob) runResource(
 	ctx context.Context,
-	resourceKind, resourceID string,
+	resourceKind, resourceID, targetID string,
 	scheduledOccurrenceMillis *int64,
 	retentionCount int,
 	onStarted func(state.BackupRecord),
 ) (state.BackupRecord, error) {
-	if !validBackupResourceKind(resourceKind) || !validControlIdentifier(resourceID) || retentionCount < 1 || retentionCount > 100 ||
+	if !validBackupResourceKind(resourceKind) || !validControlIdentifier(resourceID) || targetID == "" || retentionCount < 1 || retentionCount > 100 ||
 		(scheduledOccurrenceMillis != nil && *scheduledOccurrenceMillis <= 0) {
 		return state.BackupRecord{}, errors.New("resource backup request is invalid")
 	}
@@ -113,7 +113,7 @@ func (job *ResourceJob) runResource(
 		return state.BackupRecord{}, ErrTargetBusy
 	}
 	defer releaseTarget()
-	target, err := job.config.Target.RuntimeTarget(ctx)
+	target, err := job.config.Target.RuntimeTarget(ctx, targetID)
 	if errors.Is(err, state.ErrBackupTargetNotFound) {
 		return state.BackupRecord{}, ErrResourceTargetMissing
 	}
@@ -138,7 +138,7 @@ func (job *ResourceJob) runResource(
 	}
 	defer lease.Release()
 	if err := job.config.Store.BeginBackup(ctx, state.BeginBackup{
-		ID: backupID, ResourceKind: resourceKind, ResourceID: resourceID,
+		ID: backupID, TargetID: targetID, ResourceKind: resourceKind, ResourceID: resourceID,
 		ScheduledOccurrenceMillis: scheduledOccurrenceMillis, GenerationID: generationID,
 		StartedAtMillis: startedAt.UnixMilli(),
 	}); err != nil {
@@ -146,7 +146,7 @@ func (job *ResourceJob) runResource(
 	}
 	if onStarted != nil {
 		onStarted(state.BackupRecord{
-			ID: backupID, ResourceKind: resourceKind, ResourceID: resourceID,
+			ID: backupID, TargetID: targetID, ResourceKind: resourceKind, ResourceID: resourceID,
 			ScheduledOccurrenceMillis: scheduledOccurrenceMillis, GenerationID: generationID,
 			Status: "running", StartedAtMillis: startedAt.UnixMilli(),
 		})

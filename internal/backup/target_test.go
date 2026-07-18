@@ -44,13 +44,14 @@ func TestTargetProbePrecedesEncryptedCommitAndFailedReplacePreservesOldTarget(t 
 			probed = config
 			return probe, nil
 		},
-		bytes.NewReader(sequenceBytes(100)),
+		bytes.NewReader(sequenceBytes(240)),
 		func() time.Time { return clock },
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	input := TargetInput{
+		Name:     "Primary",
 		Endpoint: "https://S3.Example.com/", Region: "eu-central-003", Bucket: "backup-bucket",
 		Prefix: "/platformd/test/", AccessKeyID: "access-key", SecretAccessKey: "secret-key",
 		Actor: Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
@@ -63,42 +64,53 @@ func TestTargetProbePrecedesEncryptedCommitAndFailedReplacePreservesOldTarget(t 
 		result.Target.Endpoint != "https://s3.example.com" || result.Target.AccessKeyID != input.AccessKeyID {
 		t.Fatalf("target result = %+v, probed = %+v, calls = %d", result, probed, probe.calls)
 	}
-	stored, err := store.BackupTarget(ctx)
+	stored, err := store.BackupTarget(ctx, result.Target.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if bytes.Contains(stored.SecretAccessKeyEncrypted, []byte(input.SecretAccessKey)) {
 		t.Fatal("backup target secret was stored in plaintext")
 	}
-	runtimeTarget, err := application.RuntimeTarget(ctx)
+	runtimeTarget, err := application.RuntimeTarget(ctx, result.Target.ID)
 	if err != nil || runtimeTarget.SecretAccessKey != input.SecretAccessKey {
 		t.Fatalf("runtime target = %+v, %v", runtimeTarget, err)
 	}
+	if _, err := application.SetControlTarget(ctx, result.Target.ID, input.Actor); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.DeleteTarget(ctx, result.Target.ID, input.Actor); !errors.Is(err, state.ErrBackupTargetInUse) {
+		t.Fatalf("disaster recovery target delete error = %v", err)
+	}
+	if _, err := application.SetControlTarget(ctx, "", input.Actor); err != nil {
+		t.Fatal(err)
+	}
 
+	input.ID = result.Target.ID
 	probe.err = errors.New("remote unavailable")
 	input.Endpoint = "https://replacement.example.com"
 	if _, err := application.SetTarget(ctx, input); err == nil {
 		t.Fatal("failed capability probe was accepted")
 	}
-	current, configured, err := application.Target(ctx)
-	if err != nil || !configured || current.Endpoint != result.Target.Endpoint {
-		t.Fatalf("target after failed replace = %+v configured=%t err=%v", current, configured, err)
+	targets, err := application.Targets(ctx)
+	if err != nil || len(targets) != 1 || targets[0].Endpoint != result.Target.Endpoint {
+		t.Fatalf("targets after failed replace = %+v err=%v", targets, err)
 	}
 
 	release, acquired := gate.TryAcquire()
 	if !acquired {
 		t.Fatal("failed to occupy backup target gate")
 	}
-	if _, err := application.DeleteTarget(ctx, input.Actor); !errors.Is(err, ErrTargetBusy) {
+	if _, err := application.DeleteTarget(ctx, result.Target.ID, input.Actor); !errors.Is(err, ErrTargetBusy) {
 		t.Fatalf("busy delete error = %v", err)
 	}
 	release()
-	requestID, err := application.DeleteTarget(ctx, input.Actor)
+	requestID, err := application.DeleteTarget(ctx, result.Target.ID, input.Actor)
 	if err != nil || requestID == "" {
 		t.Fatalf("delete target = %q, %v", requestID, err)
 	}
-	if _, configured, err := application.Target(ctx); err != nil || configured {
-		t.Fatalf("deleted target configured=%t err=%v", configured, err)
+	targets, err = application.Targets(ctx)
+	if err != nil || len(targets) != 0 {
+		t.Fatalf("targets after delete = %+v err=%v", targets, err)
 	}
 }
 
@@ -139,6 +151,7 @@ func TestEmbeddedPublicObjectStoreCannotBecomeBackupTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = application.SetTarget(ctx, TargetInput{
+		Name:     "Primary",
 		Endpoint: "https://objects.example.com", Region: "us-east-1", Bucket: "backup-bucket",
 		AccessKeyID: "access", SecretAccessKey: "secret",
 		Actor: Actor{Kind: "access", ID: "user", Email: "admin@example.com"},

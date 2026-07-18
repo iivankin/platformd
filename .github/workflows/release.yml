@@ -205,7 +205,7 @@ jobs:
           run_delegated \
             platformd-managedpostgres-integration \
             dist/managedpostgres-integration.test \
-            10m \
+            15m \
             --setenv=PATH=/nonexistent \
             --setenv=PLATFORMD_MANAGED_POSTGRES_INTEGRATION=1
           run_delegated \

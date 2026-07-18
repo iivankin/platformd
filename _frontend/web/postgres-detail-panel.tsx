@@ -31,17 +31,6 @@ interface PostgresDetailPanelProperties {
   view: PostgresWorkspaceView;
 }
 
-const Fact = ({ label, value }: { label: string; value: string }) => (
-  <div className="border-r border-border px-4 py-3 last:border-r-0">
-    <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-      {label}
-    </p>
-    <p className="mt-1 truncate text-[10px]" title={value}>
-      {value}
-    </p>
-  </div>
-);
-
 export const PostgresDetailPanel = ({
   data,
   onChanged,
@@ -143,14 +132,6 @@ export const PostgresDetailPanel = ({
           ),
           settings: (
             <>
-              <div className="grid grid-cols-3 border-b border-border">
-                <Fact label="Private endpoint" value={`${hostname}:5432`} />
-                <Fact
-                  label="Database"
-                  value={resource?.databaseName ?? "Loading…"}
-                />
-                <Fact label="Resource ID" value={postgresID} />
-              </div>
               {resource ? (
                 <DatabaseVersionChange
                   activeDigest={resource.imageDigest}

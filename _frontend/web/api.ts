@@ -10,11 +10,54 @@ const metaSchema = z.object({
 export type Meta = z.infer<typeof metaSchema>;
 
 const identitySchema = z.object({
+  avatarUrl: z.url().optional(),
   email: z.email(),
+  name: z.string().trim().min(1).optional(),
   subject: z.string().min(1),
 });
 
+const accessIdentityProfileSchema = z.object({
+  avatar_url: z.string().nullish(),
+  idp: z.record(z.string(), z.unknown()).nullish(),
+  name: z.string().nullish(),
+  oidc_fields: z.record(z.string(), z.unknown()).nullish(),
+  picture: z.string().nullish(),
+});
+
 export type Identity = z.infer<typeof identitySchema>;
+
+const githubAvatarURL = (
+  profile: z.infer<typeof accessIdentityProfileSchema>
+) => {
+  const oidcPicture = profile.oidc_fields?.picture;
+  const oidcAvatar = profile.oidc_fields?.avatar_url;
+  const idpPicture = profile.idp?.picture;
+  const idpAvatar = profile.idp?.avatar_url;
+  const candidates = [
+    profile.avatar_url,
+    profile.picture,
+    typeof idpAvatar === "string" ? idpAvatar : undefined,
+    typeof idpPicture === "string" ? idpPicture : undefined,
+    typeof oidcAvatar === "string" ? oidcAvatar : undefined,
+    typeof oidcPicture === "string" ? oidcPicture : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) {
+      continue;
+    }
+    try {
+      const url = new URL(candidate);
+      if (
+        url.protocol === "https:" &&
+        url.hostname === "avatars.githubusercontent.com"
+      ) {
+        return url.toString();
+      }
+    } catch {
+      // An IdP profile is optional display data; malformed URLs are ignored.
+    }
+  }
+};
 
 const projectSchema = z.object({
   createdAt: z.number().int().nonnegative(),
@@ -93,6 +136,13 @@ const canvasResourceSchema = z.object({
   name: z.string().min(1),
   status: z.enum(["degraded", "disabled", "failed", "pending", "running"]),
   statusMessage: z.string().optional(),
+  volumes: z.array(
+    z.object({
+      containerPath: z.string().min(1).optional(),
+      id: z.string().min(1),
+      name: z.string().min(1),
+    })
+  ),
 });
 
 const canvasConnectionSchema = z.object({
@@ -616,7 +666,18 @@ const postgresQueryResultSchema = z.object({
   truncated: z.boolean(),
 });
 
+const postgresExtensionSchema = z.object({
+  comment: z.string(),
+  defaultVersion: z.string(),
+  installedVersion: z.string().optional(),
+  name: z.string().min(1),
+});
+const postgresExtensionsSchema = z.object({
+  extensions: z.array(postgresExtensionSchema),
+});
+
 export type ManagedPostgres = z.infer<typeof managedPostgresSchema>;
+export type PostgresExtension = z.infer<typeof postgresExtensionSchema>;
 export type PostgresQueryResult = z.infer<typeof postgresQueryResultSchema>;
 
 export interface CreateManagedPostgresInput {
@@ -757,22 +818,30 @@ export interface CreateRegistryRepositoryInput {
 }
 
 const backupTargetSchema = z.object({
-  accessKeyId: z.string().min(1).optional(),
-  bucket: z.string().min(1).optional(),
-  configured: z.boolean(),
-  createdAt: z.number().int().positive().optional(),
-  endpoint: z.string().min(1).optional(),
-  prefix: z.string().optional(),
-  region: z.string().min(1).optional(),
-  updatedAt: z.number().int().positive().optional(),
+  accessKeyId: z.string().min(1),
+  bucket: z.string().min(1),
+  createdAt: z.number().int().positive(),
+  endpoint: z.string().min(1),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  prefix: z.string(),
+  region: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+});
+
+const backupTargetsSchema = z.object({
+  controlTargetId: z.string(),
+  targets: z.array(backupTargetSchema),
 });
 
 export type BackupTarget = z.infer<typeof backupTargetSchema>;
+export type BackupTargets = z.infer<typeof backupTargetsSchema>;
 
 export interface SetBackupTargetInput {
   accessKeyId: string;
   bucket: string;
   endpoint: string;
+  name: string;
   prefix: string;
   region: string;
   secretAccessKey: string;
@@ -827,6 +896,7 @@ const recoveryResourceKindSchema = z.enum([
   "postgres",
   "redis",
   "registry",
+  "volume",
 ]);
 
 const backupPolicySchema = z.object({
@@ -836,6 +906,7 @@ const backupPolicySchema = z.object({
   resourceId: z.string().min(1),
   resourceKind: recoveryResourceKindSchema,
   retentionCount: z.number().int().min(1).max(100),
+  targetId: z.string().optional(),
 });
 
 const backupPoliciesSchema = z.object({
@@ -854,6 +925,7 @@ const backupRecordSchema = z.object({
   sizeBytes: z.number().int().nonnegative().optional(),
   startedAt: z.number().int().positive(),
   status: z.enum(["failed", "interrupted", "running", "succeeded"]),
+  targetId: z.string().min(1),
 });
 
 const backupHistorySchema = z.object({ backups: z.array(backupRecordSchema) });
@@ -951,7 +1023,35 @@ export const fetchIdentity = async (
       `identity request failed with ${response.status}`
     );
   }
-  return identitySchema.parse(await response.json());
+  const identity = identitySchema.parse(await response.json());
+  try {
+    const profileResponse = await fetcher("/cdn-cgi/access/get-identity", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+      signal,
+    });
+    if (!profileResponse.ok) {
+      return identity;
+    }
+    const parsedProfile = accessIdentityProfileSchema.safeParse(
+      await profileResponse.json()
+    );
+    if (!parsedProfile.success) {
+      return identity;
+    }
+    const name = parsedProfile.data.name?.trim();
+    const avatarUrl = githubAvatarURL(parsedProfile.data);
+    return {
+      ...identity,
+      ...(name ? { name } : {}),
+      ...(avatarUrl ? { avatarUrl } : {}),
+    };
+  } catch (profileError) {
+    if (signal?.aborted) {
+      throw profileError;
+    }
+    return identity;
+  }
 };
 
 export const fetchProjects = async (
@@ -2084,6 +2184,48 @@ export const queryManagedPostgres = async (
   return postgresQueryResultSchema.parse(await response.json());
 };
 
+export const fetchManagedPostgresExtensions = async (
+  projectID: string,
+  postgresID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<PostgresExtension[]> => {
+  const response = await fetcher(
+    `${managedPostgresPath(projectID, postgresID)}/extensions`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL extensions request failed with ${response.status}`
+    );
+  }
+  return postgresExtensionsSchema.parse(await response.json()).extensions;
+};
+
+export const setManagedPostgresExtension = async (
+  projectID: string,
+  postgresID: string,
+  name: string,
+  installed: boolean,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Operation> => {
+  const response = await fetcher(
+    `${managedPostgresPath(projectID, postgresID)}/extensions/${encodeURIComponent(name)}`,
+    {
+      headers: { Accept: "application/json" },
+      method: installed ? "PUT" : "DELETE",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL extension change failed with ${response.status}`
+    );
+  }
+  return operationSchema.parse(await response.json());
+};
+
 const databaseVersionPath = (
   engine: ManagedImageEngine,
   projectID: string,
@@ -2320,11 +2462,11 @@ export const deleteObject = async (
 const registryRepositoryPath = (repositoryID?: string) =>
   `/api/v1/registry/repositories${repositoryID ? `/${encodeURIComponent(repositoryID)}` : ""}`;
 
-export const fetchBackupTarget = async (
+export const fetchBackupTargets = async (
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
-): Promise<BackupTarget> => {
-  const response = await fetcher("/api/v1/backups/target", {
+): Promise<BackupTargets> => {
+  const response = await fetcher("/api/v1/backups/targets", {
     headers: { Accept: "application/json" },
     signal,
   });
@@ -2334,17 +2476,17 @@ export const fetchBackupTarget = async (
       `Backup target request failed with ${response.status}`
     );
   }
-  return backupTargetSchema.parse(await response.json());
+  return backupTargetsSchema.parse(await response.json());
 };
 
-export const setBackupTarget = async (
+export const createBackupTarget = async (
   input: SetBackupTargetInput,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<BackupTarget> => {
-  const response = await fetcher("/api/v1/backups/target", {
+  const response = await fetcher("/api/v1/backups/targets", {
     body: JSON.stringify(input),
     headers: { Accept: "application/json", "Content-Type": "application/json" },
-    method: "PUT",
+    method: "POST",
   });
   if (!response.ok) {
     throw await apiError(
@@ -2355,18 +2497,66 @@ export const setBackupTarget = async (
   return backupTargetSchema.parse(await response.json());
 };
 
+export const updateBackupTarget = async (
+  targetID: string,
+  input: SetBackupTargetInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<BackupTarget> => {
+  const response = await fetcher(
+    `/api/v1/backups/targets/${encodeURIComponent(targetID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Backup target update failed with ${response.status}`
+    );
+  }
+  return backupTargetSchema.parse(await response.json());
+};
+
 export const deleteBackupTarget = async (
+  targetID: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<void> => {
-  const response = await fetcher("/api/v1/backups/target", {
-    method: "DELETE",
-  });
+  const response = await fetcher(
+    `/api/v1/backups/targets/${encodeURIComponent(targetID)}`,
+    {
+      method: "DELETE",
+    }
+  );
   if (!response.ok) {
     throw await apiError(
       response,
       `Backup target deletion failed with ${response.status}`
     );
   }
+};
+
+export const setControlBackupTarget = async (
+  targetID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<string> => {
+  const response = await fetcher("/api/v1/backups/control-target", {
+    body: JSON.stringify({ targetId: targetID }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Disaster recovery target update failed with ${response.status}`
+    );
+  }
+  return z.object({ targetId: z.string() }).parse(await response.json())
+    .targetId;
 };
 
 const backupResourcePath = (kind: RecoveryResourceKind, resourceID: string) =>
@@ -2411,7 +2601,12 @@ export const fetchBackupPolicy = async (
 export const setBackupPolicy = async (
   kind: RecoveryResourceKind,
   resourceID: string,
-  input: { cron: string; enabled: boolean; retentionCount: number },
+  input: {
+    cron: string;
+    enabled: boolean;
+    retentionCount: number;
+    targetId: string;
+  },
   fetcher: Fetcher = globalThis.fetch
 ): Promise<BackupPolicy> => {
   const response = await fetcher(
@@ -2437,12 +2632,17 @@ export const setBackupPolicy = async (
 export const runBackupNow = async (
   kind: RecoveryResourceKind,
   resourceID: string,
+  targetID: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<BackupRecord> => {
   const response = await fetcher(
     `${backupResourcePath(kind, resourceID)}/run`,
     {
-      headers: { Accept: "application/json" },
+      body: JSON.stringify({ targetId: targetID }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
       method: "POST",
     }
   );
@@ -2458,11 +2658,12 @@ export const runBackupNow = async (
 export const fetchBackupHistory = async (
   kind: RecoveryResourceKind,
   resourceID: string,
+  targetID: string,
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<BackupRecord[]> => {
   const response = await fetcher(
-    `${backupResourcePath(kind, resourceID)}/history?limit=50`,
+    `${backupResourcePath(kind, resourceID)}/history?${new URLSearchParams({ limit: "50", targetId: targetID })}`,
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
@@ -2477,11 +2678,12 @@ export const fetchBackupHistory = async (
 export const fetchBackupGenerations = async (
   kind: RecoveryResourceKind,
   resourceID: string,
+  targetID: string,
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<BackupGeneration[]> => {
   const response = await fetcher(
-    `${backupResourcePath(kind, resourceID)}/generations`,
+    `${backupResourcePath(kind, resourceID)}/generations?${new URLSearchParams({ targetId: targetID })}`,
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
@@ -2496,6 +2698,7 @@ export const fetchBackupGenerations = async (
 export const restoreBackupGeneration = async (
   kind: RecoveryResourceKind,
   resourceID: string,
+  targetID: string,
   generationID: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<Operation> => {
@@ -2506,6 +2709,7 @@ export const restoreBackupGeneration = async (
         destructiveConfirmed: true,
         generationId: generationID,
         mode: "replace",
+        targetId: targetID,
       }),
       headers: {
         Accept: "application/json",

@@ -18,8 +18,8 @@ type ControlRunner interface {
 }
 
 type ResourceRunner interface {
-	RunResource(context.Context, string, string, *int64, int) (state.BackupRecord, error)
-	RunResourceStarted(context.Context, string, string, *int64, int, func(state.BackupRecord)) (state.BackupRecord, error)
+	RunResource(context.Context, string, string, string, *int64, int) (state.BackupRecord, error)
+	RunResourceStarted(context.Context, string, string, string, *int64, int, func(state.BackupRecord)) (state.BackupRecord, error)
 }
 
 type WorkerConfig struct {
@@ -51,6 +51,7 @@ type Worker struct {
 type manualRequest struct {
 	resourceKind   string
 	resourceID     string
+	targetID       string
 	retentionCount int
 	started        chan manualStartResult
 }
@@ -93,7 +94,7 @@ func newWorker(config WorkerConfig) (*Worker, error) {
 
 func (worker *Worker) TryRunNow(
 	ctx context.Context,
-	resourceKind, resourceID string,
+	resourceKind, resourceID, targetID string,
 	retentionCount int,
 ) (state.BackupRecord, error) {
 	if worker.resources == nil {
@@ -107,7 +108,7 @@ func (worker *Worker) TryRunNow(
 	worker.busy = true
 	worker.mutex.Unlock()
 	request := manualRequest{
-		resourceKind: resourceKind, resourceID: resourceID, retentionCount: retentionCount,
+		resourceKind: resourceKind, resourceID: resourceID, targetID: targetID, retentionCount: retentionCount,
 		started: make(chan manualStartResult, 1),
 	}
 	worker.manual <- request
@@ -160,7 +161,7 @@ func (worker *Worker) Run(ctx context.Context) error {
 			continue
 		}
 		record, runErr := worker.resources.RunResource(
-			ctx, candidate.ResourceKind, candidate.ResourceID,
+			ctx, candidate.ResourceKind, candidate.ResourceID, candidate.TargetID,
 			candidate.ScheduledOccurrenceMillis, candidate.RetentionCount,
 		)
 		if runErr == nil {
@@ -184,7 +185,7 @@ func (worker *Worker) Run(ctx context.Context) error {
 func (worker *Worker) runManual(ctx context.Context, request manualRequest) {
 	started := false
 	record, err := worker.resources.RunResourceStarted(
-		ctx, request.resourceKind, request.resourceID, nil, request.retentionCount,
+		ctx, request.resourceKind, request.resourceID, request.targetID, nil, request.retentionCount,
 		func(record state.BackupRecord) {
 			started = true
 			request.started <- manualStartResult{record: record}

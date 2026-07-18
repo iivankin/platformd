@@ -10,7 +10,7 @@ const tabs = [
 ];
 
 export const SettingsPage = () => (
-  <div className="enter-row min-h-full">
+  <div className="min-h-full animate-in duration-200 fade-in slide-in-from-bottom-1">
     <PageTabs label="Settings pages" tabs={tabs} />
     <Routes>
       <Route element={<Navigate replace to="general" />} index />

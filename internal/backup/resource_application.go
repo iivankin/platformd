@@ -25,11 +25,11 @@ type ResourceApplicationStore interface {
 }
 
 type ManualRunner interface {
-	TryRunNow(context.Context, string, string, int) (state.BackupRecord, error)
+	TryRunNow(context.Context, string, string, string, int) (state.BackupRecord, error)
 }
 
 type RestoreRunner interface {
-	Start(context.Context, string, string, string, ResourceRestoreOptions, Actor) (state.Operation, error)
+	Start(context.Context, string, string, string, string, ResourceRestoreOptions, Actor) (state.Operation, error)
 }
 
 type ResourceApplication struct {
@@ -59,6 +59,7 @@ type ResourceApplicationConfig struct {
 type PolicyInput struct {
 	ResourceKind   string
 	ResourceID     string
+	TargetID       string
 	Enabled        bool
 	Cron           string
 	RetentionCount int
@@ -98,7 +99,7 @@ func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplicat
 
 func (application *ResourceApplication) Restore(
 	ctx context.Context,
-	kind, resourceID, generationID string,
+	kind, resourceID, targetID, generationID string,
 	options ResourceRestoreOptions,
 	actor Actor,
 ) (state.Operation, error) {
@@ -108,7 +109,7 @@ func (application *ResourceApplication) Restore(
 	if application.restores == nil {
 		return state.Operation{}, ErrResourceRestorer
 	}
-	return application.restores.Start(ctx, kind, resourceID, generationID, options, actor)
+	return application.restores.Start(ctx, kind, resourceID, targetID, generationID, options, actor)
 }
 
 func (application *ResourceApplication) Operation(ctx context.Context, operationID string) (state.Operation, error) {
@@ -117,7 +118,7 @@ func (application *ResourceApplication) Operation(ctx context.Context, operation
 
 func (application *ResourceApplication) Generations(
 	ctx context.Context,
-	kind, resourceID string,
+	kind, resourceID, targetID string,
 ) ([]ResourceCompletion, error) {
 	if _, err := application.store.BackupPolicy(ctx, kind, resourceID); err != nil {
 		return nil, err
@@ -130,7 +131,7 @@ func (application *ResourceApplication) Generations(
 		return nil, ErrTargetBusy
 	}
 	defer release()
-	target, err := application.target.RuntimeTarget(ctx)
+	target, err := application.target.RuntimeTarget(ctx, targetID)
 	if errors.Is(err, state.ErrBackupTargetNotFound) {
 		return nil, ErrResourceTargetMissing
 	}
@@ -170,7 +171,7 @@ func (application *ResourceApplication) SetPolicy(ctx context.Context, input Pol
 	}
 	timestamp := application.now()
 	nextRun, err := nextPolicyRun(state.BackupPolicy{
-		Enabled: input.Enabled, Cron: input.Cron,
+		Enabled: input.Enabled, Cron: input.Cron, TargetID: input.TargetID,
 	}, timestamp)
 	if err != nil {
 		return PolicyResult{}, err
@@ -185,7 +186,7 @@ func (application *ResourceApplication) SetPolicy(ctx context.Context, input Pol
 	}
 	policy, err := application.store.SetBackupPolicy(ctx, state.SetBackupPolicy{
 		ResourceKind: input.ResourceKind, ResourceID: input.ResourceID,
-		Enabled: input.Enabled, Cron: input.Cron, RetentionCount: input.RetentionCount,
+		TargetID: input.TargetID, Enabled: input.Enabled, Cron: input.Cron, RetentionCount: input.RetentionCount,
 		AuditEventID: auditID, ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
 		ActorEmail: input.Actor.Email, RequestCorrelationID: requestID,
 		UpdatedAtMillis: timestamp.UnixMilli(),
@@ -209,6 +210,9 @@ func nextPolicyRun(policy state.BackupPolicy, now time.Time) (int64, error) {
 	if !policy.Enabled {
 		return 0, nil
 	}
+	if policy.TargetID == "" {
+		return 0, errors.New("enabled backup policy has no storage target")
+	}
 	schedule, err := backupcron.Parse(policy.Cron)
 	if err != nil {
 		return 0, err
@@ -220,7 +224,7 @@ func nextPolicyRun(policy state.BackupPolicy, now time.Time) (int64, error) {
 	return next.UnixMilli(), nil
 }
 
-func (application *ResourceApplication) RunNow(ctx context.Context, kind, resourceID string) (state.BackupRecord, error) {
+func (application *ResourceApplication) RunNow(ctx context.Context, kind, resourceID, targetID string) (state.BackupRecord, error) {
 	if application.worker == nil {
 		return state.BackupRecord{}, ErrResourceRunner
 	}
@@ -228,12 +232,12 @@ func (application *ResourceApplication) RunNow(ctx context.Context, kind, resour
 	if err != nil {
 		return state.BackupRecord{}, err
 	}
-	return application.worker.TryRunNow(ctx, kind, resourceID, policy.RetentionCount)
+	return application.worker.TryRunNow(ctx, kind, resourceID, targetID, policy.RetentionCount)
 }
 
 func (application *ResourceApplication) History(
 	ctx context.Context,
-	kind, resourceID string,
+	kind, resourceID, targetID string,
 	beforeMillis int64,
 	limit int,
 ) ([]state.BackupRecord, error) {
@@ -241,6 +245,6 @@ func (application *ResourceApplication) History(
 		return nil, err
 	}
 	return application.store.BackupHistory(ctx, state.BackupHistoryQuery{
-		ResourceKind: kind, ResourceID: resourceID, BeforeMillis: beforeMillis, Limit: limit,
+		TargetID: targetID, ResourceKind: kind, ResourceID: resourceID, BeforeMillis: beforeMillis, Limit: limit,
 	})
 }

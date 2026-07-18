@@ -252,6 +252,17 @@ func (stack *runtimeStack) DeleteServiceLogs(serviceID string) error {
 	return controller.DeleteServiceLogs(serviceID)
 }
 
+func (stack *runtimeStack) WithServiceQuiesced(ctx context.Context, serviceID string, action func() error) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not ready")
+	}
+	return controller.WithServiceQuiesced(ctx, serviceID, action)
+}
+
 func (stack *runtimeStack) ServiceStatus(serviceID string, enabled bool) (string, string) {
 	if !enabled {
 		return "disabled", ""

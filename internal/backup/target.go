@@ -27,42 +27,28 @@ var (
 
 type TargetStore interface {
 	Installation(context.Context) (state.Installation, error)
-	BackupTarget(context.Context) (state.BackupTarget, error)
+	BackupTargets(context.Context) ([]state.BackupTarget, error)
+	BackupTarget(context.Context, string) (state.BackupTarget, error)
+	ControlBackupTargetID(context.Context) (string, error)
 	SetBackupTarget(context.Context, state.SetBackupTarget) (state.BackupTarget, error)
+	SetControlBackupTarget(context.Context, state.SetControlBackupTarget) error
 	DeleteBackupTarget(context.Context, state.DeleteBackupTarget) error
 	EmbeddedObjectStoreHostnameExists(context.Context, string) (bool, error)
 }
 
-type Probe interface {
-	Probe(context.Context) error
-}
-
+type Probe interface{ Probe(context.Context) error }
 type RemoteFactory func(remotes3.Config) (Probe, error)
 
-type Actor struct {
-	Kind  string
-	ID    string
-	Email string
-}
+type Actor struct{ Kind, ID, Email string }
 
 type TargetInput struct {
-	Endpoint        string
-	Region          string
-	Bucket          string
-	Prefix          string
-	AccessKeyID     string
-	SecretAccessKey string
-	Actor           Actor
+	ID, Name, Endpoint, Region, Bucket, Prefix, AccessKeyID, SecretAccessKey string
+	Actor                                                                    Actor
 }
 
 type Target struct {
-	Endpoint        string
-	Region          string
-	Bucket          string
-	Prefix          string
-	AccessKeyID     string
-	CreatedAtMillis int64
-	UpdatedAtMillis int64
+	ID, Name, Endpoint, Region, Bucket, Prefix, AccessKeyID string
+	CreatedAtMillis, UpdatedAtMillis                        int64
 }
 
 type RuntimeTarget struct {
@@ -75,14 +61,17 @@ type TargetResult struct {
 	RequestID string
 }
 
+type ControlTargetResult struct {
+	TargetID  string
+	RequestID string
+}
+
 type Gate struct {
 	mutex sync.Mutex
 	busy  bool
 }
 
-func NewGate() *Gate {
-	return &Gate{}
-}
+func NewGate() *Gate { return &Gate{} }
 
 func (gate *Gate) TryAcquire() (func(), bool) {
 	gate.mutex.Lock()
@@ -116,9 +105,7 @@ func NewTargetApplication(store TargetStore, master cryptobox.MasterKey, gate *G
 		gate = NewGate()
 	}
 	if factory == nil {
-		factory = func(config remotes3.Config) (Probe, error) {
-			return remotes3.New(config)
-		}
+		factory = func(config remotes3.Config) (Probe, error) { return remotes3.New(config) }
 	}
 	if random == nil {
 		random = rand.Reader
@@ -126,24 +113,27 @@ func NewTargetApplication(store TargetStore, master cryptobox.MasterKey, gate *G
 	if now == nil {
 		now = time.Now
 	}
-	return &TargetApplication{
-		store: store, master: master, gate: gate, factory: factory, random: random, now: now,
-	}, nil
+	return &TargetApplication{store: store, master: master, gate: gate, factory: factory, random: random, now: now}, nil
 }
 
-func (application *TargetApplication) Target(ctx context.Context) (Target, bool, error) {
-	stored, err := application.store.BackupTarget(ctx)
-	if errors.Is(err, state.ErrBackupTargetNotFound) {
-		return Target{}, false, nil
-	}
+func (application *TargetApplication) Targets(ctx context.Context) ([]Target, error) {
+	stored, err := application.store.BackupTargets(ctx)
 	if err != nil {
-		return Target{}, false, err
+		return nil, err
 	}
-	return publicTarget(stored), true, nil
+	result := make([]Target, len(stored))
+	for index := range stored {
+		result[index] = publicTarget(stored[index])
+	}
+	return result, nil
 }
 
-func (application *TargetApplication) RuntimeTarget(ctx context.Context) (RuntimeTarget, error) {
-	stored, err := application.store.BackupTarget(ctx)
+func (application *TargetApplication) ControlTargetID(ctx context.Context) (string, error) {
+	return application.store.ControlBackupTargetID(ctx)
+}
+
+func (application *TargetApplication) RuntimeTarget(ctx context.Context, targetID string) (RuntimeTarget, error) {
+	stored, err := application.store.BackupTarget(ctx, targetID)
 	if err != nil {
 		return RuntimeTarget{}, err
 	}
@@ -158,19 +148,34 @@ func (application *TargetApplication) RuntimeTarget(ctx context.Context) (Runtim
 	return RuntimeTarget{Target: publicTarget(stored), SecretAccessKey: secret}, nil
 }
 
+func (application *TargetApplication) ControlRuntimeTarget(ctx context.Context) (RuntimeTarget, error) {
+	targetID, err := application.store.ControlBackupTargetID(ctx)
+	if err != nil {
+		return RuntimeTarget{}, err
+	}
+	if targetID == "" {
+		return RuntimeTarget{}, state.ErrBackupTargetNotFound
+	}
+	return application.RuntimeTarget(ctx, targetID)
+}
+
 func (application *TargetApplication) SetTarget(ctx context.Context, input TargetInput) (TargetResult, error) {
-	if err := validateActor(input.Actor); err != nil {
-		return TargetResult{}, err
+	if err := validateActor(input.Actor); err != nil || strings.TrimSpace(input.Name) == "" {
+		return TargetResult{}, ErrInvalidInput
 	}
 	release, acquired := application.gate.TryAcquire()
 	if !acquired {
 		return TargetResult{}, ErrTargetBusy
 	}
 	defer release()
+	if input.ID != "" {
+		if _, err := application.store.BackupTarget(ctx, input.ID); err != nil {
+			return TargetResult{}, err
+		}
+	}
 	canonical, err := remotes3.CanonicalConfig(remotes3.Config{
-		Endpoint: input.Endpoint, Region: input.Region, Bucket: input.Bucket,
-		Prefix: input.Prefix, AccessKeyID: input.AccessKeyID, SecretAccessKey: input.SecretAccessKey,
-		Random: application.random,
+		Endpoint: input.Endpoint, Region: input.Region, Bucket: input.Bucket, Prefix: input.Prefix,
+		AccessKeyID: input.AccessKeyID, SecretAccessKey: input.SecretAccessKey, Random: application.random,
 	})
 	if err != nil {
 		return TargetResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
@@ -202,6 +207,13 @@ func (application *TargetApplication) SetTarget(ctx context.Context, input Targe
 		return TargetResult{}, err
 	}
 	timestamp := application.now()
+	targetID := input.ID
+	if targetID == "" {
+		targetID, err = id.NewWith(timestamp, application.random)
+		if err != nil {
+			return TargetResult{}, err
+		}
+	}
 	auditID, err := id.NewWith(timestamp, application.random)
 	if err != nil {
 		return TargetResult{}, err
@@ -212,9 +224,9 @@ func (application *TargetApplication) SetTarget(ctx context.Context, input Targe
 	}
 	stored, err := application.store.SetBackupTarget(ctx, state.SetBackupTarget{
 		Target: state.BackupTarget{
-			Endpoint: canonical.Endpoint, Region: canonical.Region, Bucket: canonical.Bucket,
-			Prefix: canonical.Prefix, AccessKeyID: canonical.AccessKeyID,
-			SecretAccessKeyEncrypted: encrypted,
+			ID: targetID, Name: strings.TrimSpace(input.Name), Endpoint: canonical.Endpoint,
+			Region: canonical.Region, Bucket: canonical.Bucket, Prefix: canonical.Prefix,
+			AccessKeyID: canonical.AccessKeyID, SecretAccessKeyEncrypted: encrypted,
 		},
 		AuditEventID: auditID, ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
 		ActorEmail: input.Actor.Email, RequestCorrelationID: requestID, UpdatedAtMillis: timestamp.UnixMilli(),
@@ -225,9 +237,34 @@ func (application *TargetApplication) SetTarget(ctx context.Context, input Targe
 	return TargetResult{Target: publicTarget(stored), RequestID: requestID}, nil
 }
 
-func (application *TargetApplication) DeleteTarget(ctx context.Context, actor Actor) (string, error) {
+func (application *TargetApplication) SetControlTarget(ctx context.Context, targetID string, actor Actor) (ControlTargetResult, error) {
 	if err := validateActor(actor); err != nil {
-		return "", err
+		return ControlTargetResult{}, err
+	}
+	release, acquired := application.gate.TryAcquire()
+	if !acquired {
+		return ControlTargetResult{}, ErrTargetBusy
+	}
+	defer release()
+	timestamp := application.now()
+	auditID, err := id.NewWith(timestamp, application.random)
+	if err != nil {
+		return ControlTargetResult{}, err
+	}
+	requestID, err := id.NewWith(timestamp, application.random)
+	if err != nil {
+		return ControlTargetResult{}, err
+	}
+	err = application.store.SetControlBackupTarget(ctx, state.SetControlBackupTarget{
+		TargetID: targetID, AuditEventID: auditID, ActorKind: actor.Kind, ActorID: actor.ID,
+		ActorEmail: actor.Email, RequestCorrelationID: requestID, UpdatedAtMillis: timestamp.UnixMilli(),
+	})
+	return ControlTargetResult{TargetID: targetID, RequestID: requestID}, err
+}
+
+func (application *TargetApplication) DeleteTarget(ctx context.Context, targetID string, actor Actor) (string, error) {
+	if targetID == "" || validateActor(actor) != nil {
+		return "", ErrInvalidInput
 	}
 	release, acquired := application.gate.TryAcquire()
 	if !acquired {
@@ -244,18 +281,16 @@ func (application *TargetApplication) DeleteTarget(ctx context.Context, actor Ac
 		return "", err
 	}
 	err = application.store.DeleteBackupTarget(ctx, state.DeleteBackupTarget{
-		AuditEventID: auditID, ActorKind: actor.Kind, ActorID: actor.ID, ActorEmail: actor.Email,
-		RequestCorrelationID: requestID, DeletedAtMillis: timestamp.UnixMilli(),
+		TargetID: targetID, AuditEventID: auditID, ActorKind: actor.Kind, ActorID: actor.ID,
+		ActorEmail: actor.Email, RequestCorrelationID: requestID, DeletedAtMillis: timestamp.UnixMilli(),
 	})
 	return requestID, err
 }
 
 func publicTarget(target state.BackupTarget) Target {
-	return Target{
-		Endpoint: target.Endpoint, Region: target.Region, Bucket: target.Bucket,
-		Prefix: target.Prefix, AccessKeyID: target.AccessKeyID,
-		CreatedAtMillis: target.CreatedAtMillis, UpdatedAtMillis: target.UpdatedAtMillis,
-	}
+	return Target{ID: target.ID, Name: target.Name, Endpoint: target.Endpoint, Region: target.Region,
+		Bucket: target.Bucket, Prefix: target.Prefix, AccessKeyID: target.AccessKeyID,
+		CreatedAtMillis: target.CreatedAtMillis, UpdatedAtMillis: target.UpdatedAtMillis}
 }
 
 func validateActor(actor Actor) error {
@@ -276,6 +311,8 @@ func SealTargetSecret(master cryptobox.MasterKey, installationID, secret string)
 	}
 	plaintext := []byte(secret)
 	defer clear(plaintext)
+	// Keep the installation-scoped AAD so the v9 singleton target can be
+	// migrated in SQL without ever decrypting its secret.
 	return box.Seal(plaintext, []byte(installationID+":backup-target-secret"))
 }
 

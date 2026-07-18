@@ -14,19 +14,21 @@ import (
 const maximumBackupTargetRequestBytes = 32 << 10
 
 type backupTargetResponse struct {
-	Configured  bool   `json:"configured"`
-	Endpoint    string `json:"endpoint,omitempty"`
-	Region      string `json:"region,omitempty"`
-	Bucket      string `json:"bucket,omitempty"`
-	Prefix      string `json:"prefix,omitempty"`
-	AccessKeyID string `json:"accessKeyId,omitempty"`
-	CreatedAt   int64  `json:"createdAt,omitempty"`
-	UpdatedAt   int64  `json:"updatedAt,omitempty"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Endpoint    string `json:"endpoint"`
+	Region      string `json:"region"`
+	Bucket      string `json:"bucket"`
+	Prefix      string `json:"prefix"`
+	AccessKeyID string `json:"accessKeyId"`
+	CreatedAt   int64  `json:"createdAt"`
+	UpdatedAt   int64  `json:"updatedAt"`
 }
 
 type backupPolicyResponse struct {
 	ResourceKind   string `json:"resourceKind"`
 	ResourceID     string `json:"resourceId"`
+	TargetID       string `json:"targetId,omitempty"`
 	Enabled        bool   `json:"enabled"`
 	Cron           string `json:"cron,omitempty"`
 	RetentionCount int    `json:"retentionCount"`
@@ -35,6 +37,7 @@ type backupPolicyResponse struct {
 
 type backupRecordResponse struct {
 	ID                  string `json:"id"`
+	TargetID            string `json:"targetId"`
 	ResourceKind        string `json:"resourceKind"`
 	ResourceID          string `json:"resourceId"`
 	ScheduledOccurrence *int64 `json:"scheduledOccurrence,omitempty"`
@@ -67,9 +70,11 @@ type operationResponse struct {
 }
 
 func registerBackupTargetRoutes(mux *http.ServeMux, application *backup.TargetApplication) {
-	mux.HandleFunc("GET /api/v1/backups/target", getBackupTarget(application))
-	mux.HandleFunc("PUT /api/v1/backups/target", setBackupTarget(application))
-	mux.HandleFunc("DELETE /api/v1/backups/target", deleteBackupTarget(application))
+	mux.HandleFunc("GET /api/v1/backups/targets", getBackupTargets(application))
+	mux.HandleFunc("POST /api/v1/backups/targets", setBackupTarget(application, false))
+	mux.HandleFunc("PUT /api/v1/backups/targets/{targetID}", setBackupTarget(application, true))
+	mux.HandleFunc("DELETE /api/v1/backups/targets/{targetID}", deleteBackupTarget(application))
+	mux.HandleFunc("PUT /api/v1/backups/control-target", setControlBackupTarget(application))
 }
 
 func registerBackupResourceRoutes(mux *http.ServeMux, application *backup.ResourceApplication) {
@@ -85,6 +90,7 @@ func registerBackupResourceRoutes(mux *http.ServeMux, application *backup.Resour
 
 func restoreBackupGeneration(application *backup.ResourceApplication) http.HandlerFunc {
 	type requestBody struct {
+		TargetID             string `json:"targetId"`
 		GenerationID         string `json:"generationId"`
 		Mode                 string `json:"mode"`
 		NewResourceName      string `json:"newResourceName"`
@@ -100,7 +106,7 @@ func restoreBackupGeneration(application *backup.ResourceApplication) http.Handl
 			return
 		}
 		operation, err := application.Restore(
-			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"), body.GenerationID,
+			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"), body.TargetID, body.GenerationID,
 			backup.ResourceRestoreOptions{
 				Mode: body.Mode, NewResourceName: body.NewResourceName,
 				DestructiveConfirmed: body.DestructiveConfirmed,
@@ -150,7 +156,7 @@ func getBackupGenerations(application *backup.ResourceApplication) http.HandlerF
 			return
 		}
 		generations, err := application.Generations(
-			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"),
+			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"), request.URL.Query().Get("targetId"),
 		)
 		if writeBackupResourceError(response, err) {
 			return
@@ -199,6 +205,7 @@ func getBackupPolicy(application *backup.ResourceApplication) http.HandlerFunc {
 
 func setBackupPolicy(application *backup.ResourceApplication) http.HandlerFunc {
 	type requestBody struct {
+		TargetID       string `json:"targetId"`
 		Enabled        bool   `json:"enabled"`
 		Cron           string `json:"cron"`
 		RetentionCount int    `json:"retentionCount"`
@@ -214,7 +221,7 @@ func setBackupPolicy(application *backup.ResourceApplication) http.HandlerFunc {
 		}
 		result, err := application.SetPolicy(request.Context(), backup.PolicyInput{
 			ResourceKind: request.PathValue("kind"), ResourceID: request.PathValue("resourceID"),
-			Enabled: body.Enabled, Cron: body.Cron, RetentionCount: body.RetentionCount,
+			TargetID: body.TargetID, Enabled: body.Enabled, Cron: body.Cron, RetentionCount: body.RetentionCount,
 			Actor: backup.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
 		})
 		if writeBackupResourceError(response, err) {
@@ -228,11 +235,18 @@ func setBackupPolicy(application *backup.ResourceApplication) http.HandlerFunc {
 }
 
 func runBackupNow(application *backup.ResourceApplication) http.HandlerFunc {
+	type requestBody struct {
+		TargetID string `json:"targetId"`
+	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := requireAccessIdentity(response, request); !ok {
 			return
 		}
-		record, err := application.RunNow(request.Context(), request.PathValue("kind"), request.PathValue("resourceID"))
+		var body requestBody
+		if !decodeBackupJSON(response, request, &body) {
+			return
+		}
+		record, err := application.RunNow(request.Context(), request.PathValue("kind"), request.PathValue("resourceID"), body.TargetID)
 		if writeBackupResourceError(response, err) {
 			return
 		}
@@ -261,7 +275,8 @@ func getBackupHistory(application *backup.ResourceApplication) http.HandlerFunc 
 			return
 		}
 		records, err := application.History(
-			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"), before, limit,
+			request.Context(), request.PathValue("kind"), request.PathValue("resourceID"),
+			request.URL.Query().Get("targetId"), before, limit,
 		)
 		if writeBackupResourceError(response, err) {
 			return
@@ -278,13 +293,13 @@ func publicBackupPolicy(status backup.PolicyStatus) backupPolicyResponse {
 	policy := status.Policy
 	return backupPolicyResponse{
 		ResourceKind: policy.ResourceKind, ResourceID: policy.ResourceID, Enabled: policy.Enabled,
-		Cron: policy.Cron, RetentionCount: policy.RetentionCount, NextRunAt: status.NextRunAtMillis,
+		TargetID: policy.TargetID, Cron: policy.Cron, RetentionCount: policy.RetentionCount, NextRunAt: status.NextRunAtMillis,
 	}
 }
 
 func publicBackupRecord(record state.BackupRecord) backupRecordResponse {
 	return backupRecordResponse{
-		ID: record.ID, ResourceKind: record.ResourceKind, ResourceID: record.ResourceID,
+		ID: record.ID, TargetID: record.TargetID, ResourceKind: record.ResourceKind, ResourceID: record.ResourceID,
 		ScheduledOccurrence: record.ScheduledOccurrenceMillis, GenerationID: record.GenerationID,
 		Status: record.Status, SizeBytes: record.SizeBytes, ErrorCode: record.ErrorCode,
 		ErrorMessage: record.ErrorMessage, StartedAt: record.StartedAtMillis, FinishedAt: record.FinishedAtMillis,
@@ -314,22 +329,32 @@ func writeBackupResourceError(response http.ResponseWriter, err error) bool {
 	return true
 }
 
-func getBackupTarget(application *backup.TargetApplication) http.HandlerFunc {
+func getBackupTargets(application *backup.TargetApplication) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := requireAccessIdentity(response, request); !ok {
 			return
 		}
-		target, configured, err := application.Target(request.Context())
+		targets, err := application.Targets(request.Context())
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load backup target")
 			return
 		}
-		writeJSON(response, http.StatusOK, publicBackupTarget(target, configured))
+		controlTargetID, err := application.ControlTargetID(request.Context())
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load disaster recovery storage")
+			return
+		}
+		result := make([]backupTargetResponse, len(targets))
+		for index := range targets {
+			result[index] = publicBackupTarget(targets[index])
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"targets": result, "controlTargetId": controlTargetID})
 	}
 }
 
-func setBackupTarget(application *backup.TargetApplication) http.HandlerFunc {
+func setBackupTarget(application *backup.TargetApplication, update bool) http.HandlerFunc {
 	type requestBody struct {
+		Name            string `json:"name"`
 		Endpoint        string `json:"endpoint"`
 		Region          string `json:"region"`
 		Bucket          string `json:"bucket"`
@@ -347,6 +372,12 @@ func setBackupTarget(application *backup.TargetApplication) http.HandlerFunc {
 			return
 		}
 		result, err := application.SetTarget(request.Context(), backup.TargetInput{
+			ID: func() string {
+				if update {
+					return request.PathValue("targetID")
+				}
+				return ""
+			}(), Name: body.Name,
 			Endpoint: body.Endpoint, Region: body.Region, Bucket: body.Bucket,
 			Prefix: body.Prefix, AccessKeyID: body.AccessKeyID, SecretAccessKey: body.SecretAccessKey,
 			Actor: backup.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
@@ -355,7 +386,7 @@ func setBackupTarget(application *backup.TargetApplication) http.HandlerFunc {
 			return
 		}
 		response.Header().Set("X-Request-ID", result.RequestID)
-		writeJSON(response, http.StatusOK, publicBackupTarget(result.Target, true))
+		writeJSON(response, http.StatusOK, publicBackupTarget(result.Target))
 	}
 }
 
@@ -365,7 +396,7 @@ func deleteBackupTarget(application *backup.TargetApplication) http.HandlerFunc 
 		if !ok {
 			return
 		}
-		requestID, err := application.DeleteTarget(request.Context(), backup.Actor{
+		requestID, err := application.DeleteTarget(request.Context(), request.PathValue("targetID"), backup.Actor{
 			Kind: "access", ID: identity.Subject, Email: identity.Email,
 		})
 		if writeBackupTargetError(response, err) {
@@ -373,6 +404,30 @@ func deleteBackupTarget(application *backup.TargetApplication) http.HandlerFunc 
 		}
 		response.Header().Set("X-Request-ID", requestID)
 		response.WriteHeader(http.StatusNoContent)
+	}
+}
+
+func setControlBackupTarget(application *backup.TargetApplication) http.HandlerFunc {
+	type requestBody struct {
+		TargetID string `json:"targetId"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		var body requestBody
+		if !decodeBackupJSON(response, request, &body) {
+			return
+		}
+		result, err := application.SetControlTarget(request.Context(), body.TargetID, backup.Actor{
+			Kind: "access", ID: identity.Subject, Email: identity.Email,
+		})
+		if writeBackupTargetError(response, err) {
+			return
+		}
+		response.Header().Set("X-Request-ID", result.RequestID)
+		writeJSON(response, http.StatusOK, map[string]string{"targetId": result.TargetID})
 	}
 }
 
@@ -405,15 +460,17 @@ func writeBackupTargetError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusBadRequest, "invalid_backup_target", err.Error())
 	case errors.Is(err, state.ErrBackupTargetNotFound):
 		writeAPIError(response, http.StatusNotFound, "backup_target_not_found", "Backup target is not configured")
+	case errors.Is(err, state.ErrBackupTargetInUse):
+		writeAPIError(response, http.StatusConflict, "backup_target_in_use", "Backup storage is selected by a policy or disaster recovery")
 	default:
 		writeAPIError(response, http.StatusUnprocessableEntity, "backup_target_probe_failed", err.Error())
 	}
 	return true
 }
 
-func publicBackupTarget(target backup.Target, configured bool) backupTargetResponse {
+func publicBackupTarget(target backup.Target) backupTargetResponse {
 	return backupTargetResponse{
-		Configured: configured, Endpoint: target.Endpoint, Region: target.Region,
+		ID: target.ID, Name: target.Name, Endpoint: target.Endpoint, Region: target.Region,
 		Bucket: target.Bucket, Prefix: target.Prefix, AccessKeyID: target.AccessKeyID,
 		CreatedAt: target.CreatedAtMillis, UpdatedAt: target.UpdatedAtMillis,
 	}

@@ -18,6 +18,7 @@ import {
 } from "@/api";
 import type { ProjectCanvas, Service, ServiceDomain } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import {
   VariableNameCombobox,
   VariableValueCombobox,
@@ -184,7 +185,7 @@ export const ServiceVariables = ({
   }
 
   return (
-    <section className="border-b border-border">
+    <SectionCard>
       <header className="flex min-h-16 items-center justify-between gap-4 bg-muted/25 px-5 py-3">
         <div>
           <h3 className="text-[10px] font-medium">
@@ -319,6 +320,6 @@ export const ServiceVariables = ({
           </Button>
         )}
       </footer>
-    </section>
+    </SectionCard>
   );
 };

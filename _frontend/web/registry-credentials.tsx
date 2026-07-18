@@ -10,6 +10,13 @@ import {
 import type { RegistryCredential } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 const errorText = (error: unknown) =>
   error instanceof Error
@@ -122,17 +129,24 @@ export const RegistryCredentials = ({
             placeholder="ci-publisher"
             value={name}
           />
-          <select
-            aria-label="Robot credential permission"
-            className="h-8 border border-input bg-background px-2 text-[10px] outline-none focus:border-ring"
-            onChange={(event) =>
-              setPermission(event.target.value as "pull" | "pull_push")
+          <Select
+            items={{ pull: "Pull only", pull_push: "Pull + push" }}
+            onValueChange={(value) =>
+              setPermission(String(value) as "pull" | "pull_push")
             }
             value={permission}
           >
-            <option value="pull_push">Pull + push</option>
-            <option value="pull">Pull only</option>
-          </select>
+            <SelectTrigger
+              aria-label="Robot credential permission"
+              className="h-8 w-full text-[10px]"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start">
+              <SelectItem value="pull_push">Pull + push</SelectItem>
+              <SelectItem value="pull">Pull only</SelectItem>
+            </SelectContent>
+          </Select>
           <div className="flex gap-1">
             <Button
               onClick={() => setCreating(false)}

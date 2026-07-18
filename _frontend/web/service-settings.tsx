@@ -1,4 +1,4 @@
-import { Network, Save, Trash2 } from "lucide-react";
+import { Network, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import type {
@@ -9,22 +9,20 @@ import type {
   Volume,
 } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import {
-  parseServiceConfiguration,
-  ServiceConfiguration,
-  serviceConfigurationDraft,
-} from "@/service-configuration";
-import type { ServiceConfigurationValues } from "@/service-configuration";
+import { ServiceConfiguration } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
-import { serviceListenerKey, ServiceListeners } from "@/service-listeners";
+import { ServiceListeners } from "@/service-listeners";
+import {
+  createPendingServiceSettings,
+  createServiceSettingsDraft,
+} from "@/service-settings-model";
+import type {
+  PendingServiceSettings,
+  ServiceSettingsDraft,
+} from "@/service-settings-model";
 import { ServiceVolumes } from "@/service-volumes";
-
-export interface ServiceSettingsValues extends ServiceConfigurationValues {
-  domains: ServiceDomain[];
-  listeners: ServiceListener[];
-  volumeMounts: Service["volumeMounts"];
-}
 
 interface ServiceSettingsProperties {
   actionError: string | null;
@@ -36,10 +34,9 @@ interface ServiceSettingsProperties {
   listeners: ServiceListener[];
   onCredentialCreated: (credential: ImageCredential) => void;
   onDelete: () => Promise<boolean>;
-  onDomainsChange: (domains: ServiceDomain[]) => void;
-  onListenersChange: (listeners: ServiceListener[]) => void;
-  onSave: (values: ServiceSettingsValues) => Promise<boolean>;
+  onDraftChange: (change?: PendingServiceSettings) => void;
   onVolumesChange: (volumes: Volume[]) => void;
+  pendingChange?: PendingServiceSettings;
   projectID: string;
   service: Service;
   serviceID: string;
@@ -56,115 +53,63 @@ export const ServiceSettings = ({
   listeners,
   onCredentialCreated,
   onDelete,
-  onDomainsChange,
-  onListenersChange,
-  onSave,
+  onDraftChange,
   onVolumesChange,
+  pendingChange,
   projectID,
   service,
   serviceID,
   volumes,
 }: ServiceSettingsProperties) => {
-  const [configuration, setConfiguration] = useState(() =>
-    serviceConfigurationDraft(service)
-  );
-  const [volumeMounts, setVolumeMounts] = useState(service.volumeMounts);
-  const [domainPorts, setDomainPorts] = useState<Record<string, number>>(() =>
-    Object.fromEntries(
-      domains.map((domain) => [domain.hostname, domain.targetPort])
-    )
-  );
-  const [listenerPorts, setListenerPorts] = useState<Record<string, number>>(
+  const [draft, setDraft] = useState<ServiceSettingsDraft>(
     () =>
-      Object.fromEntries(
-        listeners.map((listener) => [
-          serviceListenerKey(listener),
-          listener.targetPort,
-        ])
-      )
+      pendingChange?.draft ??
+      createServiceSettingsDraft(service, domains, listeners, volumes)
   );
-  const [error, setError] = useState<string>();
   const [deleting, setDeleting] = useState(false);
   const [confirmation, setConfirmation] = useState("");
 
-  const changedDomains = domains.map((domain) => ({
-    ...domain,
-    targetPort: domainPorts[domain.hostname] ?? domain.targetPort,
-  }));
-  const changedListeners = listeners.map((listener) => ({
-    ...listener,
-    targetPort:
-      listenerPorts[serviceListenerKey(listener)] ?? listener.targetPort,
-  }));
-
-  const save = async () => {
-    try {
-      const saved = await onSave({
-        ...parseServiceConfiguration(
-          configuration,
-          credentials,
-          embeddedRegistryHost
-        ),
-        domains: changedDomains,
-        listeners: changedListeners,
-        volumeMounts,
-      });
-      if (saved) {
-        setError(undefined);
-      }
-    } catch (saveError) {
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Invalid service settings"
-      );
-    }
-  };
-
-  const updateDomains = (next: ServiceDomain[]) => {
-    setDomainPorts((current) =>
-      Object.fromEntries(
-        next.map((domain) => [
-          domain.hostname,
-          current[domain.hostname] ?? domain.targetPort,
-        ])
-      )
+  const updateDraft = (next: ServiceSettingsDraft) => {
+    setDraft(next);
+    onDraftChange(
+      createPendingServiceSettings({
+        current: pendingChange,
+        domains,
+        draft: next,
+        listeners,
+        service,
+        volumes,
+      })
     );
-    onDomainsChange(next);
-  };
-
-  const updateListeners = (next: ServiceListener[]) => {
-    setListenerPorts((current) =>
-      Object.fromEntries(
-        next.map((listener) => {
-          const key = serviceListenerKey(listener);
-          return [key, current[key] ?? listener.targetPort];
-        })
-      )
-    );
-    onListenersChange(next);
   };
 
   return (
-    <div>
+    <div className="grid gap-3">
       <ServiceConfiguration
         credentials={credentials}
-        draft={configuration}
+        draft={draft.configuration}
         embeddedRegistryHost={embeddedRegistryHost}
         onCredentialCreated={onCredentialCreated}
-        onDraftChange={setConfiguration}
+        onDraftChange={(configuration) =>
+          updateDraft({ ...draft, configuration })
+        }
         projectID={projectID}
       />
       <ServiceVolumes
-        mounts={volumeMounts}
-        onMountsChange={setVolumeMounts}
-        onVolumesChange={onVolumesChange}
+        mounts={draft.volumeMounts}
+        onMountsChange={(volumeMounts) =>
+          updateDraft({ ...draft, volumeMounts })
+        }
+        onPersistedVolumesChange={onVolumesChange}
+        onVolumesChange={(nextVolumes) =>
+          updateDraft({ ...draft, volumes: nextVolumes })
+        }
         projectID={projectID}
         serviceID={serviceID}
-        volumes={volumes}
+        volumes={draft.volumes}
       />
 
-      <section className="grid border-b border-border lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
         <div className="px-5 py-4">
           <h3 className="flex items-center gap-2 text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
             <Network className="size-3" /> Private network
@@ -184,46 +129,24 @@ export const ServiceSettings = ({
             </code>
           </div>
         </div>
-      </section>
+      </SectionCard>
 
       <ServiceDomains
-        domains={domains}
-        onChanged={updateDomains}
-        onPortDraftChange={(hostname, port) =>
-          setDomainPorts((current) => ({ ...current, [hostname]: port }))
+        disabled={busy}
+        domains={draft.domains}
+        onChanged={(nextDomains) =>
+          updateDraft({ ...draft, domains: nextDomains })
         }
-        portDrafts={domainPorts}
-        projectID={projectID}
-        serviceID={serviceID}
       />
       <ServiceListeners
-        listeners={listeners}
-        onChanged={updateListeners}
-        onPortDraftChange={(key, port) =>
-          setListenerPorts((current) => ({ ...current, [key]: port }))
+        disabled={busy}
+        listeners={draft.listeners}
+        onChanged={(nextListeners) =>
+          updateDraft({ ...draft, listeners: nextListeners })
         }
-        portDrafts={listenerPorts}
-        projectID={projectID}
-        serviceID={serviceID}
       />
 
-      <div className="flex items-center justify-end gap-3 border-b border-border px-5 py-3">
-        {error || actionError ? (
-          <p className="mr-auto text-[10px] text-destructive">
-            {error ?? actionError}
-          </p>
-        ) : null}
-        <Button
-          disabled={busy || configuration.imageReference.trim() === ""}
-          onClick={() => void save()}
-          type="button"
-        >
-          <Save />
-          {busy ? "Saving…" : "Save settings"}
-        </Button>
-      </div>
-
-      <section className="grid border-b border-border lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
         <div className="px-5 py-4">
           <h3 className="text-[9px] tracking-[0.13em] text-destructive uppercase">
             Delete service
@@ -234,6 +157,9 @@ export const ServiceSettings = ({
           </p>
         </div>
         <div className="border-t border-border px-5 py-4 lg:border-t-0 lg:border-l">
+          {actionError ? (
+            <p className="mb-3 text-[10px] text-destructive">{actionError}</p>
+          ) : null}
           {deleting ? (
             <div className="max-w-lg">
               <p className="text-[10px] leading-4 text-destructive">
@@ -278,7 +204,7 @@ export const ServiceSettings = ({
             </Button>
           )}
         </div>
-      </section>
+      </SectionCard>
     </div>
   );
 };

@@ -42,6 +42,7 @@ func (repository *liveRecoveryRepository) RecoveryStatus(ctx context.Context) (s
 	appendResources("object_store", resources.ObjectStores)
 	appendResources("postgres", resources.Postgres)
 	appendResources("redis", resources.Redis)
+	appendResources("volume", resources.Volumes)
 	return status, nil
 }
 

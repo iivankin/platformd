@@ -4,6 +4,7 @@ import type { FormEvent } from "react";
 
 import { createObjectStore } from "@/api";
 import type { ObjectStore } from "@/api";
+import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { objectStoreConfiguration } from "@/connection-values";
@@ -134,13 +135,12 @@ export const ObjectStoreCreatePanel = ({
             label="Public hostname · optional"
             name="object-store-host"
           >
-            <Input
-              autoCapitalize="none"
-              autoComplete="off"
+            <CertificateHostnameCombobox
+              ariaLabel="Object storage public hostname"
+              disabled={saving}
               id="object-store-host"
-              onChange={(event) => setPublicHostname(event.target.value)}
+              onChange={setPublicHostname}
               placeholder="objects.example.com"
-              spellCheck={false}
               value={publicHostname}
             />
             <p className="mt-1.5 text-[9px] leading-4 text-muted-foreground">

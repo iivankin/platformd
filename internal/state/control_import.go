@@ -23,7 +23,7 @@ func (store *Store) ImportControl(ctx context.Context, input ControlImport) erro
 	target := input.Target
 	if input.ExpectedInstallationID == "" || input.AuditEventID == "" || input.ImportedAtMillis <= 0 ||
 		(input.AccessTeamDomain == nil) != (input.AccessAudience == nil) ||
-		target.Endpoint == "" || target.Region == "" || target.Bucket == "" || target.AccessKeyID == "" ||
+		target.ID == "" || target.Endpoint == "" || target.Region == "" || target.Bucket == "" || target.AccessKeyID == "" ||
 		len(target.SecretAccessKeyEncrypted) == 0 {
 		return errors.New("control import input is incomplete")
 	}
@@ -66,28 +66,23 @@ FROM installation WHERE singleton = 1`).Scan(&installationID, &teamDomain, &audi
 		}
 		if _, err := transaction.ExecContext(ctx, `
 UPDATE installation
-SET access_team_domain = ?, access_audience = ?, recovery_mode = 1, updated_at = ?
-WHERE singleton = 1`, teamDomain, audience, input.ImportedAtMillis); err != nil {
+SET access_team_domain = ?, access_audience = ?, backup_control_target_id = ?, recovery_mode = 1, updated_at = ?
+WHERE singleton = 1`, teamDomain, audience, target.ID, input.ImportedAtMillis); err != nil {
 			return fmt.Errorf("enter recovery mode: %w", err)
 		}
-		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO backup_target(
-  singleton, endpoint, region, bucket, prefix, access_key_id,
-  secret_access_key_encrypted, created_at, updated_at
-) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(singleton) DO UPDATE SET
-  endpoint = excluded.endpoint,
-  region = excluded.region,
-  bucket = excluded.bucket,
-  prefix = excluded.prefix,
-  access_key_id = excluded.access_key_id,
-  secret_access_key_encrypted = excluded.secret_access_key_encrypted,
-  created_at = excluded.created_at,
-  updated_at = excluded.updated_at`,
-			target.Endpoint, target.Region, target.Bucket, target.Prefix, target.AccessKeyID,
-			target.SecretAccessKeyEncrypted, input.ImportedAtMillis, input.ImportedAtMillis,
-		); err != nil {
-			return fmt.Errorf("replace restored backup target: %w", err)
+		result, err := transaction.ExecContext(ctx, `
+UPDATE backup_targets
+SET access_key_id = ?, secret_access_key_encrypted = ?, updated_at = ?
+WHERE id = ? AND endpoint = ? AND region = ? AND bucket = ? AND prefix = ?`,
+			target.AccessKeyID, target.SecretAccessKeyEncrypted, input.ImportedAtMillis, target.ID,
+			target.Endpoint, target.Region, target.Bucket, target.Prefix,
+		)
+		if err != nil {
+			return fmt.Errorf("refresh restored backup target credentials: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil || changed != 1 {
+			return errors.New("recovery storage is absent from the restored control snapshot")
 		}
 		metadata, err := json.Marshal(map[string]string{
 			"endpoint": target.Endpoint, "region": target.Region,

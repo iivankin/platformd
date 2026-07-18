@@ -1,3 +1,10 @@
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import type { RedisInputEncoding } from "@/redis-data-utils";
 
 interface RedisBinaryInputProperties {
@@ -24,17 +31,24 @@ export const RedisBinaryInput = ({
     <label className="mb-3 block" htmlFor={id}>
       <span className="mb-1.5 flex items-center justify-between gap-3 text-[9px] tracking-[0.1em] text-muted-foreground uppercase">
         {label}
-        <select
-          aria-label={`${label} encoding`}
-          className="border-0 bg-transparent text-[9px] tracking-normal text-muted-foreground normal-case outline-none"
-          onChange={(event) =>
-            onEncodingChange(event.target.value as RedisInputEncoding)
+        <Select
+          items={{ base64url: "Base64url", text: "Text" }}
+          onValueChange={(selected) =>
+            onEncodingChange(String(selected) as RedisInputEncoding)
           }
           value={encoding}
         >
-          <option value="text">Text</option>
-          <option value="base64url">Base64url</option>
-        </select>
+          <SelectTrigger
+            aria-label={`${label} encoding`}
+            className="h-6 border-0 bg-transparent px-1 text-[9px] tracking-normal text-muted-foreground normal-case"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            <SelectItem value="text">Text</SelectItem>
+            <SelectItem value="base64url">Base64url</SelectItem>
+          </SelectContent>
+        </Select>
       </span>
       {multiline ? (
         <textarea

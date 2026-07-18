@@ -144,11 +144,18 @@ func TestRecoveryAttemptCompletesEmptyInstallationAndReleasesGates(t *testing.T)
 	}
 	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
 		Target: state.BackupTarget{
+			ID: "target", Name: "Primary",
 			Endpoint: "https://s3.example.com", Region: "us-east-1", Bucket: "backups",
 			AccessKeyID: "access", SecretAccessKeyEncrypted: sealed,
 		},
 		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
 		ActorEmail: "admin@example.com", UpdatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetControlBackupTarget(ctx, state.SetControlBackupTarget{
+		TargetID: "target", AuditEventID: "control-target-audit", ActorKind: "access",
+		ActorID: "user", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
 	}); err != nil {
 		t.Fatal(err)
 	}

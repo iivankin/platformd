@@ -1,45 +1,45 @@
 import { Network, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
-import { APIError, attachServiceListener, detachServiceListener } from "@/api";
-import type { ServiceListener } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type { ServiceListenerDraft } from "@/service-settings-model";
+import { serviceListenerDraftKey } from "@/service-settings-model";
 
 interface ServiceListenersProperties {
-  listeners: ServiceListener[];
-  onChanged: (listeners: ServiceListener[]) => void;
-  onPortDraftChange: (key: string, port: number) => void;
-  portDrafts: Record<string, number>;
-  projectID: string;
-  serviceID: string;
+  disabled?: boolean;
+  listeners: ServiceListenerDraft[];
+  onChanged: (listeners: ServiceListenerDraft[]) => void;
 }
 
 const validPort = (port: number) =>
   Number.isInteger(port) && port >= 1 && port <= 65_535;
-export const serviceListenerKey = (
-  listener: Pick<ServiceListener, "protocol" | "publicPort">
-) => `${listener.protocol}:${listener.publicPort}`;
-
 export const ServiceListeners = ({
+  disabled = false,
   listeners,
   onChanged,
-  onPortDraftChange,
-  portDrafts,
-  projectID,
-  serviceID,
 }: ServiceListenersProperties) => {
-  const [protocol, setProtocol] = useState<ServiceListener["protocol"]>("tcp");
+  const [protocol, setProtocol] =
+    useState<ServiceListenerDraft["protocol"]>("tcp");
   const [publicPort, setPublicPort] = useState(0);
   const [targetPort, setTargetPort] = useState(0);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
-  const commit = (listener: ServiceListener) => {
-    const key = serviceListenerKey(listener);
+  const commit = (listener: ServiceListenerDraft) => {
+    const key = serviceListenerDraftKey(listener);
     onChanged(
       [
-        ...listeners.filter((current) => serviceListenerKey(current) !== key),
+        ...listeners.filter(
+          (current) => serviceListenerDraftKey(current) !== key
+        ),
         listener,
       ].toSorted(
         (left, right) =>
@@ -47,81 +47,36 @@ export const ServiceListeners = ({
           left.protocol.localeCompare(right.protocol)
       )
     );
-    onPortDraftChange(key, listener.targetPort);
   };
 
-  const attach = async (input: {
-    protocol: ServiceListener["protocol"];
+  const add = (input: {
+    protocol: ServiceListenerDraft["protocol"];
     publicPort: number;
     targetPort: number;
   }) => {
-    if (busy || !validPort(input.publicPort) || !validPort(input.targetPort)) {
+    if (
+      disabled ||
+      !validPort(input.publicPort) ||
+      !validPort(input.targetPort)
+    ) {
       return;
     }
-    setBusy(true);
     setError(undefined);
-    try {
-      commit(await attachServiceListener(projectID, serviceID, input));
-      setPublicPort(0);
-      setTargetPort(0);
-    } catch (attachError) {
-      if (
-        attachError instanceof APIError &&
-        attachError.code === "listener_conflict" &&
-        attachError.listener
-      ) {
-        const owner = attachError.listener;
-        setError(
-          `Public ${owner.protocol.toUpperCase()} port ${owner.publicPort} is used by ${owner.serviceName ?? "another service"}${owner.projectName ? ` in ${owner.projectName}` : ""}.`
-        );
-      } else {
-        setError(
-          attachError instanceof Error
-            ? attachError.message
-            : "Unable to attach listener"
-        );
-      }
-    } finally {
-      setBusy(false);
-    }
+    commit(input);
+    setPublicPort(0);
+    setTargetPort(0);
   };
 
-  const remove = async (listener: ServiceListener) => {
-    if (busy) {
-      return;
-    }
-    setBusy(true);
-    setError(undefined);
-    try {
-      await detachServiceListener(
-        projectID,
-        serviceID,
-        listener.protocol,
-        listener.publicPort
-      );
-      onChanged(
-        listeners.filter(
-          (current) =>
-            serviceListenerKey(current) !== serviceListenerKey(listener)
-        )
-      );
-    } catch (removeError) {
-      setError(
-        removeError instanceof Error
-          ? removeError.message
-          : "Unable to remove listener"
-      );
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const submit = () => {
-    void attach({ protocol, publicPort, targetPort });
-  };
+  const remove = (listener: ServiceListenerDraft) =>
+    onChanged(
+      listeners.filter(
+        (current) =>
+          serviceListenerDraftKey(current) !== serviceListenerDraftKey(listener)
+      )
+    );
 
   return (
-    <section className="border-b border-border">
+    <SectionCard>
       <header className="flex min-h-14 items-center justify-between gap-4 bg-muted/25 px-5 py-3">
         <div>
           <h3 className="text-[10px] font-medium">TCP / UDP listeners</h3>
@@ -135,8 +90,7 @@ export const ServiceListeners = ({
       {listeners.length ? (
         <div className="border-t border-border">
           {listeners.map((listener) => {
-            const key = serviceListenerKey(listener);
-            const draft = portDrafts[key] ?? listener.targetPort;
+            const key = serviceListenerDraftKey(listener);
             return (
               <div
                 className="grid min-h-12 grid-cols-[4rem_minmax(0,1fr)_8rem_2.5rem] items-center border-b border-border px-5 last:border-b-0"
@@ -151,19 +105,22 @@ export const ServiceListeners = ({
                 <Input
                   aria-label={`Container port for ${listener.protocol} ${listener.publicPort}`}
                   className="h-7 px-2 text-[9px]"
-                  disabled={busy}
+                  disabled={disabled}
                   max={65_535}
                   min={1}
                   onChange={(event) =>
-                    onPortDraftChange(key, Number(event.target.value))
+                    commit({
+                      ...listener,
+                      targetPort: Number(event.target.value),
+                    })
                   }
                   type="number"
-                  value={draft}
+                  value={listener.targetPort}
                 />
                 <Button
                   aria-label={`Remove ${listener.protocol} ${listener.publicPort}`}
-                  disabled={busy}
-                  onClick={() => void remove(listener)}
+                  disabled={disabled}
+                  onClick={() => remove(listener)}
                   size="icon"
                   variant="ghost"
                 >
@@ -180,21 +137,28 @@ export const ServiceListeners = ({
       )}
 
       <div className="grid grid-cols-[6rem_8rem_8rem_auto] gap-2 bg-muted/10 px-5 py-3">
-        <select
-          aria-label="Listener protocol"
-          className="h-8 border border-input bg-transparent px-2 text-[10px] text-foreground outline-none focus:border-ring"
-          disabled={busy}
-          onChange={(event) =>
-            setProtocol(event.target.value as ServiceListener["protocol"])
+        <Select
+          disabled={disabled}
+          items={{ tcp: "TCP", udp: "UDP" }}
+          onValueChange={(value) =>
+            setProtocol(String(value) as ServiceListenerDraft["protocol"])
           }
           value={protocol}
         >
-          <option value="tcp">TCP</option>
-          <option value="udp">UDP</option>
-        </select>
+          <SelectTrigger
+            aria-label="Listener protocol"
+            className="h-8 w-full text-[10px]"
+          >
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="start">
+            <SelectItem value="tcp">TCP</SelectItem>
+            <SelectItem value="udp">UDP</SelectItem>
+          </SelectContent>
+        </Select>
         <Input
           aria-label="Public VPS port"
-          disabled={busy}
+          disabled={disabled}
           max={65_535}
           min={1}
           onChange={(event) => setPublicPort(Number(event.target.value))}
@@ -204,7 +168,7 @@ export const ServiceListeners = ({
         />
         <Input
           aria-label="Listener container port"
-          disabled={busy}
+          disabled={disabled}
           max={65_535}
           min={1}
           onChange={(event) => setTargetPort(Number(event.target.value))}
@@ -213,8 +177,10 @@ export const ServiceListeners = ({
           value={targetPort || ""}
         />
         <Button
-          disabled={busy || !validPort(publicPort) || !validPort(targetPort)}
-          onClick={submit}
+          disabled={
+            disabled || !validPort(publicPort) || !validPort(targetPort)
+          }
+          onClick={() => add({ protocol, publicPort, targetPort })}
           size="sm"
           type="button"
         >
@@ -229,6 +195,6 @@ export const ServiceListeners = ({
           {error}
         </p>
       ) : null}
-    </section>
+    </SectionCard>
   );
 };

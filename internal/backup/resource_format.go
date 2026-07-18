@@ -326,7 +326,7 @@ func validateResourceCompletion(completion ResourceCompletion) error {
 
 func validBackupResourceKind(value string) bool {
 	switch value {
-	case "registry", "object_store", "postgres", "redis":
+	case "registry", "object_store", "postgres", "redis", "volume":
 		return true
 	default:
 		return false

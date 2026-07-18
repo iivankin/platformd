@@ -10,6 +10,7 @@ import {
   attachServiceDomain,
   attachServiceListener,
   createAPIToken,
+  createBackupTarget,
   createObjectStore,
   createManagedRedis,
   createProject,
@@ -35,7 +36,7 @@ import {
   fetchBackupHistory,
   fetchBackupPolicy,
   fetchBackupPolicies,
-  fetchBackupTarget,
+  fetchBackupTargets,
   fetchBackupGenerations,
   fetchService,
   fetchServiceDeployment,
@@ -57,6 +58,7 @@ import {
   startDatabaseVersionChange,
   fetchDatabaseVersionOperation,
   fetchManagedPostgres,
+  fetchManagedPostgresExtensions,
   fetchManagedRedis,
   fetchManagedRedisPersistence,
   fetchMeta,
@@ -86,7 +88,7 @@ import {
   scanManagedRedisKeys,
   setRegistryHostname,
   setRegistryRepositoryPublicPull,
-  setBackupTarget,
+  setManagedPostgresExtension,
   setBackupPolicy,
   restoreBackupGeneration,
   retryRecovery,
@@ -141,13 +143,52 @@ test("returns validated control-plane metadata", async () => {
 });
 
 test("returns the validated Cloudflare Access identity", async () => {
+  const requested: string[] = [];
   await expect(
-    fetchIdentity(undefined, () =>
+    fetchIdentity(undefined, (input) => {
+      requested.push(input.toString());
+      return Promise.resolve(
+        input === "/api/v1/me"
+          ? Response.json({
+              email: "admin@example.com",
+              subject: "access-user",
+            })
+          : Response.json({
+              avatar_url: "https://avatars.githubusercontent.com/u/1?v=4",
+              email: "admin@example.com",
+              name: "Admin Example",
+            })
+      );
+    })
+  ).resolves.toEqual({
+    avatarUrl: "https://avatars.githubusercontent.com/u/1?v=4",
+    email: "admin@example.com",
+    name: "Admin Example",
+    subject: "access-user",
+  });
+  expect(requested).toEqual(["/api/v1/me", "/cdn-cgi/access/get-identity"]);
+});
+
+test("does not load an Access profile image from an untrusted host", async () => {
+  await expect(
+    fetchIdentity(undefined, (input) =>
       Promise.resolve(
-        Response.json({ email: "admin@example.com", subject: "access-user" })
+        input === "/api/v1/me"
+          ? Response.json({
+              email: "admin@example.com",
+              subject: "access-user",
+            })
+          : Response.json({
+              name: "Admin Example",
+              picture: "https://tracking.example/avatar.png",
+            })
       )
     )
-  ).resolves.toEqual({ email: "admin@example.com", subject: "access-user" });
+  ).resolves.toEqual({
+    email: "admin@example.com",
+    name: "Admin Example",
+    subject: "access-user",
+  });
 });
 
 const project = {
@@ -224,6 +265,7 @@ test("validates the project canvas and encodes its project ID", async () => {
               kind: "service",
               name: "api",
               status: "running",
+              volumes: [],
             },
           ],
         })
@@ -1102,6 +1144,75 @@ test("creates PostgreSQL and runs bounded SQL only through the admin client", as
   );
   expect(result.statements[0]?.commandTag).toBe("DELETE 2");
   expect(result.statements[1]?.rows[0]?.[0]?.text).toBe("1");
+
+  const extensions = [
+    {
+      comment: "Foreign-data wrapper for flat file access",
+      defaultVersion: "1.0",
+      name: "file_fdw",
+    },
+  ];
+  await expect(
+    fetchManagedPostgresExtensions(
+      resource.projectId,
+      resource.id,
+      undefined,
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/extensions"
+        );
+        expect(init?.method).toBeUndefined();
+        return Promise.resolve(Response.json({ extensions }));
+      }
+    )
+  ).resolves.toEqual(extensions);
+
+  const extensionPath =
+    "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/extensions/uuid-ossp";
+  const extensionOperation = {
+    id: "operation-extension",
+    kind: "postgres_extension_install",
+    progress: "queued",
+    startedAt: 10,
+    status: "running",
+    targetId: resource.id,
+  } as const;
+  await expect(
+    setManagedPostgresExtension(
+      resource.projectId,
+      resource.id,
+      "uuid-ossp",
+      true,
+      (input, init) => {
+        expect(input.toString()).toBe(extensionPath);
+        expect(init?.method).toBe("PUT");
+        return Promise.resolve(
+          Response.json(extensionOperation, { status: 202 })
+        );
+      }
+    )
+  ).resolves.toEqual(extensionOperation);
+  await expect(
+    setManagedPostgresExtension(
+      resource.projectId,
+      resource.id,
+      "uuid-ossp",
+      false,
+      (input, init) => {
+        expect(input.toString()).toBe(extensionPath);
+        expect(init?.method).toBe("DELETE");
+        return Promise.resolve(
+          Response.json(
+            { ...extensionOperation, kind: "postgres_extension_uninstall" },
+            { status: 202 }
+          )
+        );
+      }
+    )
+  ).resolves.toEqual({
+    ...extensionOperation,
+    kind: "postgres_extension_uninstall",
+  });
 });
 
 test("uses the Access-only object storage browser contract", async () => {
@@ -1541,28 +1652,34 @@ test("uses the Registry settings, repository, image, and deletion contracts", as
   ).resolves.toMatchObject({ blobCount: 1, deleted: false });
 });
 
-test("configures the single probed backup target without returning its secret", async () => {
+test("configures named probed backup targets without returning secrets", async () => {
   const target = {
     accessKeyId: "remote-access",
     bucket: "backup-bucket",
-    configured: true,
     createdAt: 1,
     endpoint: "https://s3.example.com",
+    id: "target-1",
+    name: "Off-site EU",
     prefix: "platformd/test",
     region: "eu-central-003",
     updatedAt: 1,
   };
   await expect(
-    fetchBackupTarget(undefined, () => Promise.resolve(Response.json(target)))
-  ).resolves.toEqual(target);
+    fetchBackupTargets(undefined, () =>
+      Promise.resolve(
+        Response.json({ controlTargetId: target.id, targets: [target] })
+      )
+    )
+  ).resolves.toEqual({ controlTargetId: target.id, targets: [target] });
 
   let requestBody = "";
   await expect(
-    setBackupTarget(
+    createBackupTarget(
       {
         accessKeyId: target.accessKeyId,
         bucket: target.bucket,
         endpoint: target.endpoint,
+        name: target.name,
         prefix: target.prefix,
         region: target.region,
         secretAccessKey: "remote-secret",
@@ -1577,7 +1694,7 @@ test("configures the single probed backup target without returning its secret", 
     secretAccessKey: "remote-secret",
   });
 
-  await deleteBackupTarget((_input, init) => {
+  await deleteBackupTarget(target.id, (_input, init) => {
     expect(init?.method).toBe("DELETE");
     return Promise.resolve(new Response(null, { status: 204 }));
   });
@@ -1591,6 +1708,7 @@ test("manages one exact resource backup policy and run history", async () => {
     resourceId: "database/one",
     resourceKind: "postgres" as const,
     retentionCount: 7,
+    targetId: "target-1",
   };
   await expect(
     fetchBackupPolicies(undefined, (input) => {
@@ -1621,6 +1739,7 @@ test("manages one exact resource backup policy and run history", async () => {
         cron: policy.cron,
         enabled: policy.enabled,
         retentionCount: policy.retentionCount,
+        targetId: policy.targetId,
       },
       (input, init) => {
         expect(input.toString()).toBe(
@@ -1635,6 +1754,7 @@ test("manages one exact resource backup policy and run history", async () => {
     cron: policy.cron,
     enabled: true,
     retentionCount: 7,
+    targetId: policy.targetId,
   });
 
   const record = {
@@ -1643,24 +1763,31 @@ test("manages one exact resource backup policy and run history", async () => {
     resourceKind: policy.resourceKind,
     startedAt: 43,
     status: "running" as const,
+    targetId: policy.targetId,
   };
   await expect(
-    runBackupNow(policy.resourceKind, policy.resourceId, (input, init) => {
-      expect(input.toString()).toBe(
-        "/api/v1/backups/resources/postgres/database%2Fone/run"
-      );
-      expect(init?.method).toBe("POST");
-      return Promise.resolve(Response.json(record, { status: 202 }));
-    })
+    runBackupNow(
+      policy.resourceKind,
+      policy.resourceId,
+      policy.targetId,
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/backups/resources/postgres/database%2Fone/run"
+        );
+        expect(init?.method).toBe("POST");
+        return Promise.resolve(Response.json(record, { status: 202 }));
+      }
+    )
   ).resolves.toEqual(record);
   await expect(
     fetchBackupHistory(
       policy.resourceKind,
       policy.resourceId,
+      policy.targetId,
       undefined,
       (input) => {
         expect(input.toString()).toBe(
-          "/api/v1/backups/resources/postgres/database%2Fone/history?limit=50"
+          "/api/v1/backups/resources/postgres/database%2Fone/history?limit=50&targetId=target-1"
         );
         return Promise.resolve(Response.json({ backups: [record] }));
       }
@@ -1676,12 +1803,18 @@ test("lists recovery generations and starts an explicitly destructive replacemen
     remoteSize: 120,
   };
   await expect(
-    fetchBackupGenerations("postgres", "database/one", undefined, (input) => {
-      expect(input.toString()).toBe(
-        "/api/v1/backups/resources/postgres/database%2Fone/generations"
-      );
-      return Promise.resolve(Response.json({ generations: [generation] }));
-    })
+    fetchBackupGenerations(
+      "postgres",
+      "database/one",
+      "target-1",
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/backups/resources/postgres/database%2Fone/generations?targetId=target-1"
+        );
+        return Promise.resolve(Response.json({ generations: [generation] }));
+      }
+    )
   ).resolves.toEqual([generation]);
 
   const operation = {
@@ -1697,6 +1830,7 @@ test("lists recovery generations and starts an explicitly destructive replacemen
     restoreBackupGeneration(
       "postgres",
       "database/one",
+      "target-1",
       generation.generationId,
       (input, init) => {
         expect(input.toString()).toBe(
@@ -1711,6 +1845,7 @@ test("lists recovery generations and starts an explicitly destructive replacemen
     destructiveConfirmed: true,
     generationId: generation.generationId,
     mode: "replace",
+    targetId: "target-1",
   });
 });
 

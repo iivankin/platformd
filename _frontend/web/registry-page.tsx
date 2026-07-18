@@ -12,7 +12,7 @@ const tabs = [
 ];
 
 const RegistrySection = () => (
-  <div className="enter-row flex min-h-full flex-col">
+  <div className="flex min-h-full animate-in flex-col duration-200 fade-in slide-in-from-bottom-1">
     <PageTabs label="Registry pages" tabs={tabs} />
     <Outlet />
   </div>

@@ -9,6 +9,7 @@ import type { ObjectStoreWorkspaceView } from "@/object-store-detail-panel";
 import { PageTabs } from "@/page-tabs";
 import { PostgresDetailPanel } from "@/postgres-detail-panel";
 import type { PostgresWorkspaceView } from "@/postgres-detail-panel";
+import { useProjectChanges } from "@/project-changes";
 import { projectFlowElements } from "@/project-flow";
 import type { ResourceFlowNode, ResourceNodeData } from "@/project-flow";
 import { resourceKind, resourcePath } from "@/project-resource-path";
@@ -17,6 +18,7 @@ import type { RedisWorkspaceView } from "@/redis-detail-panel";
 import { ResourceDrawer } from "@/resource-drawer";
 import { ServiceDetailPanel } from "@/service-detail-panel";
 import type { ServiceWorkspaceView } from "@/service-detail-panel";
+import type { PendingServiceSettings } from "@/service-settings-model";
 
 interface ResourceWorkspaceDefinition {
   icon: ComponentType<{ className?: string }>;
@@ -89,11 +91,15 @@ const statusColor: Record<ResourceNodeData["status"], string> = {
 const ResourceWorkspace = ({
   node,
   onChanged,
+  onPendingSettingsChange,
+  pendingSettings,
   projectID,
   view,
 }: {
   node: ResourceFlowNode;
   onChanged: () => void;
+  onPendingSettingsChange: (change?: PendingServiceSettings) => void;
+  pendingSettings?: PendingServiceSettings;
   projectID: string;
   view: string;
 }) => {
@@ -103,6 +109,8 @@ const ResourceWorkspace = ({
         <ServiceDetailPanel
           data={node.data}
           onChanged={onChanged}
+          onPendingSettingsChange={onPendingSettingsChange}
+          pendingSettings={pendingSettings}
           projectID={projectID}
           serviceID={node.id}
           view={view as ServiceWorkspaceView}
@@ -155,6 +163,7 @@ export const ProjectResourcePage = () => {
     view = "",
   } = useParams();
   const projectPath = `/projects/${encodeURIComponent(projectID)}`;
+  const { serviceChanges, setServiceChange } = useProjectChanges(projectID);
   const kind = resourceKind(resourceCollection);
   const [node, setNode] = useState<ResourceFlowNode>();
   const [projectName, setProjectName] = useState("");
@@ -290,6 +299,10 @@ export const ProjectResourcePage = () => {
         <ResourceWorkspace
           node={node}
           onChanged={() => setRefreshVersion((value) => value + 1)}
+          onPendingSettingsChange={(change) =>
+            setServiceChange(resourceID, change)
+          }
+          pendingSettings={serviceChanges[resourceID]}
           projectID={projectID}
           view={view}
         />

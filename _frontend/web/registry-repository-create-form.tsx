@@ -5,7 +5,15 @@ import type { FormEvent } from "react";
 import { createRegistryRepository } from "@/api";
 import type { RegistryRepository } from "@/api";
 import { Button } from "@/components/ui/button";
+import { FormCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FormField } from "@/form-field";
 
 export const RegistryRepositoryCreateForm = ({
@@ -52,8 +60,8 @@ export const RegistryRepositoryCreateForm = ({
   };
 
   return (
-    <form
-      className="grid border-b border-border lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,0.7fr)_150px_150px_auto] lg:items-end"
+    <FormCard
+      className="grid lg:grid-cols-[minmax(12rem,1fr)_minmax(10rem,0.7fr)_150px_150px_auto] lg:items-end"
       onSubmit={create}
     >
       <div className="px-5 pt-4 lg:border-r lg:border-border">
@@ -77,17 +85,24 @@ export const RegistryRepositoryCreateForm = ({
       </div>
       <div className="px-5 pt-4 lg:border-r lg:border-border">
         <FormField label="Permission" name="registry-permission">
-          <select
-            className="h-8 w-full border border-input bg-background px-2 text-xs outline-none focus:border-ring"
-            id="registry-permission"
-            onChange={(event) =>
-              setPermission(event.target.value as "pull" | "pull_push")
+          <Select
+            items={{ pull: "Pull only", pull_push: "Pull + push" }}
+            onValueChange={(value) =>
+              setPermission(String(value) as "pull" | "pull_push")
             }
             value={permission}
           >
-            <option value="pull_push">Pull + push</option>
-            <option value="pull">Pull only</option>
-          </select>
+            <SelectTrigger
+              className="h-8 w-full text-xs"
+              id="registry-permission"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start">
+              <SelectItem value="pull_push">Pull + push</SelectItem>
+              <SelectItem value="pull">Pull only</SelectItem>
+            </SelectContent>
+          </Select>
         </FormField>
       </div>
       <label className="flex h-16 items-center gap-2 px-5 text-[10px] lg:border-r lg:border-border">
@@ -115,6 +130,6 @@ export const RegistryRepositoryCreateForm = ({
           <PackagePlus /> Create
         </Button>
       </div>
-    </form>
+    </FormCard>
   );
 };

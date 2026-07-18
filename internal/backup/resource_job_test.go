@@ -54,7 +54,7 @@ func TestResourceJobPublishesRetentionAndSuccessfulRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	occurrence := int64(19_000)
-	record, err := job.RunResource(ctx, "redis", "redis-1", &occurrence, 1)
+	record, err := job.RunResource(ctx, "redis", "redis-1", "target", &occurrence, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestResourceJobRecordsExporterFailureAndSkipsRecordWhenTargetBusy(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := job.RunResource(ctx, "registry", "repository-1", nil, 7)
+	record, err := job.RunResource(ctx, "registry", "repository-1", "target", nil, 7)
 	if err == nil || record.Status != "failed" || record.ErrorCode != "registry_backup_failed" {
 		t.Fatalf("failed resource backup = %+v, %v", record, err)
 	}
@@ -97,7 +97,7 @@ func TestResourceJobRecordsExporterFailureAndSkipsRecordWhenTargetBusy(t *testin
 		t.Fatal("failed to occupy target gate")
 	}
 	defer release()
-	if _, err := job.RunResource(ctx, "registry", "repository-1", nil, 7); !errors.Is(err, ErrTargetBusy) {
+	if _, err := job.RunResource(ctx, "registry", "repository-1", "target", nil, 7); !errors.Is(err, ErrTargetBusy) {
 		t.Fatalf("busy resource backup error = %v", err)
 	}
 	var count int
@@ -118,19 +118,27 @@ func resourceJobTarget(t *testing.T, root string) (*state.Store, *TargetApplicat
 	}
 	createBackupInstallation(t, store)
 	master := cryptobox.MasterKey{1, 2, 3, 4}
+	sealedSecret, err := SealTargetSecret(master, "installation-id", "secret")
+	if err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "us-east-1",
+			Bucket: "bucket", Prefix: "prefix", AccessKeyID: "access", SecretAccessKeyEncrypted: sealedSecret,
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "test", ActorEmail: "test@example.com",
+		UpdatedAtMillis: time.Unix(5, 0).UnixMilli(),
+	}); err != nil {
+		store.Close()
+		t.Fatal(err)
+	}
 	gate := NewGate()
 	target, err := NewTargetApplication(store, master, gate, func(remotes3.Config) (Probe, error) {
 		return &probeStub{}, nil
 	}, nil, func() time.Time { return time.Unix(5, 0) })
 	if err != nil {
-		store.Close()
-		t.Fatal(err)
-	}
-	if _, err := target.SetTarget(ctx, TargetInput{
-		Endpoint: "https://s3.example.com", Region: "us-east-1", Bucket: "bucket", Prefix: "prefix",
-		AccessKeyID: "access", SecretAccessKey: "secret",
-		Actor: Actor{Kind: "access", ID: "test", Email: "test@example.com"},
-	}); err != nil {
 		store.Close()
 		t.Fatal(err)
 	}

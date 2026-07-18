@@ -177,6 +177,14 @@ func (*postgresRestoreConnection) Query(context.Context, string) (QueryResult, e
 	return QueryResult{}, nil
 }
 
+func (*postgresRestoreConnection) Extensions(context.Context) ([]Extension, error) {
+	return nil, nil
+}
+
+func (*postgresRestoreConnection) ChangeExtension(context.Context, string, bool) error {
+	return nil
+}
+
 func (connection *postgresRestoreConnection) Close(context.Context) error {
 	connection.closeCalls++
 	return nil

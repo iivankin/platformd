@@ -18,6 +18,7 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/id"
+	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -45,6 +46,16 @@ type DeploymentStore interface {
 	RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
 }
 
+type ExtensionStore interface {
+	ManagedPostgresExtensions(context.Context, string) ([]state.ManagedPostgresExtension, error)
+	PutManagedPostgresExtension(context.Context, state.PutManagedPostgresExtension) error
+	DeleteManagedPostgresExtension(context.Context, string, string) error
+}
+
+type ExtensionImageBuilder interface {
+	Ensure(context.Context, postgresextension.BuildRequest) (containerengine.Image, error)
+}
+
 type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
 	InspectImage(context.Context, string) (containerengine.Image, error)
@@ -68,6 +79,8 @@ type Connection interface {
 	Bootstrap(context.Context, string, string, string) error
 	Ping(context.Context) error
 	Query(context.Context, string) (QueryResult, error)
+	Extensions(context.Context) ([]Extension, error)
+	ChangeExtension(context.Context, string, bool) error
 	Close(context.Context) error
 }
 
@@ -86,6 +99,8 @@ type Publisher interface {
 type ControllerConfig struct {
 	Store             ControllerStore
 	Deployments       DeploymentStore
+	Extensions        ExtensionStore
+	ExtensionBuilder  ExtensionImageBuilder
 	Engine            Engine
 	Publisher         Publisher
 	Growth            GrowthGate
@@ -116,6 +131,8 @@ type activeRuntime struct {
 type Controller struct {
 	store             ControllerStore
 	deployments       DeploymentStore
+	extensions        ExtensionStore
+	extensionBuilder  ExtensionImageBuilder
 	engine            Engine
 	publisher         Publisher
 	growth            GrowthGate
@@ -177,7 +194,8 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
 	}
 	return &Controller{
-		store: config.Store, deployments: config.Deployments, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
+		store: config.Store, deployments: config.Deployments, extensions: config.Extensions, extensionBuilder: config.ExtensionBuilder,
+		engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		ownerPassword: config.OwnerPassword, bootstrapPassword: config.BootstrapPassword,
 		placement: config.Placement, dial: dial, volumeRoot: config.VolumeRoot,
 		logRoot: config.LogRoot, logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -195,6 +213,10 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) (res
 	lock := controller.resourceLock(resourceID)
 	lock.Lock()
 	defer lock.Unlock()
+	return controller.startLocked(ctx, resourceID)
+}
+
+func (controller *Controller) startLocked(ctx context.Context, resourceID string) (resultErr error) {
 	if _, active := controller.activeRuntime(resourceID); active {
 		return nil
 	}
@@ -416,6 +438,196 @@ func (controller *Controller) Query(ctx context.Context, resourceID, sql string)
 	}
 	defer connection.Close(context.Background())
 	return connection.Query(ctx, sql)
+}
+
+func (controller *Controller) Extensions(ctx context.Context, resourceID string) ([]Extension, error) {
+	connection, cleanup, err := controller.bootstrapClient(ctx, resourceID)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+	extensions, err := connection.Extensions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, extension := range extensions {
+		if extension.Name == postgresextension.VectorName {
+			return extensions, nil
+		}
+	}
+	recipe := postgresextension.VectorRecipe()
+	return append(extensions, Extension{
+		Name: recipe.Name, DefaultVersion: recipe.Version,
+		Comment: "Open-source vector similarity search for PostgreSQL. Installed into a verified local runtime image.",
+	}), nil
+}
+
+func (controller *Controller) ChangeExtension(
+	ctx context.Context,
+	resourceID string,
+	name string,
+	install bool,
+	progress func(string),
+) error {
+	lease, err := controller.admission.Begin("postgres_extension_change", resourceID)
+	if err != nil {
+		return err
+	}
+	defer lease.Release()
+	lock := controller.resourceLock(resourceID)
+	lock.Lock()
+	defer lock.Unlock()
+	active, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return ErrNotRunning
+	}
+	connection, err := controller.bootstrapConnection(ctx, active)
+	if err != nil {
+		return err
+	}
+	available, err := connection.Extensions(ctx)
+	if err != nil {
+		_ = connection.Close(context.Background())
+		return err
+	}
+	isAvailable := false
+	isInstalled := false
+	for _, extension := range available {
+		if extension.Name == name {
+			isAvailable = true
+			isInstalled = extension.InstalledVersion != ""
+			break
+		}
+	}
+	if name != postgresextension.VectorName || (install && isAvailable) {
+		changeErr := connection.ChangeExtension(ctx, name, install)
+		return errors.Join(changeErr, connection.Close(context.Background()))
+	}
+	if controller.extensions == nil || controller.extensionBuilder == nil {
+		_ = connection.Close(context.Background())
+		return errors.New("runtime PostgreSQL extensions are unavailable")
+	}
+	desired, err := controller.extensions.ManagedPostgresExtensions(ctx, resourceID)
+	if err != nil {
+		_ = connection.Close(context.Background())
+		return err
+	}
+	provisioned := false
+	for _, extension := range desired {
+		if extension.Name == name {
+			provisioned = true
+			break
+		}
+	}
+	if !install {
+		if isInstalled {
+			progressValue(progress, "dropping_extension")
+			if err := connection.ChangeExtension(ctx, name, false); err != nil {
+				_ = connection.Close(context.Background())
+				return err
+			}
+		}
+		if err := connection.Close(context.Background()); err != nil {
+			return err
+		}
+		if !provisioned {
+			return nil
+		}
+		progressValue(progress, "updating_configuration")
+		if err := controller.extensions.DeleteManagedPostgresExtension(ctx, resourceID, name); err != nil {
+			return err
+		}
+		progressValue(progress, "restarting_database")
+		if err := controller.stopLocked(ctx, resourceID); err != nil {
+			return err
+		}
+		return controller.startLocked(ctx, resourceID)
+	}
+	if err := connection.Close(context.Background()); err != nil {
+		return err
+	}
+	recipe, err := postgresextension.Lookup(name)
+	if err != nil {
+		return err
+	}
+	if !provisioned {
+		desired = append(desired, state.ManagedPostgresExtension{
+			PostgresID: resourceID, Name: recipe.Name, Version: recipe.Version, RecipeDigest: recipe.Digest,
+		})
+	}
+	progressValue(progress, "resolving_base_image")
+	if _, err := controller.resolveImageWithExtensions(ctx, active.resource, desired, progress); err != nil {
+		return err
+	}
+	progressValue(progress, "updating_configuration")
+	if err := controller.extensions.PutManagedPostgresExtension(ctx, state.PutManagedPostgresExtension{
+		PostgresID: resourceID, Name: recipe.Name, Version: recipe.Version,
+		RecipeDigest: recipe.Digest, TimestampMillis: controller.now().UnixMilli(),
+	}); err != nil {
+		return err
+	}
+	progressValue(progress, "restarting_database")
+	if err := controller.stopLocked(ctx, resourceID); err != nil {
+		return err
+	}
+	if err := controller.startLocked(ctx, resourceID); err != nil {
+		return err
+	}
+	started, ok := controller.activeRuntime(resourceID)
+	if !ok {
+		return ErrNotRunning
+	}
+	connection, err = controller.bootstrapConnection(ctx, started)
+	if err != nil {
+		return err
+	}
+	progressValue(progress, "creating_extension")
+	changeErr := connection.ChangeExtension(ctx, name, true)
+	return errors.Join(changeErr, connection.Close(context.Background()))
+}
+
+func (controller *Controller) bootstrapConnection(ctx context.Context, active activeRuntime) (Connection, error) {
+	password, err := controller.bootstrapPassword(active.resource)
+	if err != nil {
+		return nil, err
+	}
+	address, err := controller.runtimeAddress(active)
+	if err != nil {
+		return nil, err
+	}
+	return controller.dial(ctx, address, "postgres", password, active.resource.DatabaseName)
+}
+
+func progressValue(callback func(string), value string) {
+	if callback != nil {
+		callback(value)
+	}
+}
+
+func (controller *Controller) bootstrapClient(ctx context.Context, resourceID string) (Connection, func(), error) {
+	lease, err := controller.admission.Begin("postgres_extension", resourceID)
+	if err != nil {
+		return nil, nil, err
+	}
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		lease.Release()
+		return nil, nil, ErrMaintenance
+	}
+	if !ok {
+		lease.Release()
+		return nil, nil, ErrNotRunning
+	}
+	connection, err := controller.bootstrapConnection(ctx, active)
+	if err != nil {
+		lease.Release()
+		return nil, nil, err
+	}
+	cleanup := func() {
+		_ = connection.Close(context.Background())
+		lease.Release()
+	}
+	return connection, cleanup, nil
 }
 
 func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedPostgres, imageID string, placement Placement, volume, bootstrapPassword string) (containerengine.Container, error) {

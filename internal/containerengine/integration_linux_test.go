@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -241,6 +242,85 @@ func TestStaticInitRunsInGlibcImage(t *testing.T) {
 	}
 	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
 		t.Fatalf("wait glibc container: code=%d err=%v", code, err)
+	}
+}
+
+func TestDerivedImagePreservesBaseProcessAndExcludesBindMountContents(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0]} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	source := filepath.Join(config.AllowedMountRoots[0], "derived-source")
+	if err := os.WriteFile(source, []byte("must-not-be-committed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	base, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	builder, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: base.ID, Name: "platformd-derived-builder",
+		Entrypoint: []string{"/bin/sh", "-c"},
+		Command:    []string{`printf derived > /derived-marker`},
+		Mounts: []Mount{{
+			Source: source, Destination: "/platformd-source", ReadOnly: true,
+		}},
+		LogPath: filepath.Join(config.LogRoot, "derived-builder.log"), LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveContainer(context.Background(), builder.ID, true)
+	if err := engine.StartContainer(ctx, builder.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, builder.ID); err != nil || code != 0 {
+		t.Fatalf("builder exit = %d, %v", code, err)
+	}
+	derived, err := engine.CommitDerivedImage(ctx, DerivedImageRequest{
+		ContainerID: builder.ID, BaseImageID: base.ID,
+		Reference: "localhost/platformd/derived-integration:latest",
+		Labels: map[string]string{
+			"io.platformd.owner": "derived-integration",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveImage(context.Background(), derived.ID)
+	if !slices.Equal(derived.Entrypoint, base.Entrypoint) || !slices.Equal(derived.Command, base.Command) {
+		t.Fatalf("derived process = entrypoint %v command %v, want %v/%v", derived.Entrypoint, derived.Command, base.Entrypoint, base.Command)
+	}
+	verification, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: derived.ID, Name: "platformd-derived-verification",
+		Command: []string{"/bin/sh", "-c", `test "$(cat /derived-marker)" = derived && ! { test -f /platformd-source && grep -Fq must-not-be-committed /platformd-source; }`},
+		LogPath: filepath.Join(config.LogRoot, "derived-verification.log"), LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveContainer(context.Background(), verification.ID, true)
+	if err := engine.StartContainer(ctx, verification.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, verification.ID); err != nil || code != 0 {
+		t.Fatalf("derived verification exit = %d, %v", code, err)
+	}
+	images, err := engine.ImagesByLabel(ctx, "io.platformd.owner=derived-integration")
+	if err != nil || len(images) != 1 || images[0].ID != derived.ID {
+		t.Fatalf("derived label lookup = %+v, %v", images, err)
 	}
 }
 

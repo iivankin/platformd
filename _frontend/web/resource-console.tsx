@@ -15,7 +15,7 @@ export const ResourceConsole = ({
   resourceKind,
   resourceName,
 }: ResourceConsoleProperties) => (
-  <div>
+  <div className="grid gap-3">
     <ContainerTerminalOverlay
       embedded
       projectID={projectID}

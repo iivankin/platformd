@@ -20,6 +20,7 @@ import (
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/projectnetwork"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
@@ -53,6 +54,8 @@ type runtimeStack struct {
 	managedRedis         *managedredis.Controller
 	redisFailures        map[string]error
 	managedPostgres      *managedpostgres.Controller
+	postgresExtensions   *postgresextension.Builder
+	postgresExtensionDB  *state.Store
 	postgresFailures     map[string]error
 	objectStoreHandler   http.Handler
 	objectStoreServers   map[string]*objectStoreServer

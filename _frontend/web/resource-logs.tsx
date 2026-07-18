@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchResourceLogs } from "@/api";
 import type { LogWindow, ResourceLogKind } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 
@@ -91,7 +92,7 @@ export const ResourceLogs = ({
   ]);
 
   return (
-    <div>
+    <SectionCard>
       <section className="flex flex-wrap items-end gap-3 border-b border-border px-5 py-4">
         <div className="mr-auto">
           <p className="text-[10px] font-medium">{title}</p>
@@ -209,6 +210,6 @@ export const ResourceLogs = ({
           </div>
         </section>
       )}
-    </div>
+    </SectionCard>
   );
 };

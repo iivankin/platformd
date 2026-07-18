@@ -1,6 +1,7 @@
 import { Activity, Power } from "lucide-react";
 
 import type { ImageCredential, Service } from "@/api";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
   compatibleImageCredentialID,
@@ -110,7 +111,7 @@ export const ServiceConfiguration = ({
 
   return (
     <>
-      <section className="grid border-b border-border lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
         <div className="px-5 py-4">
           <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
             Container image
@@ -159,9 +160,9 @@ export const ServiceConfiguration = ({
             selectedCredentialID={draft.imageCredentialID}
           />
         </div>
-      </section>
+      </SectionCard>
 
-      <section className="grid border-b border-border lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
         <div className="px-5 py-4">
           <h3 className="flex items-center gap-2 text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
             <Activity className="size-3" /> Health check
@@ -241,7 +242,7 @@ export const ServiceConfiguration = ({
             </div>
           ) : null}
         </div>
-      </section>
+      </SectionCard>
     </>
   );
 };

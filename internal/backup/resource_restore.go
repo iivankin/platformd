@@ -105,11 +105,11 @@ func NewResourceRestoreService(config ResourceRestoreServiceConfig) (*ResourceRe
 
 func (service *ResourceRestoreService) Start(
 	ctx context.Context,
-	resourceKind, resourceID, generationID string,
+	resourceKind, resourceID, targetID, generationID string,
 	options ResourceRestoreOptions,
 	actor Actor,
 ) (state.Operation, error) {
-	if ctx == nil || !validBackupResourceKind(resourceKind) || !validControlIdentifier(resourceID) ||
+	if ctx == nil || !validBackupResourceKind(resourceKind) || !validControlIdentifier(resourceID) || targetID == "" ||
 		!validControlIdentifier(generationID) {
 		return state.Operation{}, errors.New("resource restore request is invalid")
 	}
@@ -133,7 +133,7 @@ func (service *ResourceRestoreService) Start(
 			releaseTarget()
 		}
 	}()
-	target, err := service.config.Target.RuntimeTarget(ctx)
+	target, err := service.config.Target.RuntimeTarget(ctx, targetID)
 	if errors.Is(err, state.ErrBackupTargetNotFound) {
 		return state.Operation{}, ErrResourceTargetMissing
 	}

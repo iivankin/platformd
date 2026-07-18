@@ -7,6 +7,7 @@ import type {
   ResourceUsageKind,
   ResourceUsageRange,
 } from "@/api";
+import { SectionCard } from "@/components/ui/card";
 import { MetricChart } from "@/metric-chart";
 import type { MetricSeries } from "@/metric-chart";
 import {
@@ -313,7 +314,7 @@ export const ResourceUsage = ({
   );
 
   return (
-    <section className="border-b border-border">
+    <SectionCard>
       <UsageHeader
         error={currentError}
         loading={!usage && !currentError}
@@ -333,6 +334,6 @@ export const ResourceUsage = ({
         range={range}
       />
       <UsageCharts history={history} historyError={historyError} />
-    </section>
+    </SectionCard>
   );
 };

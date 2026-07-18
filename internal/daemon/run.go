@@ -339,8 +339,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
 		Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 		Admission: mutationAdmission, Master: key,
-		Restorers: resourceRestorers(runtime, registryApplication, objectStoreApplication),
-		OnError:   func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
+		Restorers: resourceRestorers(runtime, registryApplication, objectStoreApplication,
+			ordinaryVolumeBackupConfig{Store: store, Root: paths.VolumesRoot}),
+		OnError: func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
 		OnSuccess: func(request backup.ResourceRestoreRequest) {
 			if disasterRecoveryProgress != nil {
 				disasterRecoveryProgress.markManual(request)
@@ -356,6 +357,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 			Admission: mutationAdmission, Growth: pressure, Master: key, WorkRoot: paths.BackupWorkRoot,
 			Exporters: map[string]backup.ResourceExporter{
+				"volume": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					stored, err := store.Volume(exportContext, resourceID)
+					if err != nil {
+						return backup.ResourceExport{}, err
+					}
+					reader, err := volume.OpenLiveBackup(exportContext, paths.VolumesRoot, stored)
+					return backup.ResourceExport{Reader: reader}, err
+				}),
 				"postgres": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
 					reader, err := runtime.OpenManagedPostgresBackup(exportContext, resourceID)
 					return backup.ResourceExport{Reader: reader}, err
@@ -407,9 +416,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			cancelWorker()
 			<-workerDone
 		}()
-		if _, configured, targetErr := backupTargets.Target(ctx); targetErr != nil {
+		if controlTargetID, targetErr := backupTargets.ControlTargetID(ctx); targetErr != nil {
 			return targetErr
-		} else if configured {
+		} else if controlTargetID != "" {
 			dirtyControl.Mark(time.Now())
 		}
 	} else {
@@ -477,7 +486,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	managedPostgresApplication, err := managedpostgres.NewApplication(store, runtime, key, nil, nil)
+	managedPostgresApplication, err := managedpostgres.NewApplication(ctx, store, runtime, key, nil, nil)
 	if err != nil {
 		return err
 	}

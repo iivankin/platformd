@@ -25,6 +25,13 @@ type CanvasResource struct {
 	StatusMessage    string
 	ActiveDeployment string
 	ImageDigest      string
+	Volumes          []CanvasVolume
+}
+
+type CanvasVolume struct {
+	ID            string
+	Name          string
+	ContainerPath string
 }
 
 type CanvasConnection struct {
@@ -144,10 +151,45 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 		}
 		resource.Enabled = enabled == 1
 		resource.InternalHostname = resource.Name + "." + project.Name + ".internal"
+		resource.Volumes = make([]CanvasVolume, 0)
 		resources = append(resources, resource)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate project canvas resources: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close project canvas resources: %w", err)
+	}
+	resourceIndex := make(map[string]int, len(resources))
+	for index := range resources {
+		resourceIndex[resources[index].ID] = index
+	}
+	volumeRows, err := store.database.QueryContext(ctx, `
+SELECT v.id, v.service_id, v.name, m.container_path
+FROM volumes v
+LEFT JOIN service_volume_mounts m ON m.volume_id = v.id
+WHERE v.project_id = ?
+ORDER BY v.service_id, v.name, v.id`, project.ID)
+	if err != nil {
+		return nil, fmt.Errorf("list project canvas volumes: %w", err)
+	}
+	defer volumeRows.Close()
+	for volumeRows.Next() {
+		var volume CanvasVolume
+		var serviceID string
+		var containerPath sql.NullString
+		if err := volumeRows.Scan(&volume.ID, &serviceID, &volume.Name, &containerPath); err != nil {
+			return nil, fmt.Errorf("scan project canvas volume: %w", err)
+		}
+		index, ok := resourceIndex[serviceID]
+		if !ok {
+			continue
+		}
+		volume.ContainerPath = containerPath.String
+		resources[index].Volumes = append(resources[index].Volumes, volume)
+	}
+	if err := volumeRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project canvas volumes: %w", err)
 	}
 	return resources, nil
 }

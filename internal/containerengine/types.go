@@ -13,12 +13,24 @@ type PullRequest struct {
 }
 
 type Image struct {
-	ID      string
-	Digest  string
-	Names   []string
-	User    string
-	Size    int64
-	Created time.Time
+	ID           string
+	Digest       string
+	Names        []string
+	User         string
+	Architecture string
+	OS           string
+	Labels       map[string]string
+	Entrypoint   []string
+	Command      []string
+	Size         int64
+	Created      time.Time
+}
+
+type DerivedImageRequest struct {
+	ContainerID string
+	BaseImageID string
+	Reference   string
+	Labels      map[string]string
 }
 
 type NetworkSpec struct {

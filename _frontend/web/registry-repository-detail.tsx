@@ -4,11 +4,16 @@ import { Link } from "react-router";
 import type { RegistryRepository } from "@/api";
 import { PageTabs } from "@/page-tabs";
 import { RegistryRepositoryAccess } from "@/registry-repository-access";
+import { RegistryRepositoryBackups } from "@/registry-repository-backups";
 import { RegistryRepositoryImages } from "@/registry-repository-images";
 import { formatRegistryBytes } from "@/registry-repository-list";
 import { RegistryRepositoryMaintenance } from "@/registry-repository-maintenance";
 
-export type RegistryRepositoryView = "access" | "images" | "maintenance";
+export type RegistryRepositoryView =
+  | "access"
+  | "backups"
+  | "images"
+  | "maintenance";
 
 export const RegistryRepositoryDetail = ({
   hostname,
@@ -27,11 +32,12 @@ export const RegistryRepositoryDetail = ({
   const tabs = [
     { label: "Images", path: `${basePath}/images` },
     { label: "Access", path: `${basePath}/access` },
+    { label: "Backups", path: `${basePath}/backups` },
     { label: "Maintenance", path: `${basePath}/maintenance` },
   ];
 
   return (
-    <div className="enter-row min-h-full">
+    <div className="min-h-full animate-in duration-200 fade-in slide-in-from-bottom-1">
       <section className="border-b border-border">
         <div className="flex min-h-20 items-center gap-4 px-5 py-4">
           <Link
@@ -46,7 +52,7 @@ export const RegistryRepositoryDetail = ({
           </span>
           <div className="min-w-0">
             <p className="text-[8px] tracking-[0.14em] text-muted-foreground uppercase">
-              Repository
+              Image repository
             </p>
             <h2 className="mt-1 truncate text-sm font-medium">
               {repository.name}
@@ -87,6 +93,9 @@ export const RegistryRepositoryDetail = ({
           onChanged={onChanged}
           repository={repository}
         />
+      ) : null}
+      {view === "backups" ? (
+        <RegistryRepositoryBackups repository={repository} />
       ) : null}
       {view === "maintenance" ? (
         <RegistryRepositoryMaintenance

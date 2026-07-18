@@ -26,7 +26,11 @@ VALUES ('failed-deployment', 'worker', 'sha256:worker', 'config', '{}', 'failed'
 INSERT INTO managed_postgres(id, project_id, name, image_tag, image_digest, volume_id, database_name, owner_username, owner_password_encrypted, bootstrap_password_encrypted, created_at, updated_at)
 VALUES ('db', 'project', 'db', '17', 'sha256:db', 'db-volume', 'app', 'owner', x'01', x'02', 1, 1);
 INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_id, password_encrypted, created_at, updated_at)
-VALUES ('cache', 'project', 'cache', '8', 'sha256:cache', 'cache-volume', x'01', 1, 1)`); err != nil {
+VALUES ('cache', 'project', 'cache', '8', 'sha256:cache', 'cache-volume', x'01', 1, 1);
+INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
+VALUES ('api-data', 'project', 'api', 'data', 1000, 1000, 1, 1);
+INSERT INTO service_volume_mounts(service_id, volume_id, container_path)
+VALUES ('api', 'api-data', '/data')`); err != nil {
 		t.Fatal(err)
 	}
 	canvas, err := store.ProjectCanvas(context.Background(), "project")
@@ -37,6 +41,9 @@ VALUES ('cache', 'project', 'cache', '8', 'sha256:cache', 'cache-volume', x'01',
 		t.Fatalf("resources = %d, want 5", len(canvas.Resources))
 	}
 	for _, resource := range canvas.Resources {
+		if resource.ID == "api" && (len(resource.Volumes) != 1 || resource.Volumes[0].Name != "data" || resource.Volumes[0].ContainerPath != "/data") {
+			t.Fatalf("api volumes = %#v", resource.Volumes)
+		}
 		if resource.ID == "worker" && (resource.Status != "failed" || resource.StatusMessage != "worker health check failed") {
 			t.Fatalf("worker status/message = %q/%q", resource.Status, resource.StatusMessage)
 		}

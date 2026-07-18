@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import type { ManagedImageEngine } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { DatabaseVersionPreview } from "@/database-version-preview";
 import { DatabaseVersionTagBrowser } from "@/database-version-tag-browser";
 import { useDatabaseVersionChange } from "@/use-database-version-change";
@@ -42,7 +43,7 @@ export const DatabaseVersionChange = ({
   };
 
   return (
-    <section className="shrink-0 border-b border-border">
+    <SectionCard className="shrink-0">
       <div className="flex items-center gap-3 px-4 py-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
@@ -75,6 +76,6 @@ export const DatabaseVersionChange = ({
           ) : null}
         </div>
       ) : null}
-    </section>
+    </SectionCard>
   );
 };

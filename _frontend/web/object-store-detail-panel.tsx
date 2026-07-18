@@ -16,7 +16,9 @@ import type {
   ObjectStore,
 } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageStack } from "@/components/ui/page-stack";
 import { ConnectionDetails } from "@/connection-details";
 import {
   objectStoreConfiguration,
@@ -199,10 +201,10 @@ export const ObjectStoreDetailPanel = ({
     : `http://${data.internalHostname}:9000`;
 
   return (
-    <div>
+    <PageStack>
       {view === "settings" ? (
         <>
-          <div className="grid shrink-0 grid-cols-3 border-b border-border text-[10px]">
+          <SectionCard className="grid shrink-0 grid-cols-3 text-[10px]">
             <div className="border-r border-border px-4 py-3">
               <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
                 Endpoint
@@ -227,7 +229,7 @@ export const ObjectStoreDetailPanel = ({
                   : "Internal only"}
               </p>
             </div>
-          </div>
+          </SectionCard>
           {resource ? (
             <ConnectionDetails
               description="S3 configuration remains available in this storage workspace."
@@ -264,8 +266,8 @@ export const ObjectStoreDetailPanel = ({
       ) : null}
 
       {view === "objects" ? (
-        <>
-          <section className="flex min-h-14 items-center justify-between border-b border-border px-4 py-3">
+        <SectionCard>
+          <header className="flex min-h-14 items-center justify-between border-b border-border px-4 py-3">
             <div>
               <h3 className="text-[10px] font-medium">Object browser</h3>
               <p className="mt-1 text-[9px] text-muted-foreground">
@@ -280,7 +282,7 @@ export const ObjectStoreDetailPanel = ({
             >
               <RefreshCw />
             </Button>
-          </section>
+          </header>
           <ObjectStoreUploadBar
             busy={busy}
             onUpload={submitUpload}
@@ -325,7 +327,7 @@ export const ObjectStoreDetailPanel = ({
               />
             </div>
           </div>
-        </>
+        </SectionCard>
       ) : null}
 
       {view === "logs" ? (
@@ -346,6 +348,6 @@ export const ObjectStoreDetailPanel = ({
           {error}
         </p>
       ) : null}
-    </div>
+    </PageStack>
   );
 };

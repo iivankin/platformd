@@ -11,14 +11,26 @@ import (
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/registry"
+	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/volume"
 )
+
+type ordinaryVolumeRepository interface {
+	Volume(context.Context, string) (state.Volume, error)
+}
+
+type ordinaryVolumeBackupConfig struct {
+	Store ordinaryVolumeRepository
+	Root  string
+}
 
 func resourceRestorers(
 	runtime *runtimeStack,
 	registryApplication *registry.Application,
 	objectStoreApplication *objectstore.Application,
+	volumeConfigs ...ordinaryVolumeBackupConfig,
 ) map[string]backup.ResourceRestorer {
-	return map[string]backup.ResourceRestorer{
+	result := map[string]backup.ResourceRestorer{
 		"postgres": backup.ResourceRestorerFunc(func(
 			ctx context.Context,
 			request backup.ResourceRestoreRequest,
@@ -104,6 +116,28 @@ func resourceRestorers(
 			return err
 		}),
 	}
+	if len(volumeConfigs) == 1 && volumeConfigs[0].Store != nil && volumeConfigs[0].Root != "" {
+		config := volumeConfigs[0]
+		result["volume"] = backup.ResourceRestorerFunc(func(
+			ctx context.Context,
+			request backup.ResourceRestoreRequest,
+		) error {
+			if err := requireConfirmedResourceReplacement(request.Options, "Volume"); err != nil {
+				return err
+			}
+			if err := requireNoResourceAttachments(request.Source.Envelope); err != nil {
+				return err
+			}
+			stored, err := config.Store.Volume(ctx, request.ResourceID)
+			if err != nil {
+				return err
+			}
+			return runtime.WithServiceQuiesced(ctx, stored.ServiceID, func() error {
+				return volume.RestoreBackup(ctx, config.Root, stored, request.Source.Reader)
+			})
+		})
+	}
+	return result
 }
 
 func requireNoResourceAttachments(envelope backup.ResourceEnvelope) error {

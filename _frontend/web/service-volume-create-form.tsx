@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-import { createVolume, fetchVolumeOwnerSuggestion } from "@/api";
-import type { Volume } from "@/api";
+import { fetchVolumeOwnerSuggestion } from "@/api";
+import type { CreateVolumeInput } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
@@ -9,13 +9,15 @@ import { FormField } from "@/form-field";
 const maximumOwnerID = 4_294_967_294;
 
 interface ServiceVolumeCreateFormProperties {
+  existingNames: string[];
   onCancel: () => void;
-  onCreated: (volume: Volume) => void;
+  onCreated: (volume: CreateVolumeInput) => void;
   projectID: string;
   serviceID: string;
 }
 
 export const ServiceVolumeCreateForm = ({
+  existingNames,
   onCancel,
   onCreated,
   projectID,
@@ -24,7 +26,6 @@ export const ServiceVolumeCreateForm = ({
   const [name, setName] = useState("");
   const [ownerUID, setOwnerUID] = useState("0");
   const [ownerGID, setOwnerGID] = useState("0");
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
   useEffect(() => {
@@ -54,7 +55,7 @@ export const ServiceVolumeCreateForm = ({
     return () => controller.abort();
   }, [projectID, serviceID]);
 
-  const create = async () => {
+  const create = () => {
     const parsedUID = Number(ownerUID);
     const parsedGID = Number(ownerGID);
     if (
@@ -68,25 +69,16 @@ export const ServiceVolumeCreateForm = ({
       setError(`UID and GID must be integers from 0 to ${maximumOwnerID}.`);
       return;
     }
-    setBusy(true);
-    setError(undefined);
-    try {
-      onCreated(
-        await createVolume(projectID, serviceID, {
-          name: name.trim(),
-          ownerGid: parsedGID,
-          ownerUid: parsedUID,
-        })
-      );
-    } catch (createError) {
-      setError(
-        createError instanceof Error
-          ? createError.message
-          : "Unable to create volume"
-      );
-    } finally {
-      setBusy(false);
+    if (existingNames.includes(name.trim())) {
+      setError("A volume with this name already exists.");
+      return;
     }
+    setError(undefined);
+    onCreated({
+      name: name.trim(),
+      ownerGid: parsedGID,
+      ownerUid: parsedUID,
+    });
   };
 
   return (
@@ -100,14 +92,10 @@ export const ServiceVolumeCreateForm = ({
         />
       </FormField>
       <div className="mt-3 flex gap-2">
-        <Button
-          disabled={busy || !name.trim()}
-          onClick={() => void create()}
-          size="sm"
-        >
-          Create volume
+        <Button disabled={!name.trim()} onClick={create} size="sm">
+          Add volume
         </Button>
-        <Button disabled={busy} onClick={onCancel} size="sm" variant="ghost">
+        <Button onClick={onCancel} size="sm" variant="ghost">
           Cancel
         </Button>
       </div>

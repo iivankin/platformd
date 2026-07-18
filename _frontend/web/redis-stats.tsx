@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchManagedRedisStats } from "@/api";
 import type { ManagedRedisStats } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { formatBytes, formatTTL } from "@/redis-data-utils";
 
 const compact = (value: number) =>
@@ -94,7 +95,7 @@ export const RedisStats = ({
   }
 
   return (
-    <section>
+    <SectionCard>
       <header className="flex items-center justify-between border-b border-border px-5 py-3">
         <div>
           <h3 className="text-[10px] font-medium">Live Redis statistics</h3>
@@ -198,6 +199,6 @@ export const RedisStats = ({
           {error}
         </p>
       ) : null}
-    </section>
+    </SectionCard>
   );
 };

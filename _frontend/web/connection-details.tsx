@@ -2,6 +2,7 @@ import { Copy, PlugZap } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 
 export interface ConnectionDetail {
   label: string;
@@ -25,7 +26,7 @@ export const ConnectionDetails = ({
   };
 
   return (
-    <section className="border-b border-border">
+    <SectionCard>
       <header className="flex items-center gap-3 border-b border-border px-4 py-3">
         <PlugZap className="size-3.5 text-muted-foreground" />
         <div>
@@ -65,6 +66,6 @@ export const ConnectionDetails = ({
           </div>
         ))}
       </dl>
-    </section>
+    </SectionCard>
   );
 };

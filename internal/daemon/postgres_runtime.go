@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 	"path"
 
@@ -12,13 +13,23 @@ import (
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
+	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
 func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master cryptobox.MasterKey) error {
+	extensionBuilder, err := postgresextension.New(postgresextension.Config{
+		Engine: stack.engine, Growth: stack.growth,
+		CacheRoot: stack.paths.PostgresExtensionRoot, LogRoot: stack.paths.LogsRoot,
+		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,
+	})
+	if err != nil {
+		return err
+	}
 	controller, err := managedpostgres.NewController(managedpostgres.ControllerConfig{
-		Store: store, Deployments: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
+		Store: store, Deployments: store, Extensions: store, ExtensionBuilder: extensionBuilder,
+		Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
 		OwnerPassword: func(resource state.ManagedPostgres) (string, error) {
 			return managedpostgres.OpenOwnerPassword(master, resource.ID, resource.OwnerPasswordEncrypted)
 		},
@@ -38,6 +49,8 @@ func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master c
 		return errors.New("container runtime is closed")
 	}
 	stack.managedPostgres = controller
+	stack.postgresExtensions = extensionBuilder
+	stack.postgresExtensionDB = store
 	stack.mu.Unlock()
 	return nil
 }
@@ -58,6 +71,9 @@ func (stack *runtimeStack) ReconcileManagedPostgres(ctx context.Context, store *
 		if err := controller.Start(ctx, resource.ID); err != nil {
 			stack.recordPostgresFailure(resource.ID, err)
 		}
+	}
+	if err := stack.garbageCollectManagedPostgresExtensions(ctx); err != nil {
+		log.Printf("managed PostgreSQL extension image cleanup: %v", err)
 	}
 	return nil
 }
@@ -289,6 +305,84 @@ func (stack *runtimeStack) QueryManagedPostgres(ctx context.Context, resourceID,
 		return managedpostgres.QueryResult{}, errors.New("managed PostgreSQL runtime is not ready")
 	}
 	return controller.Query(ctx, resourceID, sql)
+}
+
+func (stack *runtimeStack) ManagedPostgresExtensions(ctx context.Context, resourceID string) ([]managedpostgres.Extension, error) {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return nil, errors.New("managed PostgreSQL runtime is not ready")
+	}
+	return controller.Extensions(ctx, resourceID)
+}
+
+func (stack *runtimeStack) ChangeManagedPostgresExtension(
+	ctx context.Context,
+	resourceID string,
+	name string,
+	install bool,
+	progress func(string),
+) error {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("managed PostgreSQL runtime is not ready")
+	}
+	if err := controller.ChangeExtension(ctx, resourceID, name, install, progress); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (stack *runtimeStack) garbageCollectManagedPostgresExtensions(ctx context.Context) error {
+	stack.mu.Lock()
+	builder := stack.postgresExtensions
+	store := stack.postgresExtensionDB
+	engine := stack.engine
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || builder == nil || store == nil || engine == nil {
+		return errors.New("managed PostgreSQL extension cache is not configured")
+	}
+	resources, err := store.ManagedPostgresResources(ctx)
+	if err != nil {
+		return err
+	}
+	desired, err := store.AllManagedPostgresExtensions(ctx)
+	if err != nil {
+		return err
+	}
+	byResource := make(map[string][]state.ManagedPostgresExtension)
+	for _, extension := range desired {
+		byResource[extension.PostgresID] = append(byResource[extension.PostgresID], extension)
+	}
+	required := make(map[string]struct{})
+	for _, resource := range resources {
+		extensions := byResource[resource.ID]
+		if len(extensions) == 0 {
+			continue
+		}
+		delete(byResource, resource.ID)
+		base, err := engine.InspectImage(ctx, resource.ImageDigest)
+		if err != nil {
+			// An incomplete required set must never be used for deletion. The
+			// next reconciliation retries after the base cache is available.
+			return fmt.Errorf("inspect required PostgreSQL base image %s: %w", resource.ImageDigest, err)
+		}
+		cacheKey, err := postgresextension.CacheKey(resource.ImageDigest, base.Architecture, extensions)
+		if err != nil {
+			return err
+		}
+		required[cacheKey] = struct{}{}
+	}
+	if len(byResource) != 0 {
+		return errors.New("managed PostgreSQL extension state references an unknown resource")
+	}
+	return builder.GarbageCollect(ctx, required)
 }
 
 func (stack *runtimeStack) recordPostgresFailure(resourceID string, err error) {

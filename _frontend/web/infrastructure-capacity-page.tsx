@@ -3,6 +3,8 @@ import { useEffect, useState } from "react";
 
 import { fetchDiskPressure } from "@/api";
 import type { DiskPressure } from "@/api";
+import { SectionCard } from "@/components/ui/card";
+import { PageStack } from "@/components/ui/page-stack";
 import { cn } from "@/lib/utils";
 
 const levelColor: Record<DiskPressure["level"], string> = {
@@ -89,8 +91,8 @@ export const InfrastructureCapacityPage = () => {
     ? pressure.totalBytes - pressure.availableBytes
     : 0;
   return (
-    <div>
-      <section className="flex min-h-24 items-center border-b border-border px-5 py-5">
+    <PageStack>
+      <SectionCard className="flex min-h-24 items-center px-5 py-5">
         <div
           className={cn(
             "mr-4 grid size-10 place-items-center bg-muted",
@@ -112,16 +114,16 @@ export const InfrastructureCapacityPage = () => {
             ? `Updated ${new Date(pressure.checkedAt).toLocaleTimeString()}`
             : "Waiting for the first reading"}
         </p>
-      </section>
+      </SectionCard>
 
       {error ? (
-        <section className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/5 px-5 py-3 text-xs text-rose-600 dark:text-rose-300">
+        <SectionCard className="flex items-center gap-2 bg-rose-500/5 px-5 py-3 text-xs text-rose-600 ring-rose-500/30 dark:text-rose-300">
           <AlertTriangle className="size-4" />
           {error}
-        </section>
+        </SectionCard>
       ) : null}
 
-      <section className="grid border-b border-border md:grid-cols-[minmax(16rem,1fr)_minmax(16rem,1fr)]">
+      <SectionCard className="grid md:grid-cols-[minmax(16rem,1fr)_minmax(16rem,1fr)]">
         <Meter
           basisPoints={pressure?.byteBasisPoints ?? 0}
           label="Disk space used"
@@ -140,7 +142,7 @@ export const InfrastructureCapacityPage = () => {
               : "Reading server storage"}
           </p>
         </div>
-      </section>
-    </div>
+      </SectionCard>
+    </PageStack>
   );
 };

@@ -1,7 +1,8 @@
+import { Menu } from "@base-ui/react/menu";
 import {
   ArchiveRestore,
   Box,
-  ChevronLeft,
+  ChevronRight,
   FileClock,
   FolderKanban,
   KeyRound,
@@ -10,14 +11,15 @@ import {
   Plus,
   Settings,
   ShieldCheck,
-  UserRound,
 } from "lucide-react";
+import { useState } from "react";
 import type { ComponentType } from "react";
 import { NavLink, useNavigate } from "react-router";
 
 import type { Identity, Project } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { ThemeMenuItems } from "@/theme-switcher";
 
 export interface NavigationItem {
   icon: ComponentType<{ className?: string }>;
@@ -45,11 +47,154 @@ interface SidebarProperties {
 
 const navClassName = ({ isActive }: { isActive: boolean }) =>
   cn(
-    "group flex h-8 items-center overflow-hidden border-l-2 border-transparent px-2.5 text-xs transition-colors",
+    "group flex items-center overflow-hidden px-2.5 py-2 text-xs transition-all duration-150",
     isActive
-      ? "border-sidebar-primary bg-sidebar-accent text-sidebar-accent-foreground"
-      : "text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground"
+      ? "border-l-2 border-primary bg-secondary text-foreground"
+      : "border-l-2 border-transparent text-muted-foreground hover:border-muted-foreground/30 hover:bg-secondary/50 hover:text-foreground"
   );
+
+const sidebarLabelClassName = (collapsed: boolean, className?: string) =>
+  cn(
+    "min-w-0 overflow-hidden text-left whitespace-nowrap transition-[margin,max-width,opacity,transform] duration-200",
+    collapsed
+      ? "ml-0 max-w-0 -translate-x-1 opacity-0"
+      : "ml-2.5 max-w-40 translate-x-0 opacity-100",
+    className
+  );
+
+const identityInitials = (identity: Identity | null) => {
+  const source = identity?.name ?? identity?.email ?? "Access user";
+  return source
+    .split(/[\s@._-]+/u)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part.slice(0, 1))
+    .join("")
+    .toUpperCase();
+};
+
+const identitySubtitle = (
+  identity: Identity | null,
+  identityError: string | null
+) => {
+  if (identityError) {
+    return "Identity unavailable";
+  }
+  if (identity?.name) {
+    return identity.email ?? "Cloudflare Access";
+  }
+  return "Cloudflare Access";
+};
+
+const IdentityAvatar = ({ identity }: { identity: Identity | null }) => {
+  const [failed, setFailed] = useState(false);
+  if (identity?.avatarUrl && !failed) {
+    return (
+      <img
+        alt=""
+        className="size-7 shrink-0 border border-border object-cover"
+        onError={() => setFailed(true)}
+        referrerPolicy="no-referrer"
+        src={identity.avatarUrl}
+      />
+    );
+  }
+  return (
+    <span className="grid size-7 shrink-0 place-items-center border border-border bg-muted text-[9px] font-medium">
+      {identityInitials(identity)}
+    </span>
+  );
+};
+
+const IdentityDetails = ({
+  className,
+  identity,
+  identityError,
+}: {
+  className?: string;
+  identity: Identity | null;
+  identityError: string | null;
+}) => {
+  const title = identity?.name ?? identity?.email ?? "Access user";
+  const subtitle = identitySubtitle(identity, identityError);
+  return (
+    <div className={cn("min-w-0", className)}>
+      <div className="truncate text-[10px] font-medium">{title}</div>
+      <div className="mt-0.5 truncate text-[9px] text-muted-foreground">
+        {subtitle}
+      </div>
+    </div>
+  );
+};
+
+const SidebarFooter = ({
+  collapsed,
+  identity,
+  identityError,
+  onCollapsedChange,
+}: {
+  collapsed: boolean;
+  identity: Identity | null;
+  identityError: string | null;
+  onCollapsedChange: (collapsed: boolean) => void;
+}) => (
+  <div
+    className={cn(
+      "border-t border-border p-1.5",
+      collapsed ? "grid place-items-center gap-1" : "flex items-center"
+    )}
+  >
+    <Menu.Root>
+      <Menu.Trigger
+        aria-label="Open user menu"
+        className={cn(
+          "group flex items-center overflow-hidden text-xs transition-all duration-150 outline-none hover:bg-secondary/50 focus-visible:ring-1 focus-visible:ring-sidebar-ring",
+          collapsed ? "size-9 p-1" : "min-w-0 flex-1 px-2.5 py-2"
+        )}
+      >
+        <IdentityAvatar identity={identity} key={identity?.avatarUrl} />
+        <IdentityDetails
+          className={sidebarLabelClassName(collapsed)}
+          identity={identity}
+          identityError={identityError}
+        />
+      </Menu.Trigger>
+      <Menu.Portal>
+        <Menu.Positioner
+          align="start"
+          className="z-50"
+          side="top"
+          sideOffset={4}
+        >
+          <Menu.Popup className="w-52 border border-border bg-popover p-1 text-popover-foreground shadow-lg">
+            <IdentityDetails
+              className="border-b border-border px-2.5 py-2"
+              identity={identity}
+              identityError={identityError}
+            />
+            <ThemeMenuItems />
+          </Menu.Popup>
+        </Menu.Positioner>
+      </Menu.Portal>
+    </Menu.Root>
+
+    <button
+      aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
+      className="shrink-0 p-1.5 text-muted-foreground transition-colors duration-150 hover:text-foreground"
+      onClick={() => onCollapsedChange(!collapsed)}
+      type="button"
+    >
+      <span
+        className={cn(
+          "block transition-transform duration-200",
+          collapsed ? "rotate-0" : "rotate-180"
+        )}
+      >
+        <ChevronRight className="size-3.5" />
+      </span>
+    </button>
+  </div>
+);
 
 export const Sidebar = ({
   collapsed,
@@ -64,34 +209,31 @@ export const Sidebar = ({
   return (
     <aside
       className={cn(
-        "flex shrink-0 flex-col border-r border-border bg-sidebar transition-[width] duration-200",
-        collapsed ? "w-12" : "w-56"
+        "relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200",
+        collapsed ? "w-12" : "w-52"
       )}
     >
       <button
-        className="flex h-12 items-center border-b border-border px-3 text-left"
+        className="flex h-12 items-center gap-2.5 border-b border-border px-3 text-left"
         onClick={() => navigate("/")}
         type="button"
       >
         <span className="grid size-7 shrink-0 place-items-center border border-border bg-secondary text-[10px] font-bold">
           pd
         </span>
-        <span
-          className={cn(
-            "ml-2.5 min-w-0 overflow-hidden transition-opacity",
-            collapsed && "opacity-0"
-          )}
-        >
-          <span className="block text-xs leading-none font-semibold">
-            platformd
+        {!collapsed && (
+          <span className="min-w-0 space-y-0.5">
+            <span className="block text-xs leading-none font-semibold">
+              platformd
+            </span>
+            <span className="block text-[9px] leading-none whitespace-nowrap text-muted-foreground">
+              single-vps control plane
+            </span>
           </span>
-          <span className="mt-1 block text-[9px] leading-none whitespace-nowrap text-muted-foreground">
-            single-vps control plane
-          </span>
-        </span>
+        )}
       </button>
 
-      <nav className="min-h-0 flex-1 overflow-y-auto p-1.5">
+      <nav className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5">
         {recovery ? (
           <NavLink
             className={navClassName}
@@ -99,14 +241,7 @@ export const Sidebar = ({
             to="/recovery"
           >
             <ArchiveRestore className="size-4 shrink-0" />
-            <span
-              className={cn(
-                "ml-2.5 whitespace-nowrap transition-opacity",
-                collapsed && "opacity-0"
-              )}
-            >
-              Recovery
-            </span>
+            <span className={sidebarLabelClassName(collapsed)}>Recovery</span>
           </NavLink>
         ) : (
           <>
@@ -120,12 +255,7 @@ export const Sidebar = ({
                 to="/projects"
               >
                 <FolderKanban className="size-4 shrink-0" />
-                <span
-                  className={cn(
-                    "ml-2.5 whitespace-nowrap transition-opacity",
-                    collapsed && "opacity-0"
-                  )}
-                >
+                <span className={sidebarLabelClassName(collapsed)}>
                   Projects
                 </span>
               </NavLink>
@@ -133,7 +263,7 @@ export const Sidebar = ({
                 <Button
                   aria-label="Create project"
                   className="size-7"
-                  onClick={() => navigate("/projects?new=1")}
+                  onClick={() => navigate("/projects/new")}
                   size="icon"
                   title="Create project"
                   variant="ghost"
@@ -152,11 +282,13 @@ export const Sidebar = ({
                 title={collapsed ? project.name : undefined}
                 to={`/projects/${project.id}`}
               >
-                <Box className="size-3.5 shrink-0" />
+                <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
+                  <Box className="size-3.5" />
+                </span>
                 <span
-                  className={cn(
-                    "ml-2 truncate whitespace-nowrap transition-opacity",
-                    collapsed && "opacity-0"
+                  className={sidebarLabelClassName(
+                    collapsed,
+                    "max-w-32 truncate"
                   )}
                 >
                   {project.name}
@@ -174,13 +306,10 @@ export const Sidebar = ({
                   title={collapsed ? item.label : undefined}
                   to={item.path}
                 >
-                  <Icon className="size-4 shrink-0" />
-                  <span
-                    className={cn(
-                      "ml-2.5 whitespace-nowrap transition-opacity",
-                      collapsed && "opacity-0"
-                    )}
-                  >
+                  <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
+                    <Icon className="size-4" />
+                  </span>
+                  <span className={sidebarLabelClassName(collapsed)}>
                     {item.label}
                   </span>
                 </NavLink>
@@ -190,31 +319,12 @@ export const Sidebar = ({
         )}
       </nav>
 
-      <div className="border-t border-border p-1.5">
-        {!collapsed && (
-          <div className="flex min-w-0 items-center px-2.5 py-2">
-            <UserRound className="size-4 shrink-0 text-muted-foreground" />
-            <div className="ml-2.5 min-w-0">
-              <div className="truncate text-[10px] font-medium">
-                {identity?.email ?? "Access user"}
-              </div>
-              <div className="mt-0.5 truncate text-[9px] text-muted-foreground">
-                {identityError ? "identity unavailable" : "Cloudflare Access"}
-              </div>
-            </div>
-          </div>
-        )}
-        <div className={cn("flex items-center", collapsed && "justify-center")}>
-          <Button
-            aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
-            onClick={() => onCollapsedChange(!collapsed)}
-            size="icon"
-            variant="ghost"
-          >
-            <ChevronLeft className={cn(collapsed && "rotate-180")} />
-          </Button>
-        </div>
-      </div>
+      <SidebarFooter
+        collapsed={collapsed}
+        identity={identity}
+        identityError={identityError}
+        onCollapsedChange={onCollapsedChange}
+      />
     </aside>
   );
 };

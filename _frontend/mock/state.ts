@@ -18,6 +18,7 @@ import type {
   ObjectMetadata,
   ObjectStore,
   Operation,
+  PostgresExtension,
   Project,
   ProjectCanvas,
   RegistryCredential,
@@ -38,7 +39,8 @@ export interface MockState {
   backupGenerations: Record<string, BackupGeneration[]>;
   backupHistory: Record<string, BackupRecord[]>;
   backupPolicies: BackupPolicy[];
-  backupTarget: BackupTarget;
+  backupTargets: BackupTarget[];
+  backupControlTargetId: string;
   canvases: Record<string, ProjectCanvas>;
   containerFiles: Record<string, Record<string, string>>;
   deployments: Record<string, Deployment[]>;
@@ -54,6 +56,7 @@ export interface MockState {
   objectStores: Record<string, ObjectStore>;
   operations: Record<string, Operation>;
   postgres: Record<string, ManagedPostgres>;
+  postgresExtensions: Record<string, PostgresExtension[]>;
   projects: Project[];
   redis: Record<string, ManagedRedis>;
   runtimeDeployments: Record<string, RuntimeDeployment[]>;
@@ -73,6 +76,12 @@ const now = Date.UTC(2026, 6, 14, 12, 0, 0);
 const iso = (offsetMinutes: number) =>
   new Date(now + offsetMinutes * 60_000).toISOString();
 const resourceKey = (kind: string, id: string) => `${kind}:${id}`;
+
+export const mockBackupTargetKey = (
+  kind: string,
+  resourceID: string,
+  targetID: string
+) => `${resourceKey(kind, resourceID)}@${targetID}`;
 const reference = (resource: string, output: string) =>
   `\${{${resource}.${output}}}`;
 
@@ -192,6 +201,7 @@ const canvas: ProjectCanvas = {
       kind: "service",
       name: service.name,
       status: "running",
+      volumes: [],
     },
     {
       enabled: true,
@@ -202,6 +212,7 @@ const canvas: ProjectCanvas = {
       kind: "postgres",
       name: postgres.name,
       status: "running",
+      volumes: [],
     },
     {
       enabled: true,
@@ -212,6 +223,7 @@ const canvas: ProjectCanvas = {
       kind: "redis",
       name: redis.name,
       status: "running",
+      volumes: [],
     },
     {
       bucketName: objectStore.bucketName,
@@ -221,6 +233,7 @@ const canvas: ProjectCanvas = {
       kind: "object_store",
       name: objectStore.name,
       status: "running",
+      volumes: [],
     },
   ],
 };
@@ -272,6 +285,7 @@ const policies: BackupPolicy[] = [
   resourceId: String(resourceId),
   resourceKind: resourceKind as BackupPolicy["resourceKind"],
   retentionCount: Number(retentionCount),
+  targetId: "backup-target-primary",
 }));
 
 const generation = (id: string): BackupGeneration => ({
@@ -283,10 +297,11 @@ const generation = (id: string): BackupGeneration => ({
 
 const makeEmptyState = (scenario: MockScenario): MockState => ({
   auditEvents: [],
+  backupControlTargetId: "",
   backupGenerations: {},
   backupHistory: {},
   backupPolicies: [],
-  backupTarget: { configured: false },
+  backupTargets: [],
   canvases: {},
   containerFiles: {},
   deployments: {},
@@ -302,7 +317,11 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     totalInodes: 9_500_000,
   },
   domains: {},
-  identity: { email: "developer@mock.local", subject: "mock-developer" },
+  identity: {
+    email: "developer@mock.local",
+    name: "Mock Developer",
+    subject: "mock-developer",
+  },
   imageCredentials: {},
   infrastructureLogs: { records: [], truncated: false },
   listeners: {},
@@ -317,6 +336,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   objectStores: {},
   operations: {},
   postgres: {},
+  postgresExtensions: {},
   projects: [],
   redis: {},
   registryCredentials: {},
@@ -349,6 +369,46 @@ export const createMockState = (scenario: MockScenario): MockState => {
   state.canvases[project.id] = canvas;
   state.services[service.id] = service;
   state.postgres[postgres.id] = postgres;
+  state.postgresExtensions[postgres.id] = [
+    {
+      comment: "PL/pgSQL procedural language",
+      defaultVersion: "1.0",
+      installedVersion: "1.0",
+      name: "plpgsql",
+    },
+    {
+      comment: "Cryptographic functions",
+      defaultVersion: "1.3",
+      installedVersion: "1.3",
+      name: "pgcrypto",
+    },
+    {
+      comment: "A UUID generator",
+      defaultVersion: "1.1",
+      name: "uuid-ossp",
+    },
+    {
+      comment:
+        "Open-source vector similarity search built into a local PostgreSQL runtime image",
+      defaultVersion: "0.8.5",
+      name: "vector",
+    },
+    {
+      comment: "Track planning and execution statistics of all SQL statements",
+      defaultVersion: "1.12",
+      name: "pg_stat_statements",
+    },
+    {
+      comment: "Foreign-data wrapper for remote PostgreSQL servers",
+      defaultVersion: "1.1",
+      name: "postgres_fdw",
+    },
+    {
+      comment: "Foreign-data wrapper for flat file access",
+      defaultVersion: "1.0",
+      name: "file_fdw",
+    },
+  ];
   state.redis[redis.id] = redis;
   state.objectStores[objectStore.id] = objectStore;
   state.containerFiles["service:service-api"] = mockContainerFiles("service");
@@ -585,19 +645,27 @@ export const createMockState = (scenario: MockScenario): MockState => {
       updatedAt: now - 172_800_000,
     },
   ];
-  state.backupTarget = {
-    accessKeyId: "MOCK_ACCESS_KEY",
-    bucket: "platformd-mock-backups",
-    configured: true,
-    createdAt: now - 30 * 86_400_000,
-    endpoint: "https://s3.mock.local",
-    prefix: "demo-installation",
-    region: "mock-region-1",
-    updatedAt: now - 86_400_000,
-  };
+  state.backupTargets = [
+    {
+      accessKeyId: "MOCK_ACCESS_KEY",
+      bucket: "platformd-mock-backups",
+      createdAt: now - 30 * 86_400_000,
+      endpoint: "https://s3.mock.local",
+      id: "backup-target-primary",
+      name: "Primary storage",
+      prefix: "demo-installation",
+      region: "mock-region-1",
+      updatedAt: now - 86_400_000,
+    },
+  ];
+  state.backupControlTargetId = "backup-target-primary";
   state.backupPolicies = policies;
   for (const policy of policies) {
-    const key = resourceKey(policy.resourceKind, policy.resourceId);
+    const key = mockBackupTargetKey(
+      policy.resourceKind,
+      policy.resourceId,
+      "backup-target-primary"
+    );
     state.backupGenerations[key] = [generation(policy.resourceId)];
     state.backupHistory[key] = [
       {
@@ -609,6 +677,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
         sizeBytes: 18_874_368,
         startedAt: now - 86_400_000,
         status: "succeeded",
+        targetId: "backup-target-primary",
       },
     ];
   }

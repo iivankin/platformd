@@ -43,7 +43,7 @@ type resourceRunnerStub struct {
 }
 
 func (runner *resourceRunnerStub) RunResource(
-	context.Context, string, string, *int64, int,
+	context.Context, string, string, string, *int64, int,
 ) (state.BackupRecord, error) {
 	return state.BackupRecord{}, errors.New("unexpected scheduled resource backup")
 }
@@ -51,12 +51,13 @@ func (runner *resourceRunnerStub) RunResource(
 func (runner *resourceRunnerStub) RunResourceStarted(
 	_ context.Context,
 	kind, resourceID string,
+	targetID string,
 	_ *int64,
 	_ int,
 	onStarted func(state.BackupRecord),
 ) (state.BackupRecord, error) {
 	record := state.BackupRecord{
-		ID: "backup", ResourceKind: kind, ResourceID: resourceID,
+		ID: "backup", TargetID: targetID, ResourceKind: kind, ResourceID: resourceID,
 		GenerationID: "generation", Status: "running", StartedAtMillis: 1,
 	}
 	onStarted(record)
@@ -192,12 +193,12 @@ func TestWorkerAcceptsOnlyOneImmediateManualBackupWithoutQueue(t *testing.T) {
 	defer cancel()
 	workerDone := make(chan error, 1)
 	go func() { workerDone <- worker.Run(ctx) }()
-	record, err := worker.TryRunNow(context.Background(), "redis", "redis-1", 7)
+	record, err := worker.TryRunNow(context.Background(), "redis", "redis-1", "target", 7)
 	if err != nil || record.Status != "running" || record.ID == "" {
 		t.Fatalf("manual backup start = %+v, %v", record, err)
 	}
 	<-runner.started
-	if _, err := worker.TryRunNow(context.Background(), "postgres", "postgres-1", 7); !errors.Is(err, ErrWorkerBusy) {
+	if _, err := worker.TryRunNow(context.Background(), "postgres", "postgres-1", "target", 7); !errors.Is(err, ErrWorkerBusy) {
 		t.Fatalf("second manual backup error = %v", err)
 	}
 	close(runner.release)

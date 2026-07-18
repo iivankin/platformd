@@ -43,3 +43,44 @@ func TestManagedPostgresQueryAuditOmitsSQLAndRows(t *testing.T) {
 		t.Fatalf("query audit metadata = %s", metadata)
 	}
 }
+
+func TestManagedPostgresExtensionAuditRecordsExactOperation(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	if _, err := store.CreateProject(ctx, state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "user",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateManagedPostgres(ctx, state.CreateManagedPostgres{
+		ID: "postgres", ProjectID: "project", Name: "database", ImageTag: "18",
+		ImageDigest: managedPostgresTestDigest, VolumeID: "volume", DatabaseName: "app",
+		OwnerUsername: "owner", OwnerPasswordEncrypted: []byte("owner"),
+		BootstrapPasswordEncrypted: []byte("bootstrap"), AuditEventID: "create-audit",
+		ActorKind: "access", ActorID: "user", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordManagedPostgresExtension(ctx, state.RecordManagedPostgresExtension{
+		ResourceID: "postgres", ProjectID: "project", ExtensionName: "uuid-ossp",
+		Install: true, Result: "succeeded", DurationMillis: 12,
+		AuditEventID: "extension-audit", ActorID: "user", ActorEmail: "admin@example.com",
+		RequestCorrelationID: "request", CreatedAtMillis: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var action, metadata string
+	if err := store.QueryRowContext(
+		ctx,
+		"SELECT action, metadata_json FROM audit_events WHERE id = 'extension-audit'",
+	).Scan(&action, &metadata); err != nil {
+		t.Fatal(err)
+	}
+	if action != "postgres.extension.install" ||
+		metadata != `{"actorEmail":"admin@example.com","durationMillis":"12","extension":"uuid-ossp"}` {
+		t.Fatalf("extension audit = %s/%s", action, metadata)
+	}
+}

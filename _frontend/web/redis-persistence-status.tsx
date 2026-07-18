@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { fetchManagedRedisPersistence } from "@/api";
 import type { ManagedRedisPersistence } from "@/api";
+import { SectionCard } from "@/components/ui/card";
 
 const refreshMillis = 30_000;
 
@@ -65,12 +66,12 @@ export const RedisPersistenceStatus = ({
 
   if (!report) {
     return (
-      <section className="flex items-center gap-2 border-b border-border px-4 py-3 text-[10px] text-muted-foreground">
+      <SectionCard className="flex items-center gap-2 px-4 py-3 text-[10px] text-muted-foreground">
         {error ? null : <LoaderCircle className="size-3 animate-spin" />}
         <span className={error ? "text-destructive" : undefined}>
           {error ?? "Reading Redis persistence status…"}
         </span>
-      </section>
+      </SectionCard>
     );
   }
 
@@ -82,8 +83,8 @@ export const RedisPersistenceStatus = ({
     state = "RDB save in progress";
   }
   return (
-    <section
-      className={`grid border-b border-border text-[10px] sm:grid-cols-3 ${
+    <SectionCard
+      className={`grid text-[10px] sm:grid-cols-3 ${
         report.needsAttention ? "bg-destructive/5" : ""
       }`}
     >
@@ -127,6 +128,6 @@ export const RedisPersistenceStatus = ({
         </p>
         {error ? <p className="mt-1 text-destructive">{error}</p> : null}
       </div>
-    </section>
+    </SectionCard>
   );
 };

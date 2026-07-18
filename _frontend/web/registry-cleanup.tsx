@@ -45,10 +45,10 @@ export const RegistryCleanup = ({
       <div className="flex items-center gap-2 px-4 py-3">
         <Eraser className="size-3.5 text-muted-foreground" />
         <div className="min-w-0 flex-1">
-          <p className="text-[10px] font-medium">Repository cleanup</p>
+          <p className="text-[10px] font-medium">Unused image data</p>
           <p className="mt-1 text-[9px] text-muted-foreground">
-            Finds unreferenced repository-local blobs after the 24-hour safety
-            grace.
+            Finds data no longer used by an image. Recently unreferenced data is
+            kept for 24 hours before it can be deleted.
           </p>
         </div>
         <Button
@@ -58,24 +58,24 @@ export const RegistryCleanup = ({
           variant="outline"
         >
           <RefreshCw />
-          Dry run
+          Scan
         </Button>
-        <Button
-          disabled={
-            busy || !preview || preview.deleted || preview.blobCount === 0
-          }
-          onClick={() => void run(false)}
-          size="sm"
-          variant="destructive"
-        >
-          Delete {preview?.blobCount ?? 0} blobs
-        </Button>
+        {preview && !preview.deleted && preview.blobCount > 0 ? (
+          <Button
+            disabled={busy}
+            onClick={() => void run(false)}
+            size="sm"
+            variant="destructive"
+          >
+            Delete unused data
+          </Button>
+        ) : null}
       </div>
       {preview ? (
         <div className="border-t border-border px-4 py-2 text-[9px] text-muted-foreground">
-          {preview.deleted ? "Deleted" : "Candidate"}:{" "}
-          {preview.blobCount.toLocaleString()} blobs ·{" "}
-          {formatRegistryBytes(preview.bytes)}
+          {preview.blobCount === 0
+            ? "No unused image data found."
+            : `${preview.deleted ? "Deleted" : "Found"} ${preview.blobCount.toLocaleString()} unused objects · ${formatRegistryBytes(preview.bytes)}`}
           {preview.previewTruncated ? " · digest preview truncated" : ""}
         </div>
       ) : null}

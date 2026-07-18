@@ -2,6 +2,7 @@ import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 
 export interface ResourceVariable {
   name: string;
@@ -24,7 +25,7 @@ export const ResourceVariables = ({
   };
 
   return (
-    <section>
+    <SectionCard>
       <header className="border-b border-border px-5 py-4">
         <h3 className="text-[10px] font-medium">Exported variables</h3>
         <p className="mt-1 text-[9px] leading-4 text-muted-foreground">
@@ -58,6 +59,6 @@ export const ResourceVariables = ({
           </Button>
         </div>
       ))}
-    </section>
+    </SectionCard>
   );
 };

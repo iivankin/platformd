@@ -16,7 +16,7 @@ func TestBackupRecordTransitionsOnceWithoutDirtyObserver(t *testing.T) {
 	dirty := 0
 	store.SetControlCommitObserver(func() { dirty++ })
 	if err := store.BeginBackup(ctx, state.BeginBackup{
-		ID: "backup", ResourceKind: "control", ResourceID: "installation",
+		ID: "backup", TargetID: "target", ResourceKind: "control", ResourceID: "installation",
 		GenerationID: "generation", StartedAtMillis: 1,
 	}); err != nil {
 		t.Fatal(err)

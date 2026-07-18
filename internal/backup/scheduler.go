@@ -18,6 +18,7 @@ type ScheduleStore interface {
 type DueCandidate struct {
 	ResourceKind              string
 	ResourceID                string
+	TargetID                  string
 	DueAt                     time.Time
 	ScheduledOccurrenceMillis *int64
 	RetentionCount            int
@@ -67,7 +68,7 @@ func SelectDueCandidate(
 		}
 		occurrence := latest.UnixMilli()
 		candidates = append(candidates, DueCandidate{
-			ResourceKind: policy.ResourceKind, ResourceID: policy.ResourceID, DueAt: latest,
+			ResourceKind: policy.ResourceKind, ResourceID: policy.ResourceID, TargetID: policy.TargetID, DueAt: latest,
 			ScheduledOccurrenceMillis: &occurrence, RetentionCount: policy.RetentionCount,
 		})
 	}

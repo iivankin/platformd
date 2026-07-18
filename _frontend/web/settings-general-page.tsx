@@ -7,8 +7,10 @@ import {
   setAutomationHostname as updateAutomationHostname,
 } from "@/api";
 import type { InstallationSettings } from "@/api";
+import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { FormCard, SectionCard } from "@/components/ui/card";
+import { PageStack } from "@/components/ui/page-stack";
 import { SettingsError } from "@/settings-error";
 
 const errorText = (error: unknown, fallback: string) =>
@@ -59,10 +61,10 @@ export const SettingsGeneralPage = () => {
   };
 
   return (
-    <div>
+    <PageStack>
       <SettingsError message={error} />
 
-      <section className="flex items-center gap-4 border-b border-border px-5 py-5">
+      <SectionCard className="flex items-center gap-4 px-5 py-5">
         <span className="grid size-9 place-items-center bg-muted">
           <ShieldCheck className="size-4" />
         </span>
@@ -74,10 +76,10 @@ export const SettingsGeneralPage = () => {
             {settings?.adminHostname ?? "Loading…"}
           </p>
         </div>
-      </section>
+      </SectionCard>
 
-      <form
-        className="grid border-b border-border lg:grid-cols-[220px_minmax(16rem,1fr)_auto] lg:items-center"
+      <FormCard
+        className="grid lg:grid-cols-[220px_minmax(16rem,1fr)_auto] lg:items-center"
         onSubmit={saveAutomationHostname}
       >
         <div className="px-5 py-4">
@@ -90,9 +92,10 @@ export const SettingsGeneralPage = () => {
           </p>
         </div>
         <div className="border-y border-border px-4 py-3 lg:border-x lg:border-y-0">
-          <Input
-            aria-label="Automation hostname"
-            onChange={(event) => setAutomationHostname(event.target.value)}
+          <CertificateHostnameCombobox
+            ariaLabel="Automation hostname"
+            disabled={saving}
+            onChange={setAutomationHostname}
             placeholder="api.example.com"
             value={automationHostname}
           />
@@ -120,32 +123,7 @@ export const SettingsGeneralPage = () => {
             </Button>
           ) : null}
         </div>
-      </form>
-
-      <details className="border-b border-border">
-        <summary className="cursor-pointer px-5 py-3 text-[10px] text-muted-foreground hover:text-foreground">
-          Advanced identity details
-        </summary>
-        <dl className="grid border-t border-border bg-muted/15 md:grid-cols-3">
-          {[
-            ["Installation ID", settings?.installationId ?? "—"],
-            ["Access team", settings?.accessTeamDomain ?? "—"],
-            ["Access audience", settings?.accessAudience ?? "—"],
-          ].map(([label, value]) => (
-            <div
-              className="min-w-0 border-b border-border px-5 py-4 md:border-r md:border-b-0"
-              key={label}
-            >
-              <dt className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-                {label}
-              </dt>
-              <dd className="mt-2 truncate font-mono text-[9px]" title={value}>
-                {value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </details>
-    </div>
+      </FormCard>
+    </PageStack>
   );
 };

@@ -7,7 +7,12 @@ import {
   runBackupNow,
   setBackupPolicy,
 } from "@/api";
-import type { BackupGeneration, BackupPolicy, BackupRecord } from "@/api";
+import type {
+  BackupGeneration,
+  BackupPolicy,
+  BackupRecord,
+  BackupTarget,
+} from "@/api";
 import { BackupResourceDetails } from "@/backup-resource-details";
 import { useResourceRestore } from "@/use-resource-restore";
 
@@ -19,21 +24,26 @@ const errorText = (error: unknown, fallback: string) =>
 interface BackupResourceRowProperties {
   initialGenerations: BackupGeneration[];
   initialHistory: BackupRecord[];
+  initialTargetID: string;
   onPolicyUpdated: (policy: BackupPolicy) => void;
   policy: BackupPolicy;
+  targets: BackupTarget[];
 }
 
 export const BackupResourceRow = ({
   initialGenerations,
   initialHistory,
+  initialTargetID,
   onPolicyUpdated,
   policy,
+  targets,
 }: BackupResourceRowProperties) => {
   const [enabled, setEnabled] = useState(policy.enabled);
   const [cron, setCron] = useState(policy.cron ?? "0 3 * * *");
   const [retentionCount, setRetentionCount] = useState(
     String(policy.retentionCount)
   );
+  const [targetID, setTargetID] = useState(initialTargetID);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState<string>();
   const [history, setHistory] = useState(initialHistory);
@@ -41,20 +51,32 @@ export const BackupResourceRow = ({
   const [detailsLoading, setDetailsLoading] = useState(false);
   const [selected, setSelected] = useState<BackupGeneration>();
   const detailsController = useRef<AbortController | null>(null);
+  const targetInitialized = useRef(false);
 
   const loadDetails = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const [loadedPolicy, loadedHistory, loadedGenerations] =
-          await Promise.all([
-            fetchBackupPolicy(policy.resourceKind, policy.resourceId, signal),
-            fetchBackupHistory(policy.resourceKind, policy.resourceId, signal),
-            fetchBackupGenerations(
-              policy.resourceKind,
-              policy.resourceId,
-              signal
-            ),
-          ]);
+        const loadedPolicy = await fetchBackupPolicy(
+          policy.resourceKind,
+          policy.resourceId,
+          signal
+        );
+        const [loadedHistory, loadedGenerations] = targetID
+          ? await Promise.all([
+              fetchBackupHistory(
+                policy.resourceKind,
+                policy.resourceId,
+                targetID,
+                signal
+              ),
+              fetchBackupGenerations(
+                policy.resourceKind,
+                policy.resourceId,
+                targetID,
+                signal
+              ),
+            ])
+          : [[], []];
         setEnabled(loadedPolicy.enabled);
         setCron(loadedPolicy.cron ?? "0 3 * * *");
         setRetentionCount(String(loadedPolicy.retentionCount));
@@ -76,7 +98,7 @@ export const BackupResourceRow = ({
         }
       }
     },
-    [onPolicyUpdated, policy.resourceId, policy.resourceKind]
+    [onPolicyUpdated, policy.resourceId, policy.resourceKind, targetID]
   );
 
   const afterRestore = useCallback(async () => {
@@ -87,9 +109,23 @@ export const BackupResourceRow = ({
     onSucceeded: afterRestore,
     resourceID: policy.resourceId,
     resourceKind: policy.resourceKind,
+    targetID,
   });
 
   useEffect(() => () => detailsController.current?.abort(), []);
+
+  useEffect(() => {
+    if (!targetInitialized.current) {
+      targetInitialized.current = true;
+      return;
+    }
+    detailsController.current?.abort();
+    const controller = new AbortController();
+    detailsController.current = controller;
+    setDetailsLoading(true);
+    void loadDetails(controller.signal);
+    return () => controller.abort();
+  }, [loadDetails, targetID]);
 
   const refresh = async () => {
     detailsController.current?.abort();
@@ -115,7 +151,12 @@ export const BackupResourceRow = ({
       const updated = await setBackupPolicy(
         policy.resourceKind,
         policy.resourceId,
-        { cron: enabled ? cron.trim() : "", enabled, retentionCount: retention }
+        {
+          cron: enabled ? cron.trim() : "",
+          enabled,
+          retentionCount: retention,
+          targetId: targetID,
+        }
       );
       setEnabled(updated.enabled);
       setCron(updated.cron ?? cron);
@@ -129,13 +170,17 @@ export const BackupResourceRow = ({
   };
 
   const run = async () => {
-    if (busy) {
+    if (busy || !targetID) {
       return;
     }
     setBusy("run");
     setError(undefined);
     try {
-      const record = await runBackupNow(policy.resourceKind, policy.resourceId);
+      const record = await runBackupNow(
+        policy.resourceKind,
+        policy.resourceId,
+        targetID
+      );
       setHistory((current) => [
         record,
         ...current.filter((entry) => entry.id !== record.id),
@@ -176,7 +221,7 @@ export const BackupResourceRow = ({
     Number.isInteger(retention) &&
     retention >= 1 &&
     retention <= 100 &&
-    (!enabled || Boolean(cron.trim()));
+    (!enabled || (Boolean(targetID) && Boolean(cron.trim())));
   const visibleError = error || restore.error;
 
   return (
@@ -196,12 +241,19 @@ export const BackupResourceRow = ({
       onRun={() => void run()}
       onSave={() => void save()}
       onSelectedChange={setSelected}
+      onTargetChange={(nextTargetID) => {
+        setTargetID(nextTargetID);
+        setHistory([]);
+        setGenerations([]);
+      }}
       policy={policy}
       policyValid={policyValid}
       restoring={restore.restoring}
       restoreProgress={restore.operation?.progress}
       retentionCount={retentionCount}
       selected={selected}
+      targetID={targetID}
+      targets={targets}
     />
   );
 };

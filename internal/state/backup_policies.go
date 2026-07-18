@@ -15,6 +15,7 @@ var ErrBackupResourceNotFound = errors.New("backup resource not found")
 type BackupPolicy struct {
 	ResourceKind   string
 	ResourceID     string
+	TargetID       string
 	Enabled        bool
 	Cron           string
 	RetentionCount int
@@ -23,6 +24,7 @@ type BackupPolicy struct {
 type SetBackupPolicy struct {
 	ResourceKind         string
 	ResourceID           string
+	TargetID             string
 	Enabled              bool
 	Cron                 string
 	RetentionCount       int
@@ -36,13 +38,15 @@ type SetBackupPolicy struct {
 
 func (store *Store) BackupPolicies(ctx context.Context) ([]BackupPolicy, error) {
 	const query = `
-SELECT 'registry', id, backup_enabled, backup_cron, backup_retention_count FROM registry_repositories
+SELECT 'registry', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM registry_repositories
 UNION ALL
-SELECT 'object_store', id, backup_enabled, backup_cron, backup_retention_count FROM object_stores
+SELECT 'object_store', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM object_stores
 UNION ALL
-SELECT 'postgres', id, backup_enabled, backup_cron, backup_retention_count FROM managed_postgres
+SELECT 'postgres', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM managed_postgres
 UNION ALL
-SELECT 'redis', id, backup_enabled, backup_cron, backup_retention_count FROM managed_redis
+SELECT 'redis', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM managed_redis
+UNION ALL
+SELECT 'volume', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM volumes
 ORDER BY 1, 2`
 	rows, err := store.database.QueryContext(ctx, query)
 	if err != nil {
@@ -66,7 +70,7 @@ func (store *Store) BackupPolicy(ctx context.Context, resourceKind, resourceID s
 		return BackupPolicy{}, errors.New("backup policy identity is invalid")
 	}
 	row := store.database.QueryRowContext(ctx, `
-SELECT ?, id, backup_enabled, backup_cron, backup_retention_count
+SELECT ?, id, backup_target_id, backup_enabled, backup_cron, backup_retention_count
 FROM `+table+` WHERE id = ?`, resourceKind, resourceID)
 	policy, err := scanBackupPolicy(row)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -91,25 +95,36 @@ func (store *Store) SetBackupPolicy(ctx context.Context, input SetBackupPolicy) 
 			return BackupPolicy{}, err
 		}
 	}
-	if input.Enabled && cron == "" {
-		return BackupPolicy{}, errors.New("enabled backup policy requires cron")
+	if input.Enabled && (cron == "" || input.TargetID == "") {
+		return BackupPolicy{}, errors.New("enabled backup policy requires a target and cron")
 	}
 	metadata, err := json.Marshal(map[string]any{
 		"actorEmail": input.ActorEmail, "enabled": input.Enabled,
-		"cron": cron, "retentionCount": input.RetentionCount,
+		"cron": cron, "retentionCount": input.RetentionCount, "targetId": input.TargetID,
 	})
 	if err != nil {
 		return BackupPolicy{}, err
 	}
 	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		if input.TargetID != "" {
+			var exists int
+			if err := transaction.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM backup_targets WHERE id = ?)`, input.TargetID).Scan(&exists); err != nil {
+				return err
+			}
+			if exists != 1 {
+				return ErrBackupTargetNotFound
+			}
+		}
 		enabled := 0
 		if input.Enabled {
 			enabled = 1
 		}
 		result, err := transaction.ExecContext(ctx, `
 UPDATE `+table+`
-SET backup_enabled = ?, backup_cron = ?, backup_retention_count = ?, updated_at = ?
-WHERE id = ?`, enabled, nullableString(cron), input.RetentionCount, input.UpdatedAtMillis, input.ResourceID)
+SET backup_target_id = ?, backup_enabled = ?, backup_cron = ?, backup_retention_count = ?, updated_at = ?
+WHERE id = ?`, nullableString(input.TargetID), enabled, nullableString(cron), input.RetentionCount,
+			input.UpdatedAtMillis, input.ResourceID)
 		if err != nil {
 			return fmt.Errorf("update backup policy: %w", err)
 		}
@@ -142,12 +157,13 @@ type backupPolicyScanner interface {
 func scanBackupPolicy(scanner backupPolicyScanner) (BackupPolicy, error) {
 	var result BackupPolicy
 	var enabled int
-	var cron sql.NullString
-	err := scanner.Scan(&result.ResourceKind, &result.ResourceID, &enabled, &cron, &result.RetentionCount)
+	var targetID, cron sql.NullString
+	err := scanner.Scan(&result.ResourceKind, &result.ResourceID, &targetID, &enabled, &cron, &result.RetentionCount)
 	if err != nil {
 		return BackupPolicy{}, err
 	}
 	result.Enabled = enabled == 1
+	result.TargetID = targetID.String
 	result.Cron = cron.String
 	return result, nil
 }
@@ -162,6 +178,8 @@ func backupResourceTable(kind string) (string, error) {
 		return "managed_postgres", nil
 	case "redis":
 		return "managed_redis", nil
+	case "volume":
+		return "volumes", nil
 	default:
 		return "", errors.New("backup resource kind is invalid")
 	}

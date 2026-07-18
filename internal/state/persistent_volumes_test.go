@@ -66,8 +66,8 @@ INSERT INTO services(
   id, project_id, name, image_reference, environment_json,
   health_timeout_seconds, enabled, created_at, updated_at
 ) VALUES ('service', 'project', 'web', 'example/image:latest', '{}', 60, 1, 1, 1);
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at)
-VALUES ('ordinary-volume', 'project', 'service', 'data', 123, 456, 1);
+INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
+VALUES ('ordinary-volume', 'project', 'service', 'data', 123, 456, 1, 1);
 INSERT INTO managed_postgres(
   id, project_id, name, image_tag, image_digest, volume_id, database_name,
   owner_username, owner_password_encrypted, bootstrap_password_encrypted,

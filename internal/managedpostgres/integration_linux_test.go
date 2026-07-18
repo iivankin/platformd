@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -32,6 +35,7 @@ type postgresIntegrationProfile struct {
 	interfaceName string
 	subnet        string
 	gateway       string
+	vector        bool
 }
 
 func TestMain(main *testing.M) {
@@ -41,21 +45,75 @@ func TestMain(main *testing.M) {
 	os.Exit(main.Run())
 }
 
-type integrationStore struct{ resource state.ManagedPostgres }
+type integrationStore struct {
+	mu         sync.Mutex
+	resource   state.ManagedPostgres
+	extensions []state.ManagedPostgresExtension
+}
 
-func (store integrationStore) ManagedPostgres(_ context.Context, resourceID string) (state.ManagedPostgres, error) {
+func (store *integrationStore) ManagedPostgres(_ context.Context, resourceID string) (state.ManagedPostgres, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	if resourceID != store.resource.ID {
 		return state.ManagedPostgres{}, state.ErrManagedPostgresNotFound
 	}
 	return store.resource, nil
 }
 
-func (store integrationStore) ManagedPostgresResources(context.Context) ([]state.ManagedPostgres, error) {
+func (store *integrationStore) ManagedPostgresResources(context.Context) ([]state.ManagedPostgres, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
 	return []state.ManagedPostgres{store.resource}, nil
 }
 
-func (integrationStore) SwitchManagedPostgresVolume(context.Context, state.SwitchManagedPostgresVolume) error {
-	return errors.New("unexpected managed PostgreSQL volume switch in runtime profile test")
+func (store *integrationStore) SwitchManagedPostgresVolume(_ context.Context, input state.SwitchManagedPostgresVolume) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if input.ResourceID != store.resource.ID || input.ExpectedVolumeID != store.resource.VolumeID {
+		return errors.New("managed PostgreSQL integration volume pointer changed concurrently")
+	}
+	store.resource.VolumeID = input.VolumeID
+	if input.ImageTag != "" {
+		store.resource.ImageTag = input.ImageTag
+		store.resource.ImageDigest = input.ImageDigest
+	}
+	store.resource.UpdatedAtMillis = input.UpdatedAtMillis
+	return nil
+}
+
+func (store *integrationStore) ManagedPostgresExtensions(context.Context, string) ([]state.ManagedPostgresExtension, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return append([]state.ManagedPostgresExtension(nil), store.extensions...), nil
+}
+
+func (store *integrationStore) PutManagedPostgresExtension(_ context.Context, input state.PutManagedPostgresExtension) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for index := range store.extensions {
+		if store.extensions[index].Name == input.Name {
+			store.extensions[index].Version = input.Version
+			store.extensions[index].RecipeDigest = input.RecipeDigest
+			return nil
+		}
+	}
+	store.extensions = append(store.extensions, state.ManagedPostgresExtension{
+		PostgresID: input.PostgresID, Name: input.Name, Version: input.Version,
+		RecipeDigest: input.RecipeDigest,
+	})
+	return nil
+}
+
+func (store *integrationStore) DeleteManagedPostgresExtension(_ context.Context, _ string, name string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	for index := range store.extensions {
+		if store.extensions[index].Name == name {
+			store.extensions = append(store.extensions[:index], store.extensions[index+1:]...)
+			break
+		}
+	}
+	return nil
 }
 
 type integrationPublisher struct{ published int }
@@ -81,6 +139,11 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 			name: "18-plus", tag: "18.4-alpine3.23",
 			image:         "docker.io/library/postgres@sha256:2342268e5cf8851c327dcf10fc124283448428059f9b756692b7e3302940d769",
 			interfaceName: "pdmp18", subnet: "10.89.54.0/24", gateway: "10.89.54.1",
+		},
+		{
+			name: "18-vector", tag: "18.4-bookworm",
+			image:         "docker.io/library/postgres@sha256:16fa100a3a6e92c0556632870455e7f8c6f3df5cefddd67d6b95292732bd7ff0",
+			interfaceName: "pdmp18v", subnet: "10.89.55.0/24", gateway: "10.89.55.1", vector: true,
 		},
 	}
 	for _, profile := range profiles {
@@ -115,7 +178,7 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		t.Fatal(err)
 	}
 	config := containerengine.ProductionConfig(paths, tree.WorkloadRoot())
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Minute)
 	defer cancel()
 	if _, err := containerengine.PrepareStorage(ctx, config); err != nil {
 		t.Fatal(err)
@@ -148,8 +211,17 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		DatabaseName: credentials.DatabaseName, OwnerUsername: credentials.OwnerUsername,
 	}
 	publisher := &integrationPublisher{}
+	store := &integrationStore{resource: resource}
+	extensionBuilder, err := postgresextension.New(postgresextension.Config{
+		Engine: engine, Growth: allowGrowthGate{}, CacheRoot: paths.PostgresExtensionRoot,
+		LogRoot: paths.LogsRoot, LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	controller, err := NewController(ControllerConfig{
-		Store: integrationStore{resource: resource}, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
+		Store: store, Extensions: store, ExtensionBuilder: extensionBuilder,
+		Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: allowMaintenanceGate{}, Admission: admission.New(),
 		OwnerPassword:     func(state.ManagedPostgres) (string, error) { return credentials.OwnerPassword, nil },
 		BootstrapPassword: func(state.ManagedPostgres) (string, error) { return credentials.BootstrapPassword, nil },
 		Placement: func(state.ManagedPostgres) (Placement, error) {
@@ -201,6 +273,102 @@ FROM pg_roles WHERE rolname = current_user`)
 			t.Fatalf("managed owner has elevated privilege: %+v", privileges)
 		}
 	}
+	extensions, err := controller.Extensions(ctx, resource.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileFDWAvailable bool
+	for _, extension := range extensions {
+		if extension.Name == "file_fdw" {
+			fileFDWAvailable = true
+			break
+		}
+	}
+	if profile.vector {
+		var progress []string
+		if err := controller.ChangeExtension(ctx, resource.ID, postgresextension.VectorName, true, func(value string) {
+			progress = append(progress, value)
+		}); err != nil {
+			buildLogs, _ := filepath.Glob(filepath.Join(paths.LogsRoot, "postgres-extension-builds", "*.log"))
+			var logContent []byte
+			if len(buildLogs) != 0 {
+				logContent, _ = os.ReadFile(buildLogs[len(buildLogs)-1])
+			}
+			t.Fatalf("install pgvector: %v progress=%v\n%s", err, progress, logContent)
+		}
+		result, err = controller.Query(ctx, resource.ID, `
+CREATE TABLE embeddings(id bigint PRIMARY KEY, embedding vector(3));
+INSERT INTO embeddings VALUES (1, '[1,2,3]'), (2, '[4,5,6]');
+SELECT round((embedding <-> '[1,2,3]')::numeric, 3) FROM embeddings WHERE id = 2;`)
+		if err != nil || result.Statements[len(result.Statements)-1].Rows[0][0].Text != "5.196" {
+			t.Fatalf("pgvector query = %+v, %v", result, err)
+		}
+		dump, err := controller.OpenBackupDump(ctx, resource.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dumpBytes, readErr := io.ReadAll(dump)
+		closeErr := dump.Close()
+		if readErr != nil || closeErr != nil || len(dumpBytes) == 0 {
+			t.Fatalf("pgvector backup = %d bytes, %v/%v", len(dumpBytes), readErr, closeErr)
+		}
+		if err := controller.RestoreReplace(ctx, resource.ID, bytes.NewReader(dumpBytes), Actor{Kind: "system", ID: "integration"}); err != nil {
+			t.Fatalf("restore pgvector backup: %v", err)
+		}
+		result, err = controller.Query(ctx, resource.ID, "SELECT count(*) FROM embeddings")
+		if err != nil || result.Statements[0].Rows[0][0].Text != "2" {
+			t.Fatalf("restored pgvector data = %+v, %v", result, err)
+		}
+		if err := controller.Stop(ctx, resource.ID); err != nil {
+			t.Fatal(err)
+		}
+		images, err := engine.ImagesByLabel(ctx, postgresextension.OwnerLabel+"="+postgresextension.DerivedOwner)
+		if err != nil || len(images) != 1 {
+			t.Fatalf("derived image list = %+v, %v", images, err)
+		}
+		if err := engine.RemoveImage(ctx, images[0].ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := controller.Start(ctx, resource.ID); err != nil {
+			t.Fatalf("rebuild missing pgvector cache: %v", err)
+		}
+		result, err = controller.Query(ctx, resource.ID, "SELECT count(*) FROM embeddings")
+		if err != nil || result.Statements[0].Rows[0][0].Text != "2" {
+			t.Fatalf("data after pgvector cache rebuild = %+v, %v", result, err)
+		}
+	}
+	if !fileFDWAvailable {
+		t.Fatal("official PostgreSQL image does not expose file_fdw")
+	}
+	if err := controller.ChangeExtension(ctx, resource.ID, "file_fdw", true, nil); err != nil {
+		t.Fatalf("install untrusted extension through privileged controller: %v", err)
+	}
+	extensions, err = controller.Extensions(ctx, resource.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fileFDWInstalled bool
+	for _, extension := range extensions {
+		if extension.Name == "file_fdw" && extension.InstalledVersion != "" {
+			fileFDWInstalled = true
+			break
+		}
+	}
+	if !fileFDWInstalled {
+		t.Fatal("file_fdw was not installed")
+	}
+	if err := controller.ChangeExtension(ctx, resource.ID, "file_fdw", false, nil); err != nil {
+		t.Fatalf("uninstall untrusted extension through privileged controller: %v", err)
+	}
+	extensions, err = controller.Extensions(ctx, resource.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, extension := range extensions {
+		if extension.Name == "file_fdw" && extension.InstalledVersion != "" {
+			t.Fatal("file_fdw remained installed")
+		}
+	}
 	if err := controller.Stop(ctx, resource.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -211,8 +379,8 @@ FROM pg_roles WHERE rolname = current_user`)
 	if err != nil || len(result.Statements) != 1 || result.Statements[0].Rows[0][0].Text != "Ada Lovelace" {
 		t.Fatalf("persistent query = %+v, %v", result, err)
 	}
-	if publisher.published != 2 {
-		t.Fatalf("publication count = %d, want 2", publisher.published)
+	if publisher.published < 2 {
+		t.Fatalf("publication count = %d, want at least 2", publisher.published)
 	}
 	active, ok := controller.activeRuntime(resource.ID)
 	if !ok {

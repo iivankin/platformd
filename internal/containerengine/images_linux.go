@@ -4,10 +4,15 @@ package containerengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/containers/buildah"
+	"github.com/containers/podman/v5/libpod"
 	"go.podman.io/common/libimage"
 	commonconfig "go.podman.io/common/pkg/config"
+	"go.podman.io/image/v5/manifest"
+	"go.podman.io/image/v5/pkg/strslice"
 )
 
 func (e *Engine) Pull(ctx context.Context, request PullRequest) (Image, error) {
@@ -49,14 +54,119 @@ func (e *Engine) inspectImage(ctx context.Context, idOrName string) (Image, erro
 		return Image{}, fmt.Errorf("inspect image %s: %w", idOrName, err)
 	}
 	result := Image{
-		ID:     image.ID(),
-		Digest: image.Digest().String(),
-		Names:  image.Names(),
-		User:   data.User,
-		Size:   data.Size,
+		ID:           image.ID(),
+		Digest:       image.Digest().String(),
+		Names:        image.Names(),
+		User:         data.User,
+		Architecture: data.Architecture,
+		OS:           data.Os,
+		Labels:       cloneStrings(data.Labels),
+		Size:         data.Size,
 	}
 	if data.Created != nil {
 		result.Created = *data.Created
 	}
+	if data.Config != nil {
+		result.Entrypoint = append([]string(nil), data.Config.Entrypoint...)
+		result.Command = append([]string(nil), data.Config.Cmd...)
+	}
 	return result, nil
+}
+
+func (e *Engine) CommitDerivedImage(ctx context.Context, request DerivedImageRequest) (Image, error) {
+	if request.ContainerID == "" || request.BaseImageID == "" || request.Reference == "" {
+		return Image{}, errors.New("derived image request is incomplete")
+	}
+	base, _, err := e.runtime.LibimageRuntime().LookupImage(request.BaseImageID, nil)
+	if err != nil {
+		return Image{}, fmt.Errorf("lookup derived image base %s: %w", request.BaseImageID, err)
+	}
+	baseData, err := base.Inspect(ctx, nil)
+	if err != nil {
+		return Image{}, fmt.Errorf("inspect derived image base %s: %w", request.BaseImageID, err)
+	}
+	if baseData.Config == nil {
+		return Image{}, errors.New("derived image base has no OCI configuration")
+	}
+	container, err := e.lookupContainer(request.ContainerID)
+	if err != nil {
+		return Image{}, err
+	}
+	labels := make(map[string]string, len(baseData.Config.Labels)+len(request.Labels))
+	for key, value := range baseData.Config.Labels {
+		labels[key] = value
+	}
+	for key, value := range request.Labels {
+		if key == "" || value == "" {
+			return Image{}, errors.New("derived image labels cannot be empty")
+		}
+		labels[key] = value
+	}
+	// Commit the builder rootfs, but keep the base runtime contract exposed by
+	// the OCI image. In particular, the builder has a shell entrypoint and a
+	// read-only source mount that must not become the derived image defaults.
+	override := &manifest.Schema2Config{
+		User:         baseData.Config.User,
+		Env:          append([]string(nil), baseData.Config.Env...),
+		Cmd:          strslice.StrSlice(append([]string(nil), baseData.Config.Cmd...)),
+		WorkingDir:   baseData.Config.WorkingDir,
+		Entrypoint:   strslice.StrSlice(append([]string(nil), baseData.Config.Entrypoint...)),
+		Labels:       labels,
+		StopSignal:   baseData.Config.StopSignal,
+		Healthcheck:  baseData.HealthCheck,
+		ArgsEscaped:  baseData.Config.ArgsEscaped,
+		Volumes:      make(map[string]struct{}, len(baseData.Config.Volumes)),
+		ExposedPorts: make(manifest.Schema2PortSet, len(baseData.Config.ExposedPorts)),
+	}
+	for volume := range baseData.Config.Volumes {
+		override.Volumes[volume] = struct{}{}
+	}
+	for port := range baseData.Config.ExposedPorts {
+		override.ExposedPorts[manifest.Schema2Port(port)] = struct{}{}
+	}
+	committed, err := container.Commit(ctx, request.Reference, libpod.ContainerCommitOptions{
+		CommitOptions: buildah.CommitOptions{
+			SignaturePolicyPath: e.config.SignaturePolicy,
+			OverrideConfig:      override,
+		},
+		IncludeVolumes: false,
+		Pause:          false,
+	})
+	if err != nil {
+		return Image{}, fmt.Errorf("commit derived image %s: %w", request.Reference, err)
+	}
+	return e.inspectImage(ctx, committed.ID())
+}
+
+func (e *Engine) ImagesByLabel(ctx context.Context, label string) ([]Image, error) {
+	if label == "" {
+		return nil, errors.New("image label filter is empty")
+	}
+	images, err := e.runtime.LibimageRuntime().ListImages(ctx, &libimage.ListImagesOptions{
+		Filters: []string{"label=" + label},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list images by label %s: %w", label, err)
+	}
+	result := make([]Image, 0, len(images))
+	for _, image := range images {
+		inspected, err := e.inspectImage(ctx, image.ID())
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, inspected)
+	}
+	return result, nil
+}
+
+func (e *Engine) RemoveImage(ctx context.Context, id string) error {
+	if id == "" {
+		return errors.New("image ID is empty")
+	}
+	_, failures := e.runtime.LibimageRuntime().RemoveImages(ctx, []string{id}, &libimage.RemoveImagesOptions{
+		Force:   false,
+		Ignore:  true,
+		NoPrune: true,
+	})
+	return errors.Join(failures...)
 }

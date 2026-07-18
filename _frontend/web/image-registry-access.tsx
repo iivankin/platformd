@@ -3,6 +3,13 @@ import { useState } from "react";
 
 import type { ImageCredential } from "@/api";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ImageCredentialForm } from "@/image-credential-form";
 import {
   imageRegistryHost,
@@ -61,20 +68,39 @@ export const ImageRegistryAccess = ({
       ) : (
         <>
           <div className="flex gap-2">
-            <select
-              className="h-8 min-w-0 flex-1 border border-input bg-background px-2 text-xs text-foreground outline-none focus:border-ring disabled:text-muted-foreground"
+            <Select
               disabled={!registryHost}
-              id={id}
-              onChange={(event) => onCredentialSelect(event.target.value)}
-              value={selectedCredentialID}
+              items={[
+                {
+                  label: "No credential · anonymous pull",
+                  value: "__anonymous__",
+                },
+                ...matchingCredentials.map((credential) => ({
+                  label: `${credential.name} · ${credential.username}`,
+                  value: credential.id,
+                })),
+              ]}
+              onValueChange={(value) =>
+                onCredentialSelect(
+                  value === "__anonymous__" ? "" : String(value)
+                )
+              }
+              value={selectedCredentialID || "__anonymous__"}
             >
-              <option value="">No credential · anonymous pull</option>
-              {matchingCredentials.map((credential) => (
-                <option key={credential.id} value={credential.id}>
-                  {credential.name} · {credential.username}
-                </option>
-              ))}
-            </select>
+              <SelectTrigger className="h-8 min-w-0 flex-1 text-xs" id={id}>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="start">
+                <SelectItem value="__anonymous__">
+                  No credential · anonymous pull
+                </SelectItem>
+                {matchingCredentials.map((credential) => (
+                  <SelectItem key={credential.id} value={credential.id}>
+                    {credential.name} · {credential.username}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <Button
               disabled={!registryHost}
               onClick={() => setCredentialOpen((current) => !current)}

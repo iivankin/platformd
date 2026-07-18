@@ -10,7 +10,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func TestImportControlAtomicallyReplacesTargetAndEntersRecovery(t *testing.T) {
+func TestImportControlAtomicallyRefreshesSelectedTargetAndEntersRecovery(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
@@ -21,12 +21,14 @@ func TestImportControlAtomicallyReplacesTargetAndEntersRecovery(t *testing.T) {
 	if err := createTestInstallation(ctx, store); err != nil {
 		t.Fatal(err)
 	}
+	createControlImportTarget(t, ctx, store)
 	team := "replacement.cloudflareaccess.com"
 	audience := "replacement-audience"
 	secret := []byte("encrypted-secret")
 	if err := store.ImportControl(ctx, state.ControlImport{
 		ExpectedInstallationID: "installation", AccessTeamDomain: &team, AccessAudience: &audience,
 		Target: state.BackupTarget{
+			ID:       "target",
 			Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", Prefix: "prefix",
 			AccessKeyID: "access", SecretAccessKeyEncrypted: secret,
 		},
@@ -38,7 +40,7 @@ func TestImportControlAtomicallyReplacesTargetAndEntersRecovery(t *testing.T) {
 	if err != nil || !installation.RecoveryMode || installation.AccessTeamDomain != team || installation.AccessAudience != audience {
 		t.Fatalf("restored installation = %+v, %v", installation, err)
 	}
-	target, err := store.BackupTarget(ctx)
+	target, err := store.BackupTarget(ctx, "target")
 	if err != nil || target.Endpoint != "https://s3.example.com" || !bytes.Equal(target.SecretAccessKeyEncrypted, secret) {
 		t.Fatalf("restored target = %+v, %v", target, err)
 	}
@@ -59,9 +61,10 @@ func TestImportControlMismatchRollsBackEveryMutation(t *testing.T) {
 	if err := createTestInstallation(ctx, store); err != nil {
 		t.Fatal(err)
 	}
+	createControlImportTarget(t, ctx, store)
 	if err := store.ImportControl(ctx, state.ControlImport{
 		ExpectedInstallationID: "other",
-		Target:                 state.BackupTarget{Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("secret")},
+		Target:                 state.BackupTarget{ID: "target", Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", Prefix: "prefix", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("replacement")},
 		AuditEventID:           "restore-audit", ImportedAtMillis: 2,
 	}); err == nil {
 		t.Fatal("mismatched installation was imported")
@@ -70,8 +73,24 @@ func TestImportControlMismatchRollsBackEveryMutation(t *testing.T) {
 	if err != nil || installation.RecoveryMode {
 		t.Fatalf("failed import changed recovery state = %+v, %v", installation, err)
 	}
-	if _, err := store.BackupTarget(ctx); err != state.ErrBackupTargetNotFound {
-		t.Fatalf("failed import wrote target: %v", err)
+	target, err := store.BackupTarget(ctx, "target")
+	if err != nil || !bytes.Equal(target.SecretAccessKeyEncrypted, []byte("old-secret")) {
+		t.Fatalf("failed import changed target: %+v, %v", target, err)
+	}
+}
+
+func createControlImportTarget(t *testing.T, ctx context.Context, store *state.Store) {
+	t.Helper()
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "region",
+			Bucket: "bucket", Prefix: "prefix", AccessKeyID: "old-access",
+			SecretAccessKeyEncrypted: []byte("old-secret"),
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "admin@example.com", UpdatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

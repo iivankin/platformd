@@ -13,6 +13,7 @@ CREATE TABLE installation (
   access_audience TEXT NOT NULL,
   console_passphrase_phc TEXT NOT NULL,
   recovery_mode INTEGER NOT NULL DEFAULT 0 CHECK (recovery_mode IN (0, 1)),
+  backup_control_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 ) STRICT;
@@ -38,6 +39,7 @@ CREATE TABLE registry_repositories (
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 ) STRICT;
@@ -144,7 +146,12 @@ CREATE TABLE volumes (
   name TEXT NOT NULL,
   owner_uid INTEGER NOT NULL CHECK (owner_uid >= 0),
   owner_gid INTEGER NOT NULL CHECK (owner_gid >= 0),
+  backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
+  backup_cron TEXT,
+  backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
   UNIQUE (service_id, name)
 ) STRICT;
 
@@ -220,6 +227,7 @@ CREATE TABLE object_stores (
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (project_id, name),
@@ -294,10 +302,21 @@ CREATE TABLE managed_postgres (
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (project_id, name)
 ) STRICT;
+
+CREATE TABLE managed_postgres_extensions (
+  postgres_id TEXT NOT NULL REFERENCES managed_postgres(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  version TEXT NOT NULL,
+  recipe_digest TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (postgres_id, name)
+) WITHOUT ROWID, STRICT;
 
 CREATE TABLE managed_redis (
   id TEXT PRIMARY KEY,
@@ -312,13 +331,15 @@ CREATE TABLE managed_redis (
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (project_id, name)
 ) STRICT;
 
-CREATE TABLE backup_target (
-  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+CREATE TABLE backup_targets (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
   endpoint TEXT NOT NULL,
   region TEXT NOT NULL,
   bucket TEXT NOT NULL,
@@ -326,12 +347,14 @@ CREATE TABLE backup_target (
   access_key_id TEXT NOT NULL,
   secret_access_key_encrypted BLOB NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  UNIQUE (endpoint, region, bucket, prefix)
 ) STRICT;
 
 CREATE TABLE backups (
   id TEXT PRIMARY KEY,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'registry', 'object_store', 'postgres', 'redis')),
+  target_id TEXT NOT NULL,
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'registry', 'object_store', 'postgres', 'redis', 'volume')),
   resource_id TEXT NOT NULL,
   scheduled_occurrence INTEGER,
   generation_id TEXT,
@@ -343,7 +366,7 @@ CREATE TABLE backups (
   finished_at INTEGER
 ) STRICT;
 
-CREATE INDEX backups_resource_started_idx ON backups(resource_kind, resource_id, started_at DESC);
+CREATE INDEX backups_resource_started_idx ON backups(target_id, resource_kind, resource_id, started_at DESC);
 CREATE UNIQUE INDEX backups_scheduled_occurrence_idx ON backups(resource_kind, resource_id, scheduled_occurrence) WHERE scheduled_occurrence IS NOT NULL;
 
 CREATE TABLE api_tokens (
@@ -402,6 +425,6 @@ CREATE INDEX resource_metric_samples_retention_idx
   ON resource_metric_samples(observed_at);
 
 INSERT INTO schema_migrations(version, applied_at)
-VALUES (8, unixepoch('subsec') * 1000);
+VALUES (10, unixepoch('subsec') * 1000);
 
-PRAGMA user_version = 8;
+PRAGMA user_version = 10;

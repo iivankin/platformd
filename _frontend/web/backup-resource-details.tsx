@@ -8,91 +8,27 @@ import {
   Save,
 } from "lucide-react";
 
-import type { BackupGeneration, BackupPolicy, BackupRecord } from "@/api";
+import type {
+  BackupGeneration,
+  BackupPolicy,
+  BackupRecord,
+  BackupTarget,
+} from "@/api";
+import { formatBackupTimestamp } from "@/backup-format";
+import { BackupList } from "@/backup-list";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
-const bytes = (value?: number) => {
-  if (value === undefined) {
-    return "—";
-  }
-  const units = ["B", "KiB", "MiB", "GiB", "TiB"];
-  let amount = value;
-  let unit = 0;
-  while (amount >= 1024 && unit < units.length - 1) {
-    amount /= 1024;
-    unit += 1;
-  }
-  return `${amount.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
-};
-
-const timestamp = (value?: number) =>
-  value
-    ? new Date(value).toLocaleString(undefined, {
-        dateStyle: "medium",
-        timeStyle: "short",
-      })
-    : "—";
-
-const duration = (record?: BackupRecord) => {
-  if (!record?.finishedAt || record.finishedAt < record.startedAt) {
-    return "—";
-  }
-  const seconds = Math.round((record.finishedAt - record.startedAt) / 1000);
-  return seconds < 60
-    ? `${seconds}s`
-    : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-};
-
-const BackupRunSummary = ({
-  history,
-  policy,
-}: {
-  history: BackupRecord[];
-  policy: BackupPolicy;
-}) => {
-  const lastSuccess = history.find((record) => record.status === "succeeded");
-  const lastFailure = history.find(
-    (record) => record.status === "failed" || record.status === "interrupted"
-  );
-  const next = policy.nextRunAt ? new Date(policy.nextRunAt) : undefined;
-  return (
-    <div className="grid border-b border-border text-[9px] md:grid-cols-3">
-      <div className="border-b border-border px-5 py-3 md:border-r md:border-b-0">
-        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-          Next run
-        </p>
-        <p className="mt-1">
-          {next ? next.toISOString().replace(".000Z", "Z") : "Disabled"}
-        </p>
-        <p className="mt-1 text-muted-foreground">
-          {next ? `${next.toLocaleString()} local` : "No scheduled occurrence"}
-        </p>
-      </div>
-      <div className="border-b border-border px-5 py-3 md:border-r md:border-b-0">
-        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-          Last success
-        </p>
-        <p className="mt-1">{timestamp(lastSuccess?.finishedAt)}</p>
-        <p className="mt-1 text-muted-foreground">
-          {duration(lastSuccess)} · {bytes(lastSuccess?.sizeBytes)}
-        </p>
-      </div>
-      <div className="px-5 py-3">
-        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-          Last error
-        </p>
-        <p className="mt-1 text-rose-600 dark:text-rose-300">
-          {lastFailure?.errorMessage || lastFailure?.errorCode || "—"}
-        </p>
-        <p className="mt-1 text-muted-foreground">
-          {timestamp(lastFailure?.finishedAt)}
-        </p>
-      </div>
-    </div>
-  );
-};
+const noBackupStorage = "__no-backup-storage__";
 
 interface BackupResourceDetailsProperties {
   busy: string;
@@ -110,12 +46,15 @@ interface BackupResourceDetailsProperties {
   onRun: () => void;
   onSave: () => void;
   onSelectedChange: (generation?: BackupGeneration) => void;
+  onTargetChange: (targetID: string) => void;
   policy: BackupPolicy;
   policyValid: boolean;
   restoring: boolean;
   restoreProgress?: string;
   retentionCount: string;
   selected?: BackupGeneration;
+  targetID: string;
+  targets: BackupTarget[];
 }
 
 export const BackupResourceDetails = ({
@@ -134,218 +73,221 @@ export const BackupResourceDetails = ({
   onRun,
   onSave,
   onSelectedChange,
+  onTargetChange,
   policy,
   policyValid,
   restoring,
   restoreProgress,
   retentionCount,
   selected,
-}: BackupResourceDetailsProperties) => (
-  <div>
-    <div className="grid border-b border-border md:grid-cols-[9rem_minmax(16rem,1fr)_10rem_auto]">
-      <div className="border-b border-border px-5 py-4 md:border-r md:border-b-0">
-        <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-          Scheduled
-        </p>
-        <Button
-          className="mt-2 w-full"
-          onClick={() => onEnabledChange(!enabled)}
-          size="sm"
-          variant={enabled ? "default" : "outline"}
-        >
-          {enabled ? <Check /> : <Clock3 />}
-          {enabled ? "Enabled" : "Disabled"}
-        </Button>
-      </div>
-      <label
-        className="border-b border-border px-5 py-4 md:border-r md:border-b-0"
-        htmlFor={`backup-cron-${policy.resourceId}`}
-      >
-        <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-          Five-field UTC cron
-        </span>
-        <Input
-          className="mt-2 font-mono"
-          disabled={!enabled}
-          id={`backup-cron-${policy.resourceId}`}
-          onChange={(event) => onCronChange(event.target.value)}
-          value={cron}
-        />
-      </label>
-      <label
-        className="border-b border-border px-5 py-4 md:border-r md:border-b-0"
-        htmlFor={`backup-retention-${policy.resourceId}`}
-      >
-        <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-          Keep generations
-        </span>
-        <Input
-          className="mt-2"
-          id={`backup-retention-${policy.resourceId}`}
-          max={100}
-          min={1}
-          onChange={(event) => onRetentionChange(event.target.value)}
-          type="number"
-          value={retentionCount}
-        />
-      </label>
-      <div className="flex items-end gap-2 px-5 py-4">
-        <Button disabled={!policyValid} onClick={onSave} size="sm">
-          {busy === "save" ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <Save />
-          )}
-          Save policy
-        </Button>
-      </div>
-    </div>
+  targetID,
+  targets,
+}: BackupResourceDetailsProperties) => {
+  const nextBackupVisible = Boolean(enabled && cron.trim() && policy.nextRunAt);
 
-    <BackupRunSummary history={history} policy={policy} />
-
-    <div className="flex flex-wrap items-center gap-2 border-b border-border px-5 py-3">
-      <Button disabled={Boolean(busy)} onClick={onRun} size="sm">
-        {busy === "run" ? <LoaderCircle className="animate-spin" /> : <Play />}
-        Backup now
-      </Button>
-      <Button
-        disabled={detailsLoading}
-        onClick={onRefresh}
-        size="sm"
-        variant="ghost"
-      >
-        <RefreshCw className={cn(detailsLoading && "animate-spin")} />
-        Refresh
-      </Button>
-      <span className="ml-auto text-[9px] text-muted-foreground">
-        Manual backup works even while the schedule is disabled.
-      </span>
-    </div>
-
-    <div className="grid xl:grid-cols-2">
-      <section className="border-b border-border xl:border-r xl:border-b-0">
-        <div className="border-b border-border px-5 py-3 text-[9px] font-medium">
-          Complete generations · {generations.length}
-        </div>
-        {generations.length === 0 ? (
-          <p className="px-5 py-4 text-[9px] text-muted-foreground">
-            No complete remote generation.
+  return (
+    <div className="grid gap-3">
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+        <div className="px-5 py-4">
+          <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
+            Backup schedule
+          </h3>
+          <p className="mt-2 text-[9px] leading-4 text-muted-foreground">
+            Run encrypted backups automatically and keep only the latest copies.
           </p>
-        ) : (
-          generations.map((generation) => (
-            <div
-              className="grid items-center gap-2 border-b border-border px-5 py-3 last:border-b-0 md:grid-cols-[minmax(10rem,1fr)_minmax(9rem,1fr)_auto]"
-              key={generation.generationId}
+        </div>
+        <div className="border-t border-border lg:border-t-0 lg:border-l">
+          <button
+            aria-pressed={enabled}
+            className="flex min-h-12 w-full items-center gap-3 border-b border-border px-5 text-left hover:bg-muted/40"
+            onClick={() => onEnabledChange(!enabled)}
+            type="button"
+          >
+            <span
+              className={cn(
+                "grid size-6 place-items-center border",
+                enabled
+                  ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600"
+                  : "border-border text-muted-foreground"
+              )}
             >
-              <div className="min-w-0">
-                <p className="truncate font-mono text-[9px]">
-                  {generation.generationId}
-                </p>
-                <p className="mt-1 text-[8px] text-muted-foreground">
-                  {bytes(generation.plaintextSize)} raw ·{" "}
-                  {bytes(generation.remoteSize)} remote
-                </p>
-              </div>
-              <span className="text-[8px] text-muted-foreground">
-                {timestamp(generation.completedAt)}
+              {enabled ? (
+                <Check className="size-3" />
+              ) : (
+                <Clock3 className="size-3" />
+              )}
+            </span>
+            <span className="text-[10px]">Automatic backups</span>
+            <span className="ml-auto text-[9px] text-muted-foreground">
+              {enabled ? "On" : "Off"}
+            </span>
+          </button>
+
+          <div className="grid md:grid-cols-[minmax(12rem,0.8fr)_minmax(14rem,1fr)_8rem_auto] md:items-end">
+            <div className="border-b border-border px-5 py-4 md:border-r md:border-b-0">
+              <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                Storage
               </span>
-              <Button
-                disabled={restoring}
-                onClick={() => onSelectedChange(generation)}
-                size="sm"
-                variant="ghost"
+              <Select
+                items={[
+                  { label: "No storage", value: noBackupStorage },
+                  ...targets.map((target) => ({
+                    label: target.name,
+                    value: target.id,
+                  })),
+                ]}
+                onValueChange={(value) =>
+                  onTargetChange(value === noBackupStorage ? "" : String(value))
+                }
+                value={targetID || noBackupStorage}
               >
-                <ArchiveRestore />
-                Restore
+                <SelectTrigger className="mt-2 h-9 w-full text-[10px]">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value={noBackupStorage}>No storage</SelectItem>
+                  {targets.map((target) => (
+                    <SelectItem key={target.id} value={target.id}>
+                      {target.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <label
+              className="border-b border-border px-5 py-4 md:border-r md:border-b-0"
+              htmlFor={`backup-cron-${policy.resourceId}`}
+            >
+              <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                Schedule · UTC cron
+              </span>
+              <Input
+                className="mt-2 font-mono"
+                id={`backup-cron-${policy.resourceId}`}
+                onChange={(event) => onCronChange(event.target.value)}
+                placeholder="0 3 * * *"
+                value={cron}
+              />
+            </label>
+            <label
+              className="border-b border-border px-5 py-4 md:border-r md:border-b-0"
+              htmlFor={`backup-retention-${policy.resourceId}`}
+            >
+              <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                Keep latest
+              </span>
+              <Input
+                className="mt-2"
+                id={`backup-retention-${policy.resourceId}`}
+                max={100}
+                min={1}
+                onChange={(event) => onRetentionChange(event.target.value)}
+                type="number"
+                value={retentionCount}
+              />
+            </label>
+            <div className="px-5 py-4">
+              <Button disabled={!policyValid} onClick={onSave} size="sm">
+                {busy === "save" ? (
+                  <LoaderCircle className="animate-spin" />
+                ) : (
+                  <Save />
+                )}
+                Save schedule
               </Button>
             </div>
-          ))
-        )}
-      </section>
-
-      <section>
-        <div className="border-b border-border px-5 py-3 text-[9px] font-medium">
-          Run history · latest 50
+          </div>
         </div>
-        {history.length === 0 ? (
-          <p className="px-5 py-4 text-[9px] text-muted-foreground">
-            No backup runs yet.
-          </p>
-        ) : (
-          history.map((record) => (
-            <div
-              className="grid gap-2 border-b border-border px-5 py-3 last:border-b-0 md:grid-cols-[7rem_minmax(9rem,1fr)_auto]"
-              key={record.id}
-            >
-              <span
-                className={cn(
-                  "text-[9px] capitalize",
-                  record.status === "succeeded" && "text-emerald-600",
-                  record.status === "failed" && "text-rose-600",
-                  record.status === "running" && "text-amber-600"
-                )}
-              >
-                {record.status}
-              </span>
-              <div>
-                <p className="text-[8px] text-muted-foreground">
-                  {timestamp(record.startedAt)}
-                </p>
-                {record.errorMessage ? (
-                  <p className="mt-1 text-[8px] text-rose-600">
-                    {record.errorMessage}
-                  </p>
-                ) : null}
-              </div>
-              <span className="text-right text-[8px] text-muted-foreground">
-                {bytes(record.sizeBytes)}
-              </span>
-            </div>
-          ))
-        )}
-      </section>
-    </div>
+      </SectionCard>
 
-    {selected ? (
-      <div className="flex flex-col gap-3 border-t border-amber-500/30 bg-amber-500/5 px-5 py-4 md:flex-row md:items-center">
-        <ArchiveRestore className="size-4 shrink-0 text-amber-600" />
-        <p className="min-w-0 flex-1 text-[10px] leading-4">
-          Replace this resource with generation{" "}
-          <span className="font-mono">{selected.generationId}</span>? Current
-          data will be replaced after the remote generation is fully verified.
-        </p>
+      <SectionCard className="flex min-h-12 flex-wrap items-center gap-3 px-5 py-3">
+        {policy.resourceKind === "volume" ? (
+          <p className="w-full text-[9px] text-muted-foreground">
+            Live file backup. The service stays online, so files changed while
+            copying may be captured at different moments.
+          </p>
+        ) : null}
+        {nextBackupVisible ? (
+          <p className="inline-flex items-center gap-2 text-[10px]">
+            <Clock3 className="size-3.5 text-muted-foreground" />
+            <span className="text-muted-foreground">Next backup:</span>
+            <time>{formatBackupTimestamp(policy.nextRunAt)}</time>
+          </p>
+        ) : null}
         <Button
-          disabled={restoring}
-          onClick={() => onSelectedChange()}
+          className={cn(!nextBackupVisible && "ml-auto")}
+          disabled={Boolean(busy) || !targetID}
+          onClick={onRun}
+          size="sm"
+        >
+          {busy === "run" ? (
+            <LoaderCircle className="animate-spin" />
+          ) : (
+            <Play />
+          )}
+          Back up now
+        </Button>
+        <Button
+          aria-label="Refresh backups"
+          className={cn(nextBackupVisible && "ml-auto")}
+          disabled={detailsLoading}
+          onClick={onRefresh}
           size="sm"
           variant="ghost"
         >
-          Cancel
+          <RefreshCw className={cn(detailsLoading && "animate-spin")} />
+          Refresh
         </Button>
-        <Button
-          disabled={restoring}
-          onClick={() => onRestore(selected.generationId)}
-          size="sm"
-        >
-          {restoring ? (
-            <LoaderCircle className="animate-spin" />
-          ) : (
-            <ArchiveRestore />
-          )}
-          Replace resource
-        </Button>
-      </div>
-    ) : null}
+      </SectionCard>
 
-    {restoring ? (
-      <p className="border-t border-border px-5 py-3 text-[9px] text-muted-foreground">
-        Restore operation · {restoreProgress || "starting"}
-      </p>
-    ) : null}
-    {error ? (
-      <p className="border-t border-rose-500/30 bg-rose-500/5 px-5 py-3 text-[10px] text-rose-600 dark:text-rose-300">
-        {error}
-      </p>
-    ) : null}
-  </div>
-);
+      <BackupList
+        generations={generations}
+        history={history}
+        onRestore={onSelectedChange}
+        restoring={restoring}
+      />
+
+      {selected ? (
+        <SectionCard className="flex flex-col gap-3 bg-amber-500/5 px-5 py-4 ring-amber-500/30 md:flex-row md:items-center">
+          <ArchiveRestore className="size-4 shrink-0 text-amber-600" />
+          <p className="min-w-0 flex-1 text-[10px] leading-4">
+            Replace current data with the backup from{" "}
+            <time>{formatBackupTimestamp(selected.completedAt)}</time>? The
+            remote backup is verified before replacement starts.
+          </p>
+          <Button
+            disabled={restoring}
+            onClick={() => onSelectedChange()}
+            size="sm"
+            variant="ghost"
+          >
+            Cancel
+          </Button>
+          <Button
+            disabled={restoring}
+            onClick={() => onRestore(selected.generationId)}
+            size="sm"
+          >
+            {restoring ? (
+              <LoaderCircle className="animate-spin" />
+            ) : (
+              <ArchiveRestore />
+            )}
+            Restore backup
+          </Button>
+        </SectionCard>
+      ) : null}
+
+      {restoring ? (
+        <SectionCard className="px-5 py-3 text-[9px] text-muted-foreground">
+          Restore · {restoreProgress || "starting"}
+        </SectionCard>
+      ) : null}
+      {error ? (
+        <SectionCard className="bg-destructive/5 px-5 py-3 text-[10px] text-destructive ring-destructive/30">
+          {error}
+        </SectionCard>
+      ) : null}
+    </div>
+  );
+};

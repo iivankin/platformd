@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 8
+	currentSchemaVersion = 10
 	writerQueueSize      = 128
 )
 
@@ -54,6 +54,15 @@ var (
 
 	//go:embed migration_8_without_services.sql
 	migration8WithoutServices string
+
+	//go:embed migration_9.sql
+	migration9 string
+
+	//go:embed migration_10.sql
+	migration10 string
+
+	//go:embed migration_10_without_backup.sql
+	migration10WithoutBackup string
 )
 
 type Store struct {
@@ -276,8 +285,21 @@ func migrate(ctx context.Context, database *sql.DB) error {
 	switch version {
 	case currentSchemaVersion:
 		return nil
+	case 9:
+		return applyMigration10(ctx, database)
+	case 8:
+		if err := applyMigration(ctx, database, migration9, 9); err != nil {
+			return err
+		}
+		return applyMigration10(ctx, database)
 	case 7:
-		return applyMigration8(ctx, database)
+		if err := applyMigration8(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration(ctx, database, migration9, 9); err != nil {
+			return err
+		}
+		return applyMigration10(ctx, database)
 	case 0:
 		transaction, err := database.BeginTx(ctx, nil)
 		if err != nil {
@@ -307,7 +329,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration6, 6); err != nil {
 			return err
 		}
-		return applyMigrations7And8(ctx, database)
+		return applyMigrations7To9(ctx, database)
 	case 2:
 		if err := applyMigration(ctx, database, migration3, 3); err != nil {
 			return err
@@ -321,7 +343,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration6, 6); err != nil {
 			return err
 		}
-		return applyMigrations7And8(ctx, database)
+		return applyMigrations7To9(ctx, database)
 	case 3:
 		if err := applyMigration(ctx, database, migration4, 4); err != nil {
 			return err
@@ -332,7 +354,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration6, 6); err != nil {
 			return err
 		}
-		return applyMigrations7And8(ctx, database)
+		return applyMigrations7To9(ctx, database)
 	case 4:
 		if err := applyMigration(ctx, database, migration5, 5); err != nil {
 			return err
@@ -340,24 +362,47 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration6, 6); err != nil {
 			return err
 		}
-		return applyMigrations7And8(ctx, database)
+		return applyMigrations7To9(ctx, database)
 	case 5:
 		if err := applyMigration(ctx, database, migration6, 6); err != nil {
 			return err
 		}
-		return applyMigrations7And8(ctx, database)
+		return applyMigrations7To9(ctx, database)
 	case 6:
-		return applyMigrations7And8(ctx, database)
+		return applyMigrations7To9(ctx, database)
 	default:
 		return fmt.Errorf("unsupported SQLite schema version %d; this binary supports exactly %d", version, currentSchemaVersion)
 	}
 }
 
-func applyMigrations7And8(ctx context.Context, database *sql.DB) error {
+func applyMigrations7To9(ctx context.Context, database *sql.DB) error {
 	if err := applyMigration7(ctx, database); err != nil {
 		return err
 	}
-	return applyMigration8(ctx, database)
+	if err := applyMigration8(ctx, database); err != nil {
+		return err
+	}
+	if err := applyMigration(ctx, database, migration9, 9); err != nil {
+		return err
+	}
+	return applyMigration10(ctx, database)
+}
+
+func applyMigration10(ctx context.Context, database *sql.DB) error {
+	var legacyTargetTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'backup_target'`).Scan(&legacyTargetTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 10: %w", err)
+	}
+	statements := migration10
+	if legacyTargetTableCount == 0 {
+		// The earliest registry-only schemas predate the entire backup subsystem.
+		// They remain readable for upgrades, but have no resource policy columns
+		// or singleton target to migrate. Add only the common v10 backup catalog;
+		// installations created by backup-capable releases take the full path.
+		statements = migration10WithoutBackup
+	}
+	return applyMigration(ctx, database, statements, 10)
 }
 
 func applyMigration8(ctx context.Context, database *sql.DB) error {

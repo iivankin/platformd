@@ -38,10 +38,17 @@ func TestControlJobPublishesAndRecordsOnlyStartedWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := targetApplication.SetTarget(ctx, TargetInput{
+	targetResult, err := targetApplication.SetTarget(ctx, TargetInput{
+		Name:     "Primary",
 		Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", Prefix: "prefix",
 		AccessKeyID: "access", SecretAccessKey: "secret",
 		Actor: Actor{Kind: "access", ID: "test", Email: "test@example.com"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := targetApplication.SetControlTarget(ctx, targetResult.Target.ID, Actor{
+		Kind: "access", ID: "test", Email: "test@example.com",
 	}); err != nil {
 		t.Fatal(err)
 	}

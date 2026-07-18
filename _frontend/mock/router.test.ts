@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   createAPIToken,
+  createBackupTarget,
   createProject,
   createRegistryRepository,
   deleteService,
@@ -11,13 +12,14 @@ import {
   fetchAuditEvents,
   fetchBackupPolicies,
   fetchBackupPolicy,
-  fetchBackupTarget,
+  fetchBackupTargets,
   fetchContainerFiles,
   fetchDiskPressure,
   fetchIdentity,
   fetchInfrastructureLogs,
   fetchInstallationSettings,
   fetchManagedPostgres,
+  fetchManagedPostgresExtensions,
   fetchManagedRedis,
   fetchMeta,
   fetchObjects,
@@ -41,8 +43,8 @@ import {
   fetchVolumes,
   scanManagedRedisKeys,
   setAutomationHostname,
-  setBackupTarget,
   setRegistryHostname,
+  setManagedPostgresExtension,
   uploadContainerFile,
 } from "../web/api";
 import { handleMockAPI } from "./router";
@@ -100,7 +102,7 @@ describe("mock API", () => {
       meta,
       identity,
       projects,
-      backupTarget,
+      backupTargets,
       backupPolicies,
       pressure,
       infrastructureLogs,
@@ -113,7 +115,7 @@ describe("mock API", () => {
       fetchMeta(undefined, mockFetch),
       fetchIdentity(undefined, mockFetch),
       fetchProjects(undefined, mockFetch),
-      fetchBackupTarget(undefined, mockFetch),
+      fetchBackupTargets(undefined, mockFetch),
       fetchBackupPolicies(undefined, mockFetch),
       fetchDiskPressure(undefined, mockFetch),
       fetchInfrastructureLogs(500, undefined, mockFetch),
@@ -135,7 +137,7 @@ describe("mock API", () => {
       mockFetch
     );
     expect(canvas).toBeDefined();
-    expect(backupTarget.configured).toBe(true);
+    expect(backupTargets.targets).toHaveLength(1);
     expect(backupPolicies).toHaveLength(4);
     expect(pressure.level).toBe("normal");
     expect(infrastructureLogs.records).not.toHaveLength(0);
@@ -203,8 +205,20 @@ describe("mock API", () => {
       fetchObjectStore("project-demo", "object-assets", undefined, mockFetch),
       fetchObjects("project-demo", "object-assets", {}, undefined, mockFetch),
       fetchBackupPolicy("postgres", "postgres-main", undefined, mockFetch),
-      fetchBackupHistory("postgres", "postgres-main", undefined, mockFetch),
-      fetchBackupGenerations("postgres", "postgres-main", undefined, mockFetch),
+      fetchBackupHistory(
+        "postgres",
+        "postgres-main",
+        "backup-target-primary",
+        undefined,
+        mockFetch
+      ),
+      fetchBackupGenerations(
+        "postgres",
+        "postgres-main",
+        "backup-target-primary",
+        undefined,
+        mockFetch
+      ),
       fetchRegistryImages("repository-api", {}, undefined, mockFetch),
       fetchResourceLogs(
         "project-demo",
@@ -301,6 +315,54 @@ describe("mock API", () => {
     expect(image.tags).toContain("stable");
   });
 
+  test("mock PostgreSQL extensions can be installed and uninstalled", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+    const initial = await fetchManagedPostgresExtensions(
+      "project-demo",
+      "postgres-main",
+      undefined,
+      mockFetch
+    );
+    expect(
+      initial.find((extension) => extension.name === "uuid-ossp")
+    ).not.toHaveProperty("installedVersion");
+
+    await setManagedPostgresExtension(
+      "project-demo",
+      "postgres-main",
+      "uuid-ossp",
+      true,
+      mockFetch
+    );
+    const installed = await fetchManagedPostgresExtensions(
+      "project-demo",
+      "postgres-main",
+      undefined,
+      mockFetch
+    );
+    expect(
+      installed.find((extension) => extension.name === "uuid-ossp")
+        ?.installedVersion
+    ).toBe("1.1");
+
+    await setManagedPostgresExtension(
+      "project-demo",
+      "postgres-main",
+      "uuid-ossp",
+      false,
+      mockFetch
+    );
+    const removed = await fetchManagedPostgresExtensions(
+      "project-demo",
+      "postgres-main",
+      undefined,
+      mockFetch
+    );
+    expect(
+      removed.find((extension) => extension.name === "uuid-ossp")
+    ).not.toHaveProperty("installedVersion");
+  });
+
   test("mutations update only the in-memory state", async () => {
     const state = createMockState("empty");
     const mockFetch = fetcher(state);
@@ -310,11 +372,12 @@ describe("mock API", () => {
       { name: "preview-token", projectId: project.id, role: "admin" },
       mockFetch
     );
-    await setBackupTarget(
+    await createBackupTarget(
       {
         accessKeyId: "MOCK_ACCESS_KEY",
         bucket: "mock-backups",
         endpoint: "https://s3.mock.local",
+        name: "Preview storage",
         prefix: "preview",
         region: "mock-region-1",
         secretAccessKey: "mock-only-secret",
@@ -334,13 +397,13 @@ describe("mock API", () => {
     await setAutomationHostname("api.preview.local", mockFetch);
 
     const projects = await fetchProjects(undefined, mockFetch);
-    const backupTarget = await fetchBackupTarget(undefined, mockFetch);
+    const backupTargets = await fetchBackupTargets(undefined, mockFetch);
     const registrySettings = await fetchRegistrySettings(undefined, mockFetch);
     const repositories = await fetchRegistryRepositories(undefined, mockFetch);
     const settings = await fetchInstallationSettings(undefined, mockFetch);
     expect(projects).toEqual([project]);
     expect(token.token).toBe("mock-only-token-do-not-use");
-    expect(backupTarget.bucket).toBe("mock-backups");
+    expect(backupTargets.targets[0]?.bucket).toBe("mock-backups");
     expect(registrySettings.hostname).toBe("registry.preview.local");
     expect(repositories[0]?.id).toBe(repository.id);
     expect(settings.automationHostname).toBe("api.preview.local");

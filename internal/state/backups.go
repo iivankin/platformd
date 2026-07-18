@@ -11,6 +11,7 @@ var ErrBackupNotRunning = errors.New("backup is not running")
 
 type BackupRecord struct {
 	ID                        string
+	TargetID                  string
 	ResourceKind              string
 	ResourceID                string
 	ScheduledOccurrenceMillis *int64
@@ -25,6 +26,7 @@ type BackupRecord struct {
 
 type BeginBackup struct {
 	ID                        string
+	TargetID                  string
 	ResourceKind              string
 	ResourceID                string
 	ScheduledOccurrenceMillis *int64
@@ -42,6 +44,7 @@ type FinishBackup struct {
 }
 
 type BackupHistoryQuery struct {
+	TargetID     string
 	ResourceKind string
 	ResourceID   string
 	BeforeMillis int64
@@ -49,7 +52,7 @@ type BackupHistoryQuery struct {
 }
 
 func (store *Store) BeginBackup(ctx context.Context, input BeginBackup) error {
-	if input.ID == "" || !validBackupResourceKind(input.ResourceKind) || input.ResourceID == "" ||
+	if input.ID == "" || input.TargetID == "" || !validBackupResourceKind(input.ResourceKind) || input.ResourceID == "" ||
 		input.GenerationID == "" || input.StartedAtMillis <= 0 ||
 		(input.ScheduledOccurrenceMillis != nil && *input.ScheduledOccurrenceMillis <= 0) {
 		return errors.New("begin backup input is invalid")
@@ -57,9 +60,9 @@ func (store *Store) BeginBackup(ctx context.Context, input BeginBackup) error {
 	return store.Write(ctx, func(transaction *sql.Tx) error {
 		_, err := transaction.ExecContext(ctx, `
 INSERT INTO backups(
-  id, resource_kind, resource_id, scheduled_occurrence, generation_id, status, started_at
-) VALUES (?, ?, ?, ?, ?, 'running', ?)`,
-			input.ID, input.ResourceKind, input.ResourceID, input.ScheduledOccurrenceMillis,
+  id, target_id, resource_kind, resource_id, scheduled_occurrence, generation_id, status, started_at
+) VALUES (?, ?, ?, ?, ?, ?, 'running', ?)`,
+			input.ID, input.TargetID, input.ResourceKind, input.ResourceID, input.ScheduledOccurrenceMillis,
 			input.GenerationID, input.StartedAtMillis,
 		)
 		if err != nil {
@@ -103,10 +106,10 @@ func (store *Store) Backup(ctx context.Context, id string) (BackupRecord, error)
 	var scheduled, size, finished sql.NullInt64
 	var generation, errorCode, errorMessage sql.NullString
 	err := store.database.QueryRowContext(ctx, `
-SELECT id, resource_kind, resource_id, scheduled_occurrence, generation_id,
+SELECT id, target_id, resource_kind, resource_id, scheduled_occurrence, generation_id,
        status, size_bytes, error_code, error_message, started_at, finished_at
 FROM backups WHERE id = ?`, id).Scan(
-		&record.ID, &record.ResourceKind, &record.ResourceID, &scheduled, &generation,
+		&record.ID, &record.TargetID, &record.ResourceKind, &record.ResourceID, &scheduled, &generation,
 		&record.Status, &size, &errorCode, &errorMessage, &record.StartedAtMillis, &finished,
 	)
 	if err != nil {
@@ -141,10 +144,19 @@ func (store *Store) BackupHistory(ctx context.Context, query BackupHistoryQuery)
 	if before <= 0 {
 		before = int64(^uint64(0) >> 1)
 	}
-	rows, err := store.database.QueryContext(ctx, `
+	queryText := `
 SELECT id FROM backups
 WHERE resource_kind = ? AND resource_id = ? AND started_at < ?
-ORDER BY started_at DESC, id DESC LIMIT ?`, query.ResourceKind, query.ResourceID, before, query.Limit)
+ORDER BY started_at DESC, id DESC LIMIT ?`
+	arguments := []any{query.ResourceKind, query.ResourceID, before, query.Limit}
+	if query.TargetID != "" {
+		queryText = `
+SELECT id FROM backups
+WHERE target_id = ? AND resource_kind = ? AND resource_id = ? AND started_at < ?
+ORDER BY started_at DESC, id DESC LIMIT ?`
+		arguments = []any{query.TargetID, query.ResourceKind, query.ResourceID, before, query.Limit}
+	}
+	rows, err := store.database.QueryContext(ctx, queryText, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +198,7 @@ SELECT EXISTS(
 
 func validBackupResourceKind(value string) bool {
 	switch value {
-	case "control", "registry", "object_store", "postgres", "redis":
+	case "control", "registry", "object_store", "postgres", "redis", "volume":
 		return true
 	default:
 		return false

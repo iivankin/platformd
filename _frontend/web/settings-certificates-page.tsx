@@ -10,6 +10,8 @@ import {
 } from "@/api";
 import type { InstallationSettings } from "@/api";
 import { Button } from "@/components/ui/button";
+import { FormCard, SectionCard } from "@/components/ui/card";
+import { PageStack } from "@/components/ui/page-stack";
 import { SettingsCertificateRow } from "@/settings-certificate-row";
 import { SettingsError } from "@/settings-error";
 
@@ -94,10 +96,10 @@ export const SettingsCertificatesPage = () => {
   };
 
   return (
-    <div>
+    <PageStack>
       <SettingsError message={error} />
 
-      <section className="flex items-center justify-between gap-4 border-b border-border px-5 py-4">
+      <SectionCard className="flex items-center justify-between gap-4 px-5 py-4">
         <div>
           <p className="flex items-center gap-2 text-xs font-medium">
             <KeyRound className="size-4 text-muted-foreground" /> Origin
@@ -120,12 +122,12 @@ export const SettingsCertificatesPage = () => {
         >
           <Plus /> Add certificate
         </Button>
-      </section>
+      </SectionCard>
 
       {settings?.certificates.length === 0 ? (
-        <p className="border-b border-border px-5 py-10 text-center text-[10px] text-muted-foreground">
+        <SectionCard className="px-5 py-10 text-center text-[10px] text-muted-foreground">
           No Origin certificates have been added.
-        </p>
+        </SectionCard>
       ) : null}
 
       {settings?.certificates.map((certificate) => (
@@ -147,7 +149,7 @@ export const SettingsCertificatesPage = () => {
       ))}
 
       {editing ? (
-        <form className="border-b border-border" onSubmit={saveCertificate}>
+        <FormCard onSubmit={saveCertificate}>
           <div className="flex items-center justify-between border-b border-border bg-muted/20 px-5 py-3">
             <p className="text-xs font-medium">
               {replacingID ? "Replace certificate" : "Add certificate"}
@@ -193,8 +195,8 @@ export const SettingsCertificatesPage = () => {
               {submitLabel(busy === "certificate", Boolean(replacingID))}
             </Button>
           </div>
-        </form>
+        </FormCard>
       ) : null}
-    </div>
+    </PageStack>
   );
 };

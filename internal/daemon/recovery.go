@@ -24,6 +24,10 @@ type recoveryStore interface {
 	CompleteRecovery(context.Context, state.CompleteRecovery) error
 }
 
+type recoveryPolicyStore interface {
+	BackupPolicy(context.Context, string, string) (state.BackupPolicy, error)
+}
+
 type recoveryConfig struct {
 	Store        recoveryStore
 	Target       *backup.TargetApplication
@@ -66,6 +70,7 @@ func (plan recoveryPlan) run(ctx context.Context) error {
 		kind string
 		ids  []string
 	}{
+		{kind: "volume", ids: resources.Volumes},
 		{kind: "registry", ids: resources.RegistryRepositories},
 		{kind: "object_store", ids: resources.ObjectStores},
 		{kind: "postgres", ids: resources.Postgres},
@@ -109,11 +114,11 @@ func newRecoveryAttempt(config recoveryConfig) (recoveryAttempt, error) {
 			return backup.ErrTargetBusy
 		}
 		defer release()
-		target, err := config.Target.RuntimeTarget(ctx)
+		target, err := config.Target.ControlRuntimeTarget(ctx)
 		if err != nil {
 			return err
 		}
-		remote, err := config.Remote(remotes3.Config{
+		_, err = config.Remote(remotes3.Config{
 			Endpoint: target.Endpoint, Region: target.Region, Bucket: target.Bucket,
 			Prefix: target.Prefix, AccessKeyID: target.AccessKeyID,
 			SecretAccessKey: target.SecretAccessKey,
@@ -128,6 +133,30 @@ func newRecoveryAttempt(config recoveryConfig) (recoveryAttempt, error) {
 					return nil
 				}
 				restorer, err := recoveryRestorer(config, kind)
+				if err != nil {
+					return err
+				}
+				policyStore, ok := config.Store.(recoveryPolicyStore)
+				if !ok {
+					return errors.New("recovery backup policy store is unavailable")
+				}
+				policy, err := policyStore.BackupPolicy(ctx, kind, resourceID)
+				if err != nil {
+					return err
+				}
+				if policy.TargetID == "" {
+					config.Progress.markLatest(kind, resourceID, backup.ResourceCompletion{}, false)
+					return nil
+				}
+				resourceTarget, err := config.Target.RuntimeTarget(ctx, policy.TargetID)
+				if err != nil {
+					return err
+				}
+				remote, err := config.Remote(remotes3.Config{
+					Endpoint: resourceTarget.Endpoint, Region: resourceTarget.Region,
+					Bucket: resourceTarget.Bucket, Prefix: resourceTarget.Prefix,
+					AccessKeyID: resourceTarget.AccessKeyID, SecretAccessKey: resourceTarget.SecretAccessKey,
+				})
 				if err != nil {
 					return err
 				}
@@ -160,7 +189,11 @@ func newRecoveryAttempt(config recoveryConfig) (recoveryAttempt, error) {
 }
 
 func recoveryRestorer(config recoveryConfig, kind string) (backup.ResourceRestorer, error) {
-	restorer := resourceRestorers(config.Runtime, config.Registry, config.ObjectStore)[kind]
+	var volumeConfig []ordinaryVolumeBackupConfig
+	if store, ok := config.Store.(ordinaryVolumeRepository); ok {
+		volumeConfig = append(volumeConfig, ordinaryVolumeBackupConfig{Store: store, Root: config.Runtime.paths.VolumesRoot})
+	}
+	restorer := resourceRestorers(config.Runtime, config.Registry, config.ObjectStore, volumeConfig...)[kind]
 	if restorer == nil {
 		return nil, errors.New("recovery resource kind is unsupported")
 	}

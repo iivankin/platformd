@@ -53,6 +53,13 @@ type QueryResult struct {
 	Truncated  bool              `json:"truncated"`
 }
 
+type Extension struct {
+	Name             string `json:"name"`
+	DefaultVersion   string `json:"defaultVersion"`
+	InstalledVersion string `json:"installedVersion,omitempty"`
+	Comment          string `json:"comment"`
+}
+
 type Client struct {
 	connection *pgx.Conn
 }
@@ -121,6 +128,62 @@ func (client *Client) Bootstrap(ctx context.Context, database, owner, password s
 		}
 	}
 	_, err := client.connection.Exec(ctx, "ALTER DATABASE "+databaseIdentifier+" OWNER TO "+ownerIdentifier)
+	return err
+}
+
+func (client *Client) Extensions(ctx context.Context) ([]Extension, error) {
+	rows, err := client.connection.Query(ctx, `
+SELECT available.name,
+       COALESCE(available.default_version, ''),
+       installed.extversion,
+       COALESCE(available.comment, '')
+FROM pg_available_extensions AS available
+LEFT JOIN pg_extension AS installed ON installed.extname = available.name
+ORDER BY available.name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	extensions := make([]Extension, 0)
+	for rows.Next() {
+		var extension Extension
+		var installedVersion *string
+		if err := rows.Scan(&extension.Name, &extension.DefaultVersion, &installedVersion, &extension.Comment); err != nil {
+			return nil, err
+		}
+		if installedVersion != nil {
+			extension.InstalledVersion = *installedVersion
+		}
+		extensions = append(extensions, extension)
+	}
+	return extensions, rows.Err()
+}
+
+func (client *Client) ChangeExtension(ctx context.Context, name string, install bool) error {
+	if name == "" || len(name) > 255 {
+		return fmt.Errorf("%w: extension name must contain 1..255 characters", ErrInvalidQuery)
+	}
+	var exists bool
+	existsQuery := "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = $1)"
+	if install {
+		existsQuery = "SELECT EXISTS(SELECT 1 FROM pg_available_extensions WHERE name = $1)"
+	}
+	if err := client.connection.QueryRow(
+		ctx,
+		existsQuery,
+		name,
+	).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return fmt.Errorf("%w: extension %q is not available for this operation", ErrInvalidQuery, name)
+	}
+	identifier := pgx.Identifier{name}.Sanitize()
+	if install {
+		_, err := client.connection.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS "+identifier)
+		return err
+	}
+	_, err := client.connection.Exec(ctx, "DROP EXTENSION IF EXISTS "+identifier+" RESTRICT")
 	return err
 }
 

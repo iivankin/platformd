@@ -88,7 +88,7 @@ export const RegistryImagePage = () => {
   const imagesPath = `/registry/repositories/${repositoryID}/images`;
 
   return (
-    <div className="enter-row min-h-full">
+    <div className="min-h-full animate-in duration-200 fade-in slide-in-from-bottom-1">
       <section className="flex min-h-20 items-center gap-4 border-b border-border px-5 py-4">
         <Link
           aria-label="Back to repository images"

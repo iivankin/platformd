@@ -3,21 +3,25 @@ import { useState } from "react";
 
 import type { Service, Volume } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
+import type { ServiceVolumeDraft } from "@/service-settings-model";
 import { ServiceVolumeCreateForm } from "@/service-volume-create-form";
 import { ServiceVolumeRow } from "@/service-volume-row";
 
 interface ServiceVolumesProperties {
   mounts: Service["volumeMounts"];
   onMountsChange: (mounts: Service["volumeMounts"]) => void;
-  onVolumesChange: (volumes: Volume[]) => void;
+  onPersistedVolumesChange: (volumes: Volume[]) => void;
+  onVolumesChange: (volumes: ServiceVolumeDraft[]) => void;
   projectID: string;
   serviceID: string;
-  volumes: Volume[];
+  volumes: ServiceVolumeDraft[];
 }
 
 export const ServiceVolumes = ({
   mounts,
   onMountsChange,
+  onPersistedVolumesChange,
   onVolumesChange,
   projectID,
   serviceID,
@@ -26,7 +30,7 @@ export const ServiceVolumes = ({
   const [creating, setCreating] = useState(false);
 
   return (
-    <section className="border-b border-border">
+    <SectionCard>
       <div className="flex items-center gap-2 px-4 py-3">
         <HardDrive className="size-3.5 text-muted-foreground" />
         <div>
@@ -50,9 +54,20 @@ export const ServiceVolumes = ({
 
       {creating ? (
         <ServiceVolumeCreateForm
+          existingNames={volumes.map((volume) => volume.name)}
           onCancel={() => setCreating(false)}
           onCreated={(created) => {
-            onVolumesChange([...volumes, created]);
+            onVolumesChange([
+              ...volumes,
+              {
+                ...created,
+                createdAt: Date.now(),
+                id: `pending-volume:${crypto.randomUUID()}`,
+                pendingCreation: true,
+                projectId: projectID,
+                serviceId: serviceID,
+              },
+            ]);
             setCreating(false);
           }}
           projectID={projectID}
@@ -71,11 +86,17 @@ export const ServiceVolumes = ({
               item={item}
               key={item.id}
               mount={mounts.find((candidate) => candidate.volumeId === item.id)}
-              onDeleted={() =>
-                onVolumesChange(
-                  volumes.filter((volume) => volume.id !== item.id)
-                )
-              }
+              onDeleted={() => {
+                const nextVolumes = volumes.filter(
+                  (volume) => volume.id !== item.id
+                );
+                onVolumesChange(nextVolumes);
+                if (!item.pendingCreation) {
+                  onPersistedVolumesChange(
+                    nextVolumes.filter((volume) => !volume.pendingCreation)
+                  );
+                }
+              }}
               onMountChange={(containerPath) => {
                 const nextMounts = mounts.filter(
                   (mount) => mount.volumeId !== item.id
@@ -91,6 +112,6 @@ export const ServiceVolumes = ({
           ))}
         </div>
       )}
-    </section>
+    </SectionCard>
   );
 };

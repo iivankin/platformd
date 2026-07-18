@@ -69,10 +69,21 @@ INSERT INTO registry_uploads(
 ) VALUES ('upload', 'repository', 'registry-credential', 1, 1, 2)`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SetBackupTarget(ctx, SetBackupTarget{
+		Target: BackupTarget{
+			ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "us-east-1",
+			Bucket: "backup", AccessKeyID: "old-access", SecretAccessKeyEncrypted: []byte("old-secret"),
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "admin@example.com", UpdatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := store.ImportControl(ctx, ControlImport{
 		ExpectedInstallationID: "installation",
 		Target: BackupTarget{
+			ID:       "target",
 			Endpoint: "https://s3.example.com", Region: "us-east-1", Bucket: "backup",
 			AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("sealed-secret"),
 		},

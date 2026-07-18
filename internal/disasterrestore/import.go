@@ -121,6 +121,21 @@ func ImportSnapshot(ctx context.Context, payload ImportPayload) (ImportResult, e
 	if installation.ID != payload.ExpectedInstallationID {
 		return ImportResult{}, errors.New("restored installation ID differs from control manifest")
 	}
+	targets, err := store.BackupTargets(ctx)
+	if err != nil {
+		return ImportResult{}, err
+	}
+	var recoveryTarget state.BackupTarget
+	for _, candidate := range targets {
+		if candidate.Endpoint == canonical.Endpoint && candidate.Region == canonical.Region &&
+			candidate.Bucket == canonical.Bucket && candidate.Prefix == canonical.Prefix {
+			recoveryTarget = candidate
+			break
+		}
+	}
+	if recoveryTarget.ID == "" {
+		return ImportResult{}, errors.New("selected recovery storage is not present in the control snapshot")
+	}
 	encryptedSecret, err := backup.SealTargetSecret(master, installation.ID, canonical.SecretAccessKey)
 	if err != nil {
 		return ImportResult{}, err
@@ -129,6 +144,7 @@ func ImportSnapshot(ctx context.Context, payload ImportPayload) (ImportResult, e
 		ExpectedInstallationID: installation.ID,
 		AccessTeamDomain:       payload.AccessTeamDomain, AccessAudience: payload.AccessAudience,
 		Target: state.BackupTarget{
+			ID:       recoveryTarget.ID,
 			Endpoint: canonical.Endpoint, Region: canonical.Region, Bucket: canonical.Bucket,
 			Prefix: canonical.Prefix, AccessKeyID: canonical.AccessKeyID,
 			SecretAccessKeyEncrypted: encryptedSecret,

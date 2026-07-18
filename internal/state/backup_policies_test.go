@@ -14,6 +14,7 @@ func TestBackupPolicyUsesResourceRowAndCanonicalCron(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 	createManagedRedisTestProject(t, store)
+	createBackupPolicyTarget(t, store)
 	if _, err := store.CreateManagedRedis(ctx, state.CreateManagedRedis{
 		ID: "redis", ProjectID: "project", Name: "cache", ImageTag: "7.4",
 		ImageDigest: "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4",
@@ -23,7 +24,7 @@ func TestBackupPolicyUsesResourceRowAndCanonicalCron(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy, err := store.SetBackupPolicy(ctx, state.SetBackupPolicy{
-		ResourceKind: "redis", ResourceID: "redis", Enabled: true,
+		ResourceKind: "redis", ResourceID: "redis", TargetID: "target", Enabled: true,
 		Cron: "  5   */2 * * 1-5 ", RetentionCount: 12, AuditEventID: "policy-audit",
 		ActorKind: "access", ActorID: "user", ActorEmail: "user@example.com",
 		RequestCorrelationID: "request", UpdatedAtMillis: 20,
@@ -57,6 +58,7 @@ func TestBackupPolicyValidationAndScheduledOccurrenceLookup(t *testing.T) {
 	defer store.Close()
 	ctx := context.Background()
 	createManagedRedisTestProject(t, store)
+	createBackupPolicyTarget(t, store)
 	if _, err := store.CreateManagedRedis(ctx, state.CreateManagedRedis{
 		ID: "redis", ProjectID: "project", Name: "cache", ImageTag: "7.4",
 		ImageDigest: "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4",
@@ -75,7 +77,7 @@ func TestBackupPolicyValidationAndScheduledOccurrenceLookup(t *testing.T) {
 	}
 	occurrence := int64(1000)
 	if err := store.BeginBackup(ctx, state.BeginBackup{
-		ID: "backup", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
+		ID: "backup", TargetID: "target", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
 		ScheduledOccurrenceMillis: &occurrence, StartedAtMillis: 1001,
 	}); err != nil {
 		t.Fatal(err)
@@ -90,5 +92,19 @@ func TestBackupPolicyValidationAndScheduledOccurrenceLookup(t *testing.T) {
 	}
 	if _, err := store.BackupPolicy(ctx, "redis", "missing"); !errors.Is(err, state.ErrBackupResourceNotFound) {
 		t.Fatalf("missing policy error = %v", err)
+	}
+}
+
+func createBackupPolicyTarget(t *testing.T, store *state.Store) {
+	t.Helper()
+	if _, err := store.SetBackupTarget(context.Background(), state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "region",
+			Bucket: "bucket", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("sealed"),
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "user@example.com", UpdatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
 	}
 }

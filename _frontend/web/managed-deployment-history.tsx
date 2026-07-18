@@ -10,6 +10,7 @@ import {
 } from "@/api";
 import type { ManagedDeploymentKind, RuntimeDeployment } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { resourceDeploymentPath } from "@/project-resource-path";
 
 const statusClass: Record<RuntimeDeployment["status"], string> = {
@@ -243,7 +244,7 @@ export const ManagedDeploymentHistory = ({
   };
 
   return (
-    <section>
+    <SectionCard>
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
           <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
@@ -322,6 +323,6 @@ export const ManagedDeploymentHistory = ({
           </Button>
         </div>
       ) : null}
-    </section>
+    </SectionCard>
   );
 };

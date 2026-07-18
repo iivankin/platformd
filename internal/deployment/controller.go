@@ -430,6 +430,24 @@ func (controller *Controller) QuiesceAll(ctx context.Context) (func(context.Cont
 	return controller.resumeServices(stopped), nil
 }
 
+// WithServiceQuiesced is used for destructive filesystem replacement. Backup
+// reads never call it; only restore briefly stops the container so it cannot
+// keep file descriptors into the directory being atomically replaced.
+func (controller *Controller) WithServiceQuiesced(ctx context.Context, serviceID string, action func() error) error {
+	if serviceID == "" || action == nil {
+		return errors.New("service quiesce request is incomplete")
+	}
+	quiesced, err := controller.quiesceService(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	actionErr := action()
+	if quiesced == nil {
+		return actionErr
+	}
+	return errors.Join(actionErr, controller.resumeService(ctx, *quiesced))
+}
+
 func (controller *Controller) quiesceService(ctx context.Context, serviceID string) (*quiescedService, error) {
 	lock := controller.serviceLock(serviceID)
 	lock.Lock()

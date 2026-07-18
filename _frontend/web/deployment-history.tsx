@@ -11,6 +11,7 @@ import { useState } from "react";
 
 import type { Deployment } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 
 interface DeploymentHistoryProperties {
   activeDeploymentID?: string;
@@ -272,14 +273,14 @@ export const DeploymentHistory = ({
 
   if (!primary) {
     return (
-      <section className="grid min-h-64 place-items-center border-b border-border px-4 text-center">
+      <SectionCard className="grid min-h-64 place-items-center px-4 text-center">
         <div>
           <p className="text-[10px] font-medium">No deployment attempts yet</p>
           <p className="mt-2 text-[9px] text-muted-foreground">
             The first deployment will appear here with its logs.
           </p>
         </div>
-      </section>
+      </SectionCard>
     );
   }
 
@@ -307,7 +308,7 @@ export const DeploymentHistory = ({
   );
 
   return (
-    <section>
+    <SectionCard>
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
           <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
@@ -355,6 +356,6 @@ export const DeploymentHistory = ({
           </Button>
         </div>
       ) : null}
-    </section>
+    </SectionCard>
   );
 };

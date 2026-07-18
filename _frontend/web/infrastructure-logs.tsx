@@ -4,7 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchInfrastructureLogs } from "@/api";
 import type { InfrastructureLogWindow } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
+import {
+  DataTable,
+  DataTableBody,
+  DataTableCell,
+  DataTableHeader,
+  DataTableRow,
+} from "@/components/ui/data-table";
 import { Input } from "@/components/ui/input";
+import { PageStack } from "@/components/ui/page-stack";
 import { cn } from "@/lib/utils";
 
 const priorities = [
@@ -17,6 +26,8 @@ const priorities = [
   "info",
   "debug",
 ] as const;
+const logColumns =
+  "minmax(180px,200px) minmax(84px,100px) minmax(130px,170px) minmax(360px,1fr)";
 
 export const InfrastructureLogs = () => {
   const [journal, setJournal] = useState<InfrastructureLogWindow>();
@@ -88,8 +99,8 @@ export const InfrastructureLogs = () => {
   }, [contains, journal]);
 
   return (
-    <>
-      <section className="flex flex-wrap items-end gap-3 border-b border-border px-5 py-4">
+    <PageStack>
+      <SectionCard className="flex flex-wrap items-end gap-3 px-5 py-4">
         <div className="mr-auto flex items-center gap-3">
           <div className="grid size-9 place-items-center bg-muted">
             <FileText className="size-4" />
@@ -127,53 +138,61 @@ export const InfrastructureLogs = () => {
           <RefreshCw className={cn(loading && "animate-spin")} />
           Refresh
         </Button>
-      </section>
+      </SectionCard>
 
       {error ? (
-        <section className="flex items-center gap-2 border-b border-rose-500/30 bg-rose-500/5 px-5 py-3 text-xs text-rose-600 dark:text-rose-300">
+        <SectionCard className="flex items-center gap-2 bg-rose-500/5 px-5 py-3 text-xs text-rose-600 ring-rose-500/30 dark:text-rose-300">
           <AlertTriangle className="size-4" />
           {error}
-        </section>
+        </SectionCard>
       ) : null}
       {journal?.truncated ? (
-        <section className="border-b border-amber-500/30 bg-amber-500/5 px-5 py-2.5 text-[10px] text-amber-700 dark:text-amber-300">
+        <SectionCard className="bg-amber-500/5 px-5 py-2.5 text-[10px] text-amber-700 ring-amber-500/30 dark:text-amber-300">
           Only the bounded newest journal window is loaded.
-        </section>
+        </SectionCard>
       ) : null}
 
-      <section
-        aria-label="Platform journal records"
-        className="font-mono text-[10px] leading-5"
-      >
+      <SectionCard aria-label="Platform journal records" className="font-mono">
+        <DataTable label="Platform journal records">
+          <DataTableHeader>
+            <DataTableRow columns={logColumns} header>
+              <DataTableCell header>Time</DataTableCell>
+              <DataTableCell header>Priority</DataTableCell>
+              <DataTableCell header>Source</DataTableCell>
+              <DataTableCell header>Message</DataTableCell>
+            </DataTableRow>
+          </DataTableHeader>
+          <DataTableBody>
+            {records.map((record) => (
+              <DataTableRow columns={logColumns} key={record.cursor}>
+                <DataTableCell className="text-muted-foreground tabular-nums">
+                  <time>{new Date(record.timestamp).toLocaleString()}</time>
+                </DataTableCell>
+                <DataTableCell className="text-muted-foreground">
+                  {priorities[record.priority]}
+                </DataTableCell>
+                <DataTableCell
+                  className="truncate text-muted-foreground"
+                  title={`${record.identifier ?? "platformd"}${record.pid ? `:${record.pid}` : ""}`}
+                >
+                  {record.identifier ?? "platformd"}
+                  {record.pid ? `:${record.pid}` : ""}
+                </DataTableCell>
+                <DataTableCell className="leading-5 break-words whitespace-pre-wrap">
+                  {record.message}
+                </DataTableCell>
+              </DataTableRow>
+            ))}
+          </DataTableBody>
+        </DataTable>
         {records.length === 0 ? (
-          <p className="border-b border-border px-5 py-12 text-center text-muted-foreground">
+          <p className="px-5 py-12 text-center text-[10px] text-muted-foreground">
             {loading
               ? "Reading platform journal…"
               : "No matching platform logs"}
           </p>
-        ) : (
-          records.map((record) => (
-            <div
-              className="grid border-b border-border/70 md:grid-cols-[190px_86px_130px_minmax(0,1fr)]"
-              key={record.cursor}
-            >
-              <time className="px-3 py-2 text-muted-foreground md:border-r md:border-border/70">
-                {new Date(record.timestamp).toLocaleString()}
-              </time>
-              <span className="px-3 py-2 text-muted-foreground md:border-r md:border-border/70">
-                {priorities[record.priority]}
-              </span>
-              <span className="px-3 py-2 text-muted-foreground md:border-r md:border-border/70">
-                {record.identifier ?? "platformd"}
-                {record.pid ? `:${record.pid}` : ""}
-              </span>
-              <pre className="min-w-0 overflow-x-auto px-3 py-2 whitespace-pre-wrap text-foreground">
-                {record.message}
-              </pre>
-            </div>
-          ))
-        )}
-      </section>
-    </>
+        ) : null}
+      </SectionCard>
+    </PageStack>
   );
 };

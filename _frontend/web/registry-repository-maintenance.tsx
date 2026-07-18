@@ -6,7 +6,6 @@ import type { RegistryRepository } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RegistryCleanup } from "@/registry-cleanup";
-import { ResourceBackupPanel } from "@/resource-backup-panel";
 
 const errorText = (error: unknown) =>
   error instanceof Error ? error.message : "Unable to delete repository";
@@ -42,7 +41,12 @@ export const RegistryRepositoryMaintenance = ({
 
   return (
     <div>
-      <ResourceBackupPanel resourceID={repository.id} resourceKind="registry" />
+      <section className="border-b border-border bg-muted/15 px-5 py-3">
+        <h3 className="text-[10px] font-medium">Repository maintenance</h3>
+        <p className="mt-1 text-[9px] text-muted-foreground">
+          Clean unused image data or permanently remove this repository.
+        </p>
+      </section>
       <RegistryCleanup onChanged={onChanged} repositoryID={repository.id} />
 
       <details className="border-b border-border">

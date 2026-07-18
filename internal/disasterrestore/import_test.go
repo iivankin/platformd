@@ -17,6 +17,7 @@ import (
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/disasterrestore"
 	"github.com/iivankin/platformd/internal/masterkey"
+	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -34,6 +35,41 @@ func TestImportSnapshotUsesExactSchemaAndOneTransaction(t *testing.T) {
 		AccessAudience: "audience", ConsolePassphrasePHC: "verifier", OriginCertificateID: "certificate",
 		OriginCertificatePEM: certificate, OriginPrivateKey: []byte("encrypted"),
 		InitialAuditEventID: "initial-audit", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateProject(ctx, state.CreateProject{
+		ID: "project", Name: "project", AuditEventID: "project-audit",
+		ActorID: "user", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateManagedPostgres(ctx, state.CreateManagedPostgres{
+		ID: "postgres", ProjectID: "project", Name: "database", ImageTag: "18.3-bookworm",
+		ImageDigest: "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4",
+		VolumeID:    "volume", DatabaseName: "app", OwnerUsername: "owner",
+		OwnerPasswordEncrypted: []byte("owner"), BootstrapPasswordEncrypted: []byte("bootstrap"),
+		AuditEventID: "postgres-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "recovery-target", Name: "Offsite", Endpoint: "https://s3.example.com", Region: "region",
+			Bucket: "bucket", Prefix: "prefix", AccessKeyID: "old-access",
+			SecretAccessKeyEncrypted: []byte("old-secret"),
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "admin@example.com", UpdatedAtMillis: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	vector := postgresextension.VectorRecipe()
+	if err := store.PutManagedPostgresExtension(ctx, state.PutManagedPostgresExtension{
+		PostgresID: "postgres", Name: vector.Name, Version: vector.Version,
+		RecipeDigest:    vector.Digest,
+		TimestampMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +103,7 @@ func TestImportSnapshotUsesExactSchemaAndOneTransaction(t *testing.T) {
 	if err != nil || !installation.RecoveryMode {
 		t.Fatalf("imported installation = %+v, %v", installation, err)
 	}
-	target, err := store.BackupTarget(ctx)
+	target, err := store.BackupTarget(ctx, "recovery-target")
 	if err != nil || target.Endpoint != "https://s3.example.com" || len(target.SecretAccessKeyEncrypted) == 0 {
 		t.Fatalf("imported target = %+v, %v", target, err)
 	}
@@ -75,9 +111,14 @@ func TestImportSnapshotUsesExactSchemaAndOneTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeTarget, err := application.RuntimeTarget(ctx)
+	runtimeTarget, err := application.RuntimeTarget(ctx, "recovery-target")
 	if err != nil || runtimeTarget.SecretAccessKey != "secret" {
 		t.Fatalf("decrypted imported target = %+v, %v", runtimeTarget, err)
+	}
+	extensions, err := store.ManagedPostgresExtensions(ctx, "postgres")
+	if err != nil || len(extensions) != 1 || extensions[0].Name != vector.Name ||
+		extensions[0].Version != vector.Version || extensions[0].RecipeDigest != vector.Digest {
+		t.Fatalf("restored PostgreSQL extension recipe = %+v, %v", extensions, err)
 	}
 }
 

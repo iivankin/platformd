@@ -11,16 +11,27 @@ export interface ResourceNodeData extends Record<string, unknown> {
   imageReference?: string;
   internalHostname: string;
   kind: ProjectCanvas["resources"][number]["kind"];
+  layoutX?: number;
+  layoutY?: number;
   name: string;
+  pendingChangeCount?: number;
   status: ProjectCanvas["resources"][number]["status"];
   statusMessage?: string;
+  volumes: ProjectCanvas["resources"][number]["volumes"];
 }
 
 export type ResourceFlowNode = Node<ResourceNodeData, "resource">;
 export type ResourceFlowEdge = Edge<Record<string, never>, "smoothstep">;
+export interface ResourceNodeOverlay {
+  pendingChangeCount: number;
+  volumes: ResourceNodeData["volumes"];
+}
 
 const columnWidth = 320;
-const rowHeight = 156;
+const nodeBaseHeight = 116;
+const nodeGap = 36;
+const pendingChangeRowHeight = 34;
+const volumeRowHeight = 33;
 const originX = 72;
 const originY = 56;
 
@@ -45,14 +56,19 @@ export const mergeResourceNodeData = (
     return {
       ...node,
       dragging: existing.dragging,
-      position: existing.position,
+      position:
+        existing.data.layoutX === existing.position.x &&
+        existing.data.layoutY === existing.position.y
+          ? node.position
+          : existing.position,
       selected: existing.selected,
     };
   });
 };
 
 export const projectFlowElements = (
-  canvas: ProjectCanvas
+  canvas: ProjectCanvas,
+  overlays: ReadonlyMap<string, ResourceNodeOverlay> = new Map()
 ): { edges: ResourceFlowEdge[]; nodes: ResourceFlowNode[] } => {
   const resourceIDs = new Set(canvas.resources.map((resource) => resource.id));
   const adjacency = new Map<string, string[]>();
@@ -95,11 +111,22 @@ export const projectFlowElements = (
     }
   }
 
-  const rowsByColumn = new Map<number, number>();
+  const nextYByColumn = new Map<number, number>();
   const nodes = canvas.resources.map((resource) => {
     const column = columns.get(resource.id) ?? 0;
-    const row = rowsByColumn.get(column) ?? 0;
-    rowsByColumn.set(column, row + 1);
+    const y = nextYByColumn.get(column) ?? originY;
+    const overlay = overlays.get(resource.id);
+    const pendingChangeCount = overlay?.pendingChangeCount ?? 0;
+    const volumes = overlay?.volumes ?? resource.volumes;
+    nextYByColumn.set(
+      column,
+      y +
+        nodeBaseHeight +
+        volumes.length * volumeRowHeight +
+        (pendingChangeCount > 0 ? pendingChangeRowHeight : 0) +
+        nodeGap
+    );
+    const x = originX + column * columnWidth;
     return {
       data: {
         activeDeploymentId: resource.activeDeploymentId,
@@ -109,14 +136,18 @@ export const projectFlowElements = (
         imageReference: resource.imageReference,
         internalHostname: resource.internalHostname,
         kind: resource.kind,
+        layoutX: x,
+        layoutY: y,
         name: resource.name,
+        pendingChangeCount,
         status: resource.status,
         statusMessage: resource.statusMessage,
+        volumes,
       },
       id: resource.id,
       position: {
-        x: originX + column * columnWidth,
-        y: originY + row * rowHeight,
+        x,
+        y,
       },
       type: "resource" as const,
     };
@@ -125,7 +156,6 @@ export const projectFlowElements = (
   const edges = canvas.connections.map((connection) => ({
     data: {},
     id: `${connection.sourceId}:${connection.targetId}`,
-    label: connection.environmentNames.join(", "),
     markerEnd: { height: 14, type: MarkerType.ArrowClosed, width: 14 },
     source: connection.sourceId,
     target: connection.targetId,

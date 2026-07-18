@@ -13,8 +13,19 @@ import type { FormEvent } from "react";
 import { createAPIToken, fetchAPITokens, revokeAPIToken } from "@/api";
 import type { APIToken, Project } from "@/api";
 import { Button } from "@/components/ui/button";
+import { FormCard, SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { PageStack } from "@/components/ui/page-stack";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { FormField } from "@/form-field";
+
+const allProjects = "__all-projects__";
 
 const formatTime = (value?: number) =>
   value ? new Date(value).toLocaleString() : "Never";
@@ -124,8 +135,8 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
   };
 
   return (
-    <div className="enter-row">
-      <section className="flex min-h-14 items-center justify-between gap-4 border-b border-border px-5 py-3">
+    <PageStack className="animate-in duration-200 fade-in slide-in-from-bottom-1">
+      <SectionCard className="flex min-h-14 items-center justify-between gap-4 px-5 py-3">
         <div>
           <p className="text-xs font-medium">Automation credentials</p>
           <p className="mt-1 text-[10px] text-muted-foreground">
@@ -136,10 +147,10 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
           <Plus />
           New token
         </Button>
-      </section>
+      </SectionCard>
 
       {revealed?.token ? (
-        <section className="border-b border-emerald-500/30 bg-emerald-500/5 px-5 py-4">
+        <SectionCard className="bg-emerald-500/5 px-5 py-4 ring-emerald-500/30">
           <div className="flex items-start gap-3">
             <Check className="mt-0.5 size-4 shrink-0 text-emerald-600" />
             <div className="min-w-0 flex-1">
@@ -166,12 +177,12 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
               </Button>
             </div>
           </div>
-        </section>
+        </SectionCard>
       ) : null}
 
       {creating ? (
-        <form
-          className="grid border-b border-border bg-muted/20 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end"
+        <FormCard
+          className="grid bg-muted/20 lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end"
           onSubmit={submit}
         >
           <div className="px-5 pt-4 lg:border-r lg:border-border">
@@ -187,34 +198,53 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
           </div>
           <div className="px-5 pt-4 lg:border-r lg:border-border">
             <FormField label="Role" name="token-role">
-              <select
-                className="h-8 w-full border border-input bg-background px-2 text-xs outline-none focus:border-ring"
-                id="token-role"
-                onChange={(event) =>
-                  setRole(event.target.value as APIToken["role"])
+              <Select
+                items={{ admin: "Admin", read: "Read" }}
+                onValueChange={(value) =>
+                  setRole(String(value) as APIToken["role"])
                 }
                 value={role}
               >
-                <option value="read">Read</option>
-                <option value="admin">Admin</option>
-              </select>
+                <SelectTrigger className="h-8 w-full text-xs" id="token-role">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value="read">Read</SelectItem>
+                  <SelectItem value="admin">Admin</SelectItem>
+                </SelectContent>
+              </Select>
             </FormField>
           </div>
           <div className="px-5 pt-4 lg:border-r lg:border-border">
             <FormField label="Project boundary" name="token-project">
-              <select
-                className="h-8 w-full border border-input bg-background px-2 text-xs outline-none focus:border-ring"
-                id="token-project"
-                onChange={(event) => setProjectID(event.target.value)}
-                value={projectID}
+              <Select
+                items={[
+                  { label: "All projects", value: allProjects },
+                  ...projects.map((project) => ({
+                    label: project.name,
+                    value: project.id,
+                  })),
+                ]}
+                onValueChange={(value) =>
+                  setProjectID(value === allProjects ? "" : String(value))
+                }
+                value={projectID || allProjects}
               >
-                <option value="">All projects</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
+                <SelectTrigger
+                  className="h-8 w-full text-xs"
+                  id="token-project"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent align="start">
+                  <SelectItem value={allProjects}>All projects</SelectItem>
+                  {projects.map((project) => (
+                    <SelectItem key={project.id} value={project.id}>
+                      {project.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </FormField>
           </div>
           <div className="flex gap-2 px-5 pb-4 lg:pb-5">
@@ -241,19 +271,19 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
               host commands.
             </div>
           ) : null}
-        </form>
+        </FormCard>
       ) : null}
 
       {error ? (
-        <section
+        <SectionCard
           aria-live="polite"
-          className="border-b border-destructive/30 bg-destructive/5 px-5 py-3 text-[10px] text-destructive"
+          className="bg-destructive/5 px-5 py-3 text-[10px] text-destructive ring-destructive/30"
         >
           {error}
-        </section>
+        </SectionCard>
       ) : null}
 
-      <section className="border-b border-border">
+      <SectionCard>
         <div className="grid grid-cols-[minmax(180px,1.2fr)_90px_minmax(140px,1fr)_150px_100px_44px] border-b border-border bg-muted/30 px-5 py-2 text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
           <span>Name</span>
           <span>Role</span>
@@ -317,7 +347,7 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
             );
           })
         )}
-      </section>
-    </div>
+      </SectionCard>
+    </PageStack>
   );
 };

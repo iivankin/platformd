@@ -26,4 +26,7 @@ func TestProductionConfigUsesOnlyPrivateRoots(t *testing.T) {
 	if config.ContainersConf != filepath.Join(paths.Current, "runtime", "containers.conf") {
 		t.Fatalf("unexpected containers.conf path %q", config.ContainersConf)
 	}
+	if len(config.AllowedMountRoots) != 3 || config.AllowedMountRoots[2] != paths.PostgresExtensionRoot {
+		t.Fatalf("PostgreSQL extension sources are not an allowed private mount root: %v", config.AllowedMountRoots)
+	}
 }

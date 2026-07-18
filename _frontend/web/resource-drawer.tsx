@@ -18,7 +18,7 @@ export const ResourceDrawer = ({
     />
     <aside
       aria-label={label}
-      className="enter-row relative z-10 flex h-full w-full flex-col border-l border-border bg-background shadow-[-16px_0_40px_rgb(0_0_0/0.12)] md:w-[min(86vw,74rem)] md:min-w-[42rem] xl:w-[min(78vw,74rem)]"
+      className="relative z-10 flex h-full w-full animate-in flex-col border-l border-border bg-background shadow-[-16px_0_40px_rgb(0_0_0/0.12)] duration-200 fade-in slide-in-from-right-2 md:w-[min(86vw,74rem)] md:min-w-[42rem] xl:w-[min(78vw,74rem)]"
     >
       {children}
     </aside>

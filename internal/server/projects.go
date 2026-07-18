@@ -42,17 +42,24 @@ type projectCanvasResponse struct {
 }
 
 type projectCanvasResource struct {
-	ID               string `json:"id"`
-	Kind             string `json:"kind"`
-	Name             string `json:"name"`
-	InternalHostname string `json:"internalHostname"`
-	ImageReference   string `json:"imageReference,omitempty"`
-	BucketName       string `json:"bucketName,omitempty"`
-	Enabled          bool   `json:"enabled"`
-	Status           string `json:"status"`
-	StatusMessage    string `json:"statusMessage,omitempty"`
-	ActiveDeployment string `json:"activeDeploymentId,omitempty"`
-	ImageDigest      string `json:"imageDigest,omitempty"`
+	ID               string                `json:"id"`
+	Kind             string                `json:"kind"`
+	Name             string                `json:"name"`
+	InternalHostname string                `json:"internalHostname"`
+	ImageReference   string                `json:"imageReference,omitempty"`
+	BucketName       string                `json:"bucketName,omitempty"`
+	Enabled          bool                  `json:"enabled"`
+	Status           string                `json:"status"`
+	StatusMessage    string                `json:"statusMessage,omitempty"`
+	ActiveDeployment string                `json:"activeDeploymentId,omitempty"`
+	ImageDigest      string                `json:"imageDigest,omitempty"`
+	Volumes          []projectCanvasVolume `json:"volumes"`
+}
+
+type projectCanvasVolume struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	ContainerPath string `json:"containerPath,omitempty"`
 }
 
 type projectCanvasConnection struct {
@@ -84,13 +91,19 @@ func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
 		}
 		resources := make([]projectCanvasResource, 0, len(canvas.Resources))
 		for _, resource := range canvas.Resources {
+			volumes := make([]projectCanvasVolume, 0, len(resource.Volumes))
+			for _, volume := range resource.Volumes {
+				volumes = append(volumes, projectCanvasVolume{
+					ID: volume.ID, Name: volume.Name, ContainerPath: volume.ContainerPath,
+				})
+			}
 			resources = append(resources, projectCanvasResource{
 				ID: resource.ID, Kind: resource.Kind, Name: resource.Name,
 				InternalHostname: resource.InternalHostname,
 				ImageReference:   resource.ImageReference, BucketName: resource.BucketName,
 				Enabled: resource.Enabled, Status: resource.Status,
 				StatusMessage: resource.StatusMessage, ActiveDeployment: resource.ActiveDeployment,
-				ImageDigest: resource.ImageDigest,
+				ImageDigest: resource.ImageDigest, Volumes: volumes,
 			})
 		}
 		connections := make([]projectCanvasConnection, 0, len(canvas.Connections))

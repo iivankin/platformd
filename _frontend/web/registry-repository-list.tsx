@@ -1,6 +1,7 @@
 import { LockKeyhole, PackageOpen, Radio } from "lucide-react";
 
 import type { RegistryRepository } from "@/api";
+import { SectionCard } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 const formatBytes = (bytes: number) => {
@@ -24,7 +25,7 @@ export const RegistryRepositoryList = ({
   onSelect: (repository: RegistryRepository) => void;
   repositories: RegistryRepository[];
 }) => (
-  <div className="min-h-0 overflow-auto">
+  <SectionCard className="min-h-0 overflow-auto">
     <div className="sticky top-0 z-10 grid grid-cols-[minmax(0,1fr)_8rem_8rem] border-b border-border bg-muted/25 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
       <span>Repository</span>
       <span>Access</span>
@@ -74,7 +75,7 @@ export const RegistryRepositoryList = ({
         </div>
       </div>
     ) : null}
-  </div>
+  </SectionCard>
 );
 
 export { formatBytes as formatRegistryBytes };

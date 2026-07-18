@@ -55,6 +55,17 @@ func TestRunExactImporterTransfersBoundedPayloadThroughPrivateFD(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "recovery-target", Name: "Offsite", Endpoint: "https://s3.example.com", Region: "region",
+			Bucket: "bucket", Prefix: "prefix", AccessKeyID: "old-access",
+			SecretAccessKeyEncrypted: []byte("old-secret"),
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "admin@example.com", UpdatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}

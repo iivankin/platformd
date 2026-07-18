@@ -4,7 +4,15 @@ import type { FormEvent } from "react";
 
 import type { RedisMutationInput } from "@/api";
 import { Button } from "@/components/ui/button";
+import { FormCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { RedisBinaryInput } from "@/redis-binary-input";
 import { redisInputBytes } from "@/redis-data-utils";
 import type { RedisInputEncoding } from "@/redis-data-utils";
@@ -114,23 +122,37 @@ export const RedisNewKeyForm = ({
   };
 
   return (
-    <form className="border-b border-border px-4 py-4" onSubmit={submit}>
+    <FormCard className="px-4 py-4" onSubmit={submit}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
           New key
         </h3>
-        <select
-          className="h-7 border border-input bg-background px-2 text-[10px] outline-none focus:border-ring"
-          onChange={(event) => setType(event.target.value as NewRedisType)}
+        <Select
+          items={{
+            hash: "Hash",
+            list: "List",
+            set: "Set",
+            stream: "Stream",
+            string: "String",
+            zset: "Sorted set",
+          }}
+          onValueChange={(selected) =>
+            setType(String(selected) as NewRedisType)
+          }
           value={type}
         >
-          <option value="string">String</option>
-          <option value="hash">Hash</option>
-          <option value="list">List</option>
-          <option value="set">Set</option>
-          <option value="zset">Sorted set</option>
-          <option value="stream">Stream</option>
-        </select>
+          <SelectTrigger className="h-7 text-[10px]">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent align="end">
+            <SelectItem value="string">String</SelectItem>
+            <SelectItem value="hash">Hash</SelectItem>
+            <SelectItem value="list">List</SelectItem>
+            <SelectItem value="set">Set</SelectItem>
+            <SelectItem value="zset">Sorted set</SelectItem>
+            <SelectItem value="stream">Stream</SelectItem>
+          </SelectContent>
+        </Select>
       </div>
       <RedisBinaryInput
         encoding={keyEncoding}
@@ -231,23 +253,24 @@ export const RedisNewKeyForm = ({
         />
       ) : null}
       {type === "list" ? (
-        <label
-          className="mb-3 block text-[9px] tracking-[0.1em] text-muted-foreground uppercase"
-          htmlFor="redis-list-side"
-        >
-          Push side
-          <select
-            className="mt-1.5 h-8 w-full border border-input bg-background px-2 text-xs tracking-normal normal-case outline-none focus:border-ring"
-            id="redis-list-side"
-            onChange={(event) =>
-              setListSide(event.target.value as "left" | "right")
+        <div className="mb-3 text-[9px] tracking-[0.1em] text-muted-foreground uppercase">
+          <span>Push side</span>
+          <Select
+            items={{ left: "Left", right: "Right" }}
+            onValueChange={(selected) =>
+              setListSide(String(selected) as "left" | "right")
             }
             value={listSide}
           >
-            <option value="left">Left</option>
-            <option value="right">Right</option>
-          </select>
-        </label>
+            <SelectTrigger className="mt-1.5 h-8 w-full text-xs tracking-normal normal-case">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="start">
+              <SelectItem value="left">Left</SelectItem>
+              <SelectItem value="right">Right</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       ) : null}
       {type === "zset" ? (
         <label
@@ -278,6 +301,6 @@ export const RedisNewKeyForm = ({
           Create key
         </Button>
       </div>
-    </form>
+    </FormCard>
   );
 };

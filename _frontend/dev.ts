@@ -70,6 +70,11 @@ const server = Bun.serve<MockSocketData>({
       }
       return new Response("WebSocket upgrade required", { status: 426 });
     },
+    "/cdn-cgi/access/get-identity": () =>
+      Response.json({
+        email: state.identity.email,
+        name: state.identity.name,
+      }),
   },
   websocket: mockWebSocketHandlers,
 });

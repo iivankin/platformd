@@ -6,7 +6,10 @@ import type { RegistryRepositoryView } from "@/registry-repository-detail";
 import { useRegistryRepository } from "@/use-registry-repository";
 
 const isRepositoryView = (value?: string): value is RegistryRepositoryView =>
-  value === "images" || value === "access" || value === "maintenance";
+  value === "images" ||
+  value === "access" ||
+  value === "backups" ||
+  value === "maintenance";
 
 export const RegistryRepositoryPage = () => {
   const navigate = useNavigate();

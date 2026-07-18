@@ -54,6 +54,7 @@ const createService: ResourceCreator = (state, projectID, input) => {
     kind: "service",
     name,
     status: "pending",
+    volumes: [],
   });
   touchProject(state, projectID, "serviceCount");
   return json(service, 201);
@@ -93,6 +94,7 @@ const createRedis: ResourceCreator = (state, projectID, input) => {
     kind: "redis",
     name,
     status: "pending",
+    volumes: [],
   });
   addBackupPolicy(state, "redis", id);
   touchProject(state, projectID, "redisCount");
@@ -136,6 +138,7 @@ const createPostgres: ResourceCreator = (state, projectID, input) => {
     kind: "postgres",
     name,
     status: "pending",
+    volumes: [],
   });
   addBackupPolicy(state, "postgres", id);
   touchProject(state, projectID, "postgresCount");
@@ -180,6 +183,7 @@ const createObjectStore: ResourceCreator = (state, projectID, input) => {
     kind: "object_store",
     name,
     status: "running",
+    volumes: [],
   });
   addBackupPolicy(state, "object_store", id);
   touchProject(state, projectID, "objectStoreCount");

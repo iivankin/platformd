@@ -89,6 +89,24 @@ const handleService = async (
   service.updatedAt = mockNow();
   const canvas = state.canvases[service.projectId];
   if (canvas) {
+    const canvasService = canvas.resources.find(
+      (resource) => resource.id === serviceID
+    );
+    if (canvasService) {
+      const mountPaths = new Map(
+        service.volumeMounts.map((mount) => [
+          mount.volumeId,
+          mount.containerPath,
+        ])
+      );
+      canvasService.volumes = (state.volumes[serviceID] ?? []).map(
+        (volume) => ({
+          containerPath: mountPaths.get(volume.id),
+          id: volume.id,
+          name: volume.name,
+        })
+      );
+    }
     const references = new Map<string, string[]>();
     for (const [environmentName, value] of Object.entries(
       service.environment
@@ -314,6 +332,14 @@ const handleVolumes = async (
     state.volumes[serviceID] = (state.volumes[serviceID] ?? []).filter(
       (volume) => volume.id !== volumeID
     );
+    const canvasService = state.canvases[projectID]?.resources.find(
+      (candidate) => candidate.id === serviceID
+    );
+    if (canvasService) {
+      canvasService.volumes = canvasService.volumes.filter(
+        (volume) => volume.id !== volumeID
+      );
+    }
     return noContent();
   }
   if (request.method !== "POST" || volumeID) {
@@ -330,6 +356,10 @@ const handleVolumes = async (
     serviceId: serviceID,
   };
   state.volumes[serviceID] = [...(state.volumes[serviceID] ?? []), volume];
+  const canvasService = state.canvases[projectID]?.resources.find(
+    (candidate) => candidate.id === serviceID
+  );
+  canvasService?.volumes.push({ id: volume.id, name: volume.name });
   return json(volume, 201);
 };
 

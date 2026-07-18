@@ -33,6 +33,7 @@ type manualBackupRunner struct {
 type restoreRunnerStub struct {
 	resourceKind string
 	resourceID   string
+	targetID     string
 	generationID string
 	options      backup.ResourceRestoreOptions
 	actor        backup.Actor
@@ -40,12 +41,13 @@ type restoreRunnerStub struct {
 
 func (runner *restoreRunnerStub) Start(
 	_ context.Context,
-	resourceKind, resourceID, generationID string,
+	resourceKind, resourceID, targetID, generationID string,
 	options backup.ResourceRestoreOptions,
 	actor backup.Actor,
 ) (state.Operation, error) {
 	runner.resourceKind = resourceKind
 	runner.resourceID = resourceID
+	runner.targetID = targetID
 	runner.generationID = generationID
 	runner.options = options
 	runner.actor = actor
@@ -55,7 +57,7 @@ func (runner *restoreRunnerStub) Start(
 	}, nil
 }
 
-func (runner manualBackupRunner) TryRunNow(context.Context, string, string, int) (state.BackupRecord, error) {
+func (runner manualBackupRunner) TryRunNow(context.Context, string, string, string, int) (state.BackupRecord, error) {
 	return runner.record, runner.err
 }
 
@@ -96,12 +98,13 @@ func TestBackupTargetAccessOnlyAPIProbesAndNeverReturnsSecret(t *testing.T) {
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, raw)
 
 	getResponse := httptest.NewRecorder()
-	handler.ServeHTTP(getResponse, projectRequest(http.MethodGet, "/api/v1/backups/target", ""))
-	if getResponse.Code != http.StatusOK || !strings.Contains(getResponse.Body.String(), `"configured":false`) {
+	handler.ServeHTTP(getResponse, projectRequest(http.MethodGet, "/api/v1/backups/targets", ""))
+	if getResponse.Code != http.StatusOK || getResponse.Body.String() != "{\"controlTargetId\":\"\",\"targets\":[]}\n" {
 		t.Fatalf("unconfigured target = %d/%s", getResponse.Code, getResponse.Body)
 	}
 
-	put := projectRequest(http.MethodPut, "/api/v1/backups/target", `{
+	put := projectRequest(http.MethodPost, "/api/v1/backups/targets", `{
+  "name":"Primary",
   "endpoint":"https://s3.example.com",
   "region":"eu-central-003",
   "bucket":"backup-bucket",
@@ -113,19 +116,38 @@ func TestBackupTargetAccessOnlyAPIProbesAndNeverReturnsSecret(t *testing.T) {
 	putResponse := httptest.NewRecorder()
 	handler.ServeHTTP(putResponse, put)
 	if putResponse.Code != http.StatusOK || probeCalls != 1 ||
-		!strings.Contains(putResponse.Body.String(), `"configured":true`) ||
+		!strings.Contains(putResponse.Body.String(), `"name":"Primary"`) ||
 		strings.Contains(putResponse.Body.String(), "remote-secret") {
 		t.Fatalf("set target = %d/%s probeCalls=%d", putResponse.Code, putResponse.Body, probeCalls)
 	}
+	targets, err := store.BackupTargets(ctx)
+	if err != nil || len(targets) != 1 {
+		t.Fatalf("stored targets = %+v, %v", targets, err)
+	}
+	targetID := targets[0].ID
 
 	getResponse = httptest.NewRecorder()
-	handler.ServeHTTP(getResponse, projectRequest(http.MethodGet, "/api/v1/backups/target", ""))
+	handler.ServeHTTP(getResponse, projectRequest(http.MethodGet, "/api/v1/backups/targets", ""))
 	if getResponse.Code != http.StatusOK || strings.Contains(getResponse.Body.String(), "remote-secret") ||
 		!strings.Contains(getResponse.Body.String(), `"accessKeyId":"remote-access"`) {
 		t.Fatalf("configured target = %d/%s", getResponse.Code, getResponse.Body)
 	}
+	control := projectRequest(http.MethodPut, "/api/v1/backups/control-target", `{"targetId":"`+targetID+`"}`)
+	control.Header.Set("Origin", "https://admin.example.com")
+	controlResponse := httptest.NewRecorder()
+	handler.ServeHTTP(controlResponse, control)
+	if controlResponse.Code != http.StatusOK || !strings.Contains(controlResponse.Body.String(), targetID) {
+		t.Fatalf("set control target = %d/%s", controlResponse.Code, controlResponse.Body)
+	}
+	clearControl := projectRequest(http.MethodPut, "/api/v1/backups/control-target", `{"targetId":""}`)
+	clearControl.Header.Set("Origin", "https://admin.example.com")
+	clearResponse := httptest.NewRecorder()
+	handler.ServeHTTP(clearResponse, clearControl)
+	if clearResponse.Code != http.StatusOK {
+		t.Fatalf("clear control target = %d/%s", clearResponse.Code, clearResponse.Body)
+	}
 
-	deleteRequest := projectRequest(http.MethodDelete, "/api/v1/backups/target", "")
+	deleteRequest := projectRequest(http.MethodDelete, "/api/v1/backups/targets/"+targetID, "")
 	deleteRequest.Header.Set("Origin", "https://admin.example.com")
 	deleteResponse := httptest.NewRecorder()
 	handler.ServeHTTP(deleteResponse, deleteRequest)
@@ -156,10 +178,20 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "region",
+			Bucket: "bucket", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("sealed"),
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "user@example.com", UpdatedAtMillis: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	restores := &restoreRunnerStub{}
 	application, err := backup.NewResourceApplication(backup.ResourceApplicationConfig{
 		Store: store, Worker: manualBackupRunner{record: state.BackupRecord{
-			ID: "backup", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
+			ID: "backup", TargetID: "target", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
 			Status: "running", StartedAtMillis: 20,
 		}}, Restores: restores, Random: bytes.NewReader(serverSequenceBytes(100)), Now: func() time.Time { return time.UnixMilli(10) },
 	})
@@ -170,6 +202,7 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, raw)
 	put := projectRequest(http.MethodPut, "/api/v1/backups/resources/redis/redis/policy", `{
   "enabled":true,
+  "targetId":"target",
   "cron":" 5 */2 * * 1-5 ",
   "retentionCount":12
 }`)
@@ -187,7 +220,7 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 		!strings.Contains(response.Body.String(), `"nextRunAt":`) {
 		t.Fatalf("list backup policies = %d/%s", response.Code, response.Body)
 	}
-	run := projectRequest(http.MethodPost, "/api/v1/backups/resources/redis/redis/run", "")
+	run := projectRequest(http.MethodPost, "/api/v1/backups/resources/redis/redis/run", `{"targetId":"target"}`)
 	run.Header.Set("Origin", "https://admin.example.com")
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, run)
@@ -195,12 +228,13 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 		t.Fatalf("run backup now = %d/%s", response.Code, response.Body)
 	}
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/backups/resources/redis/redis/history?limit=50", ""))
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/backups/resources/redis/redis/history?targetId=target&limit=50", ""))
 	if response.Code != http.StatusOK || response.Body.String() != "{\"backups\":[]}\n" {
 		t.Fatalf("backup history = %d/%s", response.Code, response.Body)
 	}
 	restore := projectRequest(http.MethodPost, "/api/v1/backups/resources/redis/redis/restore", `{
   "generationId":"generation-1",
+  "targetId":"target",
   "mode":"replace",
   "newResourceName":"",
   "destructiveConfirmed":true
@@ -209,7 +243,7 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, restore)
 	if response.Code != http.StatusAccepted || !strings.Contains(response.Body.String(), `"id":"operation-1"`) ||
-		restores.resourceKind != "redis" || restores.resourceID != "redis" || restores.generationID != "generation-1" ||
+		restores.resourceKind != "redis" || restores.resourceID != "redis" || restores.targetID != "target" || restores.generationID != "generation-1" ||
 		restores.options.Mode != "replace" || !restores.options.DestructiveConfirmed || restores.actor.Email == "" {
 		t.Fatalf("restore = %d/%s runner=%+v", response.Code, response.Body, restores)
 	}

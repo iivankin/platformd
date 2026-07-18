@@ -70,7 +70,7 @@ func (job *ControlJob) RunControl(ctx context.Context) error {
 		return ErrTargetBusy
 	}
 	defer releaseTarget()
-	target, err := job.config.Target.RuntimeTarget(ctx)
+	target, err := job.config.Target.ControlRuntimeTarget(ctx)
 	if errors.Is(err, state.ErrBackupTargetNotFound) {
 		return ErrControlTargetMissing
 	}
@@ -95,7 +95,7 @@ func (job *ControlJob) RunControl(ctx context.Context) error {
 	}
 	defer lease.Release()
 	if err := job.config.Store.BeginBackup(ctx, state.BeginBackup{
-		ID: backupID, ResourceKind: "control", ResourceID: job.config.InstallationID,
+		ID: backupID, TargetID: target.ID, ResourceKind: "control", ResourceID: job.config.InstallationID,
 		GenerationID: generationID, StartedAtMillis: startedAt.UnixMilli(),
 	}); err != nil {
 		return err

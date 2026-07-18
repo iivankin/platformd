@@ -11,6 +11,7 @@ import type { ReactNode } from "react";
 
 import {
   fetchBackupGenerations,
+  fetchBackupPolicy,
   fetchRecoveryStatus,
   retryRecovery,
 } from "@/api";
@@ -32,6 +33,7 @@ const resourcePresentation: Record<RecoveryResourceKind, { label: string }> = {
   postgres: { label: "PostgreSQL" },
   redis: { label: "Redis" },
   registry: { label: "Registry" },
+  volume: { label: "Volume" },
 };
 
 const errorText = (error: unknown, fallback: string) =>
@@ -72,6 +74,7 @@ const RecoveryResourceRow = ({
   const [generationsLoading, setGenerationsLoading] = useState(false);
   const [selected, setSelected] = useState<BackupGeneration>();
   const [error, setError] = useState<string>();
+  const [targetID, setTargetID] = useState("");
 
   const afterRestore = useCallback(async () => {
     setSelected(undefined);
@@ -82,6 +85,7 @@ const RecoveryResourceRow = ({
     onSucceeded: afterRestore,
     resourceID: resource.resourceId,
     resourceKind: resource.resourceKind,
+    targetID,
   });
 
   useEffect(() => () => generationController.current?.abort(), []);
@@ -101,12 +105,21 @@ const RecoveryResourceRow = ({
     setGenerationsLoading(true);
     setError(undefined);
     try {
+      const policy = await fetchBackupPolicy(
+        resource.resourceKind,
+        resource.resourceId,
+        controller.signal
+      );
+      setTargetID(policy.targetId ?? "");
       setGenerations(
-        await fetchBackupGenerations(
-          resource.resourceKind,
-          resource.resourceId,
-          controller.signal
-        )
+        policy.targetId
+          ? await fetchBackupGenerations(
+              resource.resourceKind,
+              resource.resourceId,
+              policy.targetId,
+              controller.signal
+            )
+          : []
       );
     } catch (loadError) {
       if (
@@ -338,7 +351,7 @@ export const RecoveryPage = () => {
   const percent = total === 0 ? 0 : Math.round((complete / total) * 100);
 
   return (
-    <div className="enter-row min-h-full">
+    <div className="min-h-full animate-in duration-200 fade-in slide-in-from-bottom-1">
       <section className="border-b border-border bg-[linear-gradient(135deg,color-mix(in_oklab,var(--muted)_45%,transparent),transparent_62%)] px-5 py-7">
         <div className="flex flex-col gap-5 md:flex-row md:items-end">
           <div className="flex min-w-0 flex-1 gap-4">

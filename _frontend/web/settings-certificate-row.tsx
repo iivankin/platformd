@@ -2,6 +2,7 @@ import { Check, RefreshCw, Trash2, X } from "lucide-react";
 
 import type { InstallationSettings } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 
 type Certificate = InstallationSettings["certificates"][number];
 
@@ -24,7 +25,7 @@ export const SettingsCertificateRow = ({
   onReplace,
   onStartDelete,
 }: SettingsCertificateRowProperties) => (
-  <section className="grid border-b border-border lg:grid-cols-[minmax(16rem,1fr)_minmax(12rem,0.6fr)_auto] lg:items-center">
+  <SectionCard className="grid lg:grid-cols-[minmax(16rem,1fr)_minmax(12rem,0.6fr)_auto] lg:items-center">
     <div className="px-5 py-4">
       <p className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
         DNS names
@@ -75,5 +76,5 @@ export const SettingsCertificateRow = ({
         </Button>
       )}
     </div>
-  </section>
+  </SectionCard>
 );

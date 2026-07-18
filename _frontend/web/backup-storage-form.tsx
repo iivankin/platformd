@@ -3,6 +3,7 @@ import type { FormEvent } from "react";
 
 import type { SetBackupTargetInput } from "@/api";
 import { Button } from "@/components/ui/button";
+import { FormCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
 
@@ -23,12 +24,23 @@ export const BackupStorageForm = ({
   onSubmit: (event: FormEvent<HTMLFormElement>) => void;
   onUpdate: (field: keyof SetBackupTargetInput, value: string) => void;
 }) => (
-  <form className="border-b border-border" onSubmit={onSubmit}>
+  <FormCard onSubmit={onSubmit}>
     <div className="border-b border-border px-5 py-3 text-[10px] text-muted-foreground">
       Connect an S3-compatible bucket. The connection is checked before it is
       saved.
     </div>
     <div className="grid md:grid-cols-2 xl:grid-cols-3">
+      <div className="border-b border-border px-5 pt-4 md:border-r">
+        <FormField label="Storage name" name="backup-name">
+          <Input
+            autoFocus
+            id="backup-name"
+            onChange={(event) => onUpdate("name", event.target.value)}
+            placeholder="Off-site · EU"
+            value={input.name}
+          />
+        </FormField>
+      </div>
       <div className="border-b border-border px-5 pt-4 md:border-r">
         <FormField label="Endpoint" name="backup-endpoint">
           <Input
@@ -89,7 +101,7 @@ export const BackupStorageForm = ({
               onUpdate("secretAccessKey", event.target.value)
             }
             placeholder={
-              configured ? "Enter the secret again" : "Stored encrypted"
+              configured ? "Enter the secret again" : "Secret access key"
             }
             type="password"
             value={input.secretAccessKey}
@@ -98,24 +110,16 @@ export const BackupStorageForm = ({
       </div>
     </div>
     <div className="flex flex-wrap items-center gap-2 px-5 py-3">
-      <details className="mr-auto text-[9px] text-muted-foreground">
-        <summary className="cursor-pointer hover:text-foreground">
-          Advanced verification details
-        </summary>
-        <p className="mt-2 max-w-xl leading-4">
-          platformd uploads, reads, lists, and deletes a temporary object over
-          TLS before accepting the connection.
-        </p>
-      </details>
-      {configured ? (
-        <Button onClick={onCancel} size="sm" type="button" variant="ghost">
-          Cancel
-        </Button>
-      ) : null}
+      <p className="mr-auto text-[9px] text-muted-foreground">
+        The connection is verified before saving.
+      </p>
+      <Button onClick={onCancel} size="sm" type="button" variant="ghost">
+        Cancel
+      </Button>
       <Button disabled={busy || !canSubmit} size="sm" type="submit">
         {busy ? <LoaderCircle className="animate-spin" /> : <Check />}
         {busy ? "Checking…" : "Connect storage"}
       </Button>
     </div>
-  </form>
+  </FormCard>
 );

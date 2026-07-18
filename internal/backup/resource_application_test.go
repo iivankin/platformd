@@ -50,7 +50,7 @@ func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	generations, err := application.Generations(ctx, "redis", "redis-1")
+	generations, err := application.Generations(ctx, "redis", "redis-1", "target")
 	if err != nil || len(generations) != 2 || generations[0].GenerationID != "generation-2" {
 		t.Fatalf("remote generations = %+v, %v", generations, err)
 	}
@@ -61,7 +61,7 @@ func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t
 	if rows != 0 {
 		t.Fatalf("remote generation list was cached in SQLite; rows = %d", rows)
 	}
-	if _, err := application.RunNow(ctx, "redis", "redis-1"); !errors.Is(err, ErrResourceRunner) {
+	if _, err := application.RunNow(ctx, "redis", "redis-1", "target"); !errors.Is(err, ErrResourceRunner) {
 		t.Fatalf("run without worker error = %v", err)
 	}
 	entries, err := os.ReadDir(filepath.Join(root, "work"))
@@ -79,6 +79,12 @@ func TestResourceApplicationDerivesNextRunWithoutPersistingSchedulerState(t *tes
 	}
 	defer store.Close()
 	createBackupInstallation(t, store)
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("sealed")},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user", ActorEmail: "user@example.com", UpdatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.CreateProject(ctx, state.CreateProject{
 		ID: "project", Name: "demo", AuditEventID: "project-audit",
 		ActorID: "user", ActorEmail: "user@example.com", CreatedAtMillis: 10,
@@ -102,6 +108,7 @@ func TestResourceApplicationDerivesNextRunWithoutPersistingSchedulerState(t *tes
 	}
 	updated, err := application.SetPolicy(ctx, PolicyInput{
 		ResourceKind: "redis", ResourceID: "redis-1", Enabled: true,
+		TargetID: "target",
 		Cron: "0 12 * * *", RetentionCount: 7,
 		Actor: Actor{Kind: "access", ID: "user", Email: "user@example.com"},
 	})

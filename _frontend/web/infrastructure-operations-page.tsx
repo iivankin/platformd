@@ -2,6 +2,8 @@ import { RefreshCw, SquareTerminal } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
+import { PageStack } from "@/components/ui/page-stack";
 import { cn } from "@/lib/utils";
 import { ServerTerminalOverlay } from "@/server-terminal-overlay";
 import { useSelfUpdate } from "@/use-self-update";
@@ -16,8 +18,8 @@ export const InfrastructureOperationsPage = () => {
   } = useSelfUpdate();
 
   return (
-    <div>
-      <section className="flex flex-col gap-5 border-b border-border px-5 py-6 md:flex-row md:items-center">
+    <PageStack>
+      <SectionCard className="flex flex-col gap-5 px-5 py-6 md:flex-row md:items-center">
         <div className="grid size-10 shrink-0 place-items-center bg-muted">
           <SquareTerminal className="size-4" />
         </div>
@@ -39,9 +41,9 @@ export const InfrastructureOperationsPage = () => {
           <SquareTerminal />
           Open console
         </Button>
-      </section>
+      </SectionCard>
 
-      <section className="flex flex-col gap-5 border-b border-border px-5 py-6 md:flex-row md:items-center">
+      <SectionCard className="flex flex-col gap-5 px-5 py-6 md:flex-row md:items-center">
         <div className="grid size-10 shrink-0 place-items-center bg-muted">
           <RefreshCw className={cn("size-4", updating && "animate-spin")} />
         </div>
@@ -71,11 +73,11 @@ export const InfrastructureOperationsPage = () => {
         >
           {updating ? "Waiting for restart" : "Update platform"}
         </Button>
-      </section>
+      </SectionCard>
 
       {terminalOpen ? (
         <ServerTerminalOverlay onClose={() => setTerminalOpen(false)} />
       ) : null}
-    </div>
+    </PageStack>
   );
 };

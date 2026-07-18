@@ -56,7 +56,7 @@ func TestSecurityHeaders(t *testing.T) {
 	response := httptest.NewRecorder()
 	server.Handler(server.DefaultMeta("bootstrapping")).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
 
-	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") || strings.Contains(got, "unsafe-inline") {
+	if got := response.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'none'") || !strings.Contains(got, "img-src 'self' data: https://avatars.githubusercontent.com") || strings.Contains(got, "unsafe-inline") {
 		t.Fatalf("unexpected CSP: %q", got)
 	}
 	if got := response.Header().Get("X-Content-Type-Options"); got != "nosniff" {

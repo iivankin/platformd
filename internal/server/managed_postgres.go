@@ -39,6 +39,9 @@ func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostg
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(application))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}/extensions", listManagedPostgresExtensions(application))
+	mux.HandleFunc("PUT /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, true))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, false))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres/{postgresID}/query", queryManagedPostgres(application))
 	registerManagedDeploymentRoutes(mux, "postgres", application, writeManagedPostgresError)
 }
@@ -108,6 +111,47 @@ func createManagedPostgres(application *managedpostgres.Application) http.Handle
 		response.Header().Set("Location", "/api/v1/projects/"+result.Resource.ProjectID+"/postgres/"+result.Resource.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicManagedPostgres(result.Resource, result.OwnerPassword))
+	}
+}
+
+func listManagedPostgresExtensions(application *managedpostgres.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		extensions, err := application.Extensions(
+			request.Context(),
+			request.PathValue("projectID"),
+			request.PathValue("postgresID"),
+		)
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"extensions": extensions})
+	}
+}
+
+func changeManagedPostgresExtension(application *managedpostgres.Application, install bool) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		result, err := application.ChangeExtension(
+			request.Context(),
+			managedpostgres.ChangeExtensionInput{
+				ProjectID: request.PathValue("projectID"), ResourceID: request.PathValue("postgresID"),
+				ExtensionName: request.PathValue("extensionName"), Install: install,
+				Actor: managedpostgres.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+			},
+		)
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		response.Header().Set("X-Request-ID", result.RequestID)
+		writeJSON(response, http.StatusAccepted, publicOperation(result.Operation))
 	}
 }
 

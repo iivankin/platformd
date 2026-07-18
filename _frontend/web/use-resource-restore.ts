@@ -12,12 +12,14 @@ interface ResourceRestoreInput {
   onSucceeded: () => Promise<void>;
   resourceID: string;
   resourceKind: RecoveryResourceKind;
+  targetID: string;
 }
 
 export const useResourceRestore = ({
   onSucceeded,
   resourceID,
   resourceKind,
+  targetID,
 }: ResourceRestoreInput) => {
   const [error, setError] = useState<string>();
   const [operation, setOperation] = useState<Operation>();
@@ -43,13 +45,18 @@ export const useResourceRestore = ({
       setError(undefined);
       try {
         await accept(
-          await restoreBackupGeneration(resourceKind, resourceID, generationID)
+          await restoreBackupGeneration(
+            resourceKind,
+            resourceID,
+            targetID,
+            generationID
+          )
         );
       } catch (restoreError) {
         setError(errorText(restoreError, "Unable to restore generation"));
       }
     },
-    [accept, operation?.status, resourceID, resourceKind]
+    [accept, operation?.status, resourceID, resourceKind, targetID]
   );
 
   useEffect(() => {

@@ -2,8 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
 import {
-  attachServiceDomain,
-  attachServiceListener,
   deleteService,
   deployServiceVersion,
   fetchImageCredentials,
@@ -32,9 +30,8 @@ import type { ResourceNodeData } from "@/project-flow";
 import { deploymentPath } from "@/project-resource-path";
 import { ResourceConsole } from "@/resource-console";
 import { ResourceUsage } from "@/resource-usage";
-import { serviceListenerKey } from "@/service-listeners";
 import { ServiceSettings } from "@/service-settings";
-import type { ServiceSettingsValues } from "@/service-settings";
+import type { PendingServiceSettings } from "@/service-settings-model";
 import { ServiceVariables } from "@/service-variables";
 import { WorkspaceView } from "@/workspace-view";
 
@@ -48,6 +45,8 @@ export type ServiceWorkspaceView =
 interface ServiceDetailPanelProperties {
   data: ResourceNodeData;
   onChanged: () => void;
+  onPendingSettingsChange: (change?: PendingServiceSettings) => void;
+  pendingSettings?: PendingServiceSettings;
   projectID: string;
   serviceID: string;
   view: ServiceWorkspaceView;
@@ -92,6 +91,8 @@ const ServicePanelError = ({
 export const ServiceDetailPanel = ({
   data,
   onChanged,
+  onPendingSettingsChange,
+  pendingSettings,
   projectID,
   serviceID,
   view,
@@ -215,79 +216,6 @@ export const ServiceDetailPanel = ({
     }
   };
 
-  const saveSettings = async (
-    values: ServiceSettingsValues
-  ): Promise<boolean> => {
-    if (!service || busy) {
-      return false;
-    }
-    setBusy("save settings");
-    setError(null);
-    try {
-      const updated = await updateService(projectID, serviceID, {
-        ...serviceUpdate(service, service.enabled, values.volumeMounts),
-        healthCheck: values.healthCheck,
-        imageCredentialId: values.imageCredentialId,
-        imageReference: values.imageReference,
-      });
-      const domainUpdates = values.domains
-        .filter(
-          (domain) =>
-            domains.find((current) => current.hostname === domain.hostname)
-              ?.targetPort !== domain.targetPort
-        )
-        .map((domain) =>
-          attachServiceDomain(
-            projectID,
-            serviceID,
-            domain.hostname,
-            domain.targetPort
-          )
-        );
-      const listenerUpdates = values.listeners
-        .filter(
-          (listener) =>
-            listeners.find(
-              (current) =>
-                serviceListenerKey(current) === serviceListenerKey(listener)
-            )?.targetPort !== listener.targetPort
-        )
-        .map((listener) =>
-          attachServiceListener(projectID, serviceID, {
-            protocol: listener.protocol,
-            publicPort: listener.publicPort,
-            targetPort: listener.targetPort,
-          })
-        );
-      const [, page] = await Promise.all([
-        Promise.all([...domainUpdates, ...listenerUpdates]),
-        fetchServiceDeployments(projectID, serviceID),
-      ]);
-      setService(updated);
-      setDomains(values.domains);
-      setListeners(values.listeners);
-      setDeployments(page.deployments);
-      setNextCursor(page.nextCursor);
-      onChanged();
-      return true;
-    } catch (saveError) {
-      try {
-        await load();
-      } catch {
-        // The original mutation error is more useful than a follow-up refresh
-        // failure and the next page load will reconcile the visible state.
-      }
-      setError(
-        saveError instanceof Error
-          ? saveError.message
-          : "Unable to save service settings"
-      );
-      return false;
-    } finally {
-      setBusy(undefined);
-    }
-  };
-
   const deleteCurrentService = async (): Promise<boolean> => {
     if (!service || busy) {
       return false;
@@ -296,6 +224,7 @@ export const ServiceDetailPanel = ({
     setError(null);
     try {
       await deleteService(projectID, serviceID, service.updatedAt);
+      onPendingSettingsChange();
       onChanged();
       void navigate(`/projects/${encodeURIComponent(projectID)}`);
       return true;
@@ -415,10 +344,9 @@ export const ServiceDetailPanel = ({
                 setCredentials((current) => [...current, credential])
               }
               onDelete={deleteCurrentService}
-              onDomainsChange={setDomains}
-              onListenersChange={setListeners}
-              onSave={saveSettings}
+              onDraftChange={onPendingSettingsChange}
               onVolumesChange={setVolumes}
+              pendingChange={pendingSettings}
               projectID={projectID}
               service={service}
               serviceID={serviceID}

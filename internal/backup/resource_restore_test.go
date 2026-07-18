@@ -51,7 +51,7 @@ func TestResourceRestoreServiceReturnsRunningOperationAndFinishesAsynchronously(
 		t.Fatal(err)
 	}
 	operation, err := service.Start(
-		ctx, "redis", "redis-1", "generation-1", ResourceRestoreOptions{},
+		ctx, "redis", "redis-1", "target", "generation-1", ResourceRestoreOptions{},
 		Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
 	)
 	if err != nil || operation.Status != "running" || operation.ID == "" {
@@ -112,7 +112,7 @@ func TestResourceRestoreServiceFailsIfRestorerDoesNotConsumeGeneration(t *testin
 		t.Fatal(err)
 	}
 	operation, err := service.Start(
-		ctx, "postgres", "postgres-1", "generation-1", ResourceRestoreOptions{},
+		ctx, "postgres", "postgres-1", "target", "generation-1", ResourceRestoreOptions{},
 		Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
 	)
 	if err != nil {
@@ -147,7 +147,7 @@ func TestResourceRestoreServiceDoesNotCreateOperationForMissingGeneration(t *tes
 		t.Fatal(err)
 	}
 	if _, err := service.Start(
-		ctx, "redis", "redis-1", "missing", ResourceRestoreOptions{},
+		ctx, "redis", "redis-1", "target", "missing", ResourceRestoreOptions{},
 		Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
 	); err != ErrResourceGenerationNotFound {
 		t.Fatalf("missing generation error = %v", err)

@@ -5,6 +5,8 @@ import { useNavigate } from "react-router";
 import { fetchRegistryRepositories } from "@/api";
 import type { RegistryRepository } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
+import { PageStack } from "@/components/ui/page-stack";
 import { RegistryRepositoryCreateForm } from "@/registry-repository-create-form";
 import { RegistryRepositoryList } from "@/registry-repository-list";
 
@@ -43,8 +45,8 @@ export const RegistryRepositoriesPage = () => {
   }, []);
 
   return (
-    <div className="flex min-h-[36rem] flex-1 flex-col">
-      <section className="flex min-h-16 items-center justify-between gap-4 border-b border-border px-5 py-3">
+    <PageStack className="min-h-[36rem] flex-1">
+      <SectionCard className="flex min-h-16 items-center justify-between gap-4 px-5 py-3">
         <div>
           <p className="text-xs font-medium">Image repositories</p>
           <p className="mt-1 text-[10px] text-muted-foreground">
@@ -54,7 +56,7 @@ export const RegistryRepositoriesPage = () => {
         <Button onClick={() => setCreating(true)} size="sm">
           <Plus /> New repository
         </Button>
-      </section>
+      </SectionCard>
 
       {creating ? (
         <RegistryRepositoryCreateForm
@@ -69,9 +71,9 @@ export const RegistryRepositoriesPage = () => {
       ) : null}
 
       {error ? (
-        <p className="border-b border-destructive/30 bg-destructive/5 px-5 py-3 text-[10px] text-destructive">
+        <SectionCard className="bg-destructive/5 px-5 py-3 text-[10px] text-destructive ring-destructive/30">
           {error}
-        </p>
+        </SectionCard>
       ) : null}
 
       {loaded ? (
@@ -82,10 +84,10 @@ export const RegistryRepositoriesPage = () => {
           repositories={repositories}
         />
       ) : (
-        <div className="grid min-h-64 place-items-center border-b border-border text-[10px] text-muted-foreground">
+        <SectionCard className="grid min-h-64 place-items-center text-[10px] text-muted-foreground">
           Loading repositories…
-        </div>
+        </SectionCard>
       )}
-    </div>
+    </PageStack>
   );
 };

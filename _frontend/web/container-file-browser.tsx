@@ -14,6 +14,7 @@ import {
 } from "@/api";
 import type { ContainerFileEntry, ContainerResourceKind } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
 interface ContainerFileBrowserProperties {
@@ -219,7 +220,7 @@ export const ContainerFileBrowser = ({
   } as CSSProperties;
 
   return (
-    <section className="border-t border-border bg-background">
+    <SectionCard className="bg-background">
       <header className="flex min-h-11 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <FolderTree className="size-4 text-muted-foreground" />
         <div>
@@ -334,6 +335,6 @@ export const ContainerFileBrowser = ({
           )}
         </div>
       </div>
-    </section>
+    </SectionCard>
   );
 };

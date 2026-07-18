@@ -5,6 +5,7 @@ import { queryManagedPostgres } from "@/api";
 import type { PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { PostgresExtensions } from "@/postgres-extensions";
 
 type DatabaseView = "config" | "data" | "stats";
 
@@ -33,11 +34,7 @@ SELECT
   COALESCE(last_autovacuum::text, last_vacuum::text, 'never') AS last_vacuum
 FROM pg_stat_user_tables
 ORDER BY pg_total_relation_size(relid) DESC
-LIMIT 100;
-SELECT extname AS name, extversion AS version FROM pg_extension ORDER BY extname;
-SELECT name, default_version, installed_version, comment
-FROM pg_available_extensions
-ORDER BY name;`;
+LIMIT 100;`;
 
 interface Cell {
   base64?: string;
@@ -110,11 +107,9 @@ const ResultTable = ({ result }: { result: PostgresQueryResult | null }) => (
 const PostgresStats = ({
   postgresID,
   projectID,
-  view,
 }: {
   postgresID: string;
   projectID: string;
-  view: "config" | "stats";
 }) => {
   const [result, setResult] = useState<PostgresQueryResult | null>(null);
   const [error, setError] = useState<string>();
@@ -163,86 +158,6 @@ const PostgresStats = ({
 
   const summary = result?.statements[0]?.rows[0] ?? [];
   const tables = result?.statements[1];
-  const installed = result?.statements[2];
-  const available = result?.statements[3];
-
-  const changeExtension = async (name: string, install: boolean) => {
-    if (!/^[a-z][a-z0-9_]*$/u.test(name)) {
-      setError("PostgreSQL returned an invalid extension name.");
-      return;
-    }
-    setLoading(true);
-    try {
-      await queryManagedPostgres(
-        projectID,
-        postgresID,
-        `${install ? "CREATE EXTENSION IF NOT EXISTS" : "DROP EXTENSION IF EXISTS"} "${name}";`
-      );
-      await load();
-    } catch (changeError) {
-      setError(
-        changeError instanceof Error
-          ? changeError.message
-          : "Unable to change extension"
-      );
-      setLoading(false);
-    }
-  };
-
-  if (view === "config") {
-    const installedNames = new Set(
-      installed?.rows.map((row) => cellText(row[0]))
-    );
-    return (
-      <section>
-        <header className="flex items-center justify-between border-b border-border px-5 py-3">
-          <div>
-            <h3 className="text-[10px] font-medium">Extensions</h3>
-            <p className="mt-1 text-[9px] text-muted-foreground">
-              Install trusted extensions available in this PostgreSQL image.
-            </p>
-          </div>
-          <Button
-            disabled={loading}
-            onClick={() => void load()}
-            size="icon"
-            variant="ghost"
-          >
-            <RefreshCw />
-          </Button>
-        </header>
-        {available?.rows.map((row) => {
-          const name = cellText(row[0]);
-          const isInstalled = installedNames.has(name);
-          return (
-            <div
-              className="grid min-h-14 grid-cols-[12rem_7rem_minmax(0,1fr)_6rem] items-center border-b border-border px-5 text-[10px]"
-              key={name}
-            >
-              <code>{name}</code>
-              <span className="text-muted-foreground">{cellText(row[1])}</span>
-              <span className="truncate pr-4 text-muted-foreground">
-                {cellText(row[3])}
-              </span>
-              <Button
-                disabled={loading}
-                onClick={() => void changeExtension(name, !isInstalled)}
-                size="sm"
-                variant="outline"
-              >
-                {isInstalled ? "Uninstall" : "Install"}
-              </Button>
-            </div>
-          );
-        })}
-        {error ? (
-          <p className="border-b border-border px-5 py-3 text-[10px] text-destructive">
-            {error}
-          </p>
-        ) : null}
-      </section>
-    );
-  }
 
   const labels = [
     "Version",
@@ -328,6 +243,44 @@ export const PostgresDatabase = ({
     }
   };
 
+  const renderView = () => {
+    if (view === "config") {
+      return (
+        <PostgresExtensions postgresID={postgresID} projectID={projectID} />
+      );
+    }
+    if (view === "stats") {
+      return <PostgresStats postgresID={postgresID} projectID={projectID} />;
+    }
+    return (
+      <div className="flex min-h-[34rem] flex-col">
+        <div className="relative h-52 shrink-0 border-b border-border">
+          <textarea
+            aria-label="PostgreSQL SQL editor"
+            className="h-full w-full resize-none bg-background p-4 pr-24 font-mono text-[11px] leading-5 outline-none focus:bg-muted/10"
+            onChange={(event) => setSQL(event.target.value)}
+            spellCheck={false}
+            value={sql}
+          />
+          <Button
+            className="absolute top-3 right-3"
+            disabled={running || !sql.trim()}
+            onClick={() => void run()}
+            size="sm"
+          >
+            <Play /> {running ? "Running…" : "Run"}
+          </Button>
+        </div>
+        <ResultTable result={result} />
+        {error ? (
+          <p className="border-b border-border px-4 py-3 text-[10px] text-destructive">
+            {error}
+          </p>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div>
       <nav
@@ -348,39 +301,7 @@ export const PostgresDatabase = ({
           </button>
         ))}
       </nav>
-      {view === "data" ? (
-        <div className="flex min-h-[34rem] flex-col">
-          <div className="relative h-52 shrink-0 border-b border-border">
-            <textarea
-              aria-label="PostgreSQL SQL editor"
-              className="h-full w-full resize-none bg-background p-4 pr-24 font-mono text-[11px] leading-5 outline-none focus:bg-muted/10"
-              onChange={(event) => setSQL(event.target.value)}
-              spellCheck={false}
-              value={sql}
-            />
-            <Button
-              className="absolute top-3 right-3"
-              disabled={running || !sql.trim()}
-              onClick={() => void run()}
-              size="sm"
-            >
-              <Play /> {running ? "Running…" : "Run"}
-            </Button>
-          </div>
-          <ResultTable result={result} />
-          {error ? (
-            <p className="border-b border-border px-4 py-3 text-[10px] text-destructive">
-              {error}
-            </p>
-          ) : null}
-        </div>
-      ) : (
-        <PostgresStats
-          postgresID={postgresID}
-          projectID={projectID}
-          view={view}
-        />
-      )}
+      {renderView()}
     </div>
   );
 };

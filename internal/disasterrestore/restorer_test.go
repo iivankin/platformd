@@ -122,6 +122,27 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 		t.Fatal(err)
 	}
 	master := cryptobox.MasterKey{1, 2, 3, 4}
+	sealedTargetSecret, err := backup.SealTargetSecret(master, "installation", "old-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sourceStore.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "recovery-target", Name: "Offsite", Endpoint: "https://s3.example.com", Region: "region",
+			Bucket: "bucket", Prefix: "prefix", AccessKeyID: "old-access",
+			SecretAccessKeyEncrypted: sealedTargetSecret,
+		},
+		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user",
+		ActorEmail: "admin@example.com", UpdatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sourceStore.SetControlBackupTarget(ctx, state.SetControlBackupTarget{
+		TargetID: "recovery-target", AuditEventID: "control-target-audit", ActorKind: "access",
+		ActorID: "user", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	built, err := backup.BuildControl(ctx, backup.ControlBuildConfig{
 		Store: sourceStore, Master: master, InstallationID: "installation", GenerationID: "generation",
 		ReleaseSlot: filepath.Join(sourcePaths.ReleasesRoot, "1.2.3"), WorkRoot: filepath.Join(sourceRoot, "work"),
@@ -209,7 +230,7 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 	if err != nil || !installation.RecoveryMode || installation.AdminHostname != "admin.example.com" {
 		t.Fatalf("restored installation = %+v, %v", installation, err)
 	}
-	target, err := store.BackupTarget(ctx)
+	target, err := store.BackupTarget(ctx, "recovery-target")
 	if err != nil || target.AccessKeyID != "access" {
 		t.Fatalf("restored target = %+v, %v", target, err)
 	}

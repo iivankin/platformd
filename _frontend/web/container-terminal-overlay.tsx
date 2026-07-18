@@ -4,7 +4,15 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchResourceTerminalShells } from "@/api";
 import type { ContainerResourceKind } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { Terminal } from "@/terminal";
 import { resourceTerminalSocketURL } from "@/terminal-url";
@@ -114,7 +122,7 @@ export const ContainerTerminalOverlay = ({
   };
 
   return (
-    <section
+    <SectionCard
       aria-label={`${resourceName} container terminal`}
       className={cn(
         "flex flex-col bg-background",
@@ -133,20 +141,30 @@ export const ContainerTerminalOverlay = ({
           </p>
         </div>
         <div className="ml-auto flex flex-wrap items-center gap-2">
-          <select
-            aria-label="Terminal shell"
-            className="h-8 min-w-32 border border-input bg-background px-2 text-[10px] outline-none focus-visible:border-ring"
+          <Select
             disabled={loading}
-            onChange={(event) => setSelection(event.target.value)}
+            items={[
+              ...shells.map((shell) => ({ label: shell, value: shell })),
+              { label: "Explicit argv", value: "custom" },
+            ]}
+            onValueChange={(value) => setSelection(String(value))}
             value={selection}
           >
-            {shells.map((shell) => (
-              <option key={shell} value={shell}>
-                {shell}
-              </option>
-            ))}
-            <option value="custom">Explicit argv</option>
-          </select>
+            <SelectTrigger
+              aria-label="Terminal shell"
+              className="h-8 min-w-32 text-[10px]"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent align="end">
+              {shells.map((shell) => (
+                <SelectItem key={shell} value={shell}>
+                  {shell}
+                </SelectItem>
+              ))}
+              <SelectItem value="custom">Explicit argv</SelectItem>
+            </SelectContent>
+          </Select>
           {selection === "custom" ? (
             <Input
               aria-label="Explicit terminal command as JSON argv"
@@ -190,6 +208,6 @@ export const ContainerTerminalOverlay = ({
             : "No allowlisted shell found. Enter an explicit argv to start."}
         </div>
       )}
-    </section>
+    </SectionCard>
   );
 };

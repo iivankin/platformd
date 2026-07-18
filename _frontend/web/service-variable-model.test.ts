@@ -37,6 +37,7 @@ test("variable suggestions fill names and string expressions from project resour
       kind: "service",
       name: "web",
       status: "running",
+      volumes: [],
     },
     {
       enabled: true,
@@ -45,6 +46,7 @@ test("variable suggestions fill names and string expressions from project resour
       kind: "service",
       name: "api",
       status: "running",
+      volumes: [],
     },
     {
       enabled: true,
@@ -53,6 +55,7 @@ test("variable suggestions fill names and string expressions from project resour
       kind: "postgres",
       name: "main",
       status: "running",
+      volumes: [],
     },
   ];
   const services = new Map([

@@ -82,9 +82,9 @@ SELECT id FROM volumes WHERE service_id = ? AND name = ?`, volume.ServiceID, vol
 			return fmt.Errorf("check volume name: %w", err)
 		}
 		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`, volume.ID, volume.ProjectID, volume.ServiceID,
-			volume.Name, volume.OwnerUID, volume.OwnerGID, volume.CreatedAtMillis,
+INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, volume.ID, volume.ProjectID, volume.ServiceID,
+			volume.Name, volume.OwnerUID, volume.OwnerGID, volume.CreatedAtMillis, volume.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("create volume: %w", err)
 		}
@@ -122,6 +122,19 @@ FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY name, id`, project
 		return nil, fmt.Errorf("iterate service volumes: %w", err)
 	}
 	return volumes, nil
+}
+
+func (store *Store) Volume(ctx context.Context, volumeID string) (Volume, error) {
+	if volumeID == "" {
+		return Volume{}, ErrVolumeNotFound
+	}
+	volume, err := scanVolume(store.database.QueryRowContext(ctx, `
+SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+FROM volumes WHERE id = ?`, volumeID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Volume{}, ErrVolumeNotFound
+	}
+	return volume, err
 }
 
 func (store *Store) DeleteVolume(ctx context.Context, input DeleteVolume) (Volume, error) {

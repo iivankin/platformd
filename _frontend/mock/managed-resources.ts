@@ -245,6 +245,63 @@ const handlePostgresQuery = (
   });
 };
 
+const handlePostgresExtensions = (
+  request: Request,
+  state: MockState,
+  collection: string,
+  resourceID: string,
+  rest: string[]
+): Response | undefined => {
+  if (collection !== "postgres") {
+    return undefined;
+  }
+  const [resource, extensionName, ...tail] = rest;
+  if (resource !== "extensions" || tail.length > 0) {
+    return undefined;
+  }
+  const extensions = state.postgresExtensions[resourceID] ?? [];
+  if (request.method === "GET" && !extensionName) {
+    return json({ extensions });
+  }
+  if (
+    !extensionName ||
+    (request.method !== "PUT" && request.method !== "DELETE")
+  ) {
+    return undefined;
+  }
+  const extension = extensions.find(
+    (candidate) => candidate.name === extensionName
+  );
+  if (!extension) {
+    return mockError(
+      "invalid_managed_postgres",
+      "Extension is not available in this PostgreSQL image",
+      400
+    );
+  }
+  if (request.method === "PUT") {
+    extension.installedVersion = extension.defaultVersion;
+  } else {
+    delete extension.installedVersion;
+  }
+  state.sequence += 1;
+  const timestamp = Date.now();
+  const operation = {
+    finishedAt: timestamp,
+    id: `operation-postgres-extension-${state.sequence}`,
+    kind:
+      request.method === "PUT"
+        ? "postgres_extension_install"
+        : "postgres_extension_uninstall",
+    progress: "complete",
+    startedAt: timestamp,
+    status: "succeeded" as const,
+    targetId: resourceID,
+  };
+  state.operations[operation.id] = operation;
+  return json(operation, 202);
+};
+
 const handleObjects = (
   request: Request,
   state: MockState,
@@ -364,6 +421,7 @@ export const handleManagedResourcesAPI = (
     handleManagedDeployments(request, state, collection, resourceID, rest) ??
     handleManagedLogs(request, state, collection, resourceID, rest) ??
     handleRedisData(request, collection, rest) ??
+    handlePostgresExtensions(request, state, collection, resourceID, rest) ??
     handlePostgresQuery(request, collection, rest) ??
     (collection === "object-stores"
       ? handleObjects(request, state, resourceID, rest, url)

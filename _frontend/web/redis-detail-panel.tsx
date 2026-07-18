@@ -14,6 +14,7 @@ import type {
   RedisPreview,
 } from "@/api";
 import { Button } from "@/components/ui/button";
+import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ConnectionDetails } from "@/connection-details";
 import { redisConnectionURL } from "@/connection-values";
@@ -106,7 +107,7 @@ const RedisOverview = ({
   resource: ManagedRedis | null;
 }) => (
   <>
-    <section className="grid grid-cols-2 border-b border-border text-[10px] sm:grid-cols-4">
+    <SectionCard className="grid grid-cols-2 text-[10px] sm:grid-cols-4">
       <div className="border-r border-border px-4 py-3">
         <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
           Endpoint
@@ -141,7 +142,7 @@ const RedisOverview = ({
             : "Unlimited"}
         </p>
       </div>
-    </section>
+    </SectionCard>
 
     {resource ? (
       <ConnectionDetails
@@ -322,9 +323,9 @@ export const RedisDetailPanel = ({
           ),
           database: (
             <>
-              <nav
-                className="flex min-h-10 border-b border-border px-4"
+              <SectionCard
                 aria-label="Redis database pages"
+                className="flex min-h-10 px-4"
               >
                 {(["data", "stats", "config"] as const).map((item) => (
                   <button
@@ -340,10 +341,10 @@ export const RedisDetailPanel = ({
                     {item}
                   </button>
                 ))}
-              </nav>
+              </SectionCard>
               {databaseView === "data" ? (
                 <>
-                  <section className="border-b border-border px-4 py-3">
+                  <SectionCard className="px-4 py-3">
                     <form
                       className="flex gap-2"
                       onSubmit={(event) => {
@@ -377,7 +378,7 @@ export const RedisDetailPanel = ({
                         Key
                       </Button>
                     </form>
-                  </section>
+                  </SectionCard>
 
                   {newKeyOpen ? (
                     <RedisNewKeyForm
@@ -387,7 +388,7 @@ export const RedisDetailPanel = ({
                     />
                   ) : null}
 
-                  <section className="grid min-h-52 grid-cols-[minmax(13rem,0.8fr)_minmax(18rem,1.2fr)] border-b border-border">
+                  <SectionCard className="grid min-h-52 grid-cols-[minmax(13rem,0.8fr)_minmax(18rem,1.2fr)]">
                     <div className="min-w-0 border-r border-border">
                       <div className="grid grid-cols-[1fr_auto_auto] border-b border-border px-3 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
                         <span>Key</span>
@@ -454,7 +455,7 @@ export const RedisDetailPanel = ({
                         </div>
                       )}
                     </div>
-                  </section>
+                  </SectionCard>
                 </>
               ) : null}
               {databaseView === "stats" ? (
@@ -495,9 +496,9 @@ export const RedisDetailPanel = ({
       />
 
       {data.statusMessage || error ? (
-        <section className="border-b border-border px-4 py-3 text-[10px] text-destructive">
+        <SectionCard className="px-4 py-3 text-[10px] text-destructive">
           {error ?? data.statusMessage}
-        </section>
+        </SectionCard>
       ) : null}
     </div>
   );
