@@ -41,17 +41,24 @@ const ResourceNodeComponent = ({
   const kind = resourceKinds[data.kind];
   const Icon = kind.icon;
   const detail =
-    data.imageReference ?? data.bucketName ?? data.internalHostname;
+    (data.source?.type === "github"
+      ? data.source.github.repository
+      : data.source?.image.reference) ??
+    data.imageReference ??
+    data.bucketName ??
+    data.internalHostname;
 
   return (
     <article
       className={nodeClassName(selected, Boolean(data.pendingChangeCount))}
     >
-      <Handle
-        className="!size-2 !border-background !bg-muted-foreground"
-        position={Position.Left}
-        type="target"
-      />
+      {data.hasIncomingConnection ? (
+        <Handle
+          className="!size-2 !border-background !bg-muted-foreground"
+          position={Position.Left}
+          type="target"
+        />
+      ) : null}
       <div className="flex h-9 items-center border-b border-border px-3">
         <Icon className="size-3.5 text-muted-foreground" />
         <span className="ml-2 min-w-0 flex-1 truncate text-xs font-medium">
@@ -59,7 +66,7 @@ const ResourceNodeComponent = ({
         </span>
         {data.pendingChangeCount ? (
           <span className="mr-2 bg-sky-500/15 px-1.5 py-0.5 text-[8px] font-medium text-sky-600 uppercase dark:text-sky-300">
-            Edited
+            {data.draft ? "Draft" : "Edited"}
           </span>
         ) : null}
         <span
@@ -83,8 +90,14 @@ const ResourceNodeComponent = ({
           <span className="grid size-3.5 place-items-center border border-current">
             !
           </span>
-          {data.pendingChangeCount}{" "}
-          {data.pendingChangeCount === 1 ? "change" : "changes"}
+          {data.draft ? (
+            "Pending creation"
+          ) : (
+            <>
+              {data.pendingChangeCount}{" "}
+              {data.pendingChangeCount === 1 ? "change" : "changes"}
+            </>
+          )}
         </div>
       ) : null}
       {data.volumes.length ? (
@@ -108,11 +121,13 @@ const ResourceNodeComponent = ({
           ))}
         </div>
       ) : null}
-      <Handle
-        className="!size-2 !border-background !bg-muted-foreground"
-        position={Position.Right}
-        type="source"
-      />
+      {data.hasOutgoingConnection ? (
+        <Handle
+          className="!size-2 !border-background !bg-muted-foreground"
+          position={Position.Right}
+          type="source"
+        />
+      ) : null}
     </article>
   );
 };

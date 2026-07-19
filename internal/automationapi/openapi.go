@@ -349,15 +349,42 @@ func writeMethod(summary string, successStatus int, schema string) map[string]an
 }
 
 func serviceMutationSchemas() map[string]any {
+	source := map[string]any{
+		"type": "object", "additionalProperties": false,
+		"required": []string{"type"},
+		"properties": map[string]any{
+			"type":       map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
+			"autoUpdate": map[string]string{"type": "boolean"},
+			"image": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"reference"},
+				"properties": map[string]any{
+					"reference": map[string]string{"type": "string"},
+				},
+			},
+			"github": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"repositoryId", "repository", "branch", "dockerfilePath", "contextPath", "triggerPaths", "waitForCi"},
+				"properties": map[string]any{
+					"repositoryId":   map[string]string{"type": "integer"},
+					"repository":     map[string]string{"type": "string"},
+					"branch":         map[string]string{"type": "string"},
+					"dockerfilePath": map[string]string{"type": "string"},
+					"contextPath":    map[string]string{"type": "string"},
+					"triggerPaths":   map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+					"waitForCi":      map[string]string{"type": "boolean"},
+				},
+			},
+		},
+	}
 	configuration := map[string]any{
 		"type": "object", "additionalProperties": false,
-		"required": []string{"imageReference"},
+		"required": []string{"source"},
 		"properties": map[string]any{
-			"imageReference":    map[string]string{"type": "string"},
-			"imageCredentialId": map[string]string{"type": "string"},
-			"command":           map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"args":              map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"environment":       map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"source":      source,
+			"command":     map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"args":        map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"environment": map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
 			"secretReferences": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "required": []string{"environmentName", "secretId"},
 				"properties": map[string]any{"environmentName": map[string]string{"type": "string"}, "secretId": map[string]string{"type": "string"}},

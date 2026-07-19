@@ -12,10 +12,14 @@ const service: Service = {
   enabled: true,
   environment: {},
   id: "service",
-  imageReference: "example/api:stable",
   name: "api",
   projectId: "project",
   secretReferences: [],
+  source: {
+    autoUpdate: true,
+    image: { reference: "docker.io/example/api:stable" },
+    type: "public_image",
+  },
   updatedAt: 2,
   volumeMounts: [{ containerPath: "/data", volumeId: "volume" }],
 };

@@ -13,6 +13,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -46,13 +47,14 @@ type projectCanvasResource struct {
 	Kind             string                `json:"kind"`
 	Name             string                `json:"name"`
 	InternalHostname string                `json:"internalHostname"`
-	ImageReference   string                `json:"imageReference,omitempty"`
+	Source           *servicesource.Source `json:"source,omitempty"`
 	BucketName       string                `json:"bucketName,omitempty"`
 	Enabled          bool                  `json:"enabled"`
 	Status           string                `json:"status"`
 	StatusMessage    string                `json:"statusMessage,omitempty"`
 	ActiveDeployment string                `json:"activeDeploymentId,omitempty"`
 	ImageDigest      string                `json:"imageDigest,omitempty"`
+	ImageReference   string                `json:"imageReference,omitempty"`
 	Volumes          []projectCanvasVolume `json:"volumes"`
 }
 
@@ -100,10 +102,10 @@ func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
 			resources = append(resources, projectCanvasResource{
 				ID: resource.ID, Kind: resource.Kind, Name: resource.Name,
 				InternalHostname: resource.InternalHostname,
-				ImageReference:   resource.ImageReference, BucketName: resource.BucketName,
+				Source:           canvasResourceSource(resource), BucketName: resource.BucketName,
 				Enabled: resource.Enabled, Status: resource.Status,
 				StatusMessage: resource.StatusMessage, ActiveDeployment: resource.ActiveDeployment,
-				ImageDigest: resource.ImageDigest, Volumes: volumes,
+				ImageDigest: resource.ImageDigest, ImageReference: resource.ImageReference, Volumes: volumes,
 			})
 		}
 		connections := make([]projectCanvasConnection, 0, len(canvas.Connections))
@@ -117,6 +119,14 @@ func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
 			Project: publicProject(canvas.Project), Resources: resources, Connections: connections,
 		})
 	}
+}
+
+func canvasResourceSource(resource state.CanvasResource) *servicesource.Source {
+	if resource.Kind != "service" {
+		return nil
+	}
+	source := resource.Source
+	return &source
 }
 
 func listProjects(repository ProjectRepository) http.HandlerFunc {

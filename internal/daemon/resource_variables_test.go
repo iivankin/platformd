@@ -53,7 +53,7 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 	api, err := store.CreateService(ctx, state.CreateService{
 		ID: "api", ProjectID: project.ID, Name: "api", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "alpine",
+			Source: serviceconfig.PublicImageSource("alpine"),
 			Environment: map[string]string{
 				"API_PATH":        "/v1",
 				"PUBLIC_ENDPOINT": "https://backend${{api.API_PATH}}",
@@ -75,7 +75,7 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 	worker, err := store.CreateService(ctx, state.CreateService{
 		ID: "worker", ProjectID: project.ID, Name: "worker", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "alpine",
+			Source: serviceconfig.PublicImageSource("alpine"),
 			Environment: map[string]string{
 				"UPSTREAM":          "${{api.PUBLIC_ENDPOINT}}/ready",
 				"UPSTREAM_PUBLIC":   "${{api.API_URL}}",
@@ -89,14 +89,21 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 		t.Fatal(err)
 	}
 
-	resolved, err := (resourceVariableResolver{store: store}).Resolve(ctx, worker)
+	resolved, err := (resourceVariableResolver{store: store}).Resolve(ctx, worker, "deployment")
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"UPSTREAM":          "https://backend/v1/ready",
-		"UPSTREAM_PUBLIC":   "https://api.example.com",
-		"UPSTREAM_INTERNAL": "http://api.shop.internal:8080/health",
+		"UPSTREAM":                 "https://backend/v1/ready",
+		"UPSTREAM_PUBLIC":          "https://api.example.com",
+		"UPSTREAM_INTERNAL":        "http://api.shop.internal:8080/health",
+		"PLATFORMD_PROJECT_ID":     "project",
+		"PLATFORMD_PROJECT_NAME":   "shop",
+		"PLATFORMD_SERVICE_ID":     "worker",
+		"PLATFORMD_SERVICE_NAME":   "worker",
+		"PLATFORMD_DEPLOYMENT_ID":  "deployment",
+		"PLATFORMD_PRIVATE_DOMAIN": "worker.shop.internal",
+		"PLATFORMD_PUBLIC_URLS":    "",
 	}
 	for name, value := range want {
 		if resolved[name] != value {
@@ -122,7 +129,7 @@ func TestResourceVariableResolverRejectsCycles(t *testing.T) {
 	service, err := store.CreateService(ctx, state.CreateService{
 		ID: "cycle", ProjectID: project.ID, Name: "cycle", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "alpine",
+			Source: serviceconfig.PublicImageSource("alpine"),
 			Environment: map[string]string{
 				"FIRST":  "${{cycle.SECOND}}",
 				"SECOND": "${{cycle.FIRST}}",
@@ -134,7 +141,7 @@ func TestResourceVariableResolverRejectsCycles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = (resourceVariableResolver{store: store}).Resolve(ctx, service)
+	_, err = (resourceVariableResolver{store: store}).Resolve(ctx, service, "deployment")
 	if err == nil || !strings.Contains(err.Error(), "variable reference cycle") {
 		t.Fatalf("cycle resolution error = %v", err)
 	}

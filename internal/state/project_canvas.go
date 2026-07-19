@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/variableexpression"
 )
 
@@ -19,6 +20,7 @@ type CanvasResource struct {
 	Name             string
 	InternalHostname string
 	ImageReference   string
+	Source           servicesource.Source
 	BucketName       string
 	Enabled          bool
 	Status           string
@@ -92,10 +94,10 @@ WHERE p.id = ?`, projectID).Scan(
 
 func (store *Store) canvasResources(ctx context.Context, project ProjectSummary) ([]CanvasResource, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, kind, name, image_reference, bucket_name, enabled,
+	SELECT id, kind, name, source_json, bucket_name, enabled,
        active_deployment_id, image_digest, status, status_message
 FROM (
-  SELECT s.id, 'service' AS kind, s.name, s.image_reference, '' AS bucket_name,
+	  SELECT s.id, 'service' AS kind, s.name, s.source_json, '' AS bucket_name,
          s.enabled, COALESCE(s.active_deployment_id, '') AS active_deployment_id,
          COALESCE(d.image_digest, '') AS image_digest,
          CASE
@@ -116,12 +118,12 @@ FROM (
   )
   WHERE s.project_id = ?
   UNION ALL
-  SELECT id, 'postgres' AS kind, name, image_tag AS image_reference,
+	  SELECT id, 'postgres' AS kind, name, '' AS source_json,
          '' AS bucket_name, 1 AS enabled,
          '', image_digest, 'pending', ''
   FROM managed_postgres WHERE project_id = ?
   UNION ALL
-  SELECT id, 'redis' AS kind, name, image_tag AS image_reference,
+	  SELECT id, 'redis' AS kind, name, '' AS source_json,
          '' AS bucket_name, 1 AS enabled,
          '', image_digest, 'pending', ''
   FROM managed_redis WHERE project_id = ?
@@ -141,8 +143,9 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 	for rows.Next() {
 		var resource CanvasResource
 		var enabled int
+		var sourceJSON string
 		if err := rows.Scan(
-			&resource.ID, &resource.Kind, &resource.Name, &resource.ImageReference,
+			&resource.ID, &resource.Kind, &resource.Name, &sourceJSON,
 			&resource.BucketName, &enabled,
 			&resource.ActiveDeployment, &resource.ImageDigest, &resource.Status,
 			&resource.StatusMessage,
@@ -150,6 +153,12 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 			return nil, fmt.Errorf("scan project canvas resource: %w", err)
 		}
 		resource.Enabled = enabled == 1
+		if sourceJSON != "" {
+			if err := json.Unmarshal([]byte(sourceJSON), &resource.Source); err != nil {
+				return nil, fmt.Errorf("decode canvas service source: %w", err)
+			}
+			resource.ImageReference = servicesource.ImageReference(resource.Source)
+		}
 		resource.InternalHostname = resource.Name + "." + project.Name + ".internal"
 		resource.Volumes = make([]CanvasVolume, 0)
 		resources = append(resources, resource)

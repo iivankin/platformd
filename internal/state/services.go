@@ -10,12 +10,13 @@ import (
 	"github.com/iivankin/platformd/internal/imagecredential"
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 var (
 	ErrResourceNameConflict        = errors.New("resource name already exists in project")
-	ErrImageCredentialNotFound     = errors.New("image registry credential not found in project")
-	ErrImageCredentialHostMismatch = errors.New("image registry credential host does not match image")
+	ErrImageCredentialNotFound     = errors.New("service image registry credential not found")
+	ErrImageCredentialHostMismatch = errors.New("service image registry credential host does not match image")
 )
 
 type ServiceDesired struct {
@@ -30,6 +31,7 @@ type ServiceDesired struct {
 	CreatedAtMillis    int64
 	UpdatedAtMillis    int64
 	Snapshot           serviceconfig.Snapshot
+	ImageCredential    *ServiceImageCredential
 }
 
 type CreateService struct {
@@ -38,6 +40,7 @@ type CreateService struct {
 	Name                 string
 	Enabled              bool
 	Snapshot             serviceconfig.Snapshot
+	ImageCredential      *ServiceImageCredential
 	AuditEventID         string
 	ActorKind            string
 	ActorID              string
@@ -57,6 +60,24 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	if err != nil {
 		return ServiceDesired{}, err
 	}
+	if snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil {
+		return ServiceDesired{}, ErrPreviewDomainCount
+	}
+	if snapshot.Source.Type == servicesource.PrivateImage {
+		if input.ImageCredential == nil {
+			return ServiceDesired{}, ErrImageCredentialNotFound
+		}
+		if input.ImageCredential.ServiceID != input.ID {
+			return ServiceDesired{}, errors.New("service image credential belongs to another service")
+		}
+		imageHost, hostErr := imagecredential.HostForReference(servicesource.ImageReference(snapshot.Source))
+		if hostErr != nil {
+			return ServiceDesired{}, hostErr
+		}
+		if input.ImageCredential.RegistryHost != imageHost {
+			return ServiceDesired{}, fmt.Errorf("%w: credential is for %s, image uses %s", ErrImageCredentialHostMismatch, input.ImageCredential.RegistryHost, imageHost)
+		}
+	}
 	commandJSON, err := optionalStringSliceJSON(snapshot.Command)
 	if err != nil {
 		return ServiceDesired{}, err
@@ -68,6 +89,10 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	environmentJSON, err := json.Marshal(snapshot.Environment)
 	if err != nil {
 		return ServiceDesired{}, fmt.Errorf("encode service environment: %w", err)
+	}
+	sourceJSON, err := json.Marshal(snapshot.Source)
+	if err != nil {
+		return ServiceDesired{}, fmt.Errorf("encode service source: %w", err)
 	}
 	metadata := make(map[string]string)
 	if input.ActorEmail != "" {
@@ -90,25 +115,6 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		} else if exists {
 			return ErrResourceNameConflict
 		}
-		if snapshot.ImageCredentialID != "" {
-			var credentialID string
-			var credentialProjectID string
-			var credentialHost string
-			if err := transaction.QueryRowContext(ctx, "SELECT id, project_id, registry_host FROM image_registry_credentials WHERE id = ?", snapshot.ImageCredentialID).Scan(&credentialID, &credentialProjectID, &credentialHost); errors.Is(err, sql.ErrNoRows) {
-				return ErrImageCredentialNotFound
-			} else if err != nil {
-				return fmt.Errorf("load image registry credential: %w", err)
-			} else if credentialProjectID != input.ProjectID {
-				return ErrImageCredentialNotFound
-			}
-			imageHost, err := imagecredential.HostForReference(snapshot.ImageReference)
-			if err != nil {
-				return err
-			}
-			if credentialHost != imageHost {
-				return fmt.Errorf("%w: credential is for %s, image uses %s", ErrImageCredentialHostMismatch, credentialHost, imageHost)
-			}
-		}
 		if len(snapshot.VolumeMounts) != 0 {
 			return errors.New("volumes must be created after their service")
 		}
@@ -130,10 +136,6 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 			healthPath = snapshot.HealthCheck.Path
 			healthTimeout = snapshot.HealthCheck.TimeoutSeconds
 		}
-		var imageCredentialID any
-		if snapshot.ImageCredentialID != "" {
-			imageCredentialID = snapshot.ImageCredentialID
-		}
 		var cpuMillis any
 		if snapshot.CPUMillicores > 0 {
 			cpuMillis = snapshot.CPUMillicores
@@ -148,16 +150,24 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO services(
-  id, project_id, name, image_reference, image_credential_id,
+	  id, project_id, name, source_json,
 	  command_json, args_json, environment_json, health_port, health_path,
 	  health_timeout_seconds, cpu_millis, memory_bytes, enabled, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			input.ID, input.ProjectID, input.Name, snapshot.ImageReference, imageCredentialID,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			input.ID, input.ProjectID, input.Name, string(sourceJSON),
 			commandJSON, argsJSON, string(environmentJSON), healthPort, healthPath,
 			healthTimeout, cpuMillis, memoryBytes, enabled,
 			input.CreatedAtMillis, input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("create service: %w", err)
+		}
+		if input.ImageCredential != nil {
+			if input.ImageCredential.ServiceID != input.ID {
+				return errors.New("service image credential belongs to another service")
+			}
+			if err := replaceServiceImageCredential(ctx, transaction, *input.ImageCredential); err != nil {
+				return err
+			}
 		}
 		for _, reference := range snapshot.SecretReferences {
 			if _, err := transaction.ExecContext(ctx, `
@@ -193,7 +203,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var activeDeploymentID sql.NullString
 	var activeImageDigest sql.NullString
 	var activeConfigHash sql.NullString
-	var imageCredentialID sql.NullString
+	var sourceJSON string
 	var commandJSON sql.NullString
 	var argsJSON sql.NullString
 	var environmentJSON string
@@ -205,7 +215,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	err := store.database.QueryRowContext(ctx, `
 SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
        d.image_digest, d.service_config_hash,
-       s.image_reference, s.image_credential_id, s.command_json, s.args_json,
+	       s.source_json, s.command_json, s.args_json,
 	       s.environment_json, s.health_port, s.health_path, s.health_timeout_seconds,
        s.cpu_millis, s.memory_bytes, s.created_at, s.updated_at
 FROM services s
@@ -214,7 +224,7 @@ LEFT JOIN deployments d ON d.id = s.active_deployment_id
 WHERE s.id = ?`, serviceID).Scan(
 		&service.ID, &service.ProjectID, &service.ProjectName, &service.Name, &enabled,
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash,
-		&service.Snapshot.ImageReference, &imageCredentialID, &commandJSON, &argsJSON,
+		&sourceJSON, &commandJSON, &argsJSON,
 		&environmentJSON, &healthPort, &healthPath, &healthTimeout,
 		&cpuMillis, &memoryBytes, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
@@ -228,7 +238,9 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveDeploymentID = activeDeploymentID.String
 	service.ActiveImageDigest = activeImageDigest.String
 	service.ActiveConfigHash = activeConfigHash.String
-	service.Snapshot.ImageCredentialID = imageCredentialID.String
+	if err := json.Unmarshal([]byte(sourceJSON), &service.Snapshot.Source); err != nil {
+		return ServiceDesired{}, fmt.Errorf("decode service source: %w", err)
+	}
 	service.Snapshot.CPUMillicores = cpuMillis.Int64
 	service.Snapshot.MemoryMaxBytes = memoryBytes.Int64
 	if healthPort.Valid && healthPath.Valid {
@@ -290,6 +302,12 @@ WHERE m.service_id = ? ORDER BY m.container_path, m.volume_id`, serviceID)
 	}
 	if err := volumeRows.Close(); err != nil {
 		return ServiceDesired{}, fmt.Errorf("close service volume mounts: %w", err)
+	}
+	credential, credentialErr := store.ServiceImageCredential(ctx, serviceID)
+	if credentialErr == nil {
+		service.ImageCredential = &credential
+	} else if !errors.Is(credentialErr, sql.ErrNoRows) {
+		return ServiceDesired{}, fmt.Errorf("load service image credential: %w", credentialErr)
 	}
 	normalized, err := serviceconfig.Normalize(service.Snapshot)
 	if err != nil {

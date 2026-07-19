@@ -1,14 +1,18 @@
 import { MarkerType } from "@xyflow/react";
 import type { Edge, Node } from "@xyflow/react";
 
-import type { ProjectCanvas } from "@/api";
+import type { ProjectCanvas, ServiceSource } from "@/api";
 
 export interface ResourceNodeData extends Record<string, unknown> {
   activeDeploymentId?: string;
   bucketName?: string;
+  draft?: boolean;
   enabled: boolean;
   imageDigest?: string;
   imageReference?: string;
+  hasIncomingConnection?: boolean;
+  hasOutgoingConnection?: boolean;
+  source?: ServiceSource;
   internalHostname: string;
   kind: ProjectCanvas["resources"][number]["kind"];
   layoutX?: number;
@@ -71,17 +75,22 @@ export const projectFlowElements = (
   overlays: ReadonlyMap<string, ResourceNodeOverlay> = new Map()
 ): { edges: ResourceFlowEdge[]; nodes: ResourceFlowNode[] } => {
   const resourceIDs = new Set(canvas.resources.map((resource) => resource.id));
+  const validConnections = canvas.connections.filter(
+    (connection) =>
+      resourceIDs.has(connection.sourceId) &&
+      resourceIDs.has(connection.targetId)
+  );
+  const incomingResourceIDs = new Set(
+    validConnections.map((connection) => connection.targetId)
+  );
+  const outgoingResourceIDs = new Set(
+    validConnections.map((connection) => connection.sourceId)
+  );
   const adjacency = new Map<string, string[]>();
   const indegree = new Map<string, number>(
     canvas.resources.map((resource) => [resource.id, 0] as const)
   );
-  for (const connection of canvas.connections) {
-    if (
-      !resourceIDs.has(connection.sourceId) ||
-      !resourceIDs.has(connection.targetId)
-    ) {
-      continue;
-    }
+  for (const connection of validConnections) {
     const outgoing = adjacency.get(connection.sourceId) ?? [];
     outgoing.push(connection.targetId);
     adjacency.set(connection.sourceId, outgoing);
@@ -116,7 +125,8 @@ export const projectFlowElements = (
     const column = columns.get(resource.id) ?? 0;
     const y = nextYByColumn.get(column) ?? originY;
     const overlay = overlays.get(resource.id);
-    const pendingChangeCount = overlay?.pendingChangeCount ?? 0;
+    const draft = resource.id.startsWith("draft:");
+    const pendingChangeCount = overlay?.pendingChangeCount ?? (draft ? 1 : 0);
     const volumes = overlay?.volumes ?? resource.volumes;
     nextYByColumn.set(
       column,
@@ -131,7 +141,10 @@ export const projectFlowElements = (
       data: {
         activeDeploymentId: resource.activeDeploymentId,
         bucketName: resource.bucketName,
+        draft,
         enabled: resource.enabled,
+        hasIncomingConnection: incomingResourceIDs.has(resource.id),
+        hasOutgoingConnection: outgoingResourceIDs.has(resource.id),
         imageDigest: resource.imageDigest,
         imageReference: resource.imageReference,
         internalHostname: resource.internalHostname,
@@ -140,6 +153,7 @@ export const projectFlowElements = (
         layoutY: y,
         name: resource.name,
         pendingChangeCount,
+        source: resource.source,
         status: resource.status,
         statusMessage: resource.statusMessage,
         volumes,
@@ -153,7 +167,7 @@ export const projectFlowElements = (
     };
   });
 
-  const edges = canvas.connections.map((connection) => ({
+  const edges = validConnections.map((connection) => ({
     data: {},
     id: `${connection.sourceId}:${connection.targetId}`,
     markerEnd: { height: 14, type: MarkerType.ArrowClosed, width: 14 },

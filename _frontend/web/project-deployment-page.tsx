@@ -9,6 +9,7 @@ import type {
   ProjectCanvas,
   RuntimeDeployment,
 } from "@/api";
+import { BuildLogs } from "@/build-logs";
 import { DeploymentDetails } from "@/deployment-details";
 import { DeploymentLogs } from "@/deployment-logs";
 import { ManagedDeploymentDetails } from "@/managed-deployment-details";
@@ -29,7 +30,9 @@ const statusClass: Record<AnyDeployment["status"], string> = {
   interrupted: "border-amber-500/50 text-amber-700 dark:text-amber-300",
   removed: "border-muted-foreground/50 text-muted-foreground",
   running: "border-sky-500/50 text-sky-700 dark:text-sky-300",
+  skipped: "border-muted-foreground/50 text-muted-foreground",
   succeeded: "border-emerald-500/50 text-emerald-700 dark:text-emerald-300",
+  waiting: "border-amber-500/50 text-amber-700 dark:text-amber-300",
 };
 
 const shortID = (value: string) =>
@@ -46,38 +49,26 @@ const isDeploymentKind = (
 ): kind is DeploymentResourceKind =>
   kind === "service" || kind === "postgres" || kind === "redis";
 
-export const ProjectDeploymentPage = ({
-  canvas,
-}: {
-  canvas: ProjectCanvas | null;
-}) => {
-  const {
-    deploymentID = "",
-    deploymentView = "",
-    projectID = "",
-    resourceCollection = "",
-    resourceID = "",
-  } = useParams();
-  const kind = resourceKind(resourceCollection);
+const useDeployment = (
+  projectID: string,
+  kind: DeploymentResourceKind | undefined,
+  resourceID: string,
+  deploymentID: string
+) => {
   const [deployment, setDeployment] = useState<AnyDeployment>();
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
-  const validKind = isDeploymentKind(kind) ? kind : undefined;
-  const closePath = validKind
-    ? resourcePath(projectID, resourceID, validKind, "deployments")
-    : `/projects/${encodeURIComponent(projectID)}`;
-
   useEffect(() => {
     const controller = new AbortController();
     const load = async () => {
-      if (!validKind) {
+      if (!kind) {
         setError("This resource does not have deployment history.");
         setLoading(false);
         return;
       }
       try {
-        setDeployment(
-          validKind === "service"
+        const loaded =
+          kind === "service"
             ? await fetchServiceDeployment(
                 projectID,
                 resourceID,
@@ -86,12 +77,12 @@ export const ProjectDeploymentPage = ({
               )
             : await fetchRuntimeDeployment(
                 projectID,
-                validKind,
+                kind,
                 resourceID,
                 deploymentID,
                 controller.signal
-              )
-        );
+              );
+        setDeployment(loaded);
         setError(undefined);
       } catch (loadError) {
         if (
@@ -113,7 +104,75 @@ export const ProjectDeploymentPage = ({
     };
     void load();
     return () => controller.abort();
-  }, [deploymentID, projectID, resourceID, validKind]);
+  }, [deploymentID, kind, projectID, resourceID]);
+  return { deployment, error, loading };
+};
+
+const deploymentContent = ({
+  deployment,
+  kind,
+  projectID,
+  resourceID,
+  view,
+}: {
+  deployment: AnyDeployment;
+  kind: DeploymentResourceKind;
+  projectID: string;
+  resourceID: string;
+  view: DeploymentWorkspaceView;
+}) => {
+  if (view === "build-logs" && kind === "service") {
+    return (
+      <BuildLogs
+        deploymentID={deployment.id}
+        projectID={projectID}
+        running={
+          deployment.status === "running" || deployment.status === "waiting"
+        }
+        serviceID={resourceID}
+      />
+    );
+  }
+  if (view === "deploy-logs") {
+    return (
+      <DeploymentLogs
+        deploymentID={deployment.id}
+        kind={kind}
+        projectID={projectID}
+        resourceID={resourceID}
+      />
+    );
+  }
+  return kind === "service" ? (
+    <DeploymentDetails deployment={deployment as Deployment} />
+  ) : (
+    <ManagedDeploymentDetails deployment={deployment as RuntimeDeployment} />
+  );
+};
+
+export const ProjectDeploymentPage = ({
+  canvas,
+}: {
+  canvas: ProjectCanvas | null;
+}) => {
+  const {
+    deploymentID = "",
+    deploymentView = "",
+    projectID = "",
+    resourceCollection = "",
+    resourceID = "",
+  } = useParams();
+  const kind = resourceKind(resourceCollection);
+  const validKind = isDeploymentKind(kind) ? kind : undefined;
+  const { deployment, error, loading } = useDeployment(
+    projectID,
+    validKind,
+    resourceID,
+    deploymentID
+  );
+  const closePath = validKind
+    ? resourcePath(projectID, resourceID, validKind, "deployments")
+    : `/projects/${encodeURIComponent(projectID)}`;
 
   const resource = canvas?.resources.find(
     (candidate) => candidate.kind === validKind && candidate.id === resourceID
@@ -149,7 +208,9 @@ export const ProjectDeploymentPage = ({
   }
 
   const validView =
-    deploymentView === "details" || deploymentView === "deploy-logs";
+    deploymentView === "details" ||
+    deploymentView === "deploy-logs" ||
+    (validKind === "service" && deploymentView === "build-logs");
   if (!validView) {
     return (
       <Navigate
@@ -175,6 +236,20 @@ export const ProjectDeploymentPage = ({
         "details"
       ),
     },
+    ...(validKind === "service"
+      ? [
+          {
+            label: "Build logs",
+            path: resourceDeploymentPath(
+              projectID,
+              resourceID,
+              validKind,
+              deploymentID,
+              "build-logs"
+            ),
+          },
+        ]
+      : []),
     {
       label: "Deploy logs",
       path: resourceDeploymentPath(
@@ -187,23 +262,13 @@ export const ProjectDeploymentPage = ({
     },
   ];
   const ResourceIcon = iconByKind[validKind];
-  let content;
-  if (view === "deploy-logs") {
-    content = (
-      <DeploymentLogs
-        deploymentID={deployment.id}
-        kind={validKind}
-        projectID={projectID}
-        resourceID={resourceID}
-      />
-    );
-  } else if (validKind === "service") {
-    content = <DeploymentDetails deployment={deployment as Deployment} />;
-  } else {
-    content = (
-      <ManagedDeploymentDetails deployment={deployment as RuntimeDeployment} />
-    );
-  }
+  const content = deploymentContent({
+    deployment,
+    kind: validKind,
+    projectID,
+    resourceID,
+    view,
+  });
 
   return (
     <ResourceDrawer closePath={closePath} label={`${resource.name} deployment`}>

@@ -16,13 +16,13 @@ func TestProjectCanvasReturnsExplicitResourceConnections(t *testing.T) {
 	defer store.Close()
 	if _, err := store.database.Exec(`
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
-INSERT INTO services(id, project_id, name, image_reference, environment_json, created_at, updated_at)
+INSERT INTO services(id, project_id, name, source_json, environment_json, created_at, updated_at)
 VALUES
-  ('api', 'project', 'api', 'example/api:latest', '{"DATABASE_URL":"${{db.DATABASE_URL}}","CACHE_HOST":"${{cache.REDISHOST}}"}', 1, 1),
-  ('worker', 'project', 'worker', 'example/worker:latest', '{"API_URL":"${{api.URL}}","UNRELATED":"postgres://remote.example/app"}', 1, 1),
-  ('postgres-service', 'project', 'postgres', 'example/postgres-proxy:latest', '{}', 1, 1);
-INSERT INTO deployments(id, service_id, image_digest, service_config_hash, snapshot_json, status, error_code, error_message, created_at, finished_at)
-VALUES ('failed-deployment', 'worker', 'sha256:worker', 'config', '{}', 'failed', 'readiness_failed', 'worker health check failed', 2, 3);
+  ('api', 'project', 'api', '{"type":"public_image","image":{"reference":"example/api:latest"}}', '{"DATABASE_URL":"${{db.DATABASE_URL}}","CACHE_HOST":"${{cache.REDISHOST}}"}', 1, 1),
+  ('worker', 'project', 'worker', '{"type":"public_image","image":{"reference":"example/worker:latest"}}', '{"API_URL":"${{api.URL}}","UNRELATED":"postgres://remote.example/app"}', 1, 1),
+  ('postgres-service', 'project', 'postgres', '{"type":"public_image","image":{"reference":"example/postgres-proxy:latest"}}', '{}', 1, 1);
+INSERT INTO deployments(id, service_id, image_digest, image_reference, service_config_hash, snapshot_json, status, error_code, error_message, created_at, finished_at)
+VALUES ('failed-deployment', 'worker', 'sha256:worker', 'example/worker:latest', 'config', '{}', 'failed', 'readiness_failed', 'worker health check failed', 2, 3);
 INSERT INTO managed_postgres(id, project_id, name, image_tag, image_digest, volume_id, database_name, owner_username, owner_password_encrypted, bootstrap_password_encrypted, created_at, updated_at)
 VALUES ('db', 'project', 'db', '17', 'sha256:db', 'db-volume', 'app', 'owner', x'01', x'02', 1, 1);
 INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_id, password_encrypted, created_at, updated_at)

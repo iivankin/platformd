@@ -21,6 +21,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/postgresextension"
+	"github.com/iivankin/platformd/internal/preview"
 	"github.com/iivankin/platformd/internal/projectnetwork"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
@@ -46,6 +47,7 @@ type runtimeStack struct {
 	growth               deployment.GrowthGate
 	admission            *admission.Gate
 	deployments          *deployment.Controller
+	previews             *preview.Application
 	serviceWatcher       *servicewatcher.Watcher
 	embeddedRegistryHost string
 	serviceRestarts      *servicerestart.Manager

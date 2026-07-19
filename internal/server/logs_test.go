@@ -15,11 +15,23 @@ import (
 )
 
 type logRepository struct {
+	buildCalls    int
+	buildProject  string
+	buildService  string
+	buildDeploy   string
 	calls         int
 	resourceCalls int
 	resourceKind  string
 	downloadCalls int
 	downloadQuery containerlogs.DownloadQuery
+}
+
+func (repository *logRepository) BuildLog(_ context.Context, projectID, serviceID, deploymentID string) (string, error) {
+	repository.buildCalls++
+	repository.buildProject = projectID
+	repository.buildService = serviceID
+	repository.buildDeploy = deploymentID
+	return "build complete", nil
 }
 
 func (repository *logRepository) DownloadServiceLogs(_ context.Context, _ string, query containerlogs.DownloadQuery, destination io.Writer) (containerlogs.DownloadResult, error) {
@@ -76,6 +88,26 @@ func TestAdminServiceLogDownloadRequiresAccessAndBoundsRange(t *testing.T) {
 
 func (*logRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {
 	return "revision", nil
+}
+
+func TestAdminBuildLogRequiresAccessAndScopesDeployment(t *testing.T) {
+	repository := &logRepository{}
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
+	path := "/api/v1/projects/project/services/service/deployments/deployment/logs/build"
+	response := httptest.NewRecorder()
+	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusForbidden || repository.buildCalls != 0 {
+		t.Fatalf("unauthenticated build log = %d/%s calls=%d", response.Code, response.Body, repository.buildCalls)
+	}
+
+	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
+	if response.Code != http.StatusOK || repository.buildCalls != 1 ||
+		repository.buildProject != "project" || repository.buildService != "service" || repository.buildDeploy != "deployment" ||
+		!strings.Contains(response.Body.String(), `"text":"build complete"`) {
+		t.Fatalf("build log = %d/%s repository=%+v", response.Code, response.Body, repository)
+	}
 }
 
 func TestAdminServiceLogsRequireAccessAndReturnStructuredWindow(t *testing.T) {

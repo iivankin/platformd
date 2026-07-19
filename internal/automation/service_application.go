@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -90,6 +91,9 @@ func (application *ServiceApplication) Create(ctx context.Context, identity Iden
 	if err != nil {
 		return ServiceMutationResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
+	if snapshot.Source.Type == servicesource.PrivateImage {
+		return ServiceMutationResult{}, fmt.Errorf("%w: private registry credentials must be configured through the service admin API", ErrInvalidInput)
+	}
 	timestamp := application.now()
 	identifiers, err := application.identifiers(timestamp, 3)
 	if err != nil {
@@ -114,6 +118,9 @@ func (application *ServiceApplication) Update(ctx context.Context, identity Iden
 	snapshot, err := serviceconfig.Normalize(input.Configuration)
 	if err != nil {
 		return ServiceMutationResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	if snapshot.Source.Type == servicesource.PrivateImage {
+		return ServiceMutationResult{}, fmt.Errorf("%w: private registry credentials must be configured through the service admin API", ErrInvalidInput)
 	}
 	timestamp := application.now()
 	identifiers, err := application.identifiers(timestamp, 2)

@@ -51,6 +51,14 @@ test("builds deterministic canvas nodes and reference edges", () => {
     ["api", 72],
     ["database", 392],
   ]);
+  expect(flow.nodes[0]?.data).toMatchObject({
+    hasIncomingConnection: false,
+    hasOutgoingConnection: true,
+  });
+  expect(flow.nodes[1]?.data).toMatchObject({
+    hasIncomingConnection: true,
+    hasOutgoingConnection: false,
+  });
   expect(flow.edges[0]?.label).toBeUndefined();
   expect(flow.edges[0]?.type).toBe("smoothstep");
 });
@@ -135,6 +143,8 @@ test("reserves canvas space for pending changes and volume rows", () => {
     ],
   ]);
   const flow = projectFlowElements(canvas, overlays);
+  expect(flow.nodes[0]?.data.hasIncomingConnection).toBe(false);
+  expect(flow.nodes[0]?.data.hasOutgoingConnection).toBe(false);
   expect(flow.nodes[0]?.data.pendingChangeCount).toBe(2);
   expect(flow.nodes[0]?.data.volumes).toHaveLength(1);
   expect(flow.nodes[1]?.position.y).toBe(275);

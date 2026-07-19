@@ -10,13 +10,13 @@ import { Plus, Waypoints } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
-import {
-  fetchImageCredentials,
-  fetchProjectCanvas,
-  fetchRegistrySettings,
-} from "@/api";
-import type { ImageCredential, ProjectCanvas } from "@/api";
+import { fetchProjectCanvas, fetchRegistrySettings } from "@/api";
+import type { ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
+import {
+  applyPendingResource,
+  pendingCanvasResource,
+} from "@/pending-resource-creation";
 import { ProjectChangeBar } from "@/project-change-bar";
 import { useProjectChanges } from "@/project-changes";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
@@ -89,19 +89,42 @@ export const ProjectCanvasPage = () => {
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<ImageCredential[]>([]);
   const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [createKind, setCreateKind] = useState<CreateKind>(null);
+  const [activeDraftID, setActiveDraftID] = useState<string>();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [applyError, setApplyError] = useState<string>();
-  const { serviceChanges, setServiceChange } = useProjectChanges(projectID);
+  const { resourceDrafts, serviceChanges, setResourceDraft, setServiceChange } =
+    useProjectChanges(projectID);
   const serviceChangesRef = useRef(serviceChanges);
+  const resourceDraftsRef = useRef(resourceDrafts);
   const [nodes, setNodes, onNodesChange] =
     useNodesState<ResourceFlowNode>(emptyNodes);
   const [edges, setEdges, onEdgesChange] =
     useEdgesState<ResourceFlowEdge>(emptyEdges);
-  const isCanvasEmpty = canvas?.resources.length === 0;
+  const pendingResources = useMemo(
+    () =>
+      Object.values(resourceDrafts).toSorted((left, right) =>
+        left.input.name.localeCompare(right.input.name)
+      ),
+    [resourceDrafts]
+  );
+  const canvasWithDrafts = useMemo<ProjectCanvas | null>(() => {
+    if (!canvas) {
+      return null;
+    }
+    return {
+      ...canvas,
+      resources: [
+        ...canvas.resources,
+        ...pendingResources.map((draft) =>
+          pendingCanvasResource(draft, canvas.project.name)
+        ),
+      ],
+    };
+  }, [canvas, pendingResources]);
+  const isCanvasEmpty = canvasWithDrafts?.resources.length === 0;
   const error = canvasError ?? metadataError;
   const pendingServices = useMemo(
     () =>
@@ -123,8 +146,17 @@ export const ProjectCanvasPage = () => {
     const load = async () => {
       try {
         const loaded = await fetchProjectCanvas(projectID, controller.signal);
+        const withDrafts = {
+          ...loaded,
+          resources: [
+            ...loaded.resources,
+            ...Object.values(resourceDraftsRef.current).map((draft) =>
+              pendingCanvasResource(draft, loaded.project.name)
+            ),
+          ],
+        };
         const flow = projectFlowElements(
-          loaded,
+          withDrafts,
           resourceOverlays(serviceChangesRef.current)
         );
         setCanvas(loaded);
@@ -165,11 +197,7 @@ export const ProjectCanvasPage = () => {
     const controller = new AbortController();
     const load = async () => {
       try {
-        const [loadedCredentials, registrySettings] = await Promise.all([
-          fetchImageCredentials(projectID, controller.signal).catch(() => []),
-          fetchRegistrySettings(controller.signal),
-        ]);
-        setCredentials(loadedCredentials);
+        const registrySettings = await fetchRegistrySettings(controller.signal);
         setEmbeddedRegistryHost(registrySettings.hostname);
         setMetadataError(null);
       } catch (loadError) {
@@ -192,41 +220,57 @@ export const ProjectCanvasPage = () => {
 
   useEffect(() => {
     serviceChangesRef.current = serviceChanges;
-    if (canvas) {
+    resourceDraftsRef.current = resourceDrafts;
+    if (canvasWithDrafts) {
       const flow = projectFlowElements(
-        canvas,
+        canvasWithDrafts,
         resourceOverlays(serviceChanges)
       );
       setNodes((current) => mergeResourceNodeData(current, flow.nodes));
+      setEdges(flow.edges);
     }
-  }, [canvas, serviceChanges, setNodes]);
+  }, [canvasWithDrafts, resourceDrafts, serviceChanges, setEdges, setNodes]);
 
   const applyChanges = async () => {
-    if (applyingChanges || pendingServices.length === 0) {
+    if (
+      applyingChanges ||
+      (pendingServices.length === 0 && pendingResources.length === 0)
+    ) {
       return;
     }
     setApplyingChanges(true);
     setApplyError(undefined);
+    const operations = [
+      ...pendingServices.map((change) => ({
+        id: change.serviceID,
+        label: change.serviceName,
+        run: () => applyServiceSettings(projectID, change),
+        type: "service" as const,
+      })),
+      ...pendingResources.map((draft) => ({
+        id: draft.id,
+        label: draft.input.name,
+        run: () => applyPendingResource(projectID, draft),
+        type: "resource" as const,
+      })),
+    ];
     const results = await Promise.allSettled(
-      pendingServices.map((change) =>
-        applyServiceSettings(
-          projectID,
-          change,
-          credentials,
-          embeddedRegistryHost
-        )
-      )
+      operations.map((operation) => operation.run())
     );
     let firstError: string | undefined;
     let applied = false;
     for (const [index, result] of results.entries()) {
-      const change = pendingServices[index];
-      if (!change) {
+      const operation = operations[index];
+      if (!operation) {
         continue;
       }
       if (result.status === "fulfilled") {
         applied = true;
-        setServiceChange(change.serviceID);
+        if (operation.type === "service") {
+          setServiceChange(operation.id);
+        } else {
+          setResourceDraft(operation.id);
+        }
         continue;
       }
       if (!firstError) {
@@ -234,7 +278,7 @@ export const ProjectCanvasPage = () => {
           result.reason instanceof Error
             ? result.reason.message
             : "Unable to apply service settings";
-        firstError = `${change.serviceName}: ${message}`;
+        firstError = `${operation.label}: ${message}`;
       }
     }
     if (applied) {
@@ -277,20 +321,30 @@ export const ProjectCanvasPage = () => {
             for (const change of pendingServices) {
               setServiceChange(change.serviceID);
             }
+            for (const draft of pendingResources) {
+              setResourceDraft(draft.id);
+            }
             setApplyError(undefined);
           }}
+          resourceDrafts={pendingResources}
         />
         <ProjectCreateOverlays
-          credentials={credentials}
+          draft={activeDraftID ? resourceDrafts[activeDraftID] : undefined}
           embeddedRegistryHost={embeddedRegistryHost}
           kind={createKind}
-          onClose={() => setCreateKind(null)}
-          onCreated={() => {
+          onClose={() => {
             setCreateKind(null);
-            setRefreshVersion((value) => value + 1);
+            setActiveDraftID(undefined);
           }}
-          onSelect={setCreateKind}
-          projectID={projectID}
+          onDrafted={(draft) => {
+            setResourceDraft(draft.id, draft);
+            setActiveDraftID(undefined);
+            setCreateKind(null);
+          }}
+          onSelect={(kind) => {
+            setActiveDraftID(undefined);
+            setCreateKind(kind);
+          }}
         />
         <EmptyCanvas visible={isCanvasEmpty === true} />
         <ReactFlow<ResourceFlowNode, ResourceFlowEdge>
@@ -307,9 +361,15 @@ export const ProjectCanvasPage = () => {
           nodes={nodes}
           nodesConnectable={false}
           onEdgesChange={onEdgesChange}
-          onNodeClick={(_event, node) =>
-            void navigate(resourcePath(projectID, node.id, node.data.kind))
-          }
+          onNodeClick={(_event, node) => {
+            const draft = resourceDrafts[node.id];
+            if (draft) {
+              setActiveDraftID(draft.id);
+              setCreateKind(draft.kind);
+              return;
+            }
+            void navigate(resourcePath(projectID, node.id, node.data.kind));
+          }}
           onNodesChange={onNodesChange}
           onlyRenderVisibleElements
           panOnScroll

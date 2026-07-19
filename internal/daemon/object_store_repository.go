@@ -132,6 +132,10 @@ func (repository *liveObjectStoreRepository) AbortMultipartUpload(ctx context.Co
 	return repository.store.AbortMultipartUpload(ctx, storeID, uploadID, objectKey)
 }
 
+func (repository *liveObjectStoreRepository) ExpiredMultipartUploads(ctx context.Context, beforeMillis int64, limit int) ([]state.MultipartUpload, error) {
+	return repository.store.ExpiredMultipartUploads(ctx, beforeMillis, limit)
+}
+
 func (repository *liveObjectStoreRepository) RestoreObjectStore(ctx context.Context, input state.RestoreObjectStore) error {
 	return repository.store.RestoreObjectStore(ctx, input)
 }

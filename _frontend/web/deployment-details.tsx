@@ -99,7 +99,10 @@ export const DeploymentDetails = ({
         <SectionTitle>Immutable deployment</SectionTitle>
         <dl>
           <Detail label="Deployment ID" value={deployment.id} />
-          <Detail label="Image digest" value={deployment.imageDigest} />
+          <Detail label="Image digest" value={deployment.imageDigest ?? "—"} />
+          {deployment.sourceRevision ? (
+            <Detail label="Source revision" value={deployment.sourceRevision} />
+          ) : null}
           <Detail
             label="Configuration hash"
             value={deployment.serviceConfigHash}
@@ -110,7 +113,14 @@ export const DeploymentDetails = ({
       <section>
         <SectionTitle>Runtime snapshot</SectionTitle>
         <dl>
-          <Detail label="Image" value={snapshot.imageReference} />
+          <Detail
+            label="Source"
+            value={
+              snapshot.source.type === "github"
+                ? `${snapshot.source.github.repository} · ${snapshot.source.github.branch}`
+                : snapshot.source.image.reference
+            }
+          />
           <Detail
             label="Command"
             value={snapshot.command?.join(" ") || "Image default"}

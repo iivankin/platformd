@@ -23,7 +23,7 @@ func TestCreateAndReadDesiredService(t *testing.T) {
 	created, err := store.CreateService(context.Background(), CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "alpine:3.22", Command: []string{"/bin/server"}, Args: []string{"--port", "8080"},
+			Source: serviceconfig.PublicImageSource("alpine:3.22"), Command: []string{"/bin/server"}, Args: []string{"--port", "8080"},
 			Environment: map[string]string{"DATABASE_URL": "postgres://db:5432/app"},
 			HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz"}, CPUMillicores: 250, MemoryMaxBytes: 64 << 20,
 		},
@@ -33,8 +33,8 @@ func TestCreateAndReadDesiredService(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Snapshot.ImageReference != "docker.io/library/alpine:3.22" {
-		t.Fatalf("created image = %q", created.Snapshot.ImageReference)
+	if created.Snapshot.Source.Image.Reference != "docker.io/library/alpine:3.22" {
+		t.Fatalf("created image = %q", created.Snapshot.Source.Image.Reference)
 	}
 	loaded, err := store.DesiredService(context.Background(), "service")
 	if err != nil {
@@ -60,7 +60,7 @@ func TestServiceMutationsRecordTokenActorWithoutAccessEmail(t *testing.T) {
 	}
 	created, err := store.CreateService(context.Background(), CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")},
 		AuditEventID: "create-audit", ActorKind: "token", ActorID: "token-id", CreatedAtMillis: 2,
 	})
 	if err != nil {
@@ -117,7 +117,7 @@ VALUES ('store', 'project', 'assets', 'assets', 1, 1)`); err != nil {
 	}
 	_, err = store.CreateService(context.Background(), CreateService{
 		ID: "service", ProjectID: "project", Name: "assets", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")},
 		AuditEventID: "audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if !errors.Is(err, ErrResourceNameConflict) {
@@ -136,7 +136,7 @@ func TestDeleteServiceRemovesOwnedStateAndRecordsAudit(t *testing.T) {
 	}
 	service, err := store.CreateService(context.Background(), CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")},
 		AuditEventID: "create-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if err != nil {
@@ -147,8 +147,8 @@ INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, crea
 VALUES ('volume', 'project', 'service', 'data', 1000, 1000, 3, 3);
 INSERT INTO service_volume_mounts(service_id, volume_id, container_path)
 VALUES ('service', 'volume', '/data');
-INSERT INTO deployments(id, service_id, image_digest, service_config_hash, snapshot_json, status, created_at)
-VALUES ('deployment', 'service', 'sha256:image', 'config', '{}', 'failed', 3);
+INSERT INTO deployments(id, service_id, image_digest, image_reference, service_config_hash, snapshot_json, status, created_at)
+VALUES ('deployment', 'service', 'sha256:image', 'docker.io/library/alpine:latest', 'config', '{}', 'failed', 3);
 INSERT INTO service_domains(hostname, service_id, target_port, created_at)
 VALUES ('api.example.com', 'service', 8080, 3);
 INSERT INTO service_listeners(protocol, public_port, service_id, target_port, created_at)

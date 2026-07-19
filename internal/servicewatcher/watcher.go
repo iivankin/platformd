@@ -8,6 +8,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -137,7 +138,9 @@ func (watcher *Watcher) Track(ctx context.Context, serviceID string, retry bool)
 	if err != nil {
 		return err
 	}
-	if !desired.Enabled || serviceconfig.IsDigestReference(desired.Snapshot.ImageReference) {
+	reference := servicesource.ImageReference(desired.Snapshot.Source)
+	if !desired.Enabled || !desired.Snapshot.Source.AutoUpdate ||
+		(reference != "" && serviceconfig.IsDigestReference(reference)) {
 		watcher.stopService(serviceID)
 		return nil
 	}
@@ -147,16 +150,16 @@ func (watcher *Watcher) Track(ctx context.Context, serviceID string, retry bool)
 		return errors.New("service watcher is not started")
 	}
 	if existing := watcher.services[serviceID]; existing != nil {
-		existing.reference = desired.Snapshot.ImageReference
-		existing.embedded = watcher.isEmbedded(existing.reference)
+		existing.reference = reference
+		existing.embedded = desired.Snapshot.Source.Type == servicesource.RegistryImage
 		watcher.mu.Unlock()
 		resetDelay(existing.reset, watcher.initialDelay(existing, retry))
 		return nil
 	}
 	loop := &serviceLoop{
 		wake: make(chan struct{}, 1), reset: make(chan time.Duration, 1), stop: make(chan struct{}),
-		reference: desired.Snapshot.ImageReference,
-		embedded:  watcher.isEmbedded(desired.Snapshot.ImageReference),
+		reference: reference,
+		embedded:  desired.Snapshot.Source.Type == servicesource.RegistryImage,
 	}
 	watcher.services[serviceID] = loop
 	runContext := watcher.ctx
@@ -230,10 +233,11 @@ func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *
 		if loadErr != nil || !desired.Enabled {
 			return
 		}
-		if serviceconfig.IsDigestReference(desired.Snapshot.ImageReference) {
+		reference := servicesource.ImageReference(desired.Snapshot.Source)
+		if !desired.Snapshot.Source.AutoUpdate || (reference != "" && serviceconfig.IsDigestReference(reference)) {
 			return
 		}
-		watcher.updateLoop(loop, desired.Snapshot.ImageReference)
+		watcher.updateLoop(loop, reference)
 		if errors.Is(err, deployment.ErrBlockedPair) {
 			failures = 0
 			delay = watcher.normalDelay(loop)
@@ -279,7 +283,6 @@ func (watcher *Watcher) failureDelay(loop *serviceLoop, failures int) time.Durat
 func (watcher *Watcher) updateLoop(loop *serviceLoop, reference string) {
 	watcher.mu.Lock()
 	loop.reference = reference
-	loop.embedded = watcher.isEmbedded(reference)
 	watcher.mu.Unlock()
 }
 

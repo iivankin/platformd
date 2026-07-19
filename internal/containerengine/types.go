@@ -12,6 +12,13 @@ type PullRequest struct {
 	Refresh   bool
 }
 
+type BuildRequest struct {
+	ContextDirectory string
+	Dockerfile       string
+	Reference        string
+	Log              io.Writer
+}
+
 type Image struct {
 	ID           string
 	Digest       string
@@ -24,6 +31,17 @@ type Image struct {
 	Command      []string
 	Size         int64
 	Created      time.Time
+}
+
+type ImageGarbageCollectRequest struct {
+	Before           time.Time
+	ProtectedDigests map[string]struct{}
+}
+
+type ImageGarbageCollectResult struct {
+	Removed      int
+	RemovedBytes int64
+	Skipped      int
 }
 
 type DerivedImageRequest struct {

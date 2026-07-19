@@ -52,6 +52,10 @@ type liveLogRepository struct {
 	revision int
 }
 
+func (*liveLogRepository) BuildLog(context.Context, string, string, string) (string, error) {
+	return "", nil
+}
+
 func (*liveLogRepository) DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error) {
 	return containerlogs.DownloadResult{}, nil
 }

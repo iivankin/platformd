@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/domainvariables"
@@ -31,7 +33,7 @@ type environmentResolution struct {
 	resolving map[string]bool
 }
 
-func (resolver resourceVariableResolver) Resolve(ctx context.Context, desired state.ServiceDesired) (map[string]string, error) {
+func (resolver resourceVariableResolver) Resolve(ctx context.Context, desired state.ServiceDesired, deploymentID string) (map[string]string, error) {
 	resources, err := resolver.store.ProjectResources(ctx, desired.ProjectID)
 	if err != nil {
 		return nil, err
@@ -53,6 +55,22 @@ func (resolver resourceVariableResolver) Resolve(ctx context.Context, desired st
 		}
 		result[name] = value
 	}
+	domains, err := resolver.store.ServiceDomains(ctx, desired.ProjectID, desired.ID)
+	if err != nil {
+		return nil, err
+	}
+	publicURLs := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		publicURLs = append(publicURLs, "https://"+domain.Hostname)
+	}
+	sort.Strings(publicURLs)
+	result["PLATFORMD_PROJECT_ID"] = desired.ProjectID
+	result["PLATFORMD_PROJECT_NAME"] = desired.ProjectName
+	result["PLATFORMD_SERVICE_ID"] = desired.ID
+	result["PLATFORMD_SERVICE_NAME"] = desired.Name
+	result["PLATFORMD_DEPLOYMENT_ID"] = deploymentID
+	result["PLATFORMD_PRIVATE_DOMAIN"] = desired.Name + "." + desired.ProjectName + ".internal"
+	result["PLATFORMD_PUBLIC_URLS"] = strings.Join(publicURLs, ",")
 	return result, nil
 }
 

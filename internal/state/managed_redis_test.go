@@ -54,7 +54,7 @@ func TestCreateManagedRedisRejectsSharedNamespaceAndRollsBackAudit(t *testing.T)
 	createManagedRedisTestProject(t, store)
 	if _, err := store.CreateService(ctx, state.CreateService{
 		ID: "service", ProjectID: "project", Name: "cache", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "redis:latest"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("redis:latest"),},
 		AuditEventID: "service-audit", ActorKind: "token", ActorID: "token",
 		CreatedAtMillis: 2,
 	}); err != nil {

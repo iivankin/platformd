@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/imagecredential"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 func validateServiceMutationIdentity(serviceID, projectID string, expectedUpdated int64, auditID, actorKind, actorID, actorEmail string, timestamp int64) error {
@@ -35,21 +36,27 @@ SELECT updated_at FROM services WHERE id = ? AND project_id = ?`, serviceID, pro
 }
 
 func validateServiceDependencies(ctx context.Context, transaction *sql.Tx, projectID, serviceID string, snapshot serviceconfig.Snapshot) error {
-	if snapshot.ImageCredentialID != "" {
-		var credentialProjectID string
+	if snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil {
+		var domainCount int
+		if err := transaction.QueryRowContext(ctx, `
+SELECT count(*) FROM service_domains WHERE service_id = ?`, serviceID).Scan(&domainCount); err != nil {
+			return fmt.Errorf("count service domains for PR previews: %w", err)
+		}
+		if domainCount != 1 {
+			return ErrPreviewDomainCount
+		}
+	}
+	if snapshot.Source.Type == servicesource.PrivateImage {
 		var credentialHost string
 		err := transaction.QueryRowContext(ctx, `
-SELECT project_id, registry_host FROM image_registry_credentials WHERE id = ?`, snapshot.ImageCredentialID).Scan(&credentialProjectID, &credentialHost)
+		SELECT registry_host FROM service_image_credentials WHERE service_id = ?`, serviceID).Scan(&credentialHost)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("%w: image credential %s", ErrDependencyMissing, snapshot.ImageCredentialID)
+			return fmt.Errorf("%w: private registry credential", ErrDependencyMissing)
 		}
 		if err != nil {
-			return fmt.Errorf("load image credential dependency: %w", err)
+			return fmt.Errorf("load service image credential: %w", err)
 		}
-		if credentialProjectID != projectID {
-			return fmt.Errorf("%w: image credential %s", ErrDependencyMissing, snapshot.ImageCredentialID)
-		}
-		imageHost, err := imagecredential.HostForReference(snapshot.ImageReference)
+		imageHost, err := imagecredential.HostForReference(servicesource.ImageReference(snapshot.Source))
 		if err != nil {
 			return err
 		}
@@ -101,6 +108,10 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	if err != nil {
 		return fmt.Errorf("encode service environment: %w", err)
 	}
+	sourceJSON, err := json.Marshal(snapshot.Source)
+	if err != nil {
+		return fmt.Errorf("encode service source: %w", err)
+	}
 	var healthPort any
 	var healthPath any
 	healthTimeout := serviceconfig.DefaultHealthTimeoutSeconds
@@ -111,13 +122,13 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	}
 	result, err := transaction.ExecContext(ctx, `
 	UPDATE services SET
-	  image_reference = ?, image_credential_id = ?, command_json = ?, args_json = ?,
+	  source_json = ?, command_json = ?, args_json = ?,
 	  environment_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
   cpu_millis = ?, memory_bytes = ?, enabled = ?,
   active_deployment_id = CASE WHEN ? = 0 THEN NULL ELSE active_deployment_id END,
   updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
-		snapshot.ImageReference, nullableString(snapshot.ImageCredentialID), commandJSON, argsJSON,
+		string(sourceJSON), commandJSON, argsJSON,
 		string(environmentJSON), healthPort, healthPath, healthTimeout,
 		nullablePositive(snapshot.CPUMillicores), nullablePositive(snapshot.MemoryMaxBytes), boolInteger(enabled),
 		boolInteger(enabled), updatedAt, serviceID, projectID, expectedUpdated,

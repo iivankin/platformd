@@ -16,6 +16,9 @@ type DeploymentRecord struct {
 	ID               string
 	ServiceID        string
 	ImageDigest      string
+	ImageReference   string
+	SourceRevision   string
+	CommitMessage    string
 	ConfigHash       string
 	Snapshot         serviceconfig.Snapshot
 	Status           string
@@ -26,17 +29,32 @@ type DeploymentRecord struct {
 }
 
 type BeginDeployment struct {
-	ID              string
-	ServiceID       string
-	ImageDigest     string
-	ConfigHash      string
-	SnapshotJSON    []byte
-	CreatedAtMillis int64
+	ID               string
+	ServiceID        string
+	ImageDigest      string
+	ImageReference   string
+	SourceRevision   string
+	CommitMessage    string
+	ConfigHash       string
+	SnapshotJSON     []byte
+	CreatedAtMillis  int64
+	Status           string
+	FinishedAtMillis int64
 }
 
 func (store *Store) BeginDeployment(ctx context.Context, input BeginDeployment) error {
-	if input.ID == "" || input.ServiceID == "" || input.ImageDigest == "" || input.ConfigHash == "" || len(input.SnapshotJSON) == 0 || input.CreatedAtMillis <= 0 {
+	if input.ID == "" || input.ServiceID == "" || input.ConfigHash == "" || len(input.SnapshotJSON) == 0 || input.CreatedAtMillis <= 0 {
 		return errors.New("begin deployment input is incomplete")
+	}
+	status := input.Status
+	if status == "" {
+		status = "running"
+	}
+	if status != "running" && status != "skipped" {
+		return errors.New("deployment can only begin as running or skipped")
+	}
+	if status == "skipped" && input.FinishedAtMillis <= 0 {
+		return errors.New("skipped deployment must have a finish time")
 	}
 	var snapshot serviceconfig.Snapshot
 	if err := json.Unmarshal(input.SnapshotJSON, &snapshot); err != nil {
@@ -50,6 +68,10 @@ func (store *Store) BeginDeployment(ctx context.Context, input BeginDeployment) 
 		return errors.New("deployment snapshot is not canonical or does not match its hash")
 	}
 	return store.Write(ctx, func(transaction *sql.Tx) error {
+		var finishedAt any
+		if input.FinishedAtMillis > 0 {
+			finishedAt = input.FinishedAtMillis
+		}
 		var enabled int
 		if err := transaction.QueryRowContext(ctx, "SELECT enabled FROM services WHERE id = ?", input.ServiceID).Scan(&enabled); errors.Is(err, sql.ErrNoRows) {
 			return sql.ErrNoRows
@@ -61,9 +83,13 @@ func (store *Store) BeginDeployment(ctx context.Context, input BeginDeployment) 
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO deployments(
-  id, service_id, image_digest, service_config_hash, snapshot_json, status, created_at
-) VALUES (?, ?, ?, ?, ?, 'running', ?)`,
-			input.ID, input.ServiceID, input.ImageDigest, input.ConfigHash, string(input.SnapshotJSON), input.CreatedAtMillis,
+		  id, service_id, image_digest, image_reference, source_revision,
+		  source_commit_message, service_config_hash, snapshot_json, status, created_at, finished_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			input.ID, input.ServiceID, input.ImageDigest, input.ImageReference,
+			nullableString(input.SourceRevision), nullableString(input.CommitMessage),
+			input.ConfigHash, string(input.SnapshotJSON), status, input.CreatedAtMillis,
+			finishedAt,
 		); err != nil {
 			return fmt.Errorf("begin deployment: %w", err)
 		}
@@ -144,7 +170,8 @@ SELECT EXISTS(
 
 func (store *Store) Deployment(ctx context.Context, deploymentID string) (DeploymentRecord, error) {
 	deployment, err := scanDeploymentRecord(store.database.QueryRowContext(ctx, `
-SELECT id, service_id, image_digest, service_config_hash, snapshot_json, status,
+		SELECT id, service_id, image_digest, image_reference, source_revision,
+		       source_commit_message, service_config_hash, snapshot_json, status,
        error_code, error_message, created_at, finished_at
 FROM deployments WHERE id = ?`, deploymentID))
 	if err != nil {

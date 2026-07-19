@@ -21,8 +21,13 @@ type BackendResolver interface {
 	ServiceBackend(string, int) (deployment.Backend, bool, error)
 }
 
+type previewBackendResolver interface {
+	PreviewBackend(string, int) (deployment.Backend, bool, error)
+}
+
 type Route struct {
 	ServiceID  string
+	PreviewID  string
 	TargetPort int
 }
 
@@ -252,7 +257,18 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		misdirected(response)
 		return
 	}
-	backend, available, err := router.backends.ServiceBackend(serviceRoute.ServiceID, serviceRoute.TargetPort)
+	var backend deployment.Backend
+	var available bool
+	if serviceRoute.PreviewID != "" {
+		previews, ok := router.backends.(previewBackendResolver)
+		if !ok {
+			unavailable(response)
+			return
+		}
+		backend, available, err = previews.PreviewBackend(serviceRoute.PreviewID, serviceRoute.TargetPort)
+	} else {
+		backend, available, err = router.backends.ServiceBackend(serviceRoute.ServiceID, serviceRoute.TargetPort)
+	}
 	if err != nil || !available {
 		unavailable(response)
 		return

@@ -158,6 +158,8 @@ func writeDomainMutationError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusConflict, "hostname_in_use", err.Error())
 	case errors.Is(err, state.ErrCertificateCoverage):
 		writeAPIError(response, http.StatusUnprocessableEntity, "certificate_not_covered", err.Error())
+	case errors.Is(err, state.ErrPreviewDomainCount):
+		writeAPIError(response, http.StatusConflict, "preview_domain_count", err.Error())
 	default:
 		writeAPIError(response, http.StatusBadRequest, "invalid_domain", err.Error())
 	}

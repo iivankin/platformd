@@ -10,20 +10,24 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
 type deploymentResponse struct {
-	ID           string                 `json:"id"`
-	ServiceID    string                 `json:"serviceId"`
-	ImageDigest  string                 `json:"imageDigest"`
-	ConfigHash   string                 `json:"serviceConfigHash"`
-	Snapshot     serviceconfig.Snapshot `json:"snapshot"`
-	Status       string                 `json:"status"`
-	ErrorCode    string                 `json:"errorCode,omitempty"`
-	ErrorMessage string                 `json:"errorMessage,omitempty"`
-	CreatedAt    int64                  `json:"createdAt"`
-	FinishedAt   int64                  `json:"finishedAt,omitempty"`
+	ID             string                 `json:"id"`
+	ServiceID      string                 `json:"serviceId"`
+	ImageDigest    string                 `json:"imageDigest,omitempty"`
+	ImageReference string                 `json:"imageReference,omitempty"`
+	SourceRevision string                 `json:"sourceRevision,omitempty"`
+	CommitMessage  string                 `json:"commitMessage,omitempty"`
+	ConfigHash     string                 `json:"serviceConfigHash"`
+	Snapshot       serviceconfig.Snapshot `json:"snapshot"`
+	Status         string                 `json:"status"`
+	ErrorCode      string                 `json:"errorCode,omitempty"`
+	ErrorMessage   string                 `json:"errorMessage,omitempty"`
+	CreatedAt      int64                  `json:"createdAt"`
+	FinishedAt     int64                  `json:"finishedAt,omitempty"`
 }
 
 type deploymentPageResponse struct {
@@ -31,17 +35,66 @@ type deploymentPageResponse struct {
 	NextCursor  string               `json:"nextCursor,omitempty"`
 }
 
+type previewDeploymentResponse struct {
+	ID                string `json:"id"`
+	ServiceID         string `json:"serviceId"`
+	PullRequestNumber int    `json:"pullRequestNumber"`
+	SourceRevision    string `json:"sourceRevision"`
+	CommitMessage     string `json:"commitMessage,omitempty"`
+	Hostname          string `json:"hostname"`
+	TargetPort        int    `json:"targetPort"`
+	Status            string `json:"status"`
+	ErrorMessage      string `json:"errorMessage,omitempty"`
+	CreatedAt         int64  `json:"createdAt"`
+	FinishedAt        int64  `json:"finishedAt,omitempty"`
+	ExpiresAt         int64  `json:"expiresAt"`
+}
+
 func registerServiceLifecycleRoutes(mux *http.ServeMux, config handlerConfig) {
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config.services))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/services/{serviceID}", deleteService(config))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments", listServiceDeployments(config.services))
+	if previews, ok := config.services.(PreviewDeploymentRepository); ok {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/previews", listServicePreviews(previews))
+	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}", getServiceDeployment(config.services))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/deploy", deployServiceVersion(config))
 	if actions, ok := config.services.(ServiceDeploymentActionRepository); ok {
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/restart", restartServiceDeployment(config, actions))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/remove", removeServiceDeployment(config, actions))
+	}
+}
+
+func listServicePreviews(repository PreviewDeploymentRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		previews, err := repository.ServicePreviewDeployments(
+			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"),
+		)
+		if errors.Is(err, state.ErrServiceNotFound) {
+			writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load PR preview history")
+			return
+		}
+		result := make([]previewDeploymentResponse, 0, len(previews))
+		for _, item := range previews {
+			result = append(result, previewDeploymentResponse{
+				ID: item.ID, ServiceID: item.ServiceID, PullRequestNumber: item.PullRequestNumber,
+				SourceRevision: item.SourceRevision, CommitMessage: item.CommitMessage,
+				Hostname: item.Hostname, TargetPort: item.TargetPort, Status: item.Status,
+				ErrorMessage: item.ErrorMessage, CreatedAt: item.CreatedAtMillis,
+				FinishedAt: item.FinishedAtMillis, ExpiresAt: item.ExpiresAtMillis,
+			})
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"previews": result})
 	}
 }
 
@@ -83,13 +136,13 @@ func deleteService(config handlerConfig) http.HandlerFunc {
 	}
 }
 
-func getService(repository ServiceRepository) http.HandlerFunc {
+func getService(config handlerConfig) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := access.IdentityFromContext(request.Context()); !ok {
 			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
 			return
 		}
-		service, err := repository.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+		service, err := config.services.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
 		if errors.Is(err, state.ErrServiceNotFound) {
 			writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
 			return
@@ -98,15 +151,22 @@ func getService(repository ServiceRepository) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load service")
 			return
 		}
-		writeJSON(response, http.StatusOK, publicService(service))
+		public, err := publicService(request.Context(), config, service)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to reveal service registry credential")
+			return
+		}
+		response.Header().Set("Cache-Control", "no-store")
+		writeJSON(response, http.StatusOK, public)
 	}
 }
 
 func updateService(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
 		serviceConfigRequest
-		Enabled           *bool `json:"enabled"`
-		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
+		Enabled            *bool                             `json:"enabled"`
+		ExpectedUpdatedAt  int64                             `json:"expectedUpdatedAt"`
+		RegistryCredential *serviceRegistryCredentialRequest `json:"registryCredential"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := access.IdentityFromContext(request.Context())
@@ -132,9 +192,18 @@ func updateService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service update identifiers")
 			return
 		}
+		credential, credentialErr := prepareServiceImageCredential(
+			request.Context(), config, request.PathValue("serviceID"), snapshot.Source,
+			body.RegistryCredential, config.now().UnixMilli(),
+		)
+		if credentialErr != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_registry_auth", credentialErr.Error())
+			return
+		}
 		updated, err := config.services.UpdateService(request.Context(), state.UpdateServiceInput{
 			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
 			Enabled: *body.Enabled, Snapshot: snapshot, ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
+			ImageCredential: credential, RemoveImageCredential: snapshot.Source.Type != servicesource.PrivateImage,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
 		})
@@ -142,7 +211,13 @@ func updateService(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		response.Header().Set("X-Request-ID", correlationID)
-		writeJSON(response, http.StatusOK, publicService(updated))
+		public, err := publicService(request.Context(), config, updated)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to reveal service registry credential")
+			return
+		}
+		response.Header().Set("Cache-Control", "no-store")
+		writeJSON(response, http.StatusOK, public)
 	}
 }
 
@@ -179,7 +254,7 @@ func redeployService(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		response.Header().Set("X-Request-ID", correlationID)
-		writeJSON(response, http.StatusOK, publicService(service))
+		writePublicService(response, request, config, service)
 	}
 }
 
@@ -216,7 +291,7 @@ func deployServiceVersion(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		response.Header().Set("X-Request-ID", correlationID)
-		writeJSON(response, http.StatusOK, publicService(service))
+		writePublicService(response, request, config, service)
 	}
 }
 
@@ -264,7 +339,7 @@ func serviceDeploymentAction(
 			return
 		}
 		response.Header().Set("X-Request-ID", correlationID)
-		writeJSON(response, http.StatusOK, publicService(service))
+		writePublicService(response, request, config, service)
 	}
 }
 
@@ -378,8 +453,10 @@ func writeServiceMutationError(response http.ResponseWriter, err error) bool {
 func publicDeployment(deployment state.DeploymentRecord) deploymentResponse {
 	return deploymentResponse{
 		ID: deployment.ID, ServiceID: deployment.ServiceID,
-		ImageDigest: deployment.ImageDigest, ConfigHash: deployment.ConfigHash,
-		Snapshot: deployment.Snapshot, Status: deployment.Status,
+		ImageDigest: deployment.ImageDigest, ImageReference: deployment.ImageReference,
+		SourceRevision: deployment.SourceRevision, CommitMessage: deployment.CommitMessage,
+		ConfigHash: deployment.ConfigHash,
+		Snapshot:   deployment.Snapshot, Status: deployment.Status,
 		ErrorCode: deployment.ErrorCode, ErrorMessage: deployment.ErrorMessage,
 		CreatedAt: deployment.CreatedAtMillis, FinishedAt: deployment.FinishedAtMillis,
 	}

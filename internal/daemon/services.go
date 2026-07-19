@@ -20,10 +20,12 @@ type liveServiceRepository struct {
 
 type serviceRuntime interface {
 	DeployService(context.Context, string, bool) error
+	DeployServiceRevision(context.Context, string, string, bool) error
 	RestartServiceDeployment(context.Context, string, string) error
 	DeleteServiceDeploymentLogs(string, string) error
 	DeleteService(context.Context, state.ServiceDesired) error
 	DeleteServiceLogs(string) error
+	stopServicePreviews(context.Context, string, string) error
 	TrackService(context.Context, string, bool) error
 	recordServiceFailure(string, error)
 }
@@ -35,6 +37,9 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 	}
 	if service.UpdatedAtMillis != input.ExpectedUpdatedMillis {
 		return state.DeleteServiceResult{}, state.ErrServiceChanged
+	}
+	if err := repository.runtime.stopServicePreviews(ctx, service.ID, "Service deleted"); err != nil {
+		return state.DeleteServiceResult{}, err
 	}
 	if err := repository.runtime.DeleteService(ctx, service); err != nil {
 		return state.DeleteServiceResult{}, err
@@ -121,7 +126,32 @@ func (repository liveServiceRepository) ServiceDeployments(ctx context.Context, 
 }
 
 func (repository liveServiceRepository) ServiceDeployment(ctx context.Context, projectID, serviceID, deploymentID string) (state.DeploymentRecord, error) {
-	return repository.store.ServiceDeployment(ctx, projectID, serviceID, deploymentID)
+	deployment, err := repository.store.ServiceDeployment(ctx, projectID, serviceID, deploymentID)
+	if !errors.Is(err, state.ErrDeploymentNotFound) {
+		return deployment, err
+	}
+	preview, previewErr := repository.store.PreviewDeployment(ctx, projectID, serviceID, deploymentID)
+	if previewErr != nil {
+		return state.DeploymentRecord{}, previewErr
+	}
+	status := preview.Status
+	if status == "active" || status == "building" {
+		status = "running"
+	} else if status == "stopped" {
+		status = "interrupted"
+	}
+	return state.DeploymentRecord{
+		ID: preview.ID, ServiceID: preview.ServiceID,
+		ImageDigest: preview.ImageDigest, ImageReference: preview.ImageReference,
+		SourceRevision: preview.SourceRevision, CommitMessage: preview.CommitMessage,
+		ConfigHash: preview.ConfigHash, Snapshot: preview.Snapshot, Status: status,
+		ErrorCode: preview.ErrorCode, ErrorMessage: preview.ErrorMessage,
+		CreatedAtMillis: preview.CreatedAtMillis, FinishedAtMillis: preview.FinishedAtMillis,
+	}, nil
+}
+
+func (repository liveServiceRepository) ServicePreviewDeployments(ctx context.Context, projectID, serviceID string) ([]state.PreviewDeployment, error) {
+	return repository.store.PreviewDeploymentsForService(ctx, projectID, serviceID)
 }
 
 func (repository liveServiceRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -144,17 +174,31 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}
+	if !updated.Enabled || updated.Snapshot.Source.GitHub == nil || updated.Snapshot.Source.GitHub.PullRequestPreview == nil {
+		if err := repository.runtime.stopServicePreviews(ctx, updated.ID, "PR previews disabled"); err != nil {
+			return state.ServiceDesired{}, err
+		}
+	}
 	deployErr := repository.runtime.DeployService(ctx, updated.ID, false)
 	repository.finishReconcile(ctx, updated.ID, deployErr)
 	return repository.store.DesiredService(ctx, updated.ID)
 }
 
 func (repository liveServiceRepository) DeployServiceVersion(ctx context.Context, input state.DeployServiceVersionInput) (state.ServiceDesired, error) {
+	deployment, err := repository.store.ServiceDeployment(ctx, input.ProjectID, input.ID, input.DeploymentID)
+	if err != nil {
+		return state.ServiceDesired{}, err
+	}
 	updated, err := repository.store.DeployServiceVersion(ctx, input)
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}
-	deployErr := repository.runtime.DeployService(ctx, updated.ID, true)
+	var deployErr error
+	if updated.Snapshot.Source.GitHub != nil {
+		deployErr = repository.runtime.DeployServiceRevision(ctx, updated.ID, deployment.SourceRevision, true)
+	} else {
+		deployErr = repository.runtime.DeployService(ctx, updated.ID, true)
+	}
 	repository.finishReconcile(ctx, updated.ID, deployErr)
 	return repository.store.DesiredService(ctx, updated.ID)
 }

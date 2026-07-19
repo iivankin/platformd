@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -27,8 +28,12 @@ type ServiceRepository interface {
 	RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error)
 }
 
+type PreviewDeploymentRepository interface {
+	ServicePreviewDeployments(context.Context, string, string) ([]state.PreviewDeployment, error)
+}
+
 type ServiceEnvironmentResolver interface {
-	Resolve(context.Context, state.ServiceDesired) (map[string]string, error)
+	Resolve(context.Context, state.ServiceDesired, string) (map[string]string, error)
 }
 
 type ServiceDeploymentActionRepository interface {
@@ -37,43 +42,53 @@ type ServiceDeploymentActionRepository interface {
 }
 
 type serviceResponse struct {
-	ID                 string                          `json:"id"`
-	ProjectID          string                          `json:"projectId"`
-	Name               string                          `json:"name"`
-	ImageReference     string                          `json:"imageReference"`
-	ImageCredentialID  string                          `json:"imageCredentialId,omitempty"`
-	Command            []string                        `json:"command,omitempty"`
-	Args               []string                        `json:"args,omitempty"`
-	Environment        map[string]string               `json:"environment"`
-	HealthCheck        *serviceconfig.HealthCheck      `json:"healthCheck,omitempty"`
-	CPUMillicores      int64                           `json:"cpuMillicores,omitempty"`
-	MemoryMaxBytes     int64                           `json:"memoryMaxBytes,omitempty"`
-	Enabled            bool                            `json:"enabled"`
-	ActiveDeploymentID string                          `json:"activeDeploymentId,omitempty"`
-	ActiveImageDigest  string                          `json:"activeImageDigest,omitempty"`
-	ActiveConfigHash   string                          `json:"activeConfigHash,omitempty"`
-	SecretReferences   []serviceconfig.SecretReference `json:"secretReferences"`
-	VolumeMounts       []serviceconfig.VolumeMount     `json:"volumeMounts"`
-	CreatedAt          int64                           `json:"createdAt"`
-	UpdatedAt          int64                           `json:"updatedAt"`
+	ID                 string                             `json:"id"`
+	ProjectID          string                             `json:"projectId"`
+	Name               string                             `json:"name"`
+	Source             servicesource.Source               `json:"source"`
+	Command            []string                           `json:"command,omitempty"`
+	Args               []string                           `json:"args,omitempty"`
+	Environment        map[string]string                  `json:"environment"`
+	HealthCheck        *serviceconfig.HealthCheck         `json:"healthCheck,omitempty"`
+	CPUMillicores      int64                              `json:"cpuMillicores,omitempty"`
+	MemoryMaxBytes     int64                              `json:"memoryMaxBytes,omitempty"`
+	Enabled            bool                               `json:"enabled"`
+	ActiveDeploymentID string                             `json:"activeDeploymentId,omitempty"`
+	ActiveImageDigest  string                             `json:"activeImageDigest,omitempty"`
+	ActiveConfigHash   string                             `json:"activeConfigHash,omitempty"`
+	SecretReferences   []serviceconfig.SecretReference    `json:"secretReferences"`
+	VolumeMounts       []serviceconfig.VolumeMount        `json:"volumeMounts"`
+	CreatedAt          int64                              `json:"createdAt"`
+	UpdatedAt          int64                              `json:"updatedAt"`
+	RegistryCredential *serviceRegistryCredentialResponse `json:"registryCredential,omitempty"`
+}
+
+type serviceRegistryCredentialResponse struct {
+	RegistryHost string `json:"registryHost"`
+	Username     string `json:"username"`
+	Password     string `json:"password"`
+}
+
+type serviceRegistryCredentialRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 type serviceConfigRequest struct {
-	ImageReference    string                          `json:"imageReference"`
-	ImageCredentialID string                          `json:"imageCredentialId"`
-	Command           []string                        `json:"command"`
-	Args              []string                        `json:"args"`
-	Environment       map[string]string               `json:"environment"`
-	SecretReferences  []serviceconfig.SecretReference `json:"secretReferences"`
-	HealthCheck       *serviceconfig.HealthCheck      `json:"healthCheck"`
-	CPUMillicores     int64                           `json:"cpuMillicores"`
-	MemoryMaxBytes    int64                           `json:"memoryMaxBytes"`
-	VolumeMounts      []serviceconfig.VolumeMount     `json:"volumeMounts"`
+	Source           servicesource.Source            `json:"source"`
+	Command          []string                        `json:"command"`
+	Args             []string                        `json:"args"`
+	Environment      map[string]string               `json:"environment"`
+	SecretReferences []serviceconfig.SecretReference `json:"secretReferences"`
+	HealthCheck      *serviceconfig.HealthCheck      `json:"healthCheck"`
+	CPUMillicores    int64                           `json:"cpuMillicores"`
+	MemoryMaxBytes   int64                           `json:"memoryMaxBytes"`
+	VolumeMounts     []serviceconfig.VolumeMount     `json:"volumeMounts"`
 }
 
 func (request serviceConfigRequest) snapshot() serviceconfig.Snapshot {
 	return serviceconfig.Snapshot{
-		ImageReference: request.ImageReference, ImageCredentialID: request.ImageCredentialID,
+		Source:  request.Source,
 		Command: request.Command, Args: request.Args, Environment: request.Environment,
 		SecretReferences: request.SecretReferences, HealthCheck: request.HealthCheck,
 		CPUMillicores: request.CPUMillicores, MemoryMaxBytes: request.MemoryMaxBytes,
@@ -90,8 +105,9 @@ func registerServiceRoutes(mux *http.ServeMux, config handlerConfig) {
 func createService(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
 		serviceConfigRequest
-		Name    string `json:"name"`
-		Enabled *bool  `json:"enabled"`
+		Name               string                            `json:"name"`
+		Enabled            *bool                             `json:"enabled"`
+		RegistryCredential *serviceRegistryCredentialRequest `json:"registryCredential"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := access.IdentityFromContext(request.Context())
@@ -131,9 +147,17 @@ func createService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service identifiers")
 			return
 		}
+		credential, credentialErr := prepareServiceImageCredential(
+			request.Context(), config, serviceID, snapshot.Source,
+			body.RegistryCredential, timestamp.UnixMilli(),
+		)
+		if credentialErr != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_registry_auth", credentialErr.Error())
+			return
+		}
 		created, err := config.services.CreateService(request.Context(), state.CreateService{
 			ID: serviceID, ProjectID: request.PathValue("projectID"), Name: body.Name,
-			Enabled: enabled, Snapshot: snapshot,
+			Enabled: enabled, Snapshot: snapshot, ImageCredential: credential,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
@@ -159,16 +183,21 @@ func createService(config handlerConfig) http.HandlerFunc {
 		}
 		response.Header().Set("Location", "/api/v1/projects/"+created.ProjectID+"/services/"+created.ID)
 		response.Header().Set("X-Request-ID", correlationID)
-		writeJSON(response, http.StatusCreated, publicService(created))
+		public, err := publicService(request.Context(), config, created)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to reveal service registry credential")
+			return
+		}
+		response.Header().Set("Cache-Control", "no-store")
+		writeJSON(response, http.StatusCreated, public)
 	}
 }
 
-func publicService(service state.ServiceDesired) serviceResponse {
-	return serviceResponse{
+func publicService(ctx context.Context, config handlerConfig, service state.ServiceDesired) (serviceResponse, error) {
+	result := serviceResponse{
 		ID: service.ID, ProjectID: service.ProjectID, Name: service.Name,
-		ImageReference:    service.Snapshot.ImageReference,
-		ImageCredentialID: service.Snapshot.ImageCredentialID,
-		Command:           service.Snapshot.Command, Args: service.Snapshot.Args,
+		Source:  service.Snapshot.Source,
+		Command: service.Snapshot.Command, Args: service.Snapshot.Args,
 		Environment: service.Snapshot.Environment, HealthCheck: service.Snapshot.HealthCheck,
 		CPUMillicores:  service.Snapshot.CPUMillicores,
 		MemoryMaxBytes: service.Snapshot.MemoryMaxBytes,
@@ -178,6 +207,57 @@ func publicService(service state.ServiceDesired) serviceResponse {
 		VolumeMounts:     service.Snapshot.VolumeMounts,
 		CreatedAt:        service.CreatedAtMillis, UpdatedAt: service.UpdatedAtMillis,
 	}
+	if service.Snapshot.Source.Type == servicesource.PrivateImage {
+		if config.serviceImageCredentials == nil {
+			return serviceResponse{}, errors.New("service image credentials are not configured")
+		}
+		host, username, password, err := config.serviceImageCredentials.RevealServiceImageCredential(ctx, service.ID)
+		if err != nil {
+			return serviceResponse{}, err
+		}
+		result.RegistryCredential = &serviceRegistryCredentialResponse{
+			RegistryHost: host, Username: username, Password: password,
+		}
+	}
+	return result, nil
+}
+
+func writePublicService(response http.ResponseWriter, request *http.Request, config handlerConfig, service state.ServiceDesired) bool {
+	public, err := publicService(request.Context(), config, service)
+	if err != nil {
+		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to reveal service registry credential")
+		return false
+	}
+	response.Header().Set("Cache-Control", "no-store")
+	writeJSON(response, http.StatusOK, public)
+	return true
+}
+
+func prepareServiceImageCredential(
+	ctx context.Context,
+	config handlerConfig,
+	serviceID string,
+	source servicesource.Source,
+	request *serviceRegistryCredentialRequest,
+	updatedAt int64,
+) (*state.ServiceImageCredential, error) {
+	if source.Type != servicesource.PrivateImage {
+		if request != nil {
+			return nil, errors.New("registry credentials are only valid for private image sources")
+		}
+		return nil, nil
+	}
+	if config.serviceImageCredentials == nil {
+		return nil, errors.New("service image credentials are not configured")
+	}
+	input := ServiceImageCredentialInput{
+		ServiceID: serviceID, ImageReference: servicesource.ImageReference(source), UpdatedAtMillis: updatedAt,
+	}
+	if request != nil {
+		input.Username = request.Username
+		input.Password = request.Password
+	}
+	return config.serviceImageCredentials.PrepareServiceImageCredential(ctx, input)
 }
 
 func resolvedServiceVariables(config handlerConfig) http.HandlerFunc {
@@ -198,7 +278,7 @@ func resolvedServiceVariables(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load service")
 			return
 		}
-		environment, err := config.serviceEnvironment.Resolve(request.Context(), service)
+		environment, err := config.serviceEnvironment.Resolve(request.Context(), service, service.ActiveDeploymentID)
 		if err != nil {
 			writeAPIError(response, http.StatusUnprocessableEntity, "variable_resolution_failed", err.Error())
 			return

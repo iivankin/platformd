@@ -63,9 +63,9 @@ func seedPersistentVolumeRows(t *testing.T, store *Store) {
 	_, err := store.database.ExecContext(context.Background(), `
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
 INSERT INTO services(
-  id, project_id, name, image_reference, environment_json,
+  id, project_id, name, source_json, environment_json,
   health_timeout_seconds, enabled, created_at, updated_at
-) VALUES ('service', 'project', 'web', 'example/image:latest', '{}', 60, 1, 1, 1);
+) VALUES ('service', 'project', 'web', '{"type":"public_image","image":{"reference":"example/image:latest"}}', '{}', 60, 1, 1, 1);
 INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
 VALUES ('ordinary-volume', 'project', 'service', 'data', 123, 456, 1, 1);
 INSERT INTO managed_postgres(

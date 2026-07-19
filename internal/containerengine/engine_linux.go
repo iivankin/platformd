@@ -21,6 +21,7 @@ var runtimeSingleton struct {
 
 type Engine struct {
 	runtime *libpod.Runtime
+	store   storage.Store
 	config  Config
 	logs    logActivity
 
@@ -104,9 +105,13 @@ func Open(ctx context.Context, config Config) (*Engine, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open private libpod runtime: %w", err)
 	}
+	store, err := storage.GetStore(runtime.StorageConfig())
+	if err != nil {
+		return nil, errors.Join(fmt.Errorf("open private image store: %w", err), runtime.Shutdown(false))
+	}
 
 	opened = true
-	return &Engine{runtime: runtime, config: config}, nil
+	return &Engine{runtime: runtime, store: store, config: config}, nil
 }
 
 func (e *Engine) Close() error {

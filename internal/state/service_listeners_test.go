@@ -26,7 +26,7 @@ func TestServiceListenersValidateConflictsAndAllowProtocolSpecificPorts(t *testi
 	for index, serviceID := range []string{"api", "worker"} {
 		if _, err := store.CreateService(ctx, CreateService{
 			ID: serviceID, ProjectID: "project", Name: serviceID, Enabled: true,
-			Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine"},
+			Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),},
 			AuditEventID: "service-audit-" + serviceID, ActorKind: "access",
 			ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: int64(index + 2),
 		}); err != nil {

@@ -93,16 +93,28 @@ const configurationChangeDetails = (
   const baselineConfiguration = serviceConfigurationDraft(
     change.baseline.service
   );
+  if (!same(baselineConfiguration.source, change.draft.configuration.source)) {
+    const { source } = change.draft.configuration;
+    details.push({
+      detail:
+        source.type === "github"
+          ? `${source.github.repository} · ${source.github.branch}`
+          : source.image.reference,
+      id: "source",
+      label: "Source",
+    });
+  }
   if (
-    baselineConfiguration.imageReference !==
-      change.draft.configuration.imageReference ||
-    baselineConfiguration.imageCredentialID !==
-      change.draft.configuration.imageCredentialID
+    change.draft.configuration.source.type === "private_image" &&
+    !same(
+      baselineConfiguration.registryCredential,
+      change.draft.configuration.registryCredential
+    )
   ) {
     details.push({
-      detail: change.draft.configuration.imageReference,
-      id: "image",
-      label: "Container image",
+      detail: change.draft.configuration.registryCredential.username,
+      id: "registry-credential",
+      label: "Registry access",
     });
   }
   if (

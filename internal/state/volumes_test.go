@@ -90,9 +90,9 @@ func TestVolumeDeleteRejectsDesiredAndActiveReferences(t *testing.T) {
 	}
 	if _, err := store.database.ExecContext(context.Background(), `
 INSERT INTO deployments(
-  id, service_id, image_digest, service_config_hash, snapshot_json,
+  id, service_id, image_digest, image_reference, service_config_hash, snapshot_json,
   status, created_at, finished_at
-) VALUES ('active', 'service', ?, 'config', ?, 'succeeded', 5, 5);
+) VALUES ('active', 'service', ?, 'docker.io/library/alpine:latest', 'config', ?, 'succeeded', 5, 5);
 UPDATE services SET active_deployment_id = 'active' WHERE id = 'service'`,
 		"sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4", string(snapshotJSON),
 	); err != nil {
@@ -165,7 +165,7 @@ func createVolumeTestService(t *testing.T, store *Store) ServiceDesired {
 	}
 	service, err := store.CreateService(ctx, CreateService{
 		ID: "service", ProjectID: "project", Name: "web", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "example/image:latest"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("example/image:latest")},
 		AuditEventID: "service-audit", ActorKind: "access", ActorID: "subject",
 		ActorEmail: "user@example.com", CreatedAtMillis: 1,
 	})

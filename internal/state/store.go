@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 10
+	currentSchemaVersion = 13
 	writerQueueSize      = 128
 )
 
@@ -63,6 +63,24 @@ var (
 
 	//go:embed migration_10_without_backup.sql
 	migration10WithoutBackup string
+
+	//go:embed migration_11.sql
+	migration11 string
+
+	//go:embed migration_11_without_services.sql
+	migration11WithoutServices string
+
+	//go:embed migration_12.sql
+	migration12 string
+
+	//go:embed migration_12_without_services.sql
+	migration12WithoutServices string
+
+	//go:embed migration_13.sql
+	migration13 string
+
+	//go:embed migration_13_without_services.sql
+	migration13WithoutServices string
 )
 
 type Store struct {
@@ -157,6 +175,7 @@ func (store *Store) MarkInterrupted(ctx context.Context, timestampMillis int64) 
 			"UPDATE operations SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
 			"UPDATE backups SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
 			"UPDATE deployments SET status = 'interrupted', finished_at = ? WHERE status = 'running' AND id NOT IN (SELECT active_deployment_id FROM services WHERE active_deployment_id IS NOT NULL)",
+			"UPDATE preview_deployments SET status = 'interrupted', finished_at = ? WHERE status = 'building'",
 		}
 		for _, statement := range statements {
 			if _, err := transaction.ExecContext(ctx, statement, timestampMillis); err != nil {
@@ -285,13 +304,46 @@ func migrate(ctx context.Context, database *sql.DB) error {
 	switch version {
 	case currentSchemaVersion:
 		return nil
+	case 12:
+		return applyMigration13(ctx, database)
+	case 11:
+		if err := applyMigration12(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration13(ctx, database)
+	case 10:
+		if err := applyMigration11(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration12(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration13(ctx, database)
 	case 9:
-		return applyMigration10(ctx, database)
+		if err := applyMigration10(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration11(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration12(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration13(ctx, database)
 	case 8:
 		if err := applyMigration(ctx, database, migration9, 9); err != nil {
 			return err
 		}
-		return applyMigration10(ctx, database)
+		if err := applyMigration10(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration11(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration12(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration13(ctx, database)
 	case 7:
 		if err := applyMigration8(ctx, database); err != nil {
 			return err
@@ -299,7 +351,16 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration(ctx, database, migration9, 9); err != nil {
 			return err
 		}
-		return applyMigration10(ctx, database)
+		if err := applyMigration10(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration11(ctx, database); err != nil {
+			return err
+		}
+		if err := applyMigration12(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration13(ctx, database)
 	case 0:
 		transaction, err := database.BeginTx(ctx, nil)
 		if err != nil {
@@ -385,7 +446,85 @@ func applyMigrations7To9(ctx context.Context, database *sql.DB) error {
 	if err := applyMigration(ctx, database, migration9, 9); err != nil {
 		return err
 	}
-	return applyMigration10(ctx, database)
+	if err := applyMigration10(ctx, database); err != nil {
+		return err
+	}
+	if err := applyMigration11(ctx, database); err != nil {
+		return err
+	}
+	if err := applyMigration12(ctx, database); err != nil {
+		return err
+	}
+	return applyMigration13(ctx, database)
+}
+
+func applyMigration13(ctx context.Context, database *sql.DB) error {
+	var serviceTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'services'`).Scan(&serviceTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 13: %w", err)
+	}
+	statements := migration13
+	if serviceTableCount == 0 {
+		statements = migration13WithoutServices
+	}
+	return applyMigration(ctx, database, statements, 13)
+}
+
+func applyMigration12(ctx context.Context, database *sql.DB) error {
+	var serviceTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'services'`).Scan(&serviceTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 12: %w", err)
+	}
+	statements := migration12
+	if serviceTableCount == 0 {
+		statements = migration12WithoutServices
+	}
+	return applyMigration(ctx, database, statements, 12)
+}
+
+func applyMigration11(ctx context.Context, database *sql.DB) error {
+	var serviceTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'services'`).Scan(&serviceTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 11: %w", err)
+	}
+	statements := migration11
+	if serviceTableCount == 0 {
+		// Registry-only installations from the earliest releases have no service
+		// or deployment state to transform.
+		statements = migration11WithoutServices
+	}
+	// SQLite cannot replace either side of the services/deployments circular
+	// foreign key while enforcement is active. The migration reconstructs both
+	// tables in one transaction and verifies the complete graph before turning
+	// enforcement back on.
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("disable foreign keys for migration 11: %w", err)
+	}
+	if err := applyMigration(ctx, database, statements, 11); err != nil {
+		_, _ = database.ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+		return err
+	}
+	if _, err := database.ExecContext(ctx, "PRAGMA foreign_keys = ON"); err != nil {
+		return fmt.Errorf("restore foreign keys after migration 11: %w", err)
+	}
+	var violations int
+	rows, err := database.QueryContext(ctx, "PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("verify migration 11 foreign keys: %w", err)
+	}
+	for rows.Next() {
+		violations++
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close migration 11 foreign key check: %w", err)
+	}
+	if violations != 0 {
+		return fmt.Errorf("migration 11 left %d foreign key violations", violations)
+	}
+	return nil
 }
 
 func applyMigration10(ctx context.Context, database *sql.DB) error {

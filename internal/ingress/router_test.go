@@ -19,6 +19,21 @@ type backendStub struct {
 	ports   chan<- int
 }
 
+type previewBackendStub struct {
+	backendStub
+	previewIDs chan<- string
+}
+
+func (stub previewBackendStub) PreviewBackend(previewID string, targetPort int) (deployment.Backend, bool, error) {
+	if stub.previewIDs != nil {
+		stub.previewIDs <- previewID
+	}
+	if stub.ports != nil {
+		stub.ports <- targetPort
+	}
+	return stub.backend, stub.present, stub.err
+}
+
 func (stub backendStub) ServiceBackend(_ string, targetPort int) (deployment.Backend, bool, error) {
 	if stub.ports != nil {
 		stub.ports <- targetPort
@@ -221,6 +236,43 @@ func TestRouterProxiesApplicationAndReplacesForwardingHeaders(t *testing.T) {
 	}
 	if proxied.Header.Get("Forwarded") != "" {
 		t.Fatalf("spoofed Forwarded header survived: %q", proxied.Header.Get("Forwarded"))
+	}
+}
+
+func TestRouterDispatchesPreviewRouteToPreviewBackend(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(backend.Close)
+	host, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previewIDs := make(chan string, 1)
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		Backends: previewBackendStub{
+			backendStub: backendStub{backend: deployment.Backend{Address: host, Port: port}, present: true},
+			previewIDs:  previewIDs,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Reload(map[string]Route{
+		"preview.example.com": {PreviewID: "preview-1", TargetPort: port},
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("preview.example.com", "preview.example.com"))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("preview response status = %d", response.Code)
+	}
+	if previewID := <-previewIDs; previewID != "preview-1" {
+		t.Fatalf("preview backend ID = %q", previewID)
 	}
 }
 

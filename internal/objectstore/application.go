@@ -49,6 +49,7 @@ type Repository interface {
 	MultipartParts(context.Context, string, string, string, int, int) ([]state.MultipartPart, bool, error)
 	CompleteMultipartUpload(context.Context, state.CompleteMultipartUpload) (state.ObjectMetadata, error)
 	AbortMultipartUpload(context.Context, string, string, string) error
+	ExpiredMultipartUploads(context.Context, int64, int) ([]state.MultipartUpload, error)
 	RestoreObjectStore(context.Context, state.RestoreObjectStore) error
 }
 

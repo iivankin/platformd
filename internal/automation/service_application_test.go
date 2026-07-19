@@ -47,7 +47,7 @@ func TestServiceApplicationAuthorizesBeforeRepositoryAndCreatesTokenAuditInput(t
 	projectID := "project"
 	input := CreateServiceInput{
 		ProjectID: projectID, Name: "api", Enabled: true,
-		Configuration: serviceconfig.Snapshot{ImageReference: "alpine:3.22"},
+		Configuration: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22"),},
 	}
 	if _, err := application.Create(context.Background(), Identity{TokenID: "read", Role: "read"}, input); !errors.Is(err, ErrAdminRequired) {
 		t.Fatalf("read token error = %v", err)
@@ -67,7 +67,7 @@ func TestServiceApplicationAuthorizesBeforeRepositoryAndCreatesTokenAuditInput(t
 	if repository.createCalls != 1 || repository.created.ActorKind != "token" || repository.created.ActorID != "admin-token" || repository.created.ActorEmail != "" {
 		t.Fatalf("create audit actor = %+v", repository.created)
 	}
-	if repository.created.Snapshot.ImageReference != "docker.io/library/alpine:3.22" || result.RequestID == "" || result.Service.ID == "" {
+	if repository.created.Snapshot.Source.Image.Reference != "docker.io/library/alpine:3.22" || result.RequestID == "" || result.Service.ID == "" {
 		t.Fatalf("create result = %+v, input = %+v", result, repository.created)
 	}
 }
@@ -80,7 +80,7 @@ func TestServiceApplicationRejectsInvalidUpdateBeforeRepository(t *testing.T) {
 	}
 	_, err = application.Update(context.Background(), Identity{TokenID: "admin", Role: "admin"}, UpdateServiceInput{
 		ProjectID: "project", ServiceID: "service", ExpectedUpdatedAt: 0,
-		Configuration: serviceconfig.Snapshot{ImageReference: "alpine"},
+		Configuration: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),},
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("update error = %v", err)

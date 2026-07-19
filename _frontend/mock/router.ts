@@ -1,5 +1,7 @@
+import { handleCloudflareAPI } from "./cloudflare";
 import { handleContainerResourcesAPI } from "./container-resources";
 import { handleCoreAPI } from "./core";
+import { handleGitHubAPI } from "./github";
 import { mockError } from "./http";
 import { handleProjectsAPI } from "./projects";
 import { handleRegistryAPI } from "./registry";
@@ -44,6 +46,18 @@ export const handleMockAPI = async (
   );
   if (registryResponse) {
     return registryResponse;
+  }
+  const githubResponse = await handleGitHubAPI(request, state, url.pathname);
+  if (githubResponse) {
+    return githubResponse;
+  }
+  const cloudflareResponse = await handleCloudflareAPI(
+    request,
+    state,
+    url.pathname
+  );
+  if (cloudflareResponse) {
+    return cloudflareResponse;
   }
   const coreResponse = await handleCoreAPI(request, state, url.pathname, url);
   if (coreResponse) {

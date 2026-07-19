@@ -9,15 +9,43 @@ import (
 )
 
 func adminTools() []Tool {
+	source := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"type":       map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
+			"autoUpdate": map[string]any{"type": "boolean"},
+			"image": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"reference": map[string]any{"type": "string"},
+				},
+				"required": []string{"reference"},
+			},
+			"github": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"repositoryId":   map[string]any{"type": "integer"},
+					"repository":     map[string]any{"type": "string"},
+					"branch":         map[string]any{"type": "string"},
+					"dockerfilePath": map[string]any{"type": "string"},
+					"contextPath":    map[string]any{"type": "string"},
+					"triggerPaths":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"waitForCi":      map[string]any{"type": "boolean"},
+				},
+				"required": []string{"repositoryId", "repository", "branch", "dockerfilePath", "contextPath", "triggerPaths", "waitForCi"},
+			},
+		},
+		"required":             []string{"type"},
+		"additionalProperties": false,
+	}
 	configuration := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"imageReference":    map[string]any{"type": "string"},
-			"imageCredentialId": map[string]any{"type": "string"},
-			"command":           map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"args":              map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"environment":       map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
-			"secretReferences":  map[string]any{"type": "array"},
+			"source":           source,
+			"command":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"args":             map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"environment":      map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"secretReferences": map[string]any{"type": "array"},
 			"healthCheck": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"required": []string{"port", "path", "timeoutSeconds"},
@@ -31,7 +59,7 @@ func adminTools() []Tool {
 			"memoryMaxBytes": map[string]any{"type": "integer", "minimum": 0},
 			"volumeMounts":   map[string]any{"type": "array"},
 		},
-		"required":             []string{"imageReference"},
+		"required":             []string{"source"},
 		"additionalProperties": false,
 	}
 	base := map[string]any{

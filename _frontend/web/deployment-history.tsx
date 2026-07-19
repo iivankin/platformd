@@ -44,12 +44,18 @@ const deploymentStatusClass = (status: Deployment["status"]) => {
   if (status === "interrupted") {
     return "bg-amber-500";
   }
+  if (status === "skipped") {
+    return "bg-muted-foreground";
+  }
+  if (status === "waiting") {
+    return "bg-amber-500";
+  }
   return "bg-destructive";
 };
 
 const confirmationMessage = (confirmation: Confirmation, active: boolean) => {
   if (confirmation.action === "deploy") {
-    return "A new deployment will be created from this exact image digest and configuration snapshot. Volume contents stay current.";
+    return "A new deployment will be created from this exact image digest or GitHub revision and configuration snapshot. Volume contents stay current.";
   }
   if (active) {
     return "This stops the active deployment. Service volumes and deployment logs are preserved.";
@@ -63,9 +69,10 @@ const confirmationLabel = (
   active: boolean
 ) => {
   if (confirmation.action === "deploy") {
-    return deployment.status === "failed"
-      ? "Retry deployment"
-      : "Deploy version";
+    if (deployment.status === "failed") {
+      return "Retry deployment";
+    }
+    return deployment.status === "skipped" ? "Deploy anyway" : "Deploy version";
   }
   return active ? "Stop deployment" : "Remove history";
 };
@@ -89,9 +96,15 @@ const DeploymentActions = ({
 }) => {
   const deployable =
     !active &&
-    (deployment.status === "succeeded" || deployment.status === "failed");
-  const deployActionLabel =
-    deployment.status === "failed" ? "Retry" : "Deploy this version";
+    (deployment.status === "succeeded" ||
+      deployment.status === "failed" ||
+      deployment.status === "skipped");
+  let deployActionLabel = "Deploy this version";
+  if (deployment.status === "failed") {
+    deployActionLabel = "Retry";
+  } else if (deployment.status === "skipped") {
+    deployActionLabel = "Deploy anyway";
+  }
 
   return (
     <Menu.Root>
@@ -203,8 +216,12 @@ const DeploymentRow = ({
             </code>
           </div>
           <p className="mt-1 truncate text-[9px] text-muted-foreground">
-            {shortValue(deployment.imageDigest)} ·{" "}
-            {new Date(deployment.createdAt).toLocaleString()}
+            {shortValue(
+              deployment.imageDigest ??
+                deployment.sourceRevision ??
+                deployment.id
+            )}{" "}
+            · {new Date(deployment.createdAt).toLocaleString()}
           </p>
           {deployment.errorMessage ? (
             <p className="mt-1 text-[9px] leading-4 text-destructive">

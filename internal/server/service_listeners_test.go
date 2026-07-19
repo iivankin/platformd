@@ -30,7 +30,7 @@ func TestServiceListenerAPIManagesExplicitPublicAndTargetPorts(t *testing.T) {
 	}
 	if _, err := store.CreateService(ctx, state.CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit",
+		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),}, AuditEventID: "service-audit",
 		ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	}); err != nil {
 		t.Fatal(err)

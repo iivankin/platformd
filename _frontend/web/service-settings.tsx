@@ -1,13 +1,7 @@
 import { Network, Trash2 } from "lucide-react";
 import { useState } from "react";
 
-import type {
-  ImageCredential,
-  Service,
-  ServiceDomain,
-  ServiceListener,
-  Volume,
-} from "@/api";
+import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -27,12 +21,10 @@ import { ServiceVolumes } from "@/service-volumes";
 interface ServiceSettingsProperties {
   actionError: string | null;
   busy: boolean;
-  credentials: ImageCredential[];
   domains: ServiceDomain[];
   embeddedRegistryHost: string;
   internalHostname: string;
   listeners: ServiceListener[];
-  onCredentialCreated: (credential: ImageCredential) => void;
   onDelete: () => Promise<boolean>;
   onDraftChange: (change?: PendingServiceSettings) => void;
   onVolumesChange: (volumes: Volume[]) => void;
@@ -46,12 +38,10 @@ interface ServiceSettingsProperties {
 export const ServiceSettings = ({
   actionError,
   busy,
-  credentials,
   domains,
   embeddedRegistryHost,
   internalHostname,
   listeners,
-  onCredentialCreated,
   onDelete,
   onDraftChange,
   onVolumesChange,
@@ -86,14 +76,12 @@ export const ServiceSettings = ({
   return (
     <div className="grid gap-3">
       <ServiceConfiguration
-        credentials={credentials}
         draft={draft.configuration}
         embeddedRegistryHost={embeddedRegistryHost}
-        onCredentialCreated={onCredentialCreated}
         onDraftChange={(configuration) =>
           updateDraft({ ...draft, configuration })
         }
-        projectID={projectID}
+        httpDomainCount={draft.domains.length}
       />
       <ServiceVolumes
         mounts={draft.volumeMounts}

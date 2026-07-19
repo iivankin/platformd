@@ -56,7 +56,8 @@ SELECT created_at FROM deployments WHERE id = ? AND service_id = ?`, cursor, ser
 		}
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, service_id, image_digest, service_config_hash, snapshot_json, status,
+	SELECT id, service_id, image_digest, image_reference, source_revision,
+	       source_commit_message, service_config_hash, snapshot_json, status,
        error_code, error_message, created_at, finished_at
 FROM deployments
 WHERE service_id = ? AND (? = '' OR created_at < ? OR (created_at = ? AND id < ?))
@@ -90,7 +91,8 @@ func (store *Store) ServiceDeployment(ctx context.Context, projectID, serviceID,
 		return DeploymentRecord{}, err
 	}
 	deployment, err := scanDeploymentRecord(store.database.QueryRowContext(ctx, `
-SELECT id, service_id, image_digest, service_config_hash, snapshot_json, status,
+	SELECT id, service_id, image_digest, image_reference, source_revision,
+	       source_commit_message, service_config_hash, snapshot_json, status,
        error_code, error_message, created_at, finished_at
 FROM deployments WHERE id = ? AND service_id = ?`, deploymentID, serviceID))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -108,9 +110,12 @@ func scanDeploymentRecord(scanner deploymentScanner) (DeploymentRecord, error) {
 	var snapshotJSON string
 	var errorCode sql.NullString
 	var errorMessage sql.NullString
+	var sourceRevision sql.NullString
+	var commitMessage sql.NullString
 	var finishedAt sql.NullInt64
 	if err := scanner.Scan(
-		&deployment.ID, &deployment.ServiceID, &deployment.ImageDigest, &deployment.ConfigHash,
+		&deployment.ID, &deployment.ServiceID, &deployment.ImageDigest, &deployment.ImageReference,
+		&sourceRevision, &commitMessage, &deployment.ConfigHash,
 		&snapshotJSON, &deployment.Status, &errorCode, &errorMessage,
 		&deployment.CreatedAtMillis, &finishedAt,
 	); err != nil {
@@ -121,6 +126,8 @@ func scanDeploymentRecord(scanner deploymentScanner) (DeploymentRecord, error) {
 	}
 	deployment.ErrorCode = errorCode.String
 	deployment.ErrorMessage = errorMessage.String
+	deployment.SourceRevision = sourceRevision.String
+	deployment.CommitMessage = commitMessage.String
 	deployment.FinishedAtMillis = finishedAt.Int64
 	return deployment, nil
 }

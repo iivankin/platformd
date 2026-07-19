@@ -18,6 +18,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -68,7 +69,9 @@ func (store *fakeStore) Deployment(_ context.Context, deploymentID string) (stat
 	}
 	return state.DeploymentRecord{
 		ID: deployment.ID, ServiceID: deployment.ServiceID, ImageDigest: deployment.ImageDigest,
-		ConfigHash: deployment.ConfigHash, Snapshot: snapshot, Status: "succeeded",
+		ImageReference: deployment.ImageReference, SourceRevision: deployment.SourceRevision,
+		CommitMessage: deployment.CommitMessage, ConfigHash: deployment.ConfigHash,
+		Snapshot: snapshot, Status: "succeeded",
 	}, nil
 }
 
@@ -78,6 +81,7 @@ type fakeEngine struct {
 	pulls      []containerengine.PullRequest
 	containers map[string]containerengine.Container
 	images     map[string]containerengine.Image
+	createErr  error
 }
 
 func (engine *fakeEngine) Pull(_ context.Context, request containerengine.PullRequest) (containerengine.Image, error) {
@@ -104,6 +108,9 @@ func (engine *fakeEngine) InspectImage(_ context.Context, idOrName string) (cont
 func (engine *fakeEngine) CreateContainer(_ context.Context, spec containerengine.ContainerSpec) (containerengine.Container, error) {
 	engine.events = append(engine.events, "create:"+spec.Name)
 	engine.created = append(engine.created, spec)
+	if engine.createErr != nil {
+		return containerengine.Container{}, engine.createErr
+	}
 	container := containerengine.Container{
 		ID: spec.Name, Name: spec.Name, State: "created",
 		IPs: map[string][]string{spec.Network: {"10.80.0.2"}},
@@ -166,6 +173,43 @@ func (resolver imageSourceResolverFunc) Resolve(ctx context.Context, reference s
 	return resolver(ctx, reference)
 }
 
+type sourceResolverFunc func(context.Context, state.ServiceDesired, string, string, io.Writer, bool) (SourceResolution, error)
+
+func (resolver sourceResolverFunc) Resolve(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	deploymentID string,
+	revision string,
+	log io.Writer,
+	force bool,
+) (SourceResolution, error) {
+	return resolver(ctx, desired, deploymentID, revision, log, force)
+}
+
+type reportEvent struct {
+	deploymentID string
+	reportID     string
+	revision     string
+	status       ReportStatus
+}
+
+type fakeReporter struct {
+	events    []reportEvent
+	finishErr error
+}
+
+func (reporter *fakeReporter) Start(_ context.Context, _ state.ServiceDesired, deploymentID, revision string) (string, error) {
+	reporter.events = append(reporter.events, reportEvent{deploymentID: deploymentID, revision: revision})
+	return "external-deployment", nil
+}
+
+func (reporter *fakeReporter) Finish(_ context.Context, _ state.ServiceDesired, deploymentID, reportID string, status ReportStatus) error {
+	reporter.events = append(reporter.events, reportEvent{
+		deploymentID: deploymentID, reportID: reportID, status: status,
+	})
+	return reporter.finishErr
+}
+
 type growthGateFunc func(context.Context) error
 
 func (gate growthGateFunc) PermitGrowth(ctx context.Context) error {
@@ -173,6 +217,76 @@ func (gate growthGateFunc) PermitGrowth(ctx context.Context) error {
 }
 
 var allowGrowth = growthGateFunc(func(context.Context) error { return nil })
+
+func TestGitHubDeploymentReportingFollowsLocalOutcome(t *testing.T) {
+	tests := []struct {
+		name       string
+		createErr  error
+		wantStatus ReportStatus
+	}{
+		{name: "success", wantStatus: ReportSucceeded},
+		{name: "runtime failure", createErr: errors.New("create failed"), wantStatus: ReportFailed},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := &fakeStore{
+				service: state.ServiceDesired{
+					ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+					Snapshot: serviceconfig.Snapshot{Source: servicesource.Source{
+						Type: servicesource.GitHubImage,
+						GitHub: &servicesource.GitHub{
+							RepositoryID: 7, Repository: "acme/api", Branch: "main",
+							DockerfilePath: "Dockerfile", ContextPath: ".",
+						},
+					}},
+				},
+				deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
+			}
+			engine := &fakeEngine{containers: make(map[string]containerengine.Container), createErr: test.createErr}
+			reporter := &fakeReporter{finishErr: errors.New("GitHub status unavailable")}
+			identifiers := []string{"deployment", "attempt"}
+			identifierIndex := 0
+			clock := int64(0)
+			controller, err := New(Config{
+				Store: store, Engine: engine, Publisher: &fakePublisher{}, Growth: allowGrowth, Admission: admission.New(),
+				Sources: sourceResolverFunc(func(context.Context, state.ServiceDesired, string, string, io.Writer, bool) (SourceResolution, error) {
+					return SourceResolution{
+						Image:          containerengine.Image{ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"},
+						ImageReference: "localhost/platformd-build/service:commit", Revision: "commit-sha", CommitMessage: "change",
+					}, nil
+				}),
+				Reporter: reporter,
+				Placement: func(state.ServiceDesired) (Placement, error) {
+					return Placement{NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"), DNSSearch: "shop.internal"}, nil
+				},
+				LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+				LogSizeBytes: 1024, LogMaxFiles: 2,
+				Now: func() time.Time {
+					clock += 5
+					return time.Unix(clock, 0)
+				},
+				NewID: func(time.Time) (string, error) {
+					value := identifiers[identifierIndex]
+					identifierIndex++
+					return value, nil
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			deployErr := controller.Deploy(context.Background(), "service", false)
+			if test.createErr == nil && deployErr != nil {
+				t.Fatalf("deployment failed because reporting failed: %v", deployErr)
+			}
+			if test.createErr != nil && !errors.Is(deployErr, test.createErr) {
+				t.Fatalf("deployment error = %v, want %v", deployErr, test.createErr)
+			}
+			if len(reporter.events) != 2 || reporter.events[0].deploymentID != "deployment" || reporter.events[0].revision != "commit-sha" || reporter.events[1].reportID != "external-deployment" || reporter.events[1].status != test.wantStatus {
+				t.Fatalf("report events = %+v", reporter.events)
+			}
+		})
+	}
+}
 
 func TestEmbeddedImageSourceReplacesRemotePullAndCloses(t *testing.T) {
 	engine := &fakeEngine{containers: make(map[string]containerengine.Container)}
@@ -217,7 +331,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 		service: state.ServiceDesired{
 			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
 			Snapshot: serviceconfig.Snapshot{
-				ImageReference: "alpine:3.22", HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
+				Source: serviceconfig.PublicImageSource("alpine:3.22"), HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
 			},
 		},
 		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
@@ -232,7 +346,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
 	})}
 	identifierIndex := 0
-	identifiers := []string{"deployment-1", "attempt-1", "deployment-2", "attempt-2"}
+	identifiers := []string{"deployment-1", "attempt-1", "deployment-2", "attempt-2", "blocked-deployment"}
 	clockIndex := 0
 	controller, err := New(Config{
 		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth, Admission: admission.New(),
@@ -297,7 +411,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 		service: state.ServiceDesired{
 			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
 			Snapshot: serviceconfig.Snapshot{
-				ImageReference: "registry.example.com/acme/api:latest", ImageCredentialID: "credential",
+				Source:      serviceconfig.PrivateImageSource("registry.example.com/acme/api:latest"),
 				HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
 			},
 		},
@@ -396,8 +510,8 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 
 func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
 	snapshot := serviceconfig.Snapshot{
-		ImageReference: "registry.example.com/acme/api:latest",
-		HealthCheck:    &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
+		Source:      serviceconfig.PublicImageSource("registry.example.com/acme/api:latest"),
+		HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
 	}
 	normalized, snapshotJSON, configHash, err := serviceconfig.Canonical(snapshot)
 	if err != nil {

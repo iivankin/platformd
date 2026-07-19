@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 var (
@@ -18,6 +19,7 @@ var (
 	ErrDeploymentNotSuccess   = errors.New("deployment did not succeed")
 	ErrDeploymentIsActive     = errors.New("deployment is active")
 	ErrServiceReconcileFailed = errors.New("service reconcile failed")
+	ErrPreviewDomainCount     = errors.New("PR previews require exactly one HTTP domain")
 )
 
 type UpdateServiceInput struct {
@@ -25,6 +27,8 @@ type UpdateServiceInput struct {
 	ProjectID             string
 	Enabled               bool
 	Snapshot              serviceconfig.Snapshot
+	ImageCredential       *ServiceImageCredential
+	RemoveImageCredential bool
 	ExpectedUpdatedMillis int64
 	AuditEventID          string
 	ActorKind             string
@@ -161,6 +165,18 @@ func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput)
 		if err := validateServiceVersion(ctx, transaction, input.ID, input.ProjectID, input.ExpectedUpdatedMillis); err != nil {
 			return err
 		}
+		if input.ImageCredential != nil {
+			if input.ImageCredential.ServiceID != input.ID {
+				return errors.New("service image credential belongs to another service")
+			}
+			if err := replaceServiceImageCredential(ctx, transaction, *input.ImageCredential); err != nil {
+				return err
+			}
+		} else if input.RemoveImageCredential {
+			if _, err := transaction.ExecContext(ctx, "DELETE FROM service_image_credentials WHERE service_id = ?", input.ID); err != nil {
+				return fmt.Errorf("remove service image credential: %w", err)
+			}
+		}
 		if err := validateServiceDependencies(ctx, transaction, input.ProjectID, input.ID, snapshot); err != nil {
 			return err
 		}
@@ -191,14 +207,15 @@ func (store *Store) DeployServiceVersion(ctx context.Context, input DeployServic
 		var imageDigest string
 		var snapshotJSON string
 		var status string
+		var sourceRevision sql.NullString
 		var enabled int
 		var currentUpdated int64
 		err := transaction.QueryRowContext(ctx, `
-SELECT d.image_digest, d.snapshot_json, d.status, s.enabled, s.updated_at
+SELECT d.image_digest, d.source_revision, d.snapshot_json, d.status, s.enabled, s.updated_at
 FROM services s
 JOIN deployments d ON d.service_id = s.id
 WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, input.DeploymentID).Scan(
-			&imageDigest, &snapshotJSON, &status, &enabled, &currentUpdated,
+			&imageDigest, &sourceRevision, &snapshotJSON, &status, &enabled, &currentUpdated,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrDeploymentNotFound
@@ -209,18 +226,25 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 		if currentUpdated != input.ExpectedUpdatedMillis {
 			return ErrServiceChanged
 		}
-		if status != "succeeded" && status != "failed" {
+		if status != "succeeded" && status != "failed" && status != "skipped" {
 			return ErrDeploymentNotSuccess
 		}
 		var snapshot serviceconfig.Snapshot
 		if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
 			return fmt.Errorf("decode deployment version snapshot: %w", err)
 		}
-		pinned, err := serviceconfig.PinnedReference(snapshot.ImageReference, imageDigest)
-		if err != nil {
-			return err
+		if servicesource.IsImage(snapshot.Source) {
+			pinned, err := serviceconfig.PinnedReference(servicesource.ImageReference(snapshot.Source), imageDigest)
+			if err != nil {
+				return err
+			}
+			snapshot.Source.Image.Reference = pinned
+			snapshot.Source.AutoUpdate = false
+		} else if snapshot.Source.Type == servicesource.GitHubImage {
+			if !sourceRevision.Valid {
+				return errors.New("GitHub deployment has no source revision")
+			}
 		}
-		snapshot.ImageReference = pinned
 		snapshot, err = serviceconfig.Normalize(snapshot)
 		if err != nil {
 			return err

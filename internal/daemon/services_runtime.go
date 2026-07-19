@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"strings"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/imagecredential"
+	"github.com/iivankin/platformd/internal/preview"
 	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
@@ -22,7 +25,7 @@ const (
 	serviceLogMaxFiles     = 3
 )
 
-func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, registryApplication *registry.Application) error {
+func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, registryApplication *registry.Application, githubApplication *githubapp.Application, adminHostname string) error {
 	var imageSources deployment.ImageSourceResolver
 	if registryApplication != nil {
 		imageSources = embeddedImageSourceResolver{
@@ -33,6 +36,8 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
 		Environment:  resourceVariableResolver{store: store, master: master},
 		ImageSources: imageSources, Growth: stack.growth, Admission: stack.admission,
+		Sources:   githubSourceResolver{github: githubApplication, engine: stack.engine, generatedRoot: stack.paths.GeneratedRoot},
+		Reporter:  githubDeploymentReporter{github: githubApplication, adminHostname: adminHostname},
 		Placement: stack.servicePlacement,
 		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
 		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,
@@ -164,6 +169,73 @@ func (stack *runtimeStack) NotifyEmbeddedImage(imageReference string) {
 	}
 }
 
+func (stack *runtimeStack) NotifyGitHubPush(
+	ctx context.Context,
+	store *state.Store,
+	application *githubapp.Application,
+	event githubapp.PushEvent,
+) {
+	serviceIDs, err := store.EnabledServiceIDs(ctx)
+	if err != nil {
+		return
+	}
+	for _, serviceID := range serviceIDs {
+		desired, err := store.DesiredService(ctx, serviceID)
+		if err != nil || desired.Snapshot.Source.GitHub == nil {
+			continue
+		}
+		source := desired.Snapshot.Source.GitHub
+		if source.RepositoryID != event.RepositoryID || source.Branch != event.Branch {
+			continue
+		}
+		// Waiting services are driven by check webhooks, while ordinary services
+		// are driven by pushes. This avoids racing a push against check creation.
+		if source.WaitForCI != event.ChecksEvent {
+			continue
+		}
+		changedPaths := event.ChangedPaths
+		if event.ChecksEvent && len(source.TriggerPaths) > 0 {
+			commit, err := application.Commit(ctx, event.RepositoryID, event.Revision)
+			if err != nil {
+				stack.recordServiceFailure(serviceID, err)
+				continue
+			}
+			changedPaths = commit.ChangedPaths
+		}
+		if !githubPathsMatch(source.TriggerPaths, changedPaths) {
+			continue
+		}
+		go func(serviceID string) {
+			stack.mu.Lock()
+			controller := stack.deployments
+			stack.mu.Unlock()
+			if controller == nil {
+				stack.recordServiceFailure(serviceID, errors.New("service deployment runtime is not configured"))
+				return
+			}
+			if err := controller.DeployRevision(ctx, serviceID, event.Revision, false); err != nil &&
+				!errors.Is(err, deployment.ErrSourceChecksPending) && !errors.Is(err, deployment.ErrBlockedPair) {
+				stack.recordServiceFailure(serviceID, err)
+			}
+		}(serviceID)
+	}
+}
+
+func githubPathsMatch(filters, changed []string) bool {
+	if len(filters) == 0 || len(changed) == 0 {
+		return true
+	}
+	for _, filter := range filters {
+		prefix := strings.TrimSuffix(filter, "/")
+		for _, path := range changed {
+			if path == prefix || strings.HasPrefix(path, prefix+"/") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (stack *runtimeStack) hasServiceFailure(serviceID string) bool {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
@@ -171,6 +243,18 @@ func (stack *runtimeStack) hasServiceFailure(serviceID string) bool {
 }
 
 func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, force bool) error {
+	return stack.deployService(ctx, serviceID, func(controller *deployment.Controller) error {
+		return controller.Deploy(ctx, serviceID, force)
+	})
+}
+
+func (stack *runtimeStack) DeployServiceRevision(ctx context.Context, serviceID, revision string, force bool) error {
+	return stack.deployService(ctx, serviceID, func(controller *deployment.Controller) error {
+		return controller.DeployRevision(ctx, serviceID, revision, force)
+	})
+}
+
+func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, deploy func(*deployment.Controller) error) error {
 	stack.mu.Lock()
 	controller := stack.deployments
 	closed := stack.closed
@@ -181,7 +265,7 @@ func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, 
 	if controller == nil {
 		return errors.New("deployment controller is not configured")
 	}
-	err := controller.Deploy(ctx, serviceID, force)
+	err := deploy(controller)
 	stack.mu.Lock()
 	if err == nil {
 		delete(stack.serviceFailures, serviceID)
@@ -381,6 +465,28 @@ func (stack *runtimeStack) ServiceBackend(serviceID string, targetPort int) (dep
 		return deployment.Backend{}, false, nil
 	}
 	return controller.Backend(serviceID, targetPort)
+}
+
+func (stack *runtimeStack) PreviewBackend(previewID string, targetPort int) (deployment.Backend, bool, error) {
+	stack.mu.Lock()
+	application := stack.previews
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || application == nil {
+		return deployment.Backend{}, false, nil
+	}
+	return application.Backend(previewID, targetPort)
+}
+
+func (stack *runtimeStack) previewPlacement(service state.ServiceDesired) (preview.Placement, error) {
+	placement, err := stack.servicePlacement(service)
+	if err != nil {
+		return preview.Placement{}, err
+	}
+	return preview.Placement{
+		NetworkName: placement.NetworkName, Gateway: placement.Gateway,
+		DNSSearch: placement.DNSSearch, CgroupParent: placement.CgroupParent,
+	}, nil
 }
 
 func (stack *runtimeStack) recordServiceFailure(serviceID string, err error) {

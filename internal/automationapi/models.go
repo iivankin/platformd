@@ -2,6 +2,7 @@ package automationapi
 
 import (
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -17,15 +18,15 @@ type projectResponse struct {
 }
 
 type serviceSummaryResponse struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	Enabled            bool   `json:"enabled"`
-	Status             string `json:"status"`
-	StatusMessage      string `json:"statusMessage,omitempty"`
-	InternalHostname   string `json:"internalHostname"`
-	ImageReference     string `json:"imageReference,omitempty"`
-	ImageDigest        string `json:"imageDigest,omitempty"`
-	ActiveDeploymentID string `json:"activeDeploymentId,omitempty"`
+	ID                 string               `json:"id"`
+	Name               string               `json:"name"`
+	Enabled            bool                 `json:"enabled"`
+	Status             string               `json:"status"`
+	StatusMessage      string               `json:"statusMessage,omitempty"`
+	InternalHostname   string               `json:"internalHostname"`
+	Source             servicesource.Source `json:"source"`
+	ImageDigest        string               `json:"imageDigest,omitempty"`
+	ActiveDeploymentID string               `json:"activeDeploymentId,omitempty"`
 }
 
 type serviceResponse struct {
@@ -65,7 +66,7 @@ func publicServiceSummary(resource state.CanvasResource) serviceSummaryResponse 
 	return serviceSummaryResponse{
 		ID: resource.ID, Name: resource.Name, Enabled: resource.Enabled,
 		Status: resource.Status, StatusMessage: resource.StatusMessage,
-		InternalHostname: resource.InternalHostname, ImageReference: resource.ImageReference,
+		InternalHostname: resource.InternalHostname, Source: resource.Source,
 		ImageDigest: resource.ImageDigest, ActiveDeploymentID: resource.ActiveDeployment,
 	}
 }

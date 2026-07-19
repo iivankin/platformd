@@ -7,7 +7,7 @@ import (
 
 func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 	input := Snapshot{
-		ImageReference: "alpine",
+		Source: PublicImageSource("alpine"),
 		Environment: map[string]string{
 			"DATABASE_URL": "postgres://db:5432/app",
 			"REDIS_URL":    "${{cache.REDIS_URL}}",
@@ -26,14 +26,14 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normalized.ImageReference != "docker.io/library/alpine:latest" || normalized.HealthCheck == nil || normalized.HealthCheck.TimeoutSeconds != 60 {
+	if normalized.Source.Image == nil || normalized.Source.Image.Reference != "docker.io/library/alpine:latest" || normalized.HealthCheck == nil || normalized.HealthCheck.TimeoutSeconds != 60 {
 		t.Fatalf("normalized snapshot = %+v", normalized)
 	}
 	if len(hash) != 64 || !strings.Contains(string(encoded), `"containerPath":"/var/lib/a"`) {
 		t.Fatalf("encoded/hash = %s/%s", encoded, hash)
 	}
 	_, secondEncoded, secondHash, err := Canonical(Snapshot{
-		ImageReference: "docker.io/library/alpine:latest",
+		Source: PublicImageSource("docker.io/library/alpine:latest"),
 		Environment: map[string]string{
 			"DATABASE_URL": "postgres://db:5432/app",
 			"REDIS_URL":    "${{cache.REDIS_URL}}",
@@ -55,13 +55,14 @@ func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
 
 func TestSnapshotValidationRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 	tests := []Snapshot{
-		{ImageReference: "UPPERCASE/image:tag"},
-		{ImageReference: "alpine", Environment: map[string]string{"BAD-NAME": "value"}},
-		{ImageReference: "alpine", Environment: map[string]string{"TOKEN": "plain"}, SecretReferences: []SecretReference{{EnvironmentName: "TOKEN", SecretID: "secret"}}},
-		{ImageReference: "alpine", HealthCheck: &HealthCheck{Path: "/healthz"}},
-		{ImageReference: "alpine", HealthCheck: &HealthCheck{Port: 8080, Path: "https://example.com/health"}},
-		{ImageReference: "alpine", VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/"}}},
-		{ImageReference: "alpine", VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/data"}, {VolumeID: "volume", ContainerPath: "/other"}}},
+		{Source: PublicImageSource("UPPERCASE/image:tag")},
+		{Source: PublicImageSource("alpine"), Environment: map[string]string{"BAD-NAME": "value"}},
+		{Source: PublicImageSource("alpine"), Environment: map[string]string{"PLATFORMD_SERVICE_ID": "override"}},
+		{Source: PublicImageSource("alpine"), Environment: map[string]string{"TOKEN": "plain"}, SecretReferences: []SecretReference{{EnvironmentName: "TOKEN", SecretID: "secret"}}},
+		{Source: PublicImageSource("alpine"), HealthCheck: &HealthCheck{Path: "/healthz"}},
+		{Source: PublicImageSource("alpine"), HealthCheck: &HealthCheck{Port: 8080, Path: "https://example.com/health"}},
+		{Source: PublicImageSource("alpine"), VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/"}}},
+		{Source: PublicImageSource("alpine"), VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/data"}, {VolumeID: "volume", ContainerPath: "/other"}}},
 	}
 	for index, input := range tests {
 		if _, err := Normalize(input); err == nil {

@@ -33,11 +33,33 @@ const createService: ResourceCreator = (state, projectID, input) => {
         ? (input.healthCheck as Service["healthCheck"])
         : undefined,
     id,
-    imageReference: stringField(input, "imageReference", "nginx:stable"),
     memoryMaxBytes: 536_870_912,
     name,
     projectId: projectID,
+    registryCredential:
+      typeof input.registryCredential === "object" &&
+      input.registryCredential !== null &&
+      (input.registryCredential as { password?: unknown }).password
+        ? {
+            ...(input.registryCredential as {
+              password: string;
+              username: string;
+            }),
+            registryHost:
+              (
+                input.source as { image?: { reference?: string } }
+              )?.image?.reference?.split("/", 1)[0] ?? "registry.mock.local",
+          }
+        : undefined,
     secretReferences: [],
+    source:
+      typeof input.source === "object" && input.source !== null
+        ? (input.source as Service["source"])
+        : {
+            autoUpdate: true,
+            image: { reference: "docker.io/library/nginx:stable" },
+            type: "public_image",
+          },
     updatedAt: mockNow(),
     volumeMounts: [],
   };
@@ -49,10 +71,10 @@ const createService: ResourceCreator = (state, projectID, input) => {
   canvas.resources.push({
     enabled: true,
     id,
-    imageReference: service.imageReference,
     internalHostname: `${name}.${canvas.project.name}.internal`,
     kind: "service",
     name,
+    source: service.source,
     status: "pending",
     volumes: [],
   });

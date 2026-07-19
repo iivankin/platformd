@@ -25,6 +25,28 @@ const withoutRecordKey = <Value>(
     Object.entries(record).filter(([candidate]) => candidate !== key)
   );
 
+const updateServiceRegistryCredential = (
+  service: Service,
+  input: Record<string, unknown>
+) => {
+  const credential = input.registryCredential;
+  if (
+    service.source.type === "private_image" &&
+    typeof credential === "object" &&
+    credential !== null
+  ) {
+    service.registryCredential = {
+      ...(credential as { password: string; username: string }),
+      registryHost:
+        service.source.image.reference.split("/", 1)[0] ?? "docker.io",
+    };
+    return;
+  }
+  if (service.source.type !== "private_image") {
+    service.registryCredential = undefined;
+  }
+};
+
 const handleService = async (
   request: Request,
   state: MockState,
@@ -69,15 +91,10 @@ const handleService = async (
   }
   const input = await readObject(request);
   service.enabled = booleanField(input, "enabled", service.enabled);
-  service.imageReference = stringField(
-    input,
-    "imageReference",
-    service.imageReference
-  );
-  service.imageCredentialId =
-    typeof input.imageCredentialId === "string" && input.imageCredentialId
-      ? input.imageCredentialId
-      : undefined;
+  if (typeof input.source === "object" && input.source !== null) {
+    service.source = input.source as Service["source"];
+  }
+  updateServiceRegistryCredential(service, input);
   service.environment = stringRecord(input.environment);
   service.healthCheck =
     typeof input.healthCheck === "object" && input.healthCheck !== null
@@ -274,6 +291,9 @@ const handleServiceReadModels = (
   }
   if (resource === "deployments") {
     return deploymentsResponse(state, serviceID, detail);
+  }
+  if (resource === "previews" && !detail) {
+    return json({ previews: state.previews[serviceID] ?? [] });
   }
   if (resource === "variables" && detail === "resolved") {
     return resolvedVariablesResponse(state, serviceID);

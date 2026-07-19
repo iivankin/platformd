@@ -1,5 +1,3 @@
-import type { ImageCredential } from "@/api";
-
 const canonicalHost = (value: string) => value.trim().toLowerCase();
 
 export const imageRegistryHost = (reference: string): string | undefined => {
@@ -41,35 +39,4 @@ export const isEmbeddedRegistryReference = (
     canonicalHost(embeddedRegistryHost) !== "" &&
     imageHost === canonicalHost(embeddedRegistryHost)
   );
-};
-
-export const matchingImageCredentials = (
-  credentials: ImageCredential[],
-  reference: string
-) => {
-  const imageHost = imageRegistryHost(reference);
-  return imageHost
-    ? credentials.filter(
-        (credential) => canonicalHost(credential.registryHost) === imageHost
-      )
-    : [];
-};
-
-export const compatibleImageCredentialID = (
-  credentialID: string,
-  credentials: ImageCredential[],
-  reference: string,
-  embeddedRegistryHost: string
-) => {
-  if (
-    !credentialID ||
-    isEmbeddedRegistryReference(reference, embeddedRegistryHost)
-  ) {
-    return "";
-  }
-  return matchingImageCredentials(credentials, reference).some(
-    (credential) => credential.id === credentialID
-  )
-    ? credentialID
-    : "";
 };

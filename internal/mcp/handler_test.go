@@ -329,14 +329,14 @@ func TestMCPAdminToolVisibilityAndAuthorizationBeforeMutation(t *testing.T) {
 	}
 
 	boundProject := "project-a"
-	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_service","arguments":{"projectId":"project-b","name":"api","configuration":{"imageReference":"alpine"}}}}`), automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &boundProject})
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"create_service","arguments":{"projectId":"project-b","name":"api","configuration":{"source":{"type":"public_image","autoUpdate":true,"image":{"reference":"alpine"}}}}}}`), automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &boundProject})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
 	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.createCalls != 0 {
 		t.Fatalf("bound admin mutation = %s, calls=%d", response.Body, repository.createCalls)
 	}
 
-	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"create_service","arguments":{"projectId":"project-a","name":"api","configuration":{"imageReference":"alpine"}}}}`), automation.Identity{TokenID: "admin-token", Role: "admin", ProjectID: &boundProject})
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"create_service","arguments":{"projectId":"project-a","name":"api","configuration":{"source":{"type":"public_image","autoUpdate":true,"image":{"reference":"alpine"}}}}}}`), automation.Identity{TokenID: "admin-token", Role: "admin", ProjectID: &boundProject})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
 	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `requestId`) || repository.createCalls != 1 {

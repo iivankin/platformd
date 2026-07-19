@@ -6,14 +6,40 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 
 	"github.com/containers/buildah"
+	buildahDefine "github.com/containers/buildah/define"
 	"github.com/containers/podman/v5/libpod"
 	"go.podman.io/common/libimage"
 	commonconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/pkg/strslice"
 )
+
+func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error) {
+	if request.ContextDirectory == "" || request.Dockerfile == "" || request.Reference == "" || request.Log == nil {
+		return Image{}, errors.New("image build request is incomplete")
+	}
+	log := io.MultiWriter(request.Log)
+	id, _, err := e.runtime.Build(ctx, buildahDefine.BuildOptions{
+		ContextDirectory:        request.ContextDirectory,
+		PullPolicy:              buildahDefine.PullIfMissing,
+		SignaturePolicyPath:     e.config.SignaturePolicy,
+		Output:                  request.Reference,
+		Out:                     log,
+		Err:                     log,
+		ReportWriter:            log,
+		CommonBuildOpts:         &buildahDefine.CommonBuildOptions{},
+		Layers:                  true,
+		RemoveIntermediateCtrs:  true,
+		ForceRmIntermediateCtrs: true,
+	}, request.Dockerfile)
+	if err != nil {
+		return Image{}, fmt.Errorf("build image %s: %w", request.Reference, err)
+	}
+	return e.inspectImage(ctx, id)
+}
 
 func (e *Engine) Pull(ctx context.Context, request PullRequest) (Image, error) {
 	if request.Reference == "" {

@@ -25,9 +25,9 @@ func TestServiceDomainAttachRequiresExplicitMoveAndTargetPort(t *testing.T) {
 		}
 	}
 	for _, service := range []CreateService{
-		{ID: "service-a", ProjectID: "project-a", Name: "api", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit-a", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 3},
-		{ID: "service-b", ProjectID: "project-b", Name: "web", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit-b", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 4},
-		{ID: "service-no-port", ProjectID: "project-a", Name: "worker", Enabled: true, Snapshot: serviceconfig.Snapshot{ImageReference: "alpine"}, AuditEventID: "service-audit-worker", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 5},
+		{ID: "service-a", ProjectID: "project-a", Name: "api", Enabled: true, Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),}, AuditEventID: "service-audit-a", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 3},
+		{ID: "service-b", ProjectID: "project-b", Name: "web", Enabled: true, Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),}, AuditEventID: "service-audit-b", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 4},
+		{ID: "service-no-port", ProjectID: "project-a", Name: "worker", Enabled: true, Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),}, AuditEventID: "service-audit-worker", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 5},
 	} {
 		if _, err := store.CreateService(context.Background(), service); err != nil {
 			t.Fatal(err)

@@ -33,6 +33,12 @@ func ProtectAdmin(hostname string, verifier TokenVerifier, next http.Handler) ht
 			next.ServeHTTP(response, request)
 			return
 		}
+		// GitHub cannot present a Cloudflare Access assertion. This single
+		// endpoint authenticates the exact request body with the App webhook HMAC.
+		if request.Method == http.MethodPost && request.URL.Path == "/api/v1/integrations/github/webhook" {
+			next.ServeHTTP(response, request)
+			return
+		}
 		assertions := request.Header.Values(assertionHeader)
 		if len(assertions) != 1 || assertions[0] == "" {
 			writeDenied(response, http.StatusForbidden)

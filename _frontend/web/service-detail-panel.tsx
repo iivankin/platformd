@@ -4,12 +4,12 @@ import { useNavigate } from "react-router";
 import {
   deleteService,
   deployServiceVersion,
-  fetchImageCredentials,
   fetchRegistrySettings,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
   fetchServiceListeners,
+  fetchServicePreviews,
   fetchVolumes,
   redeployService,
   removeServiceDeployment,
@@ -18,7 +18,7 @@ import {
 } from "@/api";
 import type {
   Deployment,
-  ImageCredential,
+  PreviewDeployment,
   Service,
   ServiceDomain,
   ServiceListener,
@@ -26,6 +26,7 @@ import type {
   Volume,
 } from "@/api";
 import { DeploymentHistory } from "@/deployment-history";
+import { PreviewDeploymentHistory } from "@/preview-deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
 import { deploymentPath } from "@/project-resource-path";
 import { ResourceConsole } from "@/resource-console";
@@ -64,10 +65,9 @@ const serviceUpdate = (
   environment: service.environment,
   expectedUpdatedAt: service.updatedAt,
   healthCheck: service.healthCheck,
-  imageCredentialId: service.imageCredentialId,
-  imageReference: service.imageReference,
   memoryMaxBytes: service.memoryMaxBytes,
   secretReferences: service.secretReferences,
+  source: service.source,
   volumeMounts,
 });
 
@@ -100,10 +100,10 @@ export const ServiceDetailPanel = ({
   const navigate = useNavigate();
   const [service, setService] = useState<Service | null>(null);
   const [deployments, setDeployments] = useState<Deployment[]>([]);
+  const [previews, setPreviews] = useState<PreviewDeployment[]>([]);
   const [domains, setDomains] = useState<ServiceDomain[]>([]);
   const [listeners, setListeners] = useState<ServiceListener[]>([]);
   const [volumes, setVolumes] = useState<Volume[]>([]);
-  const [credentials, setCredentials] = useState<ImageCredential[]>([]);
   const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [nextCursor, setNextCursor] = useState<string>();
   const [busy, setBusy] = useState<string>();
@@ -117,16 +117,16 @@ export const ServiceDetailPanel = ({
         loadedDomains,
         loadedListeners,
         loadedVolumes,
-        loadedCredentials,
         registrySettings,
+        loadedPreviews,
       ] = await Promise.all([
         fetchService(projectID, serviceID, signal),
         fetchServiceDeployments(projectID, serviceID, undefined, signal),
         fetchServiceDomains(projectID, serviceID, signal),
         fetchServiceListeners(projectID, serviceID, signal),
         fetchVolumes(projectID, serviceID, signal),
-        fetchImageCredentials(projectID, signal),
         fetchRegistrySettings(signal),
+        fetchServicePreviews(projectID, serviceID, signal),
       ]);
       setService(loadedService);
       setDeployments(page.deployments);
@@ -134,8 +134,8 @@ export const ServiceDetailPanel = ({
       setDomains(loadedDomains);
       setListeners(loadedListeners);
       setVolumes(loadedVolumes);
-      setCredentials(loadedCredentials);
       setEmbeddedRegistryHost(registrySettings.hostname);
+      setPreviews(loadedPreviews);
       setError(null);
     },
     [projectID, serviceID]
@@ -266,61 +266,71 @@ export const ServiceDetailPanel = ({
             />
           ),
           deployments: (
-            <DeploymentHistory
-              activeDeploymentID={service?.activeDeploymentId}
-              busy={Boolean(busy)}
-              deployments={deployments}
-              nextCursor={nextCursor}
-              onDeployVersion={(deployment) => {
-                if (service) {
-                  void apply("deploy version", () =>
-                    deployServiceVersion(
-                      projectID,
-                      serviceID,
-                      deployment.id,
-                      service.updatedAt
-                    )
-                  );
+            <div className="grid gap-3">
+              <DeploymentHistory
+                activeDeploymentID={service?.activeDeploymentId}
+                busy={Boolean(busy)}
+                deployments={deployments}
+                nextCursor={nextCursor}
+                onDeployVersion={(deployment) => {
+                  if (service) {
+                    void apply("deploy version", () =>
+                      deployServiceVersion(
+                        projectID,
+                        serviceID,
+                        deployment.id,
+                        service.updatedAt
+                      )
+                    );
+                  }
+                }}
+                onLoadOlder={() => void loadOlder()}
+                onRedeploy={() => {
+                  if (service) {
+                    void apply("redeploy", () =>
+                      redeployService(projectID, serviceID, service.updatedAt)
+                    );
+                  }
+                }}
+                onRemove={(deployment) => {
+                  if (service) {
+                    void apply("remove deployment", () =>
+                      removeServiceDeployment(
+                        projectID,
+                        serviceID,
+                        deployment.id,
+                        service.updatedAt
+                      )
+                    );
+                  }
+                }}
+                onRestart={(deployment) => {
+                  if (service) {
+                    void apply("restart", () =>
+                      restartServiceDeployment(
+                        projectID,
+                        serviceID,
+                        deployment.id,
+                        service.updatedAt
+                      )
+                    );
+                  }
+                }}
+                onViewLogs={(deployment) =>
+                  void navigate(
+                    deploymentPath(projectID, serviceID, deployment.id)
+                  )
                 }
-              }}
-              onLoadOlder={() => void loadOlder()}
-              onRedeploy={() => {
-                if (service) {
-                  void apply("redeploy", () =>
-                    redeployService(projectID, serviceID, service.updatedAt)
-                  );
+              />
+              <PreviewDeploymentHistory
+                onViewLogs={(preview) =>
+                  void navigate(
+                    deploymentPath(projectID, serviceID, preview.id)
+                  )
                 }
-              }}
-              onRemove={(deployment) => {
-                if (service) {
-                  void apply("remove deployment", () =>
-                    removeServiceDeployment(
-                      projectID,
-                      serviceID,
-                      deployment.id,
-                      service.updatedAt
-                    )
-                  );
-                }
-              }}
-              onRestart={(deployment) => {
-                if (service) {
-                  void apply("restart", () =>
-                    restartServiceDeployment(
-                      projectID,
-                      serviceID,
-                      deployment.id,
-                      service.updatedAt
-                    )
-                  );
-                }
-              }}
-              onViewLogs={(deployment) =>
-                void navigate(
-                  deploymentPath(projectID, serviceID, deployment.id)
-                )
-              }
-            />
+                previews={previews}
+              />
+            </div>
           ),
           metrics: (
             <ResourceUsage
@@ -334,15 +344,11 @@ export const ServiceDetailPanel = ({
             <ServiceSettings
               actionError={error}
               busy={Boolean(busy)}
-              credentials={credentials}
               domains={domains}
               embeddedRegistryHost={embeddedRegistryHost}
               internalHostname={data.internalHostname}
               key={service.updatedAt}
               listeners={listeners}
-              onCredentialCreated={(credential) =>
-                setCredentials((current) => [...current, credential])
-              }
               onDelete={deleteCurrentService}
               onDraftChange={onPendingSettingsChange}
               onVolumesChange={setVolumes}

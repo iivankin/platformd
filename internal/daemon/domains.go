@@ -32,6 +32,9 @@ func (repository liveDomainRepository) AttachServiceDomain(ctx context.Context, 
 		return state.ServiceDomain{}, state.ErrCertificateCoverage
 	}
 	input.Hostname = hostname
+	if err := repository.validatePreviewDomainAttach(ctx, input); err != nil {
+		return state.ServiceDomain{}, err
+	}
 	domain, err := repository.store.AttachServiceDomain(ctx, input)
 	if err != nil {
 		return state.ServiceDomain{}, err
@@ -45,6 +48,9 @@ func (repository liveDomainRepository) AttachServiceDomain(ctx context.Context, 
 func (repository liveDomainRepository) DetachServiceDomain(ctx context.Context, input state.DetachServiceDomainInput) error {
 	repository.publicMu.Lock()
 	defer repository.publicMu.Unlock()
+	if err := repository.validatePreviewDomainDetach(ctx, input); err != nil {
+		return err
+	}
 	if err := repository.store.DetachServiceDomain(ctx, input); err != nil {
 		return err
 	}
@@ -56,10 +62,48 @@ func (repository liveDomainRepository) reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	routes := make(map[string]ingress.Route, len(domains))
+	previews, err := repository.store.ActivePreviewDeployments(ctx)
+	if err != nil {
+		return err
+	}
+	routes := make(map[string]ingress.Route, len(domains)+len(previews))
 	for _, domain := range domains {
 		routes[domain.Hostname] = ingress.Route{ServiceID: domain.ServiceID, TargetPort: domain.TargetPort}
 	}
+	for _, preview := range previews {
+		routes[preview.Hostname] = ingress.Route{ServiceID: preview.ServiceID, PreviewID: preview.ID, TargetPort: preview.TargetPort}
+	}
 	repository.router.Reload(routes)
+	return nil
+}
+
+func (repository liveDomainRepository) validatePreviewDomainAttach(ctx context.Context, input state.AttachServiceDomainInput) error {
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ServiceID)
+	if err != nil {
+		return err
+	}
+	if service.Snapshot.Source.GitHub == nil || service.Snapshot.Source.GitHub.PullRequestPreview == nil {
+		return nil
+	}
+	domains, err := repository.store.ServiceDomains(ctx, input.ProjectID, input.ServiceID)
+	if err != nil {
+		return err
+	}
+	for _, domain := range domains {
+		if domain.Hostname == input.Hostname {
+			return nil
+		}
+	}
+	return state.ErrPreviewDomainCount
+}
+
+func (repository liveDomainRepository) validatePreviewDomainDetach(ctx context.Context, input state.DetachServiceDomainInput) error {
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ServiceID)
+	if err != nil {
+		return err
+	}
+	if service.Snapshot.Source.GitHub != nil && service.Snapshot.Source.GitHub.PullRequestPreview != nil {
+		return state.ErrPreviewDomainCount
+	}
 	return nil
 }

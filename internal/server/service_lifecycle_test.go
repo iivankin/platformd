@@ -47,7 +47,7 @@ func TestServiceLifecycleAPIUpdatesListsDeploymentsAndDeploysVersion(t *testing.
 	}
 	service, err := store.CreateService(context.Background(), state.CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine:3.22"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22")},
 		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if err != nil {
@@ -84,7 +84,7 @@ func TestServiceLifecycleAPIUpdatesListsDeploymentsAndDeploysVersion(t *testing.
 	expectedUpdated := int64(current["updatedAt"].(float64))
 
 	update := projectRequest(http.MethodPut, "/api/v1/projects/project/services/service", `{
-  "imageReference":"alpine:3.23",
+  "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"alpine:3.23"}},
   "enabled":false,
 	"expectedUpdatedAt":`+strconv.FormatInt(expectedUpdated, 10)+`
 }`)
@@ -101,7 +101,7 @@ func TestServiceLifecycleAPIUpdatesListsDeploymentsAndDeploysVersion(t *testing.
 	updatedAt := int64(updated["updatedAt"].(float64))
 
 	stale := projectRequest(http.MethodPut, "/api/v1/projects/project/services/service", `{
-  "imageReference":"alpine:3.24",
+  "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"alpine:3.24"}},
   "enabled":true,
 	"expectedUpdatedAt":`+strconv.FormatInt(expectedUpdated, 10)+`
 }`)
@@ -170,7 +170,7 @@ func TestServiceDeploymentRestartAndRemoveRoutesTargetExactDeployment(t *testing
 	}
 	service, err := store.CreateService(context.Background(), state.CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{ImageReference: "alpine:3.22"},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22")},
 		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
 	})
 	if err != nil {

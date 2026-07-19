@@ -14,7 +14,6 @@ import {
   createObjectStore,
   createManagedRedis,
   createProject,
-  createImageCredential,
   createManagedPostgres,
   createRegistryRepository,
   createRegistryCredential,
@@ -38,6 +37,7 @@ import {
   fetchBackupPolicies,
   fetchBackupTargets,
   fetchBackupGenerations,
+  fetchBuildLog,
   fetchService,
   fetchServiceDeployment,
   fetchServiceDeployments,
@@ -48,7 +48,6 @@ import {
   issueServerTerminalToken,
   fetchVolumeOwnerSuggestion,
   fetchVolumes,
-  fetchImageCredentials,
   fetchIdentity,
   fetchInfrastructureLogs,
   fetchDiskPressure,
@@ -260,10 +259,14 @@ test("validates the project canvas and encodes its project ID", async () => {
             {
               enabled: true,
               id: "api",
-              imageReference: "example/api:latest",
               internalHostname: "api.shop.internal",
               kind: "service",
               name: "api",
+              source: {
+                autoUpdate: true,
+                image: { reference: "docker.io/example/api:latest" },
+                type: "public_image",
+              },
               status: "running",
               volumes: [],
             },
@@ -276,60 +279,22 @@ test("validates the project canvas and encodes its project ID", async () => {
   expect(canvas.connections[0]?.environmentNames).toEqual(["DATABASE_URL"]);
 });
 
-test("creates remote image credentials without changing the JSON fields", async () => {
-  let requestInit: RequestInit | undefined;
-  const credential = await createImageCredential(
-    "project",
-    {
-      name: "production",
-      password: "secret",
-      registryHost: "registry.example.com",
-      username: "robot",
-    },
-    (_input, init) => {
-      requestInit = init;
-      return Promise.resolve(
-        Response.json(
-          {
-            createdAt: 1,
-            id: "credential",
-            name: "production",
-            registryHost: "registry.example.com",
-            username: "robot",
-          },
-          { status: 201 }
-        )
-      );
-    }
-  );
-  expect(credential.id).toBe("credential");
-  expect(requestInit?.body).toBe(
-    '{"name":"production","password":"secret","registryHost":"registry.example.com","username":"robot"}'
-  );
-});
-
-test("lists credentials and creates a service", async () => {
-  const credential = {
-    createdAt: 1,
-    id: "credential",
-    name: "production",
-    registryHost: "registry.example.com",
-    username: "robot",
-  };
-  await expect(
-    fetchImageCredentials("project", undefined, () =>
-      Promise.resolve(Response.json([credential]))
-    )
-  ).resolves.toEqual([credential]);
+test("creates a private image service with service-owned credentials", async () => {
   let requestInit: RequestInit | undefined;
   const service = await createService(
     "project",
     {
       environment: { APP_ENV: "production" },
       healthCheck: { path: "/healthz", port: 8080, timeoutSeconds: 60 },
-      imageCredentialId: "credential",
-      imageReference: "registry.example.com/acme/api:latest",
       name: "api",
+      registryCredential: { password: "secret", username: "robot" },
+      source: {
+        autoUpdate: true,
+        image: {
+          reference: "registry.example.com/acme/api:latest",
+        },
+        type: "private_image",
+      },
     },
     (_input, init) => {
       requestInit = init;
@@ -345,11 +310,21 @@ test("lists credentials and creates a service", async () => {
               timeoutSeconds: 60,
             },
             id: "service",
-            imageCredentialId: "credential",
-            imageReference: "registry.example.com/acme/api:latest",
             name: "api",
             projectId: "project",
+            registryCredential: {
+              password: "secret",
+              registryHost: "registry.example.com",
+              username: "robot",
+            },
             secretReferences: [],
+            source: {
+              autoUpdate: true,
+              image: {
+                reference: "registry.example.com/acme/api:latest",
+              },
+              type: "private_image",
+            },
             updatedAt: 1,
             volumeMounts: [],
           },
@@ -368,10 +343,14 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     enabled: true,
     environment: {},
     id: "service",
-    imageReference: "docker.io/library/alpine:latest",
     name: "api",
     projectId: "project",
     secretReferences: [],
+    source: {
+      autoUpdate: true,
+      image: { reference: "docker.io/library/alpine:latest" },
+      type: "public_image" as const,
+    },
     updatedAt: 2,
     volumeMounts: [],
   };
@@ -389,8 +368,8 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       enabled: false,
       environment: {},
       expectedUpdatedAt: 2,
-      imageReference: service.imageReference,
       secretReferences: [],
+      source: service.source,
       volumeMounts: [],
     },
     (_input, init) => {
@@ -404,8 +383,8 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     enabled: false,
     environment: {},
     expectedUpdatedAt: 2,
-    imageReference: service.imageReference,
     secretReferences: [],
+    source: service.source,
     volumeMounts: [],
   });
 
@@ -508,8 +487,12 @@ test("validates bounded deployment history pages", async () => {
               serviceId: "service",
               snapshot: {
                 environment: {},
-                imageReference: "docker.io/library/alpine:latest",
                 secretReferences: [],
+                source: {
+                  autoUpdate: true,
+                  image: { reference: "docker.io/library/alpine:latest" },
+                  type: "public_image",
+                },
                 volumeMounts: [],
               },
               status: "succeeded",
@@ -541,8 +524,12 @@ test("loads one deployment by its stable route", async () => {
             serviceId: "service/id",
             snapshot: {
               environment: {},
-              imageReference: "docker.io/library/alpine:latest",
               secretReferences: [],
+              source: {
+                autoUpdate: true,
+                image: { reference: "docker.io/library/alpine:latest" },
+                type: "public_image",
+              },
               volumeMounts: [],
             },
             status: "succeeded",
@@ -553,6 +540,27 @@ test("loads one deployment by its stable route", async () => {
   ).resolves.toMatchObject({ id: "deployment/id" });
   expect(requested).toBe(
     "/api/v1/projects/project%2Fid/services/service%2Fid/deployments/deployment%2Fid"
+  );
+});
+
+test("loads persisted build output for one deployment", async () => {
+  let requested = "";
+  await expect(
+    fetchBuildLog(
+      "project/id",
+      "service/id",
+      "deployment/id",
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({ text: "STEP 1/3\nBuilt image" })
+        );
+      }
+    )
+  ).resolves.toBe("STEP 1/3\nBuilt image");
+  expect(requested).toBe(
+    "/api/v1/projects/project%2Fid/services/service%2Fid/deployments/deployment%2Fid/logs/build"
   );
 });
 
@@ -669,6 +677,7 @@ test("reads derived disk pressure without a persisted operation", async () => {
           availableInodes: 500,
           byteBasisPoints: 9600,
           checkedAt: 42,
+          components: [],
           inodeBasisPoints: 5000,
           level: "critical",
           reservePresent: false,

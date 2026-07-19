@@ -6,7 +6,7 @@ export type ResourceCollection =
   | "redis"
   | "services";
 
-export type DeploymentWorkspaceView = "deploy-logs" | "details";
+export type DeploymentWorkspaceView = "build-logs" | "deploy-logs" | "details";
 
 const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
   object_store: "object-stores",

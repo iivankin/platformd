@@ -2,11 +2,15 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/iivankin/platformd/internal/buildlog"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -16,6 +20,38 @@ const objectStoreLogLimit = state.MaximumAuditPageSize
 type liveLogRepository struct {
 	store  *state.Store
 	reader *containerlogs.Reader
+	root   string
+}
+
+func (repository liveLogRepository) BuildLog(ctx context.Context, projectID, serviceID, deploymentID string) (string, error) {
+	if _, err := repository.store.Service(ctx, projectID, serviceID); err != nil {
+		return "", err
+	}
+	if _, err := repository.store.ServiceDeployment(ctx, projectID, serviceID, deploymentID); err != nil {
+		if !errors.Is(err, state.ErrDeploymentNotFound) {
+			return "", err
+		}
+		if _, previewErr := repository.store.PreviewDeployment(ctx, projectID, serviceID, deploymentID); previewErr != nil {
+			return "", previewErr
+		}
+	}
+	path := filepath.Join(repository.root, "services", serviceID, deploymentID, "build.log")
+	file, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("open build log: %w", err)
+	}
+	defer file.Close()
+	content, err := io.ReadAll(io.LimitReader(file, buildlog.MaxBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read build log: %w", err)
+	}
+	if len(content) > buildlog.MaxBytes {
+		content = append(content[:buildlog.MaxBytes-len(buildlog.TruncationMarker)], buildlog.TruncationMarker...)
+	}
+	return string(content), nil
 }
 
 func (repository liveLogRepository) DownloadServiceLogs(

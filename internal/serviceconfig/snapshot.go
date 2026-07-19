@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/opencontainers/go-digest"
 	"go.podman.io/image/v5/docker/reference"
 )
@@ -43,25 +44,47 @@ type HealthCheck struct {
 }
 
 type Snapshot struct {
-	ImageReference    string            `json:"imageReference"`
-	ImageCredentialID string            `json:"imageCredentialId,omitempty"`
-	Command           []string          `json:"command,omitempty"`
-	Args              []string          `json:"args,omitempty"`
-	Environment       map[string]string `json:"environment"`
-	SecretReferences  []SecretReference `json:"secretReferences"`
-	HealthCheck       *HealthCheck      `json:"healthCheck,omitempty"`
-	CPUMillicores     int64             `json:"cpuMillicores,omitempty"`
-	MemoryMaxBytes    int64             `json:"memoryMaxBytes,omitempty"`
-	VolumeMounts      []VolumeMount     `json:"volumeMounts"`
+	Source           servicesource.Source `json:"source"`
+	Command          []string             `json:"command,omitempty"`
+	Args             []string             `json:"args,omitempty"`
+	Environment      map[string]string    `json:"environment"`
+	SecretReferences []SecretReference    `json:"secretReferences"`
+	HealthCheck      *HealthCheck         `json:"healthCheck,omitempty"`
+	CPUMillicores    int64                `json:"cpuMillicores,omitempty"`
+	MemoryMaxBytes   int64                `json:"memoryMaxBytes,omitempty"`
+	VolumeMounts     []VolumeMount        `json:"volumeMounts"`
+}
+
+// Source helpers keep programmatic callers on the same explicit source model
+// as JSON clients without duplicating source literals throughout the daemon.
+func PlatformRegistrySource(reference string) servicesource.Source {
+	return servicesource.Source{
+		Type: servicesource.RegistryImage, AutoUpdate: true,
+		Image: &servicesource.Image{Reference: reference},
+	}
+}
+
+func PublicImageSource(reference string) servicesource.Source {
+	return servicesource.Source{
+		Type: servicesource.PublicImage, AutoUpdate: true,
+		Image: &servicesource.Image{Reference: reference},
+	}
+}
+
+func PrivateImageSource(reference string) servicesource.Source {
+	return servicesource.Source{
+		Type: servicesource.PrivateImage, AutoUpdate: true,
+		Image: &servicesource.Image{Reference: reference},
+	}
 }
 
 func Normalize(input Snapshot) (Snapshot, error) {
 	normalized := input
-	image, err := reference.ParseDockerRef(strings.TrimSpace(input.ImageReference))
+	source, err := servicesource.Normalize(input.Source)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("invalid image reference: %w", err)
+		return Snapshot{}, err
 	}
-	normalized.ImageReference = image.String()
+	normalized.Source = source
 	if input.HealthCheck != nil {
 		healthCheck := *input.HealthCheck
 		if healthCheck.TimeoutSeconds == 0 {
@@ -145,9 +168,6 @@ func IsDigestReference(imageReference string) bool {
 }
 
 func validateSnapshot(snapshot Snapshot) error {
-	if snapshot.ImageCredentialID != "" && strings.ContainsRune(snapshot.ImageCredentialID, '\x00') {
-		return errors.New("image credential ID contains NUL")
-	}
 	if err := validateProcess(snapshot.Command, snapshot.Args); err != nil {
 		return err
 	}
@@ -199,6 +219,9 @@ func validateEnvironment(environment map[string]string, secretReferences []Secre
 		if !environmentName.MatchString(name) {
 			return fmt.Errorf("invalid environment name %q", name)
 		}
+		if strings.HasPrefix(name, "PLATFORMD_") {
+			return fmt.Errorf("environment name %q is reserved by platformd", name)
+		}
 		if strings.ContainsRune(value, '\x00') {
 			return fmt.Errorf("environment %s contains NUL", name)
 		}
@@ -208,6 +231,9 @@ func validateEnvironment(environment map[string]string, secretReferences []Secre
 	for _, reference := range secretReferences {
 		if !environmentName.MatchString(reference.EnvironmentName) || reference.SecretID == "" || strings.ContainsRune(reference.SecretID, '\x00') {
 			return errors.New("invalid secret environment reference")
+		}
+		if strings.HasPrefix(reference.EnvironmentName, "PLATFORMD_") {
+			return fmt.Errorf("environment name %q is reserved by platformd", reference.EnvironmentName)
 		}
 		if _, exists := seen[reference.EnvironmentName]; exists {
 			return fmt.Errorf("duplicate environment name %q", reference.EnvironmentName)

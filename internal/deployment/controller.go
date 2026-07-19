@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -15,10 +16,12 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/admission"
+	"github.com/iivankin/platformd/internal/buildlog"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -26,10 +29,20 @@ const (
 	processStartupGrace = 3 * time.Second
 	probeInterval       = 250 * time.Millisecond
 	probeTimeout        = 2 * time.Second
+	reportTimeout       = 10 * time.Second
 	stopTimeoutSeconds  = 10
 )
 
 var ErrBlockedPair = errors.New("deployment pair is blocked by an earlier failure")
+var ErrSourceChecksPending = errors.New("source checks are still pending")
+
+type SourceSkippedError struct {
+	Reason string
+}
+
+func (err *SourceSkippedError) Error() string {
+	return err.Reason
+}
 
 type Store interface {
 	DesiredService(context.Context, string) (state.ServiceDesired, error)
@@ -96,11 +109,37 @@ type CredentialResolver interface {
 }
 
 type EnvironmentResolver interface {
-	Resolve(context.Context, state.ServiceDesired) (map[string]string, error)
+	Resolve(context.Context, state.ServiceDesired, string) (map[string]string, error)
 }
 
 type ImageSourceResolver interface {
 	Resolve(context.Context, string) (reference string, close func(), handled bool, err error)
+}
+
+type SourceResolution struct {
+	Image          containerengine.Image
+	ImageReference string
+	Revision       string
+	CommitMessage  string
+}
+
+type SourceResolver interface {
+	Resolve(context.Context, state.ServiceDesired, string, string, io.Writer, bool) (SourceResolution, error)
+}
+
+type ReportStatus string
+
+const (
+	ReportSucceeded ReportStatus = "succeeded"
+	ReportFailed    ReportStatus = "failed"
+)
+
+// Reporter mirrors a local deployment into an external source provider. The
+// local deployment record remains authoritative and reporting errors never
+// change whether a workload is deployed.
+type Reporter interface {
+	Start(context.Context, state.ServiceDesired, string, string) (string, error)
+	Finish(context.Context, state.ServiceDesired, string, string, ReportStatus) error
 }
 
 type GrowthGate interface {
@@ -114,6 +153,8 @@ type Config struct {
 	Credentials  CredentialResolver
 	Environment  EnvironmentResolver
 	ImageSources ImageSourceResolver
+	Sources      SourceResolver
+	Reporter     Reporter
 	Growth       GrowthGate
 	Admission    *admission.Gate
 	Placement    func(state.ServiceDesired) (Placement, error)
@@ -139,6 +180,8 @@ type Controller struct {
 	credentials  CredentialResolver
 	environment  EnvironmentResolver
 	imageSources ImageSourceResolver
+	sources      SourceResolver
+	reporter     Reporter
 	growth       GrowthGate
 	admission    *admission.Gate
 	placement    func(state.ServiceDesired) (Placement, error)
@@ -193,6 +236,8 @@ func New(config Config) (*Controller, error) {
 		store: config.Store, engine: config.Engine, publisher: config.Publisher, credentials: config.Credentials,
 		environment:  config.Environment,
 		imageSources: config.ImageSources,
+		sources:      config.Sources,
+		reporter:     config.Reporter,
 		growth:       config.Growth,
 		admission:    config.Admission,
 		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
@@ -203,6 +248,19 @@ func New(config Config) (*Controller, error) {
 }
 
 func (controller *Controller) Deploy(ctx context.Context, serviceID string, force bool) error {
+	return controller.deploy(ctx, serviceID, "", force)
+}
+
+// DeployRevision pins a webhook-triggered build to the commit that produced
+// the event without writing that transient revision into desired service state.
+func (controller *Controller) DeployRevision(ctx context.Context, serviceID, revision string, force bool) error {
+	if revision == "" {
+		return errors.New("source revision is required")
+	}
+	return controller.deploy(ctx, serviceID, revision, force)
+}
+
+func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevisionOverride string, force bool) error {
 	lease, err := controller.admission.Begin("service_deploy", serviceID)
 	if err != nil {
 		return err
@@ -224,6 +282,12 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 		return err
 	}
 	desired.Snapshot = normalized
+	startedAt := controller.now()
+	deploymentID, err := controller.newID(startedAt)
+	if err != nil {
+		return fmt.Errorf("allocate deployment ID: %w", err)
+	}
+	buildLogPath := controller.buildLogPath(serviceID, deploymentID)
 	if err := controller.growth.PermitGrowth(ctx); err != nil {
 		active, activeExists := controller.activeContainer(serviceID)
 		if !force && errors.Is(err, diskpressure.ErrGrowthDenied) && activeExists &&
@@ -232,8 +296,62 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 		}
 		return err
 	}
+	imageReference := servicesource.ImageReference(normalized.Source)
+	var image containerengine.Image
+	var sourceRevision string
+	var commitMessage string
+	if normalized.Source.Type == servicesource.GitHubImage {
+		if controller.sources == nil {
+			return errors.New("GitHub source resolution is not configured")
+		}
+		logFile, openErr := openBuildLog(buildLogPath)
+		if openErr != nil {
+			return openErr
+		}
+		resolution, resolveErr := controller.sources.Resolve(
+			ctx, desired, deploymentID, sourceRevisionOverride, logFile, force,
+		)
+		closeErr := logFile.Close()
+		if closeErr != nil && resolveErr == nil {
+			return closeErr
+		}
+		imageReference = resolution.ImageReference
+		sourceRevision = resolution.Revision
+		commitMessage = resolution.CommitMessage
+		var skipped *SourceSkippedError
+		if errors.As(resolveErr, &skipped) {
+			finishedAt := controller.now()
+			if err := controller.store.BeginDeployment(ctx, state.BeginDeployment{
+				ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
+				SourceRevision: sourceRevision, CommitMessage: commitMessage,
+				ConfigHash: configHash, SnapshotJSON: snapshotJSON,
+				Status: "skipped", CreatedAtMillis: startedAt.UnixMilli(), FinishedAtMillis: finishedAt.UnixMilli(),
+			}); err != nil {
+				return err
+			}
+			_ = appendBuildLog(buildLogPath, "Deployment skipped: "+skipped.Reason)
+			return nil
+		}
+		if resolveErr != nil {
+			if !errors.Is(resolveErr, ErrSourceChecksPending) {
+				if beginErr := controller.store.BeginDeployment(ctx, state.BeginDeployment{
+					ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
+					SourceRevision: sourceRevision, CommitMessage: commitMessage,
+					ConfigHash: configHash, SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
+				}); beginErr == nil {
+					reportID := controller.startReport(ctx, desired, deploymentID, sourceRevision, buildLogPath)
+					_ = controller.store.FailDeployment(ctx, deploymentID, "source_resolution_failed", resolveErr.Error(), controller.now().UnixMilli())
+					controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
+				}
+			}
+			return resolveErr
+		}
+		image = resolution.Image
+	} else if imageReference == "" {
+		return errors.New("image source reference is empty")
+	}
 	credential := ImageCredential{}
-	if normalized.ImageCredentialID != "" {
+	if normalized.Source.Type == servicesource.PrivateImage {
 		if controller.credentials == nil {
 			return errors.New("image credential resolution is not configured")
 		}
@@ -243,20 +361,37 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 		}
 	}
 
-	image, err := controller.pull(ctx, containerengine.PullRequest{
-		Reference: normalized.ImageReference,
-		Username:  credential.Username,
-		Password:  credential.Password,
-		Refresh:   !serviceconfig.IsDigestReference(normalized.ImageReference),
-	})
-	if err != nil {
-		return fmt.Errorf("resolve and pull service image: %w", err)
+	if normalized.Source.Type != servicesource.GitHubImage {
+		if err := appendBuildLog(buildLogPath, "Resolving "+imageReference); err != nil {
+			return err
+		}
+		image, err = controller.pull(ctx, containerengine.PullRequest{
+			Reference: imageReference,
+			Username:  credential.Username,
+			Password:  credential.Password,
+			Refresh:   !serviceconfig.IsDigestReference(imageReference),
+		})
+		if err != nil {
+			if beginErr := controller.store.BeginDeployment(ctx, state.BeginDeployment{
+				ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
+				ConfigHash: configHash, SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
+			}); beginErr == nil {
+				_ = controller.store.FailDeployment(ctx, deploymentID, "source_resolution_failed", err.Error(), controller.now().UnixMilli())
+			}
+			_ = appendBuildLog(buildLogPath, "Source resolution failed: "+err.Error())
+			return fmt.Errorf("resolve and pull service image: %w", err)
+		}
+		if err := appendBuildLog(buildLogPath, "Resolved "+image.Digest); err != nil {
+			return err
+		}
 	}
 	if image.ID == "" || image.Digest == "" {
 		return errors.New("pulled image has no ID or digest")
 	}
-	if _, err := serviceconfig.PinnedReference(normalized.ImageReference, image.Digest); err != nil {
-		return err
+	if servicesource.IsImage(normalized.Source) {
+		if _, err := serviceconfig.PinnedReference(imageReference, image.Digest); err != nil {
+			return err
+		}
 	}
 
 	current, err := controller.store.DesiredService(ctx, serviceID)
@@ -267,12 +402,13 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 	if err != nil {
 		return err
 	}
-	if !current.Enabled || currentHash != configHash || currentNormalized.ImageReference != normalized.ImageReference {
+	if !current.Enabled || currentHash != configHash {
 		return state.ErrServiceChanged
 	}
 	desired = current
 	desired.Snapshot = currentNormalized
 	if !force && desired.ActiveImageDigest == image.Digest && desired.ActiveConfigHash == configHash {
+		_ = os.Remove(buildLogPath)
 		active, ok := controller.activeContainer(serviceID)
 		if !ok || active.deploymentID != desired.ActiveDeploymentID {
 			return errors.New("active deployment has no matching runtime container")
@@ -285,22 +421,77 @@ func (controller *Controller) Deploy(ctx context.Context, serviceID string, forc
 			return err
 		}
 		if blocked {
+			_ = os.Remove(buildLogPath)
 			return ErrBlockedPair
 		}
 	}
 
-	startedAt := controller.now()
-	deploymentID, err := controller.newID(startedAt)
-	if err != nil {
-		return fmt.Errorf("allocate deployment ID: %w", err)
-	}
 	if err := controller.store.BeginDeployment(ctx, state.BeginDeployment{
 		ID: deploymentID, ServiceID: serviceID, ImageDigest: image.Digest,
-		ConfigHash: configHash, SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
+		ImageReference: imageReference, SourceRevision: sourceRevision, CommitMessage: commitMessage, ConfigHash: configHash,
+		SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
 	}); err != nil {
 		return err
 	}
-	return controller.runDeployment(ctx, desired, deploymentID, image.ID)
+	if err := appendBuildLog(buildLogPath, "Image ready; starting deployment"); err != nil {
+		return controller.fail(deploymentID, "build_log_failed", err)
+	}
+	reportID := controller.startReport(ctx, desired, deploymentID, sourceRevision, buildLogPath)
+	deployErr := controller.runDeployment(ctx, desired, deploymentID, image.ID)
+	if deployErr != nil {
+		controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
+		return deployErr
+	}
+	controller.finishReport(desired, deploymentID, reportID, ReportSucceeded, buildLogPath)
+	return nil
+}
+
+func openBuildLog(logPath string) (io.WriteCloser, error) {
+	return buildlog.OpenAppend(logPath)
+}
+
+func (controller *Controller) buildLogPath(serviceID, deploymentID string) string {
+	return filepath.Join(controller.logRoot, "services", serviceID, deploymentID, "build.log")
+}
+
+func appendBuildLog(logPath, message string) error {
+	return buildlog.Append(logPath, fmt.Sprintf("%s %s\n", time.Now().UTC().Format(time.RFC3339), message))
+}
+
+func (controller *Controller) startReport(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	deploymentID string,
+	revision string,
+	buildLogPath string,
+) string {
+	if controller.reporter == nil || revision == "" {
+		return ""
+	}
+	reportContext, cancel := context.WithTimeout(ctx, reportTimeout)
+	defer cancel()
+	reportID, err := controller.reporter.Start(reportContext, desired, deploymentID, revision)
+	if err != nil {
+		_ = appendBuildLog(buildLogPath, "External deployment reporting warning: "+err.Error())
+	}
+	return reportID
+}
+
+func (controller *Controller) finishReport(
+	desired state.ServiceDesired,
+	deploymentID string,
+	reportID string,
+	status ReportStatus,
+	buildLogPath string,
+) {
+	if controller.reporter == nil || reportID == "" {
+		return
+	}
+	reportContext, cancel := context.WithTimeout(context.Background(), reportTimeout)
+	defer cancel()
+	if err := controller.reporter.Finish(reportContext, desired, deploymentID, reportID, status); err != nil {
+		_ = appendBuildLog(buildLogPath, "External deployment reporting warning: "+err.Error())
+	}
 }
 
 func (controller *Controller) Restore(ctx context.Context, serviceID string) error {
@@ -523,30 +714,18 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 		return false, fmt.Errorf("load active deployment: %w", err)
 	}
 	desired.Snapshot = activeDeployment.Snapshot
-	pinnedReference, err := serviceconfig.PinnedReference(desired.Snapshot.ImageReference, activeDeployment.ImageDigest)
-	if err != nil {
-		return false, err
-	}
 	image, inspectErr := controller.engine.InspectImage(ctx, activeDeployment.ImageDigest)
 	if inspectErr != nil {
 		if err := controller.growth.PermitGrowth(ctx); err != nil {
 			return false, fmt.Errorf("active service image is not cached: %w", err)
 		}
-		credential := ImageCredential{}
-		if desired.Snapshot.ImageCredentialID != "" {
-			if controller.credentials == nil {
-				return false, errors.New("image credential resolution is not configured")
-			}
-			credential, err = controller.credentials.Resolve(ctx, desired)
-			if err != nil {
-				return false, fmt.Errorf("resolve active image credential: %w", err)
-			}
+		if desired.Snapshot.Source.Type == servicesource.GitHubImage {
+			image, err = controller.rebuildGitHubDeployment(ctx, desired, activeDeployment)
+		} else {
+			image, err = controller.pullActiveImage(ctx, desired, activeDeployment)
 		}
-		image, err = controller.pull(ctx, containerengine.PullRequest{
-			Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
-		})
 		if err != nil {
-			return false, fmt.Errorf("pull active service image: %w", err)
+			return false, err
 		}
 	}
 	if image.Digest != activeDeployment.ImageDigest {
@@ -578,6 +757,61 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 		return false, fmt.Errorf("publish restored service: %w", err)
 	}
 	return true, nil
+}
+
+func (controller *Controller) rebuildGitHubDeployment(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	active state.DeploymentRecord,
+) (containerengine.Image, error) {
+	if controller.sources == nil || desired.Snapshot.Source.GitHub == nil || active.SourceRevision == "" {
+		return containerengine.Image{}, errors.New("active GitHub deployment cannot be rebuilt from its exact revision")
+	}
+	github := *desired.Snapshot.Source.GitHub
+	github.Revision = active.SourceRevision
+	github.WaitForCI = false
+	desired.Snapshot.Source.GitHub = &github
+	logFile, err := openBuildLog(controller.buildLogPath(desired.ID, active.ID))
+	if err != nil {
+		return containerengine.Image{}, err
+	}
+	_, _ = io.WriteString(logFile, "\nRebuilding the active GitHub revision because its local image is missing\n")
+	resolution, resolveErr := controller.sources.Resolve(
+		ctx, desired, active.ID, active.SourceRevision, logFile, true,
+	)
+	closeErr := logFile.Close()
+	if err := errors.Join(resolveErr, closeErr); err != nil {
+		return containerengine.Image{}, fmt.Errorf("rebuild active GitHub image: %w", err)
+	}
+	return resolution.Image, nil
+}
+
+func (controller *Controller) pullActiveImage(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	active state.DeploymentRecord,
+) (containerengine.Image, error) {
+	pinnedReference, err := serviceconfig.PinnedReference(active.ImageReference, active.ImageDigest)
+	if err != nil {
+		return containerengine.Image{}, err
+	}
+	credential := ImageCredential{}
+	if desired.Snapshot.Source.Type == servicesource.PrivateImage {
+		if controller.credentials == nil {
+			return containerengine.Image{}, errors.New("image credential resolution is not configured")
+		}
+		credential, err = controller.credentials.Resolve(ctx, desired)
+		if err != nil {
+			return containerengine.Image{}, fmt.Errorf("resolve active image credential: %w", err)
+		}
+	}
+	image, err := controller.pull(ctx, containerengine.PullRequest{
+		Reference: pinnedReference, Username: credential.Username, Password: credential.Password,
+	})
+	if err != nil {
+		return containerengine.Image{}, fmt.Errorf("pull active service image: %w", err)
+	}
+	return image, nil
 }
 
 func (controller *Controller) pull(ctx context.Context, request containerengine.PullRequest) (containerengine.Image, error) {
@@ -786,7 +1020,7 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 	}
 	environment := desired.Snapshot.Environment
 	if controller.environment != nil {
-		resolved, resolveErr := controller.environment.Resolve(ctx, desired)
+		resolved, resolveErr := controller.environment.Resolve(ctx, desired, deploymentID)
 		if resolveErr != nil {
 			return containerengine.Container{}, Placement{}, fmt.Errorf("resolve service variables: %w", resolveErr)
 		}

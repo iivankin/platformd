@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -13,8 +14,10 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
+	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/databaseversion"
+	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -33,43 +36,47 @@ type Meta struct {
 }
 
 type handlerConfig struct {
-	projects             ProjectRepository
-	services             ServiceRepository
-	serviceEnvironment   ServiceEnvironmentResolver
-	volumes              *volume.Application
-	domains              DomainRepository
-	listeners            ServiceListenerRepository
-	tokens               APITokenRepository
-	imageCredentials     ImageCredentialRepository
-	logs                 LogRepository
-	logsHostname         string
-	audit                AuditRepository
-	managedImages        ManagedImageCatalog
-	managedRedis         ManagedRedisRepository
-	managedPostgres      *managedpostgres.Application
-	objectStores         *objectstore.Application
-	registry             *registry.Application
-	registrySettings     RegistrySettings
-	installationSettings *installationsettings.Application
-	backupTargets        *backup.TargetApplication
-	backupResources      *backup.ResourceApplication
-	databaseVersions     *databaseversion.Service
-	containerConsole     ContainerConsole
-	containerFiles       *containerfiles.Application
-	serverTerminal       HostTerminal
-	serverTerminalAuth   *terminalauth.Service
-	serverTerminalIdle   time.Duration
-	serverTerminalLife   time.Duration
-	adminHostname        string
-	diskPressure         DiskPressure
-	resourceUsage        ResourceUsage
-	infrastructureLogs   InfrastructureLogs
-	admission            *admission.Gate
-	selfUpdater          SelfUpdater
-	afterUpdate          func()
-	recovery             RecoveryRepository
-	random               io.Reader
-	now                  func() time.Time
+	projects                ProjectRepository
+	services                ServiceRepository
+	serviceEnvironment      ServiceEnvironmentResolver
+	volumes                 *volume.Application
+	domains                 DomainRepository
+	listeners               ServiceListenerRepository
+	tokens                  APITokenRepository
+	serviceImageCredentials ServiceImageCredentialManager
+	logs                    LogRepository
+	logsHostname            string
+	audit                   AuditRepository
+	managedImages           ManagedImageCatalog
+	managedRedis            ManagedRedisRepository
+	managedPostgres         *managedpostgres.Application
+	objectStores            *objectstore.Application
+	registry                *registry.Application
+	registrySettings        RegistrySettings
+	installationSettings    *installationsettings.Application
+	githubApp               *githubapp.Application
+	onGitHubPush            func(context.Context, githubapp.PushEvent)
+	onGitHubPullRequest     func(context.Context, githubapp.PullRequestEvent)
+	cloudflareDNS           *cloudflaredns.Application
+	backupTargets           *backup.TargetApplication
+	backupResources         *backup.ResourceApplication
+	databaseVersions        *databaseversion.Service
+	containerConsole        ContainerConsole
+	containerFiles          *containerfiles.Application
+	serverTerminal          HostTerminal
+	serverTerminalAuth      *terminalauth.Service
+	serverTerminalIdle      time.Duration
+	serverTerminalLife      time.Duration
+	adminHostname           string
+	diskPressure            DiskPressure
+	resourceUsage           ResourceUsage
+	infrastructureLogs      InfrastructureLogs
+	admission               *admission.Gate
+	selfUpdater             SelfUpdater
+	afterUpdate             func()
+	recovery                RecoveryRepository
+	random                  io.Reader
+	now                     func() time.Time
 }
 
 type Option func(*handlerConfig)
@@ -80,9 +87,9 @@ func WithProjects(repository ProjectRepository) Option {
 	}
 }
 
-func WithImageCredentials(repository ImageCredentialRepository) Option {
+func WithServiceImageCredentials(manager ServiceImageCredentialManager) Option {
 	return func(config *handlerConfig) {
-		config.imageCredentials = repository
+		config.serviceImageCredentials = manager
 	}
 }
 
@@ -169,6 +176,24 @@ func WithRegistry(application *registry.Application, settings RegistrySettings) 
 func WithInstallationSettings(application *installationsettings.Application) Option {
 	return func(config *handlerConfig) {
 		config.installationSettings = application
+	}
+}
+
+func WithGitHubApp(
+	application *githubapp.Application,
+	onPush func(context.Context, githubapp.PushEvent),
+	onPullRequest func(context.Context, githubapp.PullRequestEvent),
+) Option {
+	return func(config *handlerConfig) {
+		config.githubApp = application
+		config.onGitHubPush = onPush
+		config.onGitHubPullRequest = onPullRequest
+	}
+}
+
+func WithCloudflareDNS(application *cloudflaredns.Application) Option {
+	return func(config *handlerConfig) {
+		config.cloudflareDNS = application
 	}
 }
 
@@ -268,9 +293,6 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	if config.projects != nil {
 		registerProjectRoutes(mux, config)
 	}
-	if config.imageCredentials != nil {
-		registerImageCredentialRoutes(mux, config)
-	}
 	if config.services != nil {
 		registerServiceRoutes(mux, config)
 	}
@@ -311,6 +333,12 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.installationSettings != nil {
 		registerInstallationSettingsRoutes(mux, config)
+	}
+	if config.githubApp != nil {
+		registerGitHubAppRoutes(mux, config)
+	}
+	if config.cloudflareDNS != nil {
+		registerCloudflareDNSRoutes(mux, config)
 	}
 	if config.backupTargets != nil {
 		registerBackupTargetRoutes(mux, config.backupTargets)

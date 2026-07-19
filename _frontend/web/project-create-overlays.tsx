@@ -1,5 +1,6 @@
-import type { ImageCredential } from "@/api";
 import { ObjectStoreCreatePanel } from "@/object-store-create-panel";
+import { newResourceDraftID } from "@/pending-resource-creation";
+import type { PendingResourceCreation } from "@/pending-resource-creation";
 import { PostgresCreatePanel } from "@/postgres-create-panel";
 import { RedisCreatePanel } from "@/redis-create-panel";
 import { ResourceCreatePanel } from "@/resource-create-panel";
@@ -14,23 +15,21 @@ export type CreateKind =
   | null;
 
 interface ProjectCreateOverlaysProperties {
-  credentials: ImageCredential[];
   embeddedRegistryHost: string;
+  draft?: PendingResourceCreation;
   kind: CreateKind;
   onClose: () => void;
-  onCreated: () => void;
+  onDrafted: (draft: PendingResourceCreation) => void;
   onSelect: (kind: "postgres" | "redis" | "service" | "storage") => void;
-  projectID: string;
 }
 
 export const ProjectCreateOverlays = ({
-  credentials,
+  draft,
   embeddedRegistryHost,
   kind,
   onClose,
-  onCreated,
+  onDrafted,
   onSelect,
-  projectID,
 }: ProjectCreateOverlaysProperties) => (
   <>
     {kind === "picker" ? (
@@ -38,32 +37,55 @@ export const ProjectCreateOverlays = ({
     ) : null}
     {kind === "service" ? (
       <ServiceCreatePanel
-        credentials={credentials}
         embeddedRegistryHost={embeddedRegistryHost}
         onClose={onClose}
-        onCreated={onCreated}
-        projectID={projectID}
+        initialDraft={draft?.kind === "service" ? draft.input : undefined}
+        onDrafted={(input) =>
+          onDrafted({
+            id: draft?.id ?? newResourceDraftID(),
+            input,
+            kind: "service",
+          })
+        }
       />
     ) : null}
     {kind === "redis" ? (
       <RedisCreatePanel
         onClose={onClose}
-        onCreated={onCreated}
-        projectID={projectID}
+        initialDraft={draft?.kind === "redis" ? draft.input : undefined}
+        onDrafted={(input) =>
+          onDrafted({
+            id: draft?.id ?? newResourceDraftID(),
+            input,
+            kind: "redis",
+          })
+        }
       />
     ) : null}
     {kind === "postgres" ? (
       <PostgresCreatePanel
         onClose={onClose}
-        onCreated={onCreated}
-        projectID={projectID}
+        initialDraft={draft?.kind === "postgres" ? draft.input : undefined}
+        onDrafted={(input) =>
+          onDrafted({
+            id: draft?.id ?? newResourceDraftID(),
+            input,
+            kind: "postgres",
+          })
+        }
       />
     ) : null}
     {kind === "storage" ? (
       <ObjectStoreCreatePanel
         onClose={onClose}
-        onCreated={onCreated}
-        projectID={projectID}
+        initialDraft={draft?.kind === "storage" ? draft.input : undefined}
+        onDrafted={(input) =>
+          onDrafted({
+            id: draft?.id ?? newResourceDraftID(),
+            input,
+            kind: "storage",
+          })
+        }
       />
     ) : null}
   </>

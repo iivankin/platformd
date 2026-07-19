@@ -26,11 +26,14 @@ import (
 	"github.com/iivankin/platformd/internal/bootstrap"
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/cgrouptree"
+	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
+	"github.com/iivankin/platformd/internal/diskusage"
+	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/journallogs"
@@ -149,6 +152,22 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	diskComponents, err := diskusage.NewScanner([]diskusage.Path{
+		{ID: "container_images", Path: paths.ContainerCache},
+		{ID: "volumes", Path: paths.VolumesRoot},
+		{ID: "registry", Path: paths.RegistryRoot},
+		{ID: "object_storage", Path: paths.ObjectsRoot},
+		{ID: "logs", Path: paths.LogsRoot},
+		{ID: "backup_work", Path: paths.BackupWorkRoot},
+		{ID: "postgres_extensions", Path: paths.PostgresExtensionRoot},
+		{ID: "platform_state", Path: filepath.Dir(paths.StateDatabase)},
+		{ID: "releases", Path: paths.ReleasesRoot},
+		{ID: "emergency_reserve", Path: paths.ReserveFile},
+	}, diskusage.DefaultCacheTTL)
+	if err != nil {
+		return fmt.Errorf("configure disk component usage: %w", err)
+	}
+	capacity := infrastructureCapacity{pressure: pressure, components: diskComponents}
 	if _, err := pressure.Check(ctx); err != nil {
 		return fmt.Errorf("initialize disk pressure: %w", err)
 	}
@@ -214,6 +233,18 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure self-update: %w", err)
 	}
 	imageCredentials := liveImageCredentialRepository{store: store, master: key}
+	githubApplication, err := githubapp.New(githubapp.Config{
+		Repository: store, Master: key, InstallationID: installation.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("configure GitHub App integration: %w", err)
+	}
+	cloudflareDNS, err := cloudflaredns.New(cloudflaredns.Config{
+		Repository: store, Master: key, InstallationID: installation.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("configure Cloudflare DNS integration: %w", err)
+	}
 	registryHostname := ""
 	if installation.RegistryHostname != nil {
 		registryHostname = *installation.RegistryHostname
@@ -259,7 +290,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err := runtime.ConfigureManagedRedis(store, key); err != nil {
 		return fmt.Errorf("configure managed Redis: %w", err)
 	}
-	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, registryApplication); err != nil {
+	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, registryApplication, githubApplication, installation.AdminHostname); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
 	if !installation.RecoveryMode {
@@ -272,6 +303,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err := runtime.ReconcileDeployments(ctx, store); err != nil {
 			return fmt.Errorf("reconcile service deployments: %w", err)
 		}
+		go runImageCacheCleanup(ctx, store, runtime.engine)
 	}
 	resourceMetrics, err := resourcemetrics.NewApplication(store, cgroupUsage, runtime, resourcemetrics.Config{})
 	if err != nil {
@@ -331,6 +363,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	objectStoreApplication, err := objectstore.NewApplication(objectStoreRepository, objectPayloads, key, nil, nil)
 	if err != nil {
 		return err
+	}
+	if !installation.RecoveryMode {
+		startObjectStoreMultipartCleanup(ctx, objectStoreApplication, mutationAdmission)
 	}
 	var disasterRecoveryProgress *recoveryProgress
 	if installation.RecoveryMode {
@@ -471,7 +506,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	logs := liveLogRepository{store: store, reader: logReader}
+	logs := liveLogRepository{store: store, reader: logReader, root: paths.LogsRoot}
 	infrastructureLogs := journallogs.NewReader()
 	managedImageCatalog, err := managedimages.New("https://hub.docker.com", &http.Client{
 		Timeout: managedImageCatalogTimeout,
@@ -621,7 +656,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}),
 		server.WithServiceEnvironment(resourceVariableResolver{store: store, master: key}),
 		server.WithVolumes(volumeApplication),
-		server.WithImageCredentials(imageCredentials),
+		server.WithServiceImageCredentials(imageCredentials),
 		server.WithDomains(domains),
 		server.WithServiceListeners(serviceListeners),
 		server.WithAPITokens(apiTokens),
@@ -633,6 +668,16 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithObjectStores(objectStoreApplication),
 		server.WithRegistry(registryApplication, registrySettings),
 		server.WithInstallationSettings(installationSettings),
+		server.WithGitHubApp(
+			githubApplication,
+			func(_ context.Context, event githubapp.PushEvent) {
+				runtime.NotifyGitHubPush(ctx, store, githubApplication, event)
+			},
+			func(_ context.Context, event githubapp.PullRequestEvent) {
+				runtime.NotifyGitHubPullRequest(ctx, store, githubApplication, event)
+			},
+		),
+		server.WithCloudflareDNS(cloudflareDNS),
 		server.WithBackupTargets(backupTargets),
 		server.WithBackupResources(backupResources),
 		server.WithDatabaseVersions(databaseVersions),
@@ -643,7 +688,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			installation.AdminHostname, hostTerminal,
 			serverTerminalIdleTimeout, serverTerminalAbsoluteLifetime,
 		),
-		server.WithDiskPressure(pressure),
+		server.WithDiskPressure(capacity),
 		server.WithResourceUsage(resourceMetrics),
 		server.WithInfrastructureLogs(infrastructureLogs),
 		server.WithAdmission(mutationAdmission),
@@ -675,6 +720,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("load application domains: %w", err)
 	}
 	if !installation.RecoveryMode {
+		if err := runtime.ConfigurePreviews(
+			ctx, store, key, githubApplication, cloudflareDNS, domains,
+			installation.AdminHostname, certificates.Covers,
+		); err != nil {
+			return fmt.Errorf("configure PR previews: %w", err)
+		}
 		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
 			return fmt.Errorf("load object store domains: %w", err)
 		}

@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/diskpressure"
+	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/journallogs"
 	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/server"
@@ -23,6 +24,17 @@ type pressureStub struct {
 
 func (pressure pressureStub) Snapshot() (diskpressure.Snapshot, bool) {
 	return pressure.snapshot, pressure.ready
+}
+
+type capacityStub struct {
+	pressureStub
+}
+
+func (capacityStub) Components(context.Context) (diskusage.Snapshot, error) {
+	return diskusage.Snapshot{
+		CheckedAt:  time.UnixMilli(40),
+		Components: []diskusage.Component{{ID: "volumes", Bytes: 24}},
+	}, nil
 }
 
 type usageStub struct{}
@@ -72,13 +84,13 @@ func (usageStub) History(_ context.Context, kind cgroupstats.Kind, resourceID st
 func TestInfrastructureShowsDerivedDiskPressureWithoutPersistentState(t *testing.T) {
 	t.Parallel()
 
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithDiskPressure(pressureStub{
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithDiskPressure(capacityStub{pressureStub: pressureStub{
 		ready: true,
 		snapshot: diskpressure.Snapshot{
 			Level: diskpressure.Critical, ReservePresent: false, CheckedAt: time.UnixMilli(42),
 			Usage: diskpressure.Usage{TotalBytes: 100, AvailableBytes: 4, TotalInodes: 1000, AvailableInodes: 500, ByteBasisPoints: 9600, InodeBasisPoints: 5000},
 		},
-	}))
+	}}))
 	response := httptest.NewRecorder()
 	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/infrastructure/disk-pressure", nil))
 	if response.Code != http.StatusForbidden {
@@ -87,7 +99,7 @@ func TestInfrastructureShowsDerivedDiskPressureWithoutPersistentState(t *testing
 	protected := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
 	response = httptest.NewRecorder()
 	protected.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/infrastructure/disk-pressure", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"level":"critical"`) || !strings.Contains(response.Body.String(), `"byteBasisPoints":9600`) || !strings.Contains(response.Body.String(), `"reservePresent":false`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"level":"critical"`) || !strings.Contains(response.Body.String(), `"byteBasisPoints":9600`) || !strings.Contains(response.Body.String(), `"reservePresent":false`) || !strings.Contains(response.Body.String(), `"id":"volumes","bytes":24`) {
 		t.Fatalf("disk pressure = %d/%s", response.Code, response.Body)
 	}
 }

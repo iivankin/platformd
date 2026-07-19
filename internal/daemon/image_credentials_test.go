@@ -30,10 +30,9 @@ func TestLiveImageCredentialRepositoryEncryptsAndResolvesAuthentication(t *testi
 		t.Fatal(err)
 	}
 	repository := liveImageCredentialRepository{store: store, master: master}
-	created, err := repository.CreateImageCredential(context.Background(), server.CreateImageCredential{
-		ID: "credential", ProjectID: "project", Name: "production", RegistryHost: "registry.example.com",
-		Username: "robot", Password: "super-secret", AuditEventID: "audit", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	created, err := repository.PrepareServiceImageCredential(context.Background(), server.ServiceImageCredentialInput{
+		ServiceID: "service", ImageReference: "registry.example.com/team/api:latest",
+		Username: "robot", Password: "super-secret", UpdatedAtMillis: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -41,19 +40,32 @@ func TestLiveImageCredentialRepositoryEncryptsAndResolvesAuthentication(t *testi
 	if bytes.Contains(created.PasswordEncrypted, []byte("super-secret")) {
 		t.Fatal("password was stored as plaintext")
 	}
+	service, err := store.CreateService(context.Background(), state.CreateService{
+		ID: "service", ProjectID: "project", Name: "api", Enabled: false,
+		Snapshot:        serviceconfig.Snapshot{Source: serviceconfig.PrivateImageSource("registry.example.com/team/api:latest")},
+		ImageCredential: created, AuditEventID: "audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	credential, err := repository.Resolve(context.Background(), state.ServiceDesired{
-		ProjectID: "project",
+		ID: service.ID, ProjectID: "project",
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "registry.example.com/team/api:latest", ImageCredentialID: "credential",
+			Source: serviceconfig.PrivateImageSource("registry.example.com/team/api:latest"),
 		},
 	})
 	if err != nil || credential.Username != "robot" || credential.Password != "super-secret" {
 		t.Fatalf("resolved credential = %+v, %v", credential, err)
 	}
+	host, username, password, err := repository.RevealServiceImageCredential(context.Background(), service.ID)
+	if err != nil || host != "registry.example.com" || username != "robot" || password != "super-secret" {
+		t.Fatalf("revealed credential = %q/%q/%q, %v", host, username, password, err)
+	}
 	if _, err := repository.Resolve(context.Background(), state.ServiceDesired{
-		ProjectID: "project",
+		ID: service.ID, ProjectID: "project",
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "other.example.com/team/api:latest", ImageCredentialID: "credential",
+			Source: serviceconfig.PrivateImageSource("other.example.com/team/api:latest"),
 		},
 	}); err == nil {
 		t.Fatal("credential was accepted for another registry host")

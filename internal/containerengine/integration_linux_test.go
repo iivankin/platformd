@@ -245,6 +245,59 @@ func TestStaticInitRunsInGlibcImage(t *testing.T) {
 	}
 }
 
+func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	if err := os.MkdirAll(config.LogRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	contextRoot := t.TempDir()
+	dockerfile := filepath.Join(contextRoot, "Dockerfile")
+	contents := "FROM " + integrationAlpineImage + "\nRUN printf yes > /platformd-built\n"
+	if err := os.WriteFile(dockerfile, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buildOutput bytes.Buffer
+	image, err := engine.Build(ctx, BuildRequest{
+		ContextDirectory: contextRoot,
+		Dockerfile:       dockerfile,
+		Reference:        "localhost/platformd/build-integration:latest",
+		Log:              &buildOutput,
+	})
+	if err != nil {
+		t.Fatalf("build image: %v\n%s", err, buildOutput.String())
+	}
+	defer engine.RemoveImage(context.Background(), image.ID)
+	if image.ID == "" || image.Digest == "" || buildOutput.Len() == 0 {
+		t.Fatalf("built image = %+v, log bytes = %d", image, buildOutput.Len())
+	}
+	container, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: image.ID, Name: "platformd-build-verification",
+		Command: []string{"/bin/sh", "-c", `test "$(cat /platformd-built)" = yes`},
+		LogPath: filepath.Join(config.LogRoot, "build-verification.log"), LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveContainer(context.Background(), container.ID, true)
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
+		t.Fatalf("built image verification exit = %d, %v", code, err)
+	}
+}
+
 func TestDerivedImagePreservesBaseProcessAndExcludesBindMountContents(t *testing.T) {
 	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
 		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")

@@ -18,6 +18,7 @@ import (
 )
 
 type LogRepository interface {
+	BuildLog(context.Context, string, string, string) (string, error)
 	ServiceLogs(context.Context, string, string, string, string, int) (containerlogs.Window, error)
 	ResourceLogs(context.Context, string, string, string, string, string, int) (containerlogs.Window, error)
 	ServiceLogRevision(context.Context, string, string, string, string) (string, error)
@@ -31,12 +32,33 @@ func registerLogRoutes(mux *http.ServeMux, hostname string, repository LogReposi
 		return errors.New("log stream hostname is required")
 	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", getServiceLogs(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/logs/build", getBuildLog(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{resourceID}/logs", getResourceLogs(repository, "redis"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{resourceID}/logs", getResourceLogs(repository, "postgres"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{resourceID}/logs", getResourceLogs(repository, "object_store"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/download", downloadServiceLogs(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/stream", streamServiceLogs(hostname, repository))
 	return nil
+}
+
+func getBuildLog(repository LogRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		content, err := repository.BuildLog(
+			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"), request.PathValue("deploymentID"),
+		)
+		switch {
+		case err == nil:
+			writeJSON(response, http.StatusOK, map[string]string{"text": content})
+		case errors.Is(err, state.ErrServiceNotFound), errors.Is(err, state.ErrDeploymentNotFound):
+			writeAPIError(response, http.StatusNotFound, "deployment_not_found", "Deployment not found")
+		default:
+			writeAPIError(response, http.StatusInternalServerError, "build_log_read_failed", "Unable to read build log")
+		}
+	}
 }
 
 func getResourceLogs(repository LogRepository, kind string) http.HandlerFunc {

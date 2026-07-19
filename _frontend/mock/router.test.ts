@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createAPIToken,
   createBackupTarget,
+  configureGitHubApp,
   createProject,
   createRegistryRepository,
   deleteService,
@@ -16,6 +17,8 @@ import {
   fetchContainerFiles,
   fetchDiskPressure,
   fetchIdentity,
+  fetchGitHubAppSettings,
+  fetchGitHubRepositories,
   fetchInfrastructureLogs,
   fetchInstallationSettings,
   fetchManagedPostgres,
@@ -101,6 +104,8 @@ describe("mock API", () => {
     const [
       meta,
       identity,
+      githubSettings,
+      githubRepositories,
       projects,
       backupTargets,
       backupPolicies,
@@ -114,6 +119,8 @@ describe("mock API", () => {
     ] = await Promise.all([
       fetchMeta(undefined, mockFetch),
       fetchIdentity(undefined, mockFetch),
+      fetchGitHubAppSettings(undefined, mockFetch),
+      fetchGitHubRepositories(undefined, mockFetch),
       fetchProjects(undefined, mockFetch),
       fetchBackupTargets(undefined, mockFetch),
       fetchBackupPolicies(undefined, mockFetch),
@@ -128,6 +135,8 @@ describe("mock API", () => {
 
     expect(meta.status).toBe("ready");
     expect(identity.email).toBe("developer@mock.local");
+    expect(githubSettings.configured).toBe(true);
+    expect(githubRepositories).toHaveLength(1);
     expect(projects).toHaveLength(1);
     const [firstProject] = projects;
     expect(firstProject).toBeDefined();
@@ -395,6 +404,14 @@ describe("mock API", () => {
       mockFetch
     );
     await setAutomationHostname("api.preview.local", mockFetch);
+    const githubSettings = await configureGitHubApp(
+      {
+        appId: 42,
+        privateKeyPem: "mock-private-key",
+        webhookSecret: "mock-webhook-secret",
+      },
+      mockFetch
+    );
 
     const projects = await fetchProjects(undefined, mockFetch);
     const backupTargets = await fetchBackupTargets(undefined, mockFetch);
@@ -407,6 +424,7 @@ describe("mock API", () => {
     expect(registrySettings.hostname).toBe("registry.preview.local");
     expect(repositories[0]?.id).toBe(repository.id);
     expect(settings.automationHostname).toBe("api.preview.local");
+    expect(githubSettings).toMatchObject({ appId: 42, configured: true });
   });
 
   test("mock container resources expose shells and mutable file trees", async () => {

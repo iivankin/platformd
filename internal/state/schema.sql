@@ -25,6 +25,23 @@ CREATE TABLE origin_certificates (
   created_at INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE github_app_settings (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  app_id INTEGER NOT NULL CHECK (app_id > 0),
+  app_slug TEXT NOT NULL,
+  private_key_encrypted BLOB NOT NULL,
+  webhook_secret_encrypted BLOB NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE cloudflare_dns_settings (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  api_token_encrypted BLOB NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -90,17 +107,6 @@ CREATE INDEX registry_uploads_repository_idx ON registry_uploads(repository_id, 
 CREATE INDEX registry_uploads_credential_idx ON registry_uploads(credential_id, created_at);
 CREATE INDEX registry_uploads_expiry_idx ON registry_uploads(expires_at, id);
 
-CREATE TABLE image_registry_credentials (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  registry_host TEXT NOT NULL,
-  username TEXT NOT NULL,
-  password_encrypted BLOB NOT NULL,
-  created_at INTEGER NOT NULL,
-  UNIQUE (project_id, name)
-) STRICT;
-
 CREATE TABLE secrets (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -114,8 +120,7 @@ CREATE TABLE services (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL,
-  image_reference TEXT NOT NULL,
-  image_credential_id TEXT REFERENCES image_registry_credentials(id) ON DELETE RESTRICT,
+  source_json TEXT NOT NULL CHECK (json_valid(source_json)),
   command_json TEXT CHECK (command_json IS NULL OR json_valid(command_json)),
   args_json TEXT CHECK (args_json IS NULL OR json_valid(args_json)),
   environment_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(environment_json)),
@@ -130,6 +135,14 @@ CREATE TABLE services (
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (active_deployment_id) REFERENCES deployments(id) DEFERRABLE INITIALLY DEFERRED,
   UNIQUE (project_id, name)
+) STRICT;
+
+CREATE TABLE service_image_credentials (
+  service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+  registry_host TEXT NOT NULL,
+  username TEXT NOT NULL,
+  password_encrypted BLOB NOT NULL,
+  updated_at INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE service_secret_refs (
@@ -167,9 +180,12 @@ CREATE TABLE deployments (
   id TEXT PRIMARY KEY,
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
   image_digest TEXT NOT NULL,
+  image_reference TEXT NOT NULL,
+  source_revision TEXT,
+  source_commit_message TEXT,
   service_config_hash TEXT NOT NULL,
   snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
-  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'interrupted')),
+  status TEXT NOT NULL CHECK (status IN ('waiting', 'running', 'succeeded', 'failed', 'interrupted', 'skipped')),
   error_code TEXT,
   error_message TEXT,
   created_at INTEGER NOT NULL,
@@ -178,6 +194,38 @@ CREATE TABLE deployments (
 
 CREATE INDEX deployments_service_created_idx ON deployments(service_id, created_at DESC);
 CREATE INDEX deployments_retry_pair_idx ON deployments(service_id, service_config_hash, image_digest, created_at DESC);
+
+CREATE TABLE preview_deployments (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  pull_request_number INTEGER NOT NULL CHECK (pull_request_number > 0),
+  source_revision TEXT NOT NULL,
+  source_commit_message TEXT,
+  hostname TEXT NOT NULL,
+  target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
+  image_digest TEXT NOT NULL,
+  image_reference TEXT NOT NULL,
+  service_config_hash TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
+  status TEXT NOT NULL CHECK (status IN ('building', 'active', 'failed', 'skipped', 'stopped', 'interrupted')),
+  error_code TEXT,
+  error_message TEXT,
+  github_deployment_id INTEGER CHECK (github_deployment_id IS NULL OR github_deployment_id > 0),
+  github_comment_id INTEGER CHECK (github_comment_id IS NULL OR github_comment_id > 0),
+  cloudflare_records_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(cloudflare_records_json)),
+  created_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  expires_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX preview_deployments_service_created_idx
+  ON preview_deployments(service_id, created_at DESC);
+CREATE INDEX preview_deployments_expiry_idx
+  ON preview_deployments(expires_at, id);
+CREATE UNIQUE INDEX preview_deployments_active_pr_idx
+  ON preview_deployments(service_id, pull_request_number) WHERE status = 'active';
+CREATE UNIQUE INDEX preview_deployments_active_hostname_idx
+  ON preview_deployments(hostname) WHERE status = 'active';
 
 CREATE TABLE runtime_deployments (
   id TEXT PRIMARY KEY,
@@ -425,6 +473,6 @@ CREATE INDEX resource_metric_samples_retention_idx
   ON resource_metric_samples(observed_at);
 
 INSERT INTO schema_migrations(version, applied_at)
-VALUES (10, unixepoch('subsec') * 1000);
+VALUES (13, unixepoch('subsec') * 1000);
 
-PRAGMA user_version = 10;
+PRAGMA user_version = 13;

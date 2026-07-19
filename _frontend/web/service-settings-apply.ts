@@ -9,21 +9,18 @@ import {
   fetchVolumes,
   updateService,
 } from "@/api";
-import type { ImageCredential, Service } from "@/api";
+import type { Service } from "@/api";
 import { parseServiceConfiguration } from "@/service-configuration";
 import { serviceListenerDraftKey } from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
 
 export const applyServiceSettings = async (
   projectID: string,
-  change: PendingServiceSettings,
-  credentials: ImageCredential[],
-  embeddedRegistryHost: string
+  change: PendingServiceSettings
 ): Promise<Service> => {
   const configuration = parseServiceConfiguration(
     change.draft.configuration,
-    credentials,
-    embeddedRegistryHost
+    change.draft.domains.length
   );
   const [currentDomains, currentListeners, currentVolumes] = await Promise.all([
     fetchServiceDomains(projectID, change.serviceID),
@@ -128,10 +125,10 @@ export const applyServiceSettings = async (
     environment: service.environment,
     expectedUpdatedAt: service.updatedAt,
     healthCheck: configuration.healthCheck,
-    imageCredentialId: configuration.imageCredentialId,
-    imageReference: configuration.imageReference,
     memoryMaxBytes: service.memoryMaxBytes,
+    registryCredential: configuration.registryCredential,
     secretReferences: service.secretReferences,
+    source: configuration.source,
     volumeMounts: change.draft.volumeMounts.map((mount) => ({
       ...mount,
       volumeId: createdVolumeIDs.get(mount.volumeId) ?? mount.volumeId,

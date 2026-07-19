@@ -2,6 +2,8 @@ import { ChevronDown, LoaderCircle, Rocket, Undo2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { pendingResourceLabel } from "@/pending-resource-creation";
+import type { PendingResourceCreation } from "@/pending-resource-creation";
 import type { PendingServiceSettings } from "@/service-settings-model";
 import { serviceSettingsChangeDetails } from "@/service-settings-model";
 
@@ -11,12 +13,14 @@ export const ProjectChangeBar = ({
   error,
   onApply,
   onDiscard,
+  resourceDrafts,
 }: {
   applying: boolean;
   changes: PendingServiceSettings[];
   error?: string;
   onApply: () => void;
   onDiscard: () => void;
+  resourceDrafts: PendingResourceCreation[];
 }) => {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const services = useMemo(
@@ -27,10 +31,10 @@ export const ProjectChangeBar = ({
       })),
     [changes]
   );
-  const total = services.reduce(
-    (sum, service) => sum + service.details.length,
-    0
-  );
+  const total =
+    services.reduce((sum, service) => sum + service.details.length, 0) +
+    resourceDrafts.length;
+  const affectedResources = services.length + resourceDrafts.length;
 
   if (total === 0) {
     return null;
@@ -52,8 +56,9 @@ export const ProjectChangeBar = ({
             </p>
           ) : (
             <p className="mt-0.5 text-[9px] text-muted-foreground">
-              {services.length} {services.length === 1 ? "service" : "services"}{" "}
-              will redeploy
+              {affectedResources}{" "}
+              {affectedResources === 1 ? "resource" : "resources"} will be
+              applied
             </p>
           )}
         </div>
@@ -98,6 +103,27 @@ export const ProjectChangeBar = ({
                   </span>
                 </div>
               ))}
+            </section>
+          ))}
+          {resourceDrafts.map((draft) => (
+            <section
+              className="border-b border-border last:border-b-0"
+              key={draft.id}
+            >
+              <header className="flex items-center justify-between bg-muted/25 px-4 py-2.5">
+                <span className="text-[10px] font-medium">
+                  {draft.input.name}
+                </span>
+                <span className="font-mono text-[9px] text-muted-foreground">
+                  1 change
+                </span>
+              </header>
+              <div className="grid grid-cols-[9rem_minmax(0,1fr)] border-t border-border px-4 py-2 text-[9px]">
+                <span className="text-muted-foreground">Create resource</span>
+                <span className="truncate font-mono">
+                  {pendingResourceLabel(draft)}
+                </span>
+              </div>
             </section>
           ))}
           <div className="flex items-center justify-between px-3 py-2">

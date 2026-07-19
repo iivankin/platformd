@@ -37,7 +37,7 @@ func (deployer *fakeDeployer) DeployService(_ context.Context, serviceID string,
 func TestEmbeddedReferenceSleepsUntilExactCommitNotification(t *testing.T) {
 	store := &fakeStore{service: state.ServiceDesired{
 		ID: "service", Enabled: true,
-		Snapshot: serviceconfig.Snapshot{ImageReference: "registry.example.com/team/api:latest"},
+		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PlatformRegistrySource("registry.example.com/team/api:latest")},
 	}}
 	deployer := &fakeDeployer{calls: make(chan string, 4)}
 	watcher, err := New(Config{
@@ -74,7 +74,7 @@ func TestEmbeddedReferenceSleepsUntilExactCommitNotification(t *testing.T) {
 func TestRemoteTagPollsAndDigestReferenceDoesNot(t *testing.T) {
 	store := &fakeStore{service: state.ServiceDesired{
 		ID: "service", Enabled: true,
-		Snapshot: serviceconfig.Snapshot{ImageReference: "docker.io/library/alpine:latest"},
+		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("docker.io/library/alpine:latest")},
 	}}
 	deployer := &fakeDeployer{calls: make(chan string, 4)}
 	watcher, err := New(Config{
@@ -102,7 +102,7 @@ func TestRemoteTagPollsAndDigestReferenceDoesNot(t *testing.T) {
 	digestStore := &fakeStore{service: state.ServiceDesired{
 		ID: "digest-service", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{
-			ImageReference: "docker.io/library/alpine@sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68",
+			Source: serviceconfig.PublicImageSource("docker.io/library/alpine@sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"),
 		},
 	}}
 	digestDeployer := &fakeDeployer{calls: make(chan string, 1)}
@@ -137,7 +137,7 @@ func TestExponentialDelayIsBounded(t *testing.T) {
 func TestTrackStopsWatcherAfterServicePinsDigest(t *testing.T) {
 	store := &fakeStore{service: state.ServiceDesired{
 		ID: "service", Enabled: true,
-		Snapshot: serviceconfig.Snapshot{ImageReference: "docker.io/library/alpine:latest"},
+		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("docker.io/library/alpine:latest")},
 	}}
 	deployer := &fakeDeployer{calls: make(chan string, 1)}
 	watcher, err := New(Config{
@@ -157,7 +157,7 @@ func TestTrackStopsWatcherAfterServicePinsDigest(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.mu.Lock()
-	store.service.Snapshot.ImageReference = "docker.io/library/alpine@sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"
+	store.service.Snapshot.Source.Image.Reference = "docker.io/library/alpine@sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"
 	store.mu.Unlock()
 	if err := watcher.Track(ctx, "service", false); err != nil {
 		t.Fatal(err)

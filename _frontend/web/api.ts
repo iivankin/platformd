@@ -124,16 +124,58 @@ const apiTokenSchema = z.object({
 const apiTokensSchema = z.object({ tokens: z.array(apiTokenSchema) });
 export type APIToken = z.infer<typeof apiTokenSchema>;
 
+const imageSourceSchema = z.discriminatedUnion("type", [
+  z.object({
+    autoUpdate: z.boolean().optional().default(false),
+    image: z.object({ reference: z.string().min(1) }),
+    type: z.literal("platformd_registry"),
+  }),
+  z.object({
+    autoUpdate: z.boolean().optional().default(false),
+    image: z.object({ reference: z.string().min(1) }),
+    type: z.literal("public_image"),
+  }),
+  z.object({
+    autoUpdate: z.boolean().optional().default(false),
+    image: z.object({ reference: z.string().min(1) }),
+    type: z.literal("private_image"),
+  }),
+]);
+
+const githubSourceSchema = z.object({
+  github: z.object({
+    branch: z.string().min(1),
+    contextPath: z.string().min(1),
+    dockerfilePath: z.string().min(1),
+    pullRequestPreview: z
+      .object({ hostnameTemplate: z.string().min(1) })
+      .optional(),
+    repository: z.string().min(1),
+    repositoryId: z.number().int().positive(),
+    revision: z
+      .string()
+      .regex(/^[\da-f]{40}$/u)
+      .optional(),
+    triggerPaths: z.array(z.string().min(1)),
+    waitForCi: z.boolean(),
+  }),
+  type: z.literal("github"),
+});
+
+const serviceSourceSchema = z.union([imageSourceSchema, githubSourceSchema]);
+export type ServiceSource = z.infer<typeof serviceSourceSchema>;
+
 const canvasResourceSchema = z.object({
   activeDeploymentId: z.string().min(1).optional(),
   bucketName: z.string().optional(),
   enabled: z.boolean(),
   id: z.string().min(1),
   imageDigest: z.string().min(1).optional(),
-  imageReference: z.string().optional(),
+  imageReference: z.string().min(1).optional(),
   internalHostname: z.string().min(1),
   kind: z.enum(["service", "postgres", "redis", "object_store"]),
   name: z.string().min(1),
+  source: serviceSourceSchema.optional(),
   status: z.enum(["degraded", "disabled", "failed", "pending", "running"]),
   statusMessage: z.string().optional(),
   volumes: z.array(
@@ -159,16 +201,14 @@ const projectCanvasSchema = z.object({
 
 export type ProjectCanvas = z.infer<typeof projectCanvasSchema>;
 
-const imageCredentialSchema = z.object({
-  createdAt: z.number().int().nonnegative(),
-  id: z.string().min(1),
-  name: z.string().min(1),
+const serviceRegistryCredentialSchema = z.object({
+  password: z.string().min(1),
   registryHost: z.string().min(1),
   username: z.string().min(1),
 });
-
-const imageCredentialsSchema = z.array(imageCredentialSchema);
-export type ImageCredential = z.infer<typeof imageCredentialSchema>;
+export type ServiceRegistryCredential = z.infer<
+  typeof serviceRegistryCredentialSchema
+>;
 
 const healthCheckSchema = z.object({
   path: z.string().min(1),
@@ -188,17 +228,17 @@ const serviceSchema = z.object({
   environment: z.record(z.string(), z.string()),
   healthCheck: healthCheckSchema.optional(),
   id: z.string().min(1),
-  imageCredentialId: z.string().min(1).optional(),
-  imageReference: z.string().min(1),
   memoryMaxBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
   projectId: z.string().min(1),
+  registryCredential: serviceRegistryCredentialSchema.optional(),
   secretReferences: z.array(
     z.object({
       environmentName: z.string().min(1),
       secretId: z.string().min(1),
     })
   ),
+  source: serviceSourceSchema,
   updatedAt: z.number().int().positive(),
   volumeMounts: z.array(
     z.object({ containerPath: z.string().min(1), volumeId: z.string().min(1) })
@@ -236,9 +276,9 @@ export interface CreateVolumeInput {
 export interface CreateServiceInput {
   environment: Record<string, string>;
   healthCheck?: z.infer<typeof healthCheckSchema>;
-  imageCredentialId?: string;
-  imageReference: string;
   name: string;
+  registryCredential?: Pick<ServiceRegistryCredential, "password" | "username">;
+  source: ServiceSource;
 }
 
 export interface UpdateServiceInput {
@@ -249,20 +289,22 @@ export interface UpdateServiceInput {
   environment: Record<string, string>;
   expectedUpdatedAt: number;
   healthCheck?: z.infer<typeof healthCheckSchema>;
-  imageCredentialId?: string;
-  imageReference: string;
   memoryMaxBytes?: number;
+  registryCredential?: Pick<ServiceRegistryCredential, "password" | "username">;
   secretReferences: Service["secretReferences"];
+  source: ServiceSource;
   volumeMounts: Service["volumeMounts"];
 }
 
 const deploymentSchema = z.object({
+  commitMessage: z.string().min(1).optional(),
   createdAt: z.number().int().positive(),
   errorCode: z.string().optional(),
   errorMessage: z.string().optional(),
   finishedAt: z.number().int().positive().optional(),
   id: z.string().min(1),
-  imageDigest: z.string().min(1),
+  imageDigest: z.string().min(1).optional(),
+  imageReference: z.string().min(1).optional(),
   serviceConfigHash: z.string().min(1),
   serviceId: z.string().min(1),
   snapshot: serviceSchema.pick({
@@ -271,13 +313,20 @@ const deploymentSchema = z.object({
     cpuMillicores: true,
     environment: true,
     healthCheck: true,
-    imageCredentialId: true,
-    imageReference: true,
     memoryMaxBytes: true,
     secretReferences: true,
+    source: true,
     volumeMounts: true,
   }),
-  status: z.enum(["failed", "interrupted", "running", "succeeded"]),
+  sourceRevision: z.string().min(1).optional(),
+  status: z.enum([
+    "failed",
+    "interrupted",
+    "running",
+    "skipped",
+    "succeeded",
+    "waiting",
+  ]),
 });
 
 const deploymentPageSchema = z.object({
@@ -287,6 +336,30 @@ const deploymentPageSchema = z.object({
 
 export type Deployment = z.infer<typeof deploymentSchema>;
 export type DeploymentPage = z.infer<typeof deploymentPageSchema>;
+
+const previewDeploymentSchema = z.object({
+  commitMessage: z.string().min(1).optional(),
+  createdAt: z.number().int().positive(),
+  errorMessage: z.string().optional(),
+  expiresAt: z.number().int().positive(),
+  finishedAt: z.number().int().positive().optional(),
+  hostname: z.string().min(1),
+  id: z.string().min(1),
+  pullRequestNumber: z.number().int().positive(),
+  serviceId: z.string().min(1),
+  sourceRevision: z.string().min(1),
+  status: z.enum([
+    "active",
+    "building",
+    "failed",
+    "interrupted",
+    "skipped",
+    "stopped",
+  ]),
+  targetPort: z.number().int().min(1).max(65_535),
+});
+
+export type PreviewDeployment = z.infer<typeof previewDeploymentSchema>;
 
 const runtimeDeploymentSchema = z.object({
   active: z.boolean(),
@@ -339,6 +412,8 @@ export type LogRecord = z.infer<typeof logRecordSchema>;
 export type LogStreamMessage = z.infer<typeof logStreamMessageSchema>;
 export type LogWindow = z.infer<typeof logWindowSchema>;
 
+const buildLogSchema = z.object({ text: z.string() });
+
 export const parseLogStreamMessage = (value: unknown): LogStreamMessage =>
   logStreamMessageSchema.parse(value);
 
@@ -358,6 +433,13 @@ const diskPressureSchema = z.object({
   availableInodes: z.number().int().nonnegative(),
   byteBasisPoints: z.number().int().min(0).max(10_000),
   checkedAt: z.number().int().positive(),
+  components: z.array(
+    z.object({
+      bytes: z.number().int().nonnegative(),
+      id: z.string().min(1),
+    })
+  ),
+  componentsCheckedAt: z.number().int().positive().optional(),
   inodeBasisPoints: z.number().int().min(0).max(10_000),
   level: z.enum(["normal", "low", "critical", "emergency"]),
   reservePresent: z.boolean(),
@@ -1099,7 +1181,10 @@ export const fetchProjectCanvas = async (
 ): Promise<ProjectCanvas> => {
   const response = await fetcher(
     `/api/v1/projects/${encodeURIComponent(projectID)}/canvas`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -1108,54 +1193,6 @@ export const fetchProjectCanvas = async (
     );
   }
   return projectCanvasSchema.parse(await response.json());
-};
-
-export const fetchImageCredentials = async (
-  projectID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<ImageCredential[]> => {
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/image-credentials`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `image credentials request failed with ${response.status}`
-    );
-  }
-  return imageCredentialsSchema.parse(await response.json());
-};
-
-export const createImageCredential = async (
-  projectID: string,
-  input: {
-    name: string;
-    password: string;
-    registryHost: string;
-    username: string;
-  },
-  fetcher: Fetcher = globalThis.fetch
-): Promise<ImageCredential> => {
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/image-credentials`,
-    {
-      body: JSON.stringify(input),
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-    }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `image credential creation failed with ${response.status}`
-    );
-  }
-  return imageCredentialSchema.parse(await response.json());
 };
 
 export const createService = async (
@@ -1306,7 +1343,10 @@ export const fetchVolumeOwnerSuggestion = async (
 ): Promise<VolumeOwnerSuggestion> => {
   const response = await fetcher(
     `${volumePath(projectID, serviceID)}/owner-suggestion`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -1496,6 +1536,24 @@ export const fetchServiceDeployments = async (
   return deploymentPageSchema.parse(await response.json());
 };
 
+export const fetchServicePreviews = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<PreviewDeployment[]> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/previews`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "PR preview history request failed");
+  }
+  return z
+    .object({ previews: z.array(previewDeploymentSchema) })
+    .parse(await response.json()).previews;
+};
+
 export const fetchServiceDeployment = async (
   projectID: string,
   serviceID: string,
@@ -1641,6 +1699,26 @@ export const fetchServiceLogs = async (
     );
   }
   return logWindowSchema.parse(await response.json());
+};
+
+export const fetchBuildLog = async (
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<string> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments/${encodeURIComponent(deploymentID)}/logs/build`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `build log request failed with ${response.status}`
+    );
+  }
+  return buildLogSchema.parse(await response.json()).text;
 };
 
 export type ResourceLogKind = "object_store" | "postgres" | "redis" | "service";
@@ -1940,7 +2018,10 @@ export const fetchManagedImageTags = async (
   }
   const response = await fetcher(
     `/api/v1/managed-images/${engine}/tags?${query.toString()}`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -2005,7 +2086,10 @@ export const fetchManagedRedisPersistence = async (
 ): Promise<ManagedRedisPersistence> => {
   const response = await fetcher(
     `${managedRedisPath(projectID, redisID)}/persistence`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -2192,7 +2276,10 @@ export const fetchManagedPostgresExtensions = async (
 ): Promise<PostgresExtension[]> => {
   const response = await fetcher(
     `${managedPostgresPath(projectID, postgresID)}/extensions`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -2587,7 +2674,10 @@ export const fetchBackupPolicy = async (
 ): Promise<BackupPolicy> => {
   const response = await fetcher(
     `${backupResourcePath(kind, resourceID)}/policy`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -2734,7 +2824,10 @@ export const fetchOperation = async (
 ): Promise<Operation> => {
   const response = await fetcher(
     `/api/v1/operations/${encodeURIComponent(operationID)}`,
-    { headers: { Accept: "application/json" }, signal }
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -3012,7 +3105,9 @@ export const deleteRegistryCredential = async (
 ): Promise<void> => {
   const response = await fetcher(
     registryCredentialsPath(repositoryID, credentialID),
-    { method: "DELETE" }
+    {
+      method: "DELETE",
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -3224,7 +3319,9 @@ export const revokeAPIToken = async (
 ): Promise<void> => {
   const response = await fetcher(
     `/api/v1/tokens/${encodeURIComponent(tokenID)}`,
-    { method: "DELETE" }
+    {
+      method: "DELETE",
+    }
   );
   if (!response.ok) {
     throw await apiError(
@@ -3342,4 +3439,129 @@ export const deleteOriginCertificate = async (
     );
   }
   return installationSettingsSchema.parse(await response.json());
+};
+
+const githubAppSettingsSchema = z.object({
+  appId: z.number().int().nonnegative(),
+  appSlug: z.string(),
+  configured: z.boolean(),
+  updatedAt: z.number().int().nonnegative(),
+  webhookPath: z.string().min(1),
+});
+
+const githubRepositorySchema = z.object({
+  defaultBranch: z.string().min(1),
+  fullName: z.string().min(1),
+  id: z.number().int().positive(),
+  installationId: z.number().int().positive(),
+});
+
+export type GitHubAppSettings = z.infer<typeof githubAppSettingsSchema>;
+export type GitHubRepository = z.infer<typeof githubRepositorySchema>;
+const githubRepositoryPathSchema = z.object({
+  path: z.string().min(1),
+  type: z.enum(["blob", "tree"]),
+});
+export type GitHubRepositoryPath = z.infer<typeof githubRepositoryPathSchema>;
+
+const cloudflareDNSSettingsSchema = z.object({
+  configured: z.boolean(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+export type CloudflareDNSSettings = z.infer<typeof cloudflareDNSSettingsSchema>;
+
+export const fetchGitHubAppSettings = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<GitHubAppSettings> => {
+  const response = await fetcher("/api/v1/settings/github", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "GitHub App settings request failed");
+  }
+  return githubAppSettingsSchema.parse(await response.json());
+};
+
+export const configureGitHubApp = async (
+  input: { appId: number; privateKeyPem: string; webhookSecret: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<GitHubAppSettings> => {
+  const response = await fetcher("/api/v1/settings/github", {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "GitHub App configuration failed");
+  }
+  return githubAppSettingsSchema.parse(await response.json());
+};
+
+export const fetchGitHubRepositories = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<GitHubRepository[]> => {
+  const response = await fetcher("/api/v1/settings/github/repositories", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "GitHub repositories request failed");
+  }
+  return z
+    .object({ repositories: z.array(githubRepositorySchema) })
+    .parse(await response.json()).repositories;
+};
+
+export const fetchGitHubRepositoryPaths = async (
+  repositoryID: number,
+  ref: string,
+  query: string,
+  kind: "dockerfile" | "path",
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<GitHubRepositoryPath[]> => {
+  const parameters = new URLSearchParams({ kind, q: query, ref });
+  const response = await fetcher(
+    `/api/v1/settings/github/repositories/${repositoryID}/paths?${parameters.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "GitHub repository paths request failed");
+  }
+  return z
+    .object({ paths: z.array(githubRepositoryPathSchema) })
+    .parse(await response.json()).paths;
+};
+
+export const fetchCloudflareDNSSettings = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<CloudflareDNSSettings> => {
+  const response = await fetcher("/api/v1/settings/cloudflare", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Cloudflare DNS settings request failed");
+  }
+  return cloudflareDNSSettingsSchema.parse(await response.json());
+};
+
+export const configureCloudflareDNS = async (
+  input: { apiToken: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<CloudflareDNSSettings> => {
+  const response = await fetcher("/api/v1/settings/cloudflare", {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Cloudflare DNS configuration failed");
+  }
+  return cloudflareDNSSettingsSchema.parse(await response.json());
 };

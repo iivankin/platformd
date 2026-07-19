@@ -10,12 +10,17 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/diskpressure"
+	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/journallogs"
 	"github.com/iivankin/platformd/internal/resourcemetrics"
 )
 
 type DiskPressure interface {
 	Snapshot() (diskpressure.Snapshot, bool)
+}
+
+type diskComponents interface {
+	Components(context.Context) (diskusage.Snapshot, error)
 }
 
 type ResourceUsage interface {
@@ -28,15 +33,22 @@ type InfrastructureLogs interface {
 }
 
 type diskPressureResponse struct {
-	Level            diskpressure.Level `json:"level"`
-	ByteBasisPoints  uint64             `json:"byteBasisPoints"`
-	InodeBasisPoints uint64             `json:"inodeBasisPoints"`
-	TotalBytes       uint64             `json:"totalBytes"`
-	AvailableBytes   uint64             `json:"availableBytes"`
-	TotalInodes      uint64             `json:"totalInodes"`
-	AvailableInodes  uint64             `json:"availableInodes"`
-	ReservePresent   bool               `json:"reservePresent"`
-	CheckedAt        int64              `json:"checkedAt"`
+	Level               diskpressure.Level      `json:"level"`
+	ByteBasisPoints     uint64                  `json:"byteBasisPoints"`
+	InodeBasisPoints    uint64                  `json:"inodeBasisPoints"`
+	TotalBytes          uint64                  `json:"totalBytes"`
+	AvailableBytes      uint64                  `json:"availableBytes"`
+	TotalInodes         uint64                  `json:"totalInodes"`
+	AvailableInodes     uint64                  `json:"availableInodes"`
+	ReservePresent      bool                    `json:"reservePresent"`
+	CheckedAt           int64                   `json:"checkedAt"`
+	Components          []diskComponentResponse `json:"components"`
+	ComponentsCheckedAt int64                   `json:"componentsCheckedAt,omitempty"`
+}
+
+type diskComponentResponse struct {
+	ID    string `json:"id"`
+	Bytes uint64 `json:"bytes"`
 }
 
 type resourceUsageResponse struct {
@@ -79,12 +91,27 @@ func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usa
 				writeAPIError(response, http.StatusServiceUnavailable, "disk_pressure_unavailable", "Disk pressure has not been measured")
 				return
 			}
+			components := make([]diskComponentResponse, 0)
+			var componentsCheckedAt int64
+			if reader, ok := pressure.(diskComponents); ok {
+				usage, err := reader.Components(request.Context())
+				if err != nil {
+					writeAPIError(response, http.StatusServiceUnavailable, "disk_usage_unavailable", "Disk component usage is unavailable")
+					return
+				}
+				components = make([]diskComponentResponse, 0, len(usage.Components))
+				for _, component := range usage.Components {
+					components = append(components, diskComponentResponse{ID: component.ID, Bytes: component.Bytes})
+				}
+				componentsCheckedAt = usage.CheckedAt.UnixMilli()
+			}
 			writeJSON(response, http.StatusOK, diskPressureResponse{
 				Level:           snapshot.Level,
 				ByteBasisPoints: snapshot.Usage.ByteBasisPoints, InodeBasisPoints: snapshot.Usage.InodeBasisPoints,
 				TotalBytes: snapshot.Usage.TotalBytes, AvailableBytes: snapshot.Usage.AvailableBytes,
 				TotalInodes: snapshot.Usage.TotalInodes, AvailableInodes: snapshot.Usage.AvailableInodes,
 				ReservePresent: snapshot.ReservePresent, CheckedAt: snapshot.CheckedAt.UnixMilli(),
+				Components: components, ComponentsCheckedAt: componentsCheckedAt,
 			})
 		})
 	}

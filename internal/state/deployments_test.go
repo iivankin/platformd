@@ -18,11 +18,11 @@ func TestDeploymentPublicationIsAtomicAndOptimistic(t *testing.T) {
 	defer store.Close()
 	if _, err := store.database.Exec(`
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
-INSERT INTO services(id, project_id, name, image_reference, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
-VALUES ('service', 'project', 'api', 'docker.io/library/alpine:3.22', '{}', 60, 1, 1, 1)`); err != nil {
+INSERT INTO services(id, project_id, name, source_json, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
+VALUES ('service', 'project', 'api', '{"type":"public_image","autoUpdate":true,"image":{"reference":"docker.io/library/alpine:3.22"}}', '{}', 60, 1, 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
-	_, snapshotJSON, hash, err := serviceconfig.Canonical(serviceconfig.Snapshot{ImageReference: "alpine:3.22"})
+	_, snapshotJSON, hash, err := serviceconfig.Canonical(serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,11 +59,11 @@ func TestFailedDeploymentPairBlocksAutomaticRetry(t *testing.T) {
 	defer store.Close()
 	if _, err := store.database.Exec(`
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
-INSERT INTO services(id, project_id, name, image_reference, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
-VALUES ('service', 'project', 'api', 'docker.io/library/alpine:3.22', '{}', 60, 1, 1, 1)`); err != nil {
+INSERT INTO services(id, project_id, name, source_json, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
+VALUES ('service', 'project', 'api', '{"type":"public_image","autoUpdate":true,"image":{"reference":"docker.io/library/alpine:3.22"}}', '{}', 60, 1, 1, 1)`); err != nil {
 		t.Fatal(err)
 	}
-	_, snapshotJSON, hash, err := serviceconfig.Canonical(serviceconfig.Snapshot{ImageReference: "alpine:3.22"})
+	_, snapshotJSON, hash, err := serviceconfig.Canonical(serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22")})
 	if err != nil {
 		t.Fatal(err)
 	}

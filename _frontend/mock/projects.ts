@@ -38,7 +38,6 @@ const handleProjectCollection = async (
     project,
     resources: [],
   };
-  state.imageCredentials[project.id] = [];
   return json(project, 201);
 };
 
@@ -62,41 +61,6 @@ const handleCanvas = (
     : mockError("not_found", "Project not found", 404);
 };
 
-const handleImageCredentials = async (
-  request: Request,
-  state: MockState,
-  segments: string[]
-): Promise<Response | undefined> => {
-  const [root, projectID, resource, ...rest] = segments;
-  if (
-    root !== "projects" ||
-    !projectID ||
-    resource !== "image-credentials" ||
-    rest.length > 0
-  ) {
-    return undefined;
-  }
-  if (request.method === "GET") {
-    return json(state.imageCredentials[projectID] ?? []);
-  }
-  if (request.method !== "POST") {
-    return undefined;
-  }
-  const input = await readObject(request);
-  const credential = {
-    createdAt: mockNow(),
-    id: nextMockID(state, "image-credential"),
-    name: stringField(input, "name", "mock-registry"),
-    registryHost: stringField(input, "registryHost", "registry.mock.local"),
-    username: stringField(input, "username", "mock-user"),
-  };
-  state.imageCredentials[projectID] = [
-    ...(state.imageCredentials[projectID] ?? []),
-    credential,
-  ];
-  return json(credential, 201);
-};
-
 export const handleProjectsAPI = async (
   request: Request,
   state: MockState,
@@ -107,7 +71,6 @@ export const handleProjectsAPI = async (
   return (
     (await handleProjectCollection(request, state, segments)) ??
     handleCanvas(request, state, segments) ??
-    (await handleImageCredentials(request, state, segments)) ??
     (await handleResourceCreation(request, state, segments)) ??
     (await handleServicesAPI(request, state, segments, url)) ??
     handleManagedResourcesAPI(request, state, segments, url)

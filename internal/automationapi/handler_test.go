@@ -427,7 +427,7 @@ func TestAutomationAPIRequiresAdminBeforeDecodingAndCreatesTokenActor(t *testing
 
 	request = httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{
   "name":"api",
-  "configuration":{"imageReference":"alpine:3.22"}
+  "configuration":{"source":{"type":"public_image","autoUpdate":true,"image":{"reference":"alpine:3.22"}}}
 }`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin-token", Role: "admin"}))

@@ -20,10 +20,14 @@ const service = (
   enabled: true,
   environment,
   id,
-  imageReference: "docker.io/library/alpine:latest",
   name,
   projectId: "project",
   secretReferences: [],
+  source: {
+    autoUpdate: true,
+    image: { reference: "docker.io/library/alpine:latest" },
+    type: "public_image",
+  },
   updatedAt: 1,
   volumeMounts: [],
 });

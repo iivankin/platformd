@@ -249,9 +249,25 @@ func TestVersionEightMigrationMovesResourceReferencesIntoEnvironmentValues(t *te
 	}
 	_, err = database.Exec(`
 CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
+CREATE TABLE projects(
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE installation(
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1), registry_hostname TEXT
+) STRICT;
 CREATE TABLE services(
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, environment_json TEXT NOT NULL,
-  target_port INTEGER, health_path TEXT, startup_timeout_seconds INTEGER NOT NULL
+  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
+  image_reference TEXT NOT NULL, image_credential_id TEXT,
+  command_json TEXT, args_json TEXT, environment_json TEXT NOT NULL,
+  target_port INTEGER, health_path TEXT, startup_timeout_seconds INTEGER NOT NULL,
+  cpu_millis INTEGER, memory_bytes INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
+  active_deployment_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE deployments(
+  id TEXT PRIMARY KEY, service_id TEXT NOT NULL, image_digest TEXT NOT NULL,
+  service_config_hash TEXT NOT NULL, snapshot_json TEXT NOT NULL,
+  status TEXT NOT NULL, error_code TEXT, error_message TEXT,
+  created_at INTEGER NOT NULL, finished_at INTEGER
 ) STRICT;
 CREATE TABLE managed_postgres(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
 CREATE TABLE managed_redis(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
@@ -260,8 +276,12 @@ CREATE TABLE service_resource_variable_refs(
   service_id TEXT NOT NULL, environment_name TEXT NOT NULL,
   resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, output_name TEXT NOT NULL
 ) STRICT;
-INSERT INTO services(id, name, environment_json, target_port, health_path, startup_timeout_seconds)
-VALUES ('worker', 'worker', '{"PLAIN":"value"}', 8080, NULL, 60);
+INSERT INTO projects VALUES ('project', 'project', 1, 1);
+INSERT INTO installation(singleton, registry_hostname) VALUES (1, NULL);
+INSERT INTO services(
+  id, project_id, name, image_reference, environment_json, target_port,
+  health_path, startup_timeout_seconds, created_at, updated_at
+) VALUES ('worker', 'project', 'worker', 'alpine:latest', '{"PLAIN":"value"}', 8080, NULL, 60, 1, 1);
 INSERT INTO managed_postgres(id, name) VALUES ('postgres-id', 'main');
 INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
 VALUES ('worker', 'POSTGRES_URL', 'postgres', 'postgres-id', 'POSTGRES_URL');
@@ -422,9 +442,9 @@ func TestStartupMarksOnlyNonActiveRunningDeploymentInterrupted(t *testing.T) {
 	if err := store.Write(ctx, func(transaction *sql.Tx) error {
 		statements := []string{
 			"INSERT INTO projects(id, name, created_at, updated_at) VALUES ('p', 'project', 1, 1)",
-			"INSERT INTO services(id, project_id, name, image_reference, active_deployment_id, created_at, updated_at) VALUES ('s', 'p', 'service', 'example:latest', 'active', 1, 1)",
-			"INSERT INTO deployments(id, service_id, image_digest, service_config_hash, snapshot_json, status, created_at) VALUES ('active', 's', 'sha256:a', 'a', '{}', 'running', 1)",
-			"INSERT INTO deployments(id, service_id, image_digest, service_config_hash, snapshot_json, status, created_at) VALUES ('candidate', 's', 'sha256:b', 'b', '{}', 'running', 2)",
+			"INSERT INTO services(id, project_id, name, source_json, active_deployment_id, created_at, updated_at) VALUES ('s', 'p', 'service', '{\"type\":\"public_image\",\"image\":{\"reference\":\"example:latest\"}}', 'active', 1, 1)",
+			"INSERT INTO deployments(id, service_id, image_digest, image_reference, service_config_hash, snapshot_json, status, created_at) VALUES ('active', 's', 'sha256:a', 'example:latest', 'a', '{}', 'running', 1)",
+			"INSERT INTO deployments(id, service_id, image_digest, image_reference, service_config_hash, snapshot_json, status, created_at) VALUES ('candidate', 's', 'sha256:b', 'example:latest', 'b', '{}', 'running', 2)",
 			"INSERT INTO operations(id, kind, target_id, status, started_at) VALUES ('op', 'cleanup', 's', 'running', 1)",
 			"INSERT INTO backups(id, target_id, resource_kind, resource_id, generation_id, status, started_at) VALUES ('backup', 'target', 'registry', 'registry', 'generation', 'running', 1)",
 		}

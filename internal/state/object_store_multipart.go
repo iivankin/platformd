@@ -249,3 +249,36 @@ DELETE FROM multipart_uploads WHERE id = ? AND object_store_id = ? AND object_ke
 		return nil
 	})
 }
+
+func (store *Store) ExpiredMultipartUploads(ctx context.Context, beforeMillis int64, limit int) ([]MultipartUpload, error) {
+	if beforeMillis <= 0 || limit < 1 || limit > 1000 {
+		return nil, errors.New("expired multipart upload query is invalid")
+	}
+	rows, err := store.database.QueryContext(ctx, `
+SELECT id, object_store_id, object_key, content_type, created_at, expires_at
+FROM multipart_uploads
+WHERE expires_at <= ?
+ORDER BY expires_at, id
+LIMIT ?`, beforeMillis, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list expired multipart uploads: %w", err)
+	}
+	defer rows.Close()
+	result := make([]MultipartUpload, 0, limit)
+	for rows.Next() {
+		var upload MultipartUpload
+		var contentType sql.NullString
+		if err := rows.Scan(
+			&upload.ID, &upload.ObjectStoreID, &upload.ObjectKey, &contentType,
+			&upload.CreatedAtMillis, &upload.ExpiresAtMillis,
+		); err != nil {
+			return nil, fmt.Errorf("scan expired multipart upload: %w", err)
+		}
+		upload.ContentType = contentType.String
+		result = append(result, upload)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate expired multipart uploads: %w", err)
+	}
+	return result, nil
+}
