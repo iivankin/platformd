@@ -7,9 +7,12 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -127,6 +130,87 @@ func (publisher *integrationPublisher) PublishPostgres(state.ManagedPostgres, co
 
 func (*integrationPublisher) WithdrawPostgres(state.ManagedPostgres) error { return nil }
 
+type integrationProxyEngine struct {
+	*containerengine.Engine
+	proxyURL string
+}
+
+func (engine *integrationProxyEngine) CreateContainer(
+	ctx context.Context,
+	spec containerengine.ContainerSpec,
+) (containerengine.Container, error) {
+	// GitHub-hosted runners reject forwarded traffic from additional bridges.
+	// The host-side proxy preserves a real package build without changing the
+	// production firewall or the derived image's base OCI configuration.
+	spec.Environment = map[string]string{
+		"HTTP_PROXY":  engine.proxyURL,
+		"HTTPS_PROXY": engine.proxyURL,
+		"http_proxy":  engine.proxyURL,
+		"https_proxy": engine.proxyURL,
+	}
+	return engine.Engine.CreateContainer(ctx, spec)
+}
+
+func startIntegrationConnectProxy(t *testing.T, address netip.Addr) string {
+	t.Helper()
+	listenAddress := net.JoinHostPort(address.String(), strconv.Itoa(firewall.ObjectStorePort))
+	listener, err := net.Listen("tcp4", listenAddress)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &http.Server{
+		Handler:           http.HandlerFunc(proxyIntegrationConnect),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	go func() {
+		_ = server.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = server.Shutdown(shutdownContext)
+	})
+	return "http://" + listenAddress
+}
+
+func proxyIntegrationConnect(response http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodConnect {
+		http.Error(response, "CONNECT is required", http.StatusMethodNotAllowed)
+		return
+	}
+	outbound, err := (&net.Dialer{Timeout: 30 * time.Second}).DialContext(request.Context(), "tcp", request.Host)
+	if err != nil {
+		http.Error(response, "upstream connection failed", http.StatusBadGateway)
+		return
+	}
+	hijacker, ok := response.(http.Hijacker)
+	if !ok {
+		_ = outbound.Close()
+		http.Error(response, "connection hijacking is unavailable", http.StatusInternalServerError)
+		return
+	}
+	client, buffered, err := hijacker.Hijack()
+	if err != nil {
+		_ = outbound.Close()
+		return
+	}
+	defer client.Close()
+	defer outbound.Close()
+	if _, err := buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+		return
+	}
+	if err := buffered.Flush(); err != nil {
+		return
+	}
+	go func() {
+		_, _ = io.Copy(outbound, buffered)
+		if connection, ok := outbound.(*net.TCPConn); ok {
+			_ = connection.CloseWrite()
+		}
+	}()
+	_, _ = io.Copy(client, outbound)
+}
+
 func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 	if os.Getenv("PLATFORMD_MANAGED_POSTGRES_INTEGRATION") != "1" {
 		t.Skip("set PLATFORMD_MANAGED_POSTGRES_INTEGRATION=1 on an isolated delegated root host")
@@ -211,6 +295,7 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 	if err := firewallManager.Apply([]firewall.Project{{
 		ID: "managed-postgres-" + profile.name, Bridge: network.Interface,
 		Subnet: netip.MustParsePrefix(network.Subnet), Gateway: gateway,
+		ObjectStoreEnabled: profile.vector,
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -249,8 +334,14 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 	}
 	publisher := &integrationPublisher{}
 	store := &integrationStore{resource: resource}
+	var extensionEngine postgresextension.Engine = engine
+	if profile.vector {
+		extensionEngine = &integrationProxyEngine{
+			Engine: engine, proxyURL: startIntegrationConnectProxy(t, gateway),
+		}
+	}
 	extensionBuilder, err := postgresextension.New(postgresextension.Config{
-		Engine: engine, Growth: allowGrowthGate{}, CacheRoot: paths.PostgresExtensionRoot,
+		Engine: extensionEngine, Growth: allowGrowthGate{}, CacheRoot: paths.PostgresExtensionRoot,
 		LogRoot: paths.LogsRoot, LogSizeBytes: 1 << 20, LogMaxFiles: 2,
 	})
 	if err != nil {
