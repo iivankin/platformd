@@ -203,11 +203,23 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.RemoveNetwork(network.Name) })
+	gateway := netip.MustParseAddr(network.Gateway)
+	if err := firewall.EnableIPv4Forwarding(); err != nil {
+		t.Fatal(err)
+	}
+	firewallManager := firewall.New()
+	if err := firewallManager.Apply([]firewall.Project{{
+		ID: "managed-postgres-" + profile.name, Bridge: network.Interface,
+		Subnet: netip.MustParsePrefix(network.Subnet), Gateway: gateway,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = firewallManager.Clear() })
 	upstreams, err := internaldns.ReadUpstreams("/etc/resolv.conf")
 	if err != nil {
 		t.Fatal(err)
 	}
-	forwarder, err := internaldns.NewForwardCache(upstreams, []netip.Addr{netip.MustParseAddr(network.Gateway)})
+	forwarder, err := internaldns.NewForwardCache(upstreams, []netip.Addr{gateway})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -220,7 +232,7 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		t.Fatal(err)
 	}
 	dnsServer, err := internaldns.Start(ctx, internaldns.ServerConfig{
-		Address: netip.MustParseAddr(network.Gateway), Port: firewall.DNSPort, FreeBind: true, View: view,
+		Address: gateway, Port: firewall.DNSPort, FreeBind: true, View: view,
 	})
 	if err != nil {
 		t.Fatal(err)
