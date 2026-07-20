@@ -17,6 +17,8 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/firewall"
+	"github.com/iivankin/platformd/internal/internaldns"
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/state"
@@ -201,6 +203,29 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.RemoveNetwork(network.Name) })
+	upstreams, err := internaldns.ReadUpstreams("/etc/resolv.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forwarder, err := internaldns.NewForwardCache(upstreams, []netip.Addr{netip.MustParseAddr(network.Gateway)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zone, err := internaldns.NewZone(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := internaldns.NewView(zone, forwarder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dnsServer, err := internaldns.Start(ctx, internaldns.ServerConfig{
+		Address: netip.MustParseAddr(network.Gateway), Port: firewall.DNSPort, FreeBind: true, View: view,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dnsServer.Close() })
 	credentials, err := GenerateCredentials("018bcfe5-687b-7fff-bfff-ffffffffffff", nil)
 	if err != nil {
 		t.Fatal(err)

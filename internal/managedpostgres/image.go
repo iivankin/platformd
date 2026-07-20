@@ -66,7 +66,8 @@ func (controller *Controller) resolveImageWithExtensions(
 	}
 	derived, err := controller.extensionBuilder.Ensure(ctx, postgresextension.BuildRequest{
 		Base: image, Extensions: extensions, ProjectID: resource.ProjectID, PostgresID: resource.ID,
-		Network: placement.NetworkName, CgroupParent: placement.CgroupParent, Progress: progress,
+		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
+		CgroupParent: placement.CgroupParent, Progress: progress,
 	})
 	if err != nil {
 		return containerengine.Image{}, fmt.Errorf("prepare managed PostgreSQL extension image: %w", err)

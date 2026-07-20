@@ -91,7 +91,7 @@ func TestResolveImageRebuildsDesiredExtensionLayer(t *testing.T) {
 		t.Fatalf("resolved image = %+v, requests=%d", resolved, len(builder.requests))
 	}
 	request := builder.requests[0]
-	if request.Base.ID != base.ID || len(request.Extensions) != 1 || request.Extensions[0].RecipeDigest != recipe.Digest || request.Network != "project-network" {
+	if request.Base.ID != base.ID || len(request.Extensions) != 1 || request.Extensions[0].RecipeDigest != recipe.Digest || request.Network != "project-network" || len(request.DNSServers) != 1 || request.DNSServers[0] != "10.90.0.1" {
 		t.Fatalf("extension build request = %+v", request)
 	}
 }

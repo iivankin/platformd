@@ -94,7 +94,7 @@ func TestBuilderCachesDerivedImageWithoutDatabaseVolume(t *testing.T) {
 	base := containerengine.Image{ID: "base", Digest: "sha256:base", Architecture: "amd64", OS: "linux"}
 	request := BuildRequest{
 		Base: base, Extensions: extensions, ProjectID: "project", PostgresID: "postgres",
-		Network: "project-network", CgroupParent: "platformd/postgres",
+		Network: "project-network", DNSServers: []string{"10.90.0.1"}, CgroupParent: "platformd/postgres",
 	}
 	first, err := builder.Ensure(context.Background(), request)
 	if err != nil {
@@ -112,8 +112,8 @@ func TestBuilderCachesDerivedImageWithoutDatabaseVolume(t *testing.T) {
 			t.Fatal("database volume was mounted into the extension builder")
 		}
 	}
-	if len(spec.DNSServers) != 0 || len(spec.DNSSearch) != 0 {
-		t.Fatalf("builder must not inherit private project DNS: servers=%v search=%v", spec.DNSServers, spec.DNSSearch)
+	if len(spec.DNSServers) != 1 || spec.DNSServers[0] != "10.90.0.1" || len(spec.DNSSearch) != 0 {
+		t.Fatalf("builder DNS = servers=%v search=%v", spec.DNSServers, spec.DNSSearch)
 	}
 	second, err := builder.Ensure(context.Background(), request)
 	if err != nil || second.ID != first.ID || len(engine.created) != 1 || growth.calls != 1 {

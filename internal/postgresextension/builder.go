@@ -73,6 +73,7 @@ type BuildRequest struct {
 	ProjectID    string
 	PostgresID   string
 	Network      string
+	DNSServers   []string
 	CgroupParent string
 	Progress     func(string)
 }
@@ -98,7 +99,7 @@ func New(config Config) (*Builder, error) {
 }
 
 func (builder *Builder) Ensure(ctx context.Context, request BuildRequest) (containerengine.Image, error) {
-	if request.Base.ID == "" || request.Base.Digest == "" || request.Base.Architecture == "" || request.Base.OS != "linux" || len(request.Extensions) == 0 || request.ProjectID == "" || request.PostgresID == "" || request.Network == "" {
+	if request.Base.ID == "" || request.Base.Digest == "" || request.Base.Architecture == "" || request.Base.OS != "linux" || len(request.Extensions) == 0 || request.ProjectID == "" || request.PostgresID == "" || request.Network == "" || len(request.DNSServers) == 0 {
 		return containerengine.Image{}, errors.New("PostgreSQL extension build request is incomplete")
 	}
 	cacheKey, err := CacheKey(request.Base.Digest, request.Base.Architecture, request.Extensions)
@@ -142,9 +143,10 @@ func (builder *Builder) Ensure(ctx context.Context, request BuildRequest) (conta
 			"io.platformd.project-id":  request.ProjectID,
 			"io.platformd.postgres-id": request.PostgresID,
 		},
-		Network: request.Network,
-		Mounts:  []containerengine.Mount{{Source: source, Destination: "/platformd/vector.tar.gz", ReadOnly: true}},
-		LogPath: logPath, LogSizeBytes: builder.config.LogSizeBytes, LogMaxFiles: builder.config.LogMaxFiles,
+		Network:    request.Network,
+		DNSServers: append([]string(nil), request.DNSServers...),
+		Mounts:     []containerengine.Mount{{Source: source, Destination: "/platformd/vector.tar.gz", ReadOnly: true}},
+		LogPath:    logPath, LogSizeBytes: builder.config.LogSizeBytes, LogMaxFiles: builder.config.LogMaxFiles,
 		CgroupParent: request.CgroupParent,
 	})
 	if err != nil {
