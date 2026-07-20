@@ -22,6 +22,8 @@ fi
 case "${PG_MAJOR:-}" in
   ''|*[!0-9]*) echo "PG_MAJOR is unavailable" >&2; exit 65 ;;
 esac
+find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i 's|http://|https://|g' {} +
+printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99platformd-network
 apt-get update
 apt-mark hold locales >/dev/null 2>&1 || true
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-$PG_MAJOR"
@@ -39,6 +41,7 @@ rm -rf /tmp/platformd-pgvector
 DEBIAN_FRONTEND=noninteractive apt-get remove -y build-essential "postgresql-server-dev-$PG_MAJOR"
 DEBIAN_FRONTEND=noninteractive apt-get autoremove -y
 apt-mark unhold locales >/dev/null 2>&1 || true
+rm -f /etc/apt/apt.conf.d/99platformd-network
 rm -rf /var/lib/apt/lists/*`
 
 type Engine interface {
