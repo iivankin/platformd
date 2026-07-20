@@ -168,8 +168,12 @@ func startIntegrationConnectProxy(t *testing.T, address netip.Addr) string {
 	if err != nil {
 		t.Fatal(err)
 	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.Proxy = nil
 	server := &http.Server{
-		Handler:           http.HandlerFunc(proxyIntegrationConnect),
+		Handler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			proxyIntegrationRequest(transport, response, request)
+		}),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	go func() {
@@ -179,15 +183,39 @@ func startIntegrationConnectProxy(t *testing.T, address netip.Addr) string {
 		shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		_ = server.Shutdown(shutdownContext)
+		transport.CloseIdleConnections()
 	})
 	return "http://" + listenAddress
 }
 
-func proxyIntegrationConnect(response http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodConnect {
-		http.Error(response, "CONNECT is required", http.StatusMethodNotAllowed)
+func proxyIntegrationRequest(transport http.RoundTripper, response http.ResponseWriter, request *http.Request) {
+	if request.Method == http.MethodConnect {
+		proxyIntegrationConnect(response, request)
 		return
 	}
+	if request.URL.Scheme != "http" || request.URL.Host == "" {
+		http.Error(response, "absolute HTTP URL is required", http.StatusBadRequest)
+		return
+	}
+	outbound := request.Clone(request.Context())
+	outbound.RequestURI = ""
+	outbound.Header.Del("Proxy-Connection")
+	upstream, err := transport.RoundTrip(outbound)
+	if err != nil {
+		http.Error(response, "upstream request failed", http.StatusBadGateway)
+		return
+	}
+	defer upstream.Body.Close()
+	for name, values := range upstream.Header {
+		for _, value := range values {
+			response.Header().Add(name, value)
+		}
+	}
+	response.WriteHeader(upstream.StatusCode)
+	_, _ = io.Copy(response, upstream.Body)
+}
+
+func proxyIntegrationConnect(response http.ResponseWriter, request *http.Request) {
 	outbound, err := (&net.Dialer{Timeout: 30 * time.Second}).DialContext(request.Context(), "tcp", request.Host)
 	if err != nil {
 		http.Error(response, "upstream connection failed", http.StatusBadGateway)

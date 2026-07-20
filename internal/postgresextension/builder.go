@@ -22,7 +22,6 @@ fi
 case "${PG_MAJOR:-}" in
   ''|*[!0-9]*) echo "PG_MAJOR is unavailable" >&2; exit 65 ;;
 esac
-find /etc/apt -type f \( -name '*.list' -o -name '*.sources' \) -exec sed -i 's|http://|https://|g' {} +
 printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99platformd-network
 apt-get update
 apt-mark hold locales >/dev/null 2>&1 || true
