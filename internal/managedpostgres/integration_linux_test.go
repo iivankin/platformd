@@ -12,8 +12,8 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strconv"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,6 +25,7 @@ import (
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/state"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -153,8 +154,17 @@ func (engine *integrationProxyEngine) CreateContainer(
 
 func startIntegrationConnectProxy(t *testing.T, address netip.Addr) string {
 	t.Helper()
-	listenAddress := net.JoinHostPort(address.String(), strconv.Itoa(firewall.ObjectStorePort))
-	listener, err := net.Listen("tcp4", listenAddress)
+	listenAddress := netip.AddrPortFrom(address, firewall.ObjectStorePort).String()
+	listenConfig := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var socketErr error
+		if err := raw.Control(func(descriptor uintptr) {
+			socketErr = unix.SetsockoptInt(int(descriptor), unix.SOL_IP, unix.IP_FREEBIND, 1)
+		}); err != nil {
+			return err
+		}
+		return socketErr
+	}}
+	listener, err := listenConfig.Listen(context.Background(), "tcp4", listenAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
