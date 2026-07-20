@@ -22,6 +22,13 @@ type Project struct {
 	Gateway                  netip.Addr
 	ObjectStoreEnabled       bool
 	BlockedDatabaseEndpoints []DatabaseEndpoint
+	GatewayListeners         []GatewayListener
+}
+
+type GatewayListener struct {
+	Address  netip.Addr
+	Protocol string
+	Port     uint16
 }
 
 // DatabaseEndpoint is process-local maintenance state compiled into the same
@@ -42,6 +49,16 @@ func canonicalProjects(projects []Project) ([]Project, error) {
 		project.BlockedDatabaseEndpoints = slices.Clone(project.BlockedDatabaseEndpoints)
 		slices.SortFunc(project.BlockedDatabaseEndpoints, func(left, right DatabaseEndpoint) int {
 			if order := left.Address.Compare(right.Address); order != 0 {
+				return order
+			}
+			return int(left.Port) - int(right.Port)
+		})
+		project.GatewayListeners = slices.Clone(project.GatewayListeners)
+		slices.SortFunc(project.GatewayListeners, func(left, right GatewayListener) int {
+			if order := left.Address.Compare(right.Address); order != 0 {
+				return order
+			}
+			if order := strings.Compare(left.Protocol, right.Protocol); order != 0 {
 				return order
 			}
 			return int(left.Port) - int(right.Port)
@@ -91,6 +108,16 @@ func validateProject(project Project) error {
 		}
 		if index > 0 && endpoint == project.BlockedDatabaseEndpoints[index-1] {
 			return fmt.Errorf("firewall project %q has duplicate blocked database endpoint %s:%d", project.ID, endpoint.Address, endpoint.Port)
+		}
+	}
+	for index, listener := range project.GatewayListeners {
+		if !listener.Address.IsValid() || !listener.Address.Is4() || !project.Subnet.Contains(listener.Address) ||
+			listener.Address == project.Gateway || listener.Port == 0 ||
+			(listener.Protocol != "tcp" && listener.Protocol != "udp") {
+			return fmt.Errorf("firewall project %q has invalid gateway listener %+v", project.ID, listener)
+		}
+		if index > 0 && listener == project.GatewayListeners[index-1] {
+			return fmt.Errorf("firewall project %q has duplicate gateway listener %+v", project.ID, listener)
 		}
 	}
 	return nil

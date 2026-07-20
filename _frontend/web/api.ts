@@ -63,6 +63,7 @@ const projectSchema = z.object({
   createdAt: z.number().int().nonnegative(),
   id: z.string().min(1),
   name: z.string().min(1),
+  networkGatewayCount: z.number().int().nonnegative(),
   objectStoreCount: z.number().int().nonnegative(),
   postgresCount: z.number().int().nonnegative(),
   redisCount: z.number().int().nonnegative(),
@@ -105,6 +106,39 @@ const containerPortSchema = z.object({
 const containerPortsSchema = z.object({
   ports: z.array(containerPortSchema),
 });
+
+const hostNetworkAddressSchema = z.object({
+  address: z.string().min(1),
+  interface: z.string().min(1),
+});
+
+const networkGatewayInputSchema = z.object({
+  interfaceName: z.string(),
+  listenPort: z.number().int().min(1).max(65_535),
+  mode: z.enum(["import", "export"]),
+  name: z.string().min(1),
+  protocol: z.enum(["tcp", "udp"]),
+  remoteHost: z.string().default(""),
+  remotePort: z.number().int().min(0).max(65_535),
+  sourceAddress: z.string(),
+  targetPort: z.number().int().min(0).max(65_535),
+  targetServiceId: z.string().default(""),
+  transport: z.enum(["vpc", "mesh"]),
+});
+
+const networkGatewaySchema = networkGatewayInputSchema.extend({
+  createdAt: z.number().int().positive(),
+  id: z.string().min(1),
+  internalHostname: z.string().min(1).optional(),
+  projectId: z.string().min(1),
+  projectName: z.string().min(1),
+  targetService: z.string().optional(),
+  updatedAt: z.number().int().positive(),
+});
+
+export type HostNetworkAddress = z.infer<typeof hostNetworkAddressSchema>;
+export type NetworkGatewayInput = z.infer<typeof networkGatewayInputSchema>;
+export type NetworkGateway = z.infer<typeof networkGatewaySchema>;
 const apiErrorSchema = z.object({
   error: z.object({
     code: z.string(),
@@ -177,11 +211,26 @@ const canvasResourceSchema = z.object({
   activeDeploymentId: z.string().min(1).optional(),
   bucketName: z.string().optional(),
   enabled: z.boolean(),
+  gatewayListenPort: z.number().int().min(1).max(65_535).optional(),
+  gatewayMode: z.enum(["import", "export"]).optional(),
+  gatewayProtocol: z.enum(["tcp", "udp"]).optional(),
+  gatewayRemoteHost: z.string().optional(),
+  gatewayRemotePort: z.number().int().min(1).max(65_535).optional(),
+  gatewaySourceAddress: z.string().optional(),
+  gatewayTargetPort: z.number().int().min(1).max(65_535).optional(),
+  gatewayTargetServiceId: z.string().optional(),
+  gatewayTransport: z.enum(["vpc", "mesh"]).optional(),
   id: z.string().min(1),
   imageDigest: z.string().min(1).optional(),
   imageReference: z.string().min(1).optional(),
   internalHostname: z.string().min(1),
-  kind: z.enum(["service", "postgres", "redis", "object_store"]),
+  kind: z.enum([
+    "service",
+    "postgres",
+    "redis",
+    "object_store",
+    "network_gateway",
+  ]),
   name: z.string().min(1),
   source: serviceSourceSchema.optional(),
   status: z.enum(["degraded", "disabled", "failed", "pending", "running"]),
@@ -1236,6 +1285,89 @@ export const fetchProjectCanvas = async (
     );
   }
   return projectCanvasSchema.parse(await response.json());
+};
+
+export const fetchHostNetworkAddresses = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<HostNetworkAddress[]> => {
+  const response = await fetcher("/api/v1/network/addresses", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "host network addresses request failed");
+  }
+  return z
+    .object({ addresses: z.array(hostNetworkAddressSchema) })
+    .parse(await response.json()).addresses;
+};
+
+export const fetchNetworkGateway = async (
+  projectID: string,
+  gatewayID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<NetworkGateway> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/network-gateways/${encodeURIComponent(gatewayID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "network gateway request failed");
+  }
+  return networkGatewaySchema.parse(await response.json());
+};
+
+const mutateNetworkGateway = async (
+  projectID: string,
+  input: NetworkGatewayInput,
+  gatewayID: string | undefined,
+  fetcher: Fetcher
+): Promise<NetworkGateway> => {
+  const suffix = gatewayID ? `/${encodeURIComponent(gatewayID)}` : "";
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/network-gateways${suffix}`,
+    {
+      body: JSON.stringify(networkGatewayInputSchema.parse(input)),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: gatewayID ? "PUT" : "POST",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "network gateway mutation failed");
+  }
+  return networkGatewaySchema.parse(await response.json());
+};
+
+export const createNetworkGateway = (
+  projectID: string,
+  input: NetworkGatewayInput,
+  fetcher: Fetcher = globalThis.fetch
+) => mutateNetworkGateway(projectID, input, undefined, fetcher);
+
+export const updateNetworkGateway = (
+  projectID: string,
+  gatewayID: string,
+  input: NetworkGatewayInput,
+  fetcher: Fetcher = globalThis.fetch
+) => mutateNetworkGateway(projectID, input, gatewayID, fetcher);
+
+export const deleteNetworkGateway = async (
+  projectID: string,
+  gatewayID: string,
+  fetcher: Fetcher = globalThis.fetch
+) => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/network-gateways/${encodeURIComponent(gatewayID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "network gateway deletion failed");
+  }
 };
 
 export const createService = async (
@@ -3534,6 +3666,29 @@ const cloudflareDNSSettingsSchema = z.object({
 
 export type CloudflareDNSSettings = z.infer<typeof cloudflareDNSSettingsSchema>;
 
+const cloudflareMeshSettingsSchema = z.object({
+  accountId: z.string(),
+  configured: z.boolean(),
+  interfaceName: z.string(),
+  meshIp: z.string(),
+  nodeId: z.string(),
+  nodeName: z.string(),
+  status: z.enum(["connected", "disconnected", "not_configured"]),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+const cloudflareMeshCredentialSchema = z.object({
+  accountId: z.string().min(1),
+  apiToken: z.string().min(1),
+});
+
+export type CloudflareMeshSettings = z.infer<
+  typeof cloudflareMeshSettingsSchema
+>;
+export type CloudflareMeshCredential = z.infer<
+  typeof cloudflareMeshCredentialSchema
+>;
+
 export const fetchGitHubAppSettings = async (
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
@@ -3627,4 +3782,67 @@ export const configureCloudflareDNS = async (
     throw await apiError(response, "Cloudflare DNS configuration failed");
   }
   return cloudflareDNSSettingsSchema.parse(await response.json());
+};
+
+export const fetchCloudflareMeshSettings = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<CloudflareMeshSettings> => {
+  const response = await fetcher("/api/v1/settings/cloudflare-mesh", {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Cloudflare Mesh settings request failed");
+  }
+  return cloudflareMeshSettingsSchema.parse(await response.json());
+};
+
+export const fetchCloudflareMeshCredential = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<CloudflareMeshCredential> => {
+  const response = await fetcher(
+    "/api/v1/settings/cloudflare-mesh/credential",
+    {
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "Cloudflare Mesh credential request failed");
+  }
+  return cloudflareMeshCredentialSchema.parse(await response.json());
+};
+
+export const configureCloudflareMesh = async (
+  input: { accountId: string; apiToken: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<CloudflareMeshSettings> => {
+  const response = await fetcher("/api/v1/settings/cloudflare-mesh", {
+    body: JSON.stringify(input),
+    cache: "no-store",
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Cloudflare Mesh configuration failed");
+  }
+  return cloudflareMeshSettingsSchema.parse(await response.json());
+};
+
+export const reconnectCloudflareMesh = async (
+  fetcher: Fetcher = globalThis.fetch
+): Promise<CloudflareMeshSettings> => {
+  const response = await fetcher("/api/v1/settings/cloudflare-mesh/connect", {
+    cache: "no-store",
+    headers: { Accept: "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Cloudflare Mesh connection failed");
+  }
+  return cloudflareMeshSettingsSchema.parse(await response.json());
 };

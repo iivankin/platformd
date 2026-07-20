@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"sort"
 	"strconv"
@@ -147,6 +148,15 @@ func (resolution *environmentResolution) reference(ctx context.Context, referenc
 			return "", fmt.Errorf("object store %s does not export %s", resource.Name, reference.Output)
 		}
 		value, err = resolution.objectStoreOutput(ctx, resource.ID, reference.Output)
+	case "network_gateway":
+		if !resourcevariables.Supports("network_gateway", reference.Output) {
+			return "", fmt.Errorf("network gateway %s does not export %s", resource.Name, reference.Output)
+		}
+		gateway, loadErr := resolution.resolver.store.NetworkGateway(ctx, resolution.projectID, resource.ID)
+		if loadErr != nil {
+			return "", loadErr
+		}
+		value, err = networkGatewayOutput(gateway, reference.Output)
 	default:
 		return "", fmt.Errorf("unsupported resource kind %s", resource.Kind)
 	}
@@ -263,6 +273,22 @@ func objectStoreOutput(resource state.ObjectStore, accessKey, secret, output str
 	value, ok := values[output]
 	if !ok {
 		return "", fmt.Errorf("unsupported object store output %s", output)
+	}
+	return value, nil
+}
+
+func networkGatewayOutput(resource state.NetworkGateway, output string) (string, error) {
+	if resource.Mode != "import" {
+		return "", fmt.Errorf("export gateway %s has no internal endpoint", resource.Name)
+	}
+	host := resource.Name + "." + resource.ProjectName + ".internal"
+	values := map[string]string{
+		"HOST": host, "PORT": strconv.Itoa(resource.ListenPort),
+		"ADDRESS": net.JoinHostPort(host, strconv.Itoa(resource.ListenPort)),
+	}
+	value, ok := values[output]
+	if !ok {
+		return "", fmt.Errorf("unsupported network gateway output %s", output)
 	}
 	return value, nil
 }

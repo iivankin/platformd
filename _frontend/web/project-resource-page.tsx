@@ -1,9 +1,12 @@
-import { Box, Database, HardDrive, Server, X } from "lucide-react";
+import { Box, Database, HardDrive, Network, Server, X } from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
+import type { ProjectCanvas } from "@/api";
+import { NetworkGatewayDetailPanel } from "@/network-gateway-detail-panel";
+import type { NetworkGatewayWorkspaceView } from "@/network-gateway-detail-panel";
 import { ObjectStoreDetailPanel } from "@/object-store-detail-panel";
 import type { ObjectStoreWorkspaceView } from "@/object-store-detail-panel";
 import { PageTabs } from "@/page-tabs";
@@ -30,6 +33,14 @@ const workspaces: Record<
   ResourceNodeData["kind"],
   ResourceWorkspaceDefinition
 > = {
+  network_gateway: {
+    icon: Network,
+    label: "Network gateway",
+    views: [
+      { label: "Variables", value: "variables" },
+      { label: "Settings", value: "settings" },
+    ],
+  },
   object_store: {
     icon: HardDrive,
     label: "Object storage",
@@ -95,6 +106,7 @@ const ResourceWorkspace = ({
   pendingSettings,
   projectID,
   view,
+  resources,
 }: {
   node: ResourceFlowNode;
   onChanged: () => void;
@@ -102,8 +114,20 @@ const ResourceWorkspace = ({
   pendingSettings?: PendingServiceSettings;
   projectID: string;
   view: string;
+  resources: ProjectCanvas["resources"];
 }) => {
   switch (node.data.kind) {
+    case "network_gateway": {
+      return (
+        <NetworkGatewayDetailPanel
+          gatewayID={node.id}
+          onChanged={onChanged}
+          projectID={projectID}
+          resources={resources}
+          view={view as NetworkGatewayWorkspaceView}
+        />
+      );
+    }
     case "service": {
       return (
         <ServiceDetailPanel
@@ -170,6 +194,7 @@ export const ProjectResourcePage = () => {
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [refreshVersion, setRefreshVersion] = useState(0);
+  const [resources, setResources] = useState<ProjectCanvas["resources"]>([]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -182,6 +207,7 @@ export const ProjectResourcePage = () => {
             (!kind || candidate.data.kind === kind)
         );
         setProjectName(canvas.project.name);
+        setResources(canvas.resources);
         setNode(resourceNode);
         setError(
           resourceNode ? undefined : "This resource is not part of the project."
@@ -304,6 +330,7 @@ export const ProjectResourcePage = () => {
           }
           pendingSettings={serviceChanges[resourceID]}
           projectID={projectID}
+          resources={resources}
           view={view}
         />
       </div>

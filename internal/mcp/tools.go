@@ -416,12 +416,13 @@ func writeToolResult(response http.ResponseWriter, id json.RawMessage, output an
 }
 
 type projectOutput struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	ServiceCount     int    `json:"serviceCount"`
-	PostgresCount    int    `json:"postgresCount"`
-	RedisCount       int    `json:"redisCount"`
-	ObjectStoreCount int    `json:"objectStoreCount"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	ServiceCount        int    `json:"serviceCount"`
+	PostgresCount       int    `json:"postgresCount"`
+	RedisCount          int    `json:"redisCount"`
+	ObjectStoreCount    int    `json:"objectStoreCount"`
+	NetworkGatewayCount int    `json:"networkGatewayCount"`
 }
 
 type serviceSummaryOutput struct {
@@ -462,7 +463,8 @@ func publicProject(project state.ProjectSummary) projectOutput {
 	return projectOutput{
 		ID: project.ID, Name: project.Name, ServiceCount: project.ServiceCount,
 		PostgresCount: project.PostgresCount, RedisCount: project.RedisCount,
-		ObjectStoreCount: project.ObjectStoreCount,
+		ObjectStoreCount:    project.ObjectStoreCount,
+		NetworkGatewayCount: project.NetworkGatewayCount,
 	}
 }
 

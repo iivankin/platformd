@@ -22,6 +22,7 @@ const otherComponentPresentation = {
 const componentPresentation: Record<string, { color: string; label: string }> =
   {
     backup_work: { color: "bg-violet-500", label: "Backup work files" },
+    cloudflare_mesh: { color: "bg-blue-500", label: "Cloudflare Mesh state" },
     container_images: { color: "bg-sky-500", label: "Container images" },
     emergency_reserve: { color: "bg-zinc-500", label: "Emergency reserve" },
     logs: { color: "bg-amber-500", label: "Logs" },

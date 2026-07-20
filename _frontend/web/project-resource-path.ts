@@ -1,6 +1,7 @@
 import type { ResourceNodeData } from "@/project-flow";
 
 export type ResourceCollection =
+  | "network-gateways"
   | "object-stores"
   | "postgres"
   | "redis"
@@ -9,6 +10,7 @@ export type ResourceCollection =
 export type DeploymentWorkspaceView = "build-logs" | "deploy-logs" | "details";
 
 const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
+  network_gateway: "network-gateways",
   object_store: "object-stores",
   postgres: "postgres",
   redis: "redis",
@@ -16,6 +18,7 @@ const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
 };
 
 const defaultViewByKind: Record<ResourceNodeData["kind"], string> = {
+  network_gateway: "variables",
   object_store: "objects",
   postgres: "deployments",
   redis: "deployments",

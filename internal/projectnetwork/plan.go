@@ -14,6 +14,13 @@ var defaultPool = netip.MustParsePrefix("10.80.0.0/12")
 
 var ErrPoolExhausted = errors.New("project network pool is exhausted")
 
+const (
+	ContainerLeaseFirstHost = 2
+	ContainerLeaseLastHost  = 191
+	GatewayFirstHost        = 192
+	GatewayLastHost         = 254
+)
+
 type Project struct {
 	ID   string
 	Name string
@@ -118,6 +125,15 @@ func subnetAt(pool netip.Prefix, index uint32) netip.Prefix {
 	value := uint32(address[0])<<24 | uint32(address[1])<<16 | uint32(address[2])<<8 | uint32(address[3])
 	value += index << 8
 	return netip.PrefixFrom(netip.AddrFrom4([4]byte{byte(value >> 24), byte(value >> 16), byte(value >> 8), byte(value)}), 24)
+}
+
+func HostAddress(subnet netip.Prefix, host int) (netip.Addr, error) {
+	if !subnet.IsValid() || !subnet.Addr().Is4() || subnet.Bits() != 24 || host < 1 || host > 254 {
+		return netip.Addr{}, fmt.Errorf("invalid /24 host address request %s host %d", subnet, host)
+	}
+	bytes := subnet.Masked().Addr().As4()
+	bytes[3] = byte(host)
+	return netip.AddrFrom4(bytes), nil
 }
 
 func overlapsAny(candidate netip.Prefix, blocked []netip.Prefix) bool {

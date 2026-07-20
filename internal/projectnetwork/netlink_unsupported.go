@@ -22,3 +22,11 @@ func MarkBridge(string) error {
 func RemoveOwnedBridges() error {
 	return fmt.Errorf("project network cleanup requires Linux")
 }
+
+func AddVirtualAddress(string, netip.Addr) error {
+	return fmt.Errorf("project virtual addresses require Linux")
+}
+
+func RemoveVirtualAddress(string, netip.Addr) error {
+	return fmt.Errorf("project virtual addresses require Linux")
+}

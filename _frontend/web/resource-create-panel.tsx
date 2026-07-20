@@ -1,18 +1,20 @@
-import { Box, Database, HardDrive, Server, X } from "lucide-react";
+import { Box, Database, HardDrive, Network, Server, X } from "lucide-react";
 import type { ComponentType } from "react";
 
 import { Button } from "@/components/ui/button";
 
 interface ResourceCreatePanelProperties {
   onClose: () => void;
-  onSelect: (kind: "postgres" | "redis" | "service" | "storage") => void;
+  onSelect: (
+    kind: "network_gateway" | "postgres" | "redis" | "service" | "storage"
+  ) => void;
 }
 
 const options: {
   description: string;
   enabled: boolean;
   icon: ComponentType<{ className?: string }>;
-  kind: "postgres" | "redis" | "service" | "storage";
+  kind: "network_gateway" | "postgres" | "redis" | "service" | "storage";
   label: string;
 }[] = [
   {
@@ -42,6 +44,14 @@ const options: {
     icon: HardDrive,
     kind: "storage",
     label: "Object storage",
+  },
+  {
+    description:
+      "Map one VPC or Cloudflare Mesh port into or out of this project.",
+    enabled: true,
+    icon: Network,
+    kind: "network_gateway",
+    label: "Network gateway",
   },
 ];
 
@@ -78,6 +88,7 @@ export const ResourceCreatePanel = ({
               key={option.kind}
               onClick={() => {
                 if (
+                  option.kind === "network_gateway" ||
                   option.kind === "postgres" ||
                   option.kind === "redis" ||
                   option.kind === "service" ||

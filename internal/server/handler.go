@@ -15,6 +15,7 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/cloudflaredns"
+	"github.com/iivankin/platformd/internal/cloudflaremesh"
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
@@ -43,6 +44,7 @@ type handlerConfig struct {
 	volumes                 *volume.Application
 	domains                 DomainRepository
 	listeners               ServiceListenerRepository
+	networkGateways         NetworkGatewayRepository
 	tokens                  APITokenRepository
 	serviceImageCredentials ServiceImageCredentialManager
 	logs                    LogRepository
@@ -59,6 +61,7 @@ type handlerConfig struct {
 	onGitHubPush            func(context.Context, githubapp.PushEvent)
 	onGitHubPullRequest     func(context.Context, githubapp.PullRequestEvent)
 	cloudflareDNS           *cloudflaredns.Application
+	cloudflareMesh          *cloudflaremesh.Application
 	backupTargets           *backup.TargetApplication
 	backupResources         *backup.ResourceApplication
 	databaseVersions        *databaseversion.Service
@@ -122,6 +125,12 @@ func WithDomains(repository DomainRepository) Option {
 func WithServiceListeners(repository ServiceListenerRepository) Option {
 	return func(config *handlerConfig) {
 		config.listeners = repository
+	}
+}
+
+func WithNetworkGateways(repository NetworkGatewayRepository) Option {
+	return func(config *handlerConfig) {
+		config.networkGateways = repository
 	}
 }
 
@@ -196,6 +205,12 @@ func WithGitHubApp(
 func WithCloudflareDNS(application *cloudflaredns.Application) Option {
 	return func(config *handlerConfig) {
 		config.cloudflareDNS = application
+	}
+}
+
+func WithCloudflareMesh(application *cloudflaremesh.Application) Option {
+	return func(config *handlerConfig) {
+		config.cloudflareMesh = application
 	}
 }
 
@@ -313,6 +328,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	if config.listeners != nil {
 		registerServiceListenerRoutes(mux, config)
 	}
+	if config.networkGateways != nil {
+		registerNetworkGatewayRoutes(mux, config)
+	}
 	if config.tokens != nil {
 		registerAPITokenRoutes(mux, config)
 	}
@@ -347,6 +365,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.cloudflareDNS != nil {
 		registerCloudflareDNSRoutes(mux, config)
+	}
+	if config.cloudflareMesh != nil {
+		registerCloudflareMeshRoutes(mux, config)
 	}
 	if config.backupTargets != nil {
 		registerBackupTargetRoutes(mux, config.backupTargets)

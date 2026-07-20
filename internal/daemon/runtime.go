@@ -28,40 +28,51 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
+const (
+	cloudflareMeshNetworkID   = "~platformd-cloudflare-mesh"
+	cloudflareMeshNetworkName = "cloudflare-mesh"
+)
+
 type runtimeStack struct {
-	mu                   sync.Mutex
-	ctx                  context.Context
-	closed               bool
-	engine               *containerengine.Engine
-	firewall             *firewall.Manager
-	forwarder            *internaldns.ForwardCache
-	upstreams            []netip.AddrPort
-	firewallProjects     map[string]firewall.Project
-	networks             []string
-	projectFailures      []projectnetwork.Failure
-	dnsServers           []*internaldns.Server
-	dnsZones             map[string]*internaldns.Zone
-	projectNetworks      map[string]containerengine.Network
-	paths                layout.Paths
-	cgroupRoot           string
-	growth               deployment.GrowthGate
-	admission            *admission.Gate
-	deployments          *deployment.Controller
-	previews             *preview.Application
-	serviceWatcher       *servicewatcher.Watcher
-	embeddedRegistryHost string
-	serviceRestarts      *servicerestart.Manager
-	serviceFailures      map[string]error
-	publishedServices    map[string]bool
-	managedRedis         *managedredis.Controller
-	redisFailures        map[string]error
-	managedPostgres      *managedpostgres.Controller
-	postgresExtensions   *postgresextension.Builder
-	postgresExtensionDB  *state.Store
-	postgresFailures     map[string]error
-	objectStoreHandler   http.Handler
-	objectStoreServers   map[string]*objectStoreServer
-	objectStoreFailures  map[string]error
+	mu                         sync.Mutex
+	ctx                        context.Context
+	closed                     bool
+	engine                     *containerengine.Engine
+	firewall                   *firewall.Manager
+	forwarder                  *internaldns.ForwardCache
+	upstreams                  []netip.AddrPort
+	firewallProjects           map[string]firewall.Project
+	networks                   []string
+	projectFailures            []projectnetwork.Failure
+	dnsServers                 []*internaldns.Server
+	dnsZones                   map[string]*internaldns.Zone
+	projectNetworks            map[string]containerengine.Network
+	paths                      layout.Paths
+	cgroupRoot                 string
+	growth                     deployment.GrowthGate
+	admission                  *admission.Gate
+	deployments                *deployment.Controller
+	previews                   *preview.Application
+	serviceWatcher             *servicewatcher.Watcher
+	embeddedRegistryHost       string
+	serviceRestarts            *servicerestart.Manager
+	serviceFailures            map[string]error
+	publishedServices          map[string]bool
+	managedRedis               *managedredis.Controller
+	redisFailures              map[string]error
+	managedPostgres            *managedpostgres.Controller
+	postgresExtensions         *postgresextension.Builder
+	postgresExtensionDB        *state.Store
+	postgresFailures           map[string]error
+	objectStoreHandler         http.Handler
+	objectStoreServers         map[string]*objectStoreServer
+	objectStoreFailures        map[string]error
+	networkGatewayFailures     map[string]error
+	networkGatewayPublications map[string]networkGatewayPublication
+	cloudflareMeshNetwork      containerengine.Network
+	cloudflareMeshNetworkError error
+	cloudflareMeshRuntime      interface{ Close() error }
+	cloudflareMeshCancel       context.CancelFunc
 }
 
 func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject, growth deployment.GrowthGate, gate *admission.Gate) (*runtimeStack, error) {
@@ -72,8 +83,13 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	if err := firewall.EnableIPv4Forwarding(); err != nil {
 		return nil, err
 	}
-	projectInputs := make([]projectnetwork.Project, 0, len(projects))
+	projectInputs := make([]projectnetwork.Project, 0, len(projects)+1)
 	var cleanupFailures []projectnetwork.Failure
+	if err := projectnetwork.RemoveBridge(projectnetwork.BridgeName(cloudflareMeshNetworkID)); err != nil {
+		cleanupFailures = append(cleanupFailures, projectnetwork.Failure{ProjectID: cloudflareMeshNetworkID, Err: err})
+	} else {
+		projectInputs = append(projectInputs, projectnetwork.Project{ID: cloudflareMeshNetworkID, Name: cloudflareMeshNetworkName})
+	}
 	for _, project := range projects {
 		if err := projectnetwork.RemoveBridge(projectnetwork.BridgeName(project.ID)); err != nil {
 			cleanupFailures = append(cleanupFailures, projectnetwork.Failure{ProjectID: project.ID, Err: err})
@@ -112,23 +128,35 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	if err != nil {
 		return nil, errors.Join(err, manager.Clear())
 	}
+	projectFailures := make([]projectnetwork.Failure, 0, len(cleanupFailures)+len(projectPlan.Failures))
+	var cloudflareMeshNetworkError error
+	for _, failure := range append(cleanupFailures, projectPlan.Failures...) {
+		if failure.ProjectID == cloudflareMeshNetworkID {
+			cloudflareMeshNetworkError = failure.Err
+			continue
+		}
+		projectFailures = append(projectFailures, failure)
+	}
 	stack := &runtimeStack{
 		ctx: ctx, engine: engine, firewall: manager, forwarder: forwarder,
-		upstreams:           slices.Clone(upstreams),
-		firewallProjects:    make(map[string]firewall.Project),
-		projectFailures:     append(cleanupFailures, projectPlan.Failures...),
-		dnsZones:            make(map[string]*internaldns.Zone),
-		projectNetworks:     make(map[string]containerengine.Network),
-		paths:               paths,
-		cgroupRoot:          cgroupWorkloadRoot,
-		growth:              growth,
-		admission:           gate,
-		serviceFailures:     make(map[string]error),
-		publishedServices:   make(map[string]bool),
-		redisFailures:       make(map[string]error),
-		postgresFailures:    make(map[string]error),
-		objectStoreServers:  make(map[string]*objectStoreServer),
-		objectStoreFailures: make(map[string]error),
+		upstreams:                  slices.Clone(upstreams),
+		firewallProjects:           make(map[string]firewall.Project),
+		projectFailures:            projectFailures,
+		dnsZones:                   make(map[string]*internaldns.Zone),
+		projectNetworks:            make(map[string]containerengine.Network),
+		paths:                      paths,
+		cgroupRoot:                 cgroupWorkloadRoot,
+		growth:                     growth,
+		admission:                  gate,
+		serviceFailures:            make(map[string]error),
+		publishedServices:          make(map[string]bool),
+		redisFailures:              make(map[string]error),
+		postgresFailures:           make(map[string]error),
+		objectStoreServers:         make(map[string]*objectStoreServer),
+		objectStoreFailures:        make(map[string]error),
+		networkGatewayFailures:     make(map[string]error),
+		networkGatewayPublications: make(map[string]networkGatewayPublication),
+		cloudflareMeshNetworkError: cloudflareMeshNetworkError,
 	}
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
@@ -136,24 +164,47 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	}
 	var firewallProjects []firewall.Project
 	for _, assignment := range projectPlan.Assignments {
+		leaseStart, leaseErr := projectnetwork.HostAddress(assignment.Subnet, projectnetwork.ContainerLeaseFirstHost)
+		if leaseErr != nil {
+			return nil, errors.Join(leaseErr, stack.Close())
+		}
+		leaseEnd, leaseErr := projectnetwork.HostAddress(assignment.Subnet, projectnetwork.ContainerLeaseLastHost)
+		if leaseErr != nil {
+			return nil, errors.Join(leaseErr, stack.Close())
+		}
+		labels := map[string]string{
+			"io.platformd.owner": "project", "io.platformd.project-id": assignment.ProjectID,
+		}
+		if assignment.ProjectID == cloudflareMeshNetworkID {
+			labels = map[string]string{
+				"io.platformd.owner": "system", "io.platformd.component": "cloudflare-mesh",
+			}
+		}
 		network, createErr := engine.CreateNetwork(containerengine.NetworkSpec{
 			Name: assignment.NetworkName, Interface: assignment.Bridge,
 			Subnet: assignment.Subnet.String(), Gateway: assignment.Gateway.String(),
-			Labels: map[string]string{
-				"io.platformd.owner":      "project",
-				"io.platformd.project-id": assignment.ProjectID,
-			},
+			LeaseStart: leaseStart.String(), LeaseEnd: leaseEnd.String(),
+			Labels: labels,
 		})
 		if createErr != nil {
-			stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: assignment.ProjectID, Err: createErr})
+			if assignment.ProjectID == cloudflareMeshNetworkID {
+				stack.cloudflareMeshNetworkError = createErr
+			} else {
+				stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: assignment.ProjectID, Err: createErr})
+			}
 			continue
 		}
 		if network.Interface != assignment.Bridge || network.Subnet != assignment.Subnet.String() || network.Gateway != assignment.Gateway.String() {
 			_ = engine.RemoveNetwork(network.Name)
-			stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{
+			failure := projectnetwork.Failure{
 				ProjectID: assignment.ProjectID,
 				Err:       fmt.Errorf("network inspect differs from requested topology: %+v", network),
-			})
+			}
+			if assignment.ProjectID == cloudflareMeshNetworkID {
+				stack.cloudflareMeshNetworkError = failure.Err
+			} else {
+				stack.projectFailures = append(stack.projectFailures, failure)
+			}
 			continue
 		}
 		zone, zoneErr := internaldns.NewZone(nil)
@@ -171,13 +222,22 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		})
 		if dnsErr != nil {
 			_ = engine.RemoveNetwork(network.Name)
-			stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: assignment.ProjectID, Err: dnsErr})
+			if assignment.ProjectID == cloudflareMeshNetworkID {
+				stack.cloudflareMeshNetworkError = dnsErr
+			} else {
+				stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: assignment.ProjectID, Err: dnsErr})
+			}
 			continue
 		}
 		stack.networks = append(stack.networks, network.Name)
 		stack.dnsServers = append(stack.dnsServers, dnsServer)
-		stack.dnsZones[assignment.ProjectID] = zone
-		stack.projectNetworks[assignment.ProjectID] = network
+		if assignment.ProjectID == cloudflareMeshNetworkID {
+			stack.cloudflareMeshNetwork = network
+			stack.cloudflareMeshNetworkError = nil
+		} else {
+			stack.dnsZones[assignment.ProjectID] = zone
+			stack.projectNetworks[assignment.ProjectID] = network
+		}
 		firewallProjects = append(firewallProjects, firewall.Project{
 			ID: assignment.ProjectID, Bridge: network.Interface,
 			Subnet: assignment.Subnet, Gateway: assignment.Gateway,
@@ -208,6 +268,8 @@ func (stack *runtimeStack) Close() error {
 	}
 	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
 	networks := append([]string(nil), stack.networks...)
+	cloudflareMeshRuntime := stack.cloudflareMeshRuntime
+	cloudflareMeshCancel := stack.cloudflareMeshCancel
 	engine := stack.engine
 	firewallManager := stack.firewall
 	stack.mu.Unlock()
@@ -228,6 +290,12 @@ func (stack *runtimeStack) Close() error {
 		stopContext, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		failures = append(failures, postgres.StopAll(stopContext))
 		cancel()
+	}
+	if cloudflareMeshCancel != nil {
+		cloudflareMeshCancel()
+	}
+	if cloudflareMeshRuntime != nil {
+		failures = append(failures, cloudflareMeshRuntime.Close())
 	}
 	for _, objectStoreServer := range objectStoreServers {
 		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -261,6 +329,8 @@ func (stack *runtimeStack) ReleaseForUpdate() error {
 		objectStoreServers = append(objectStoreServers, objectStoreServer)
 	}
 	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
+	cloudflareMeshRuntime := stack.cloudflareMeshRuntime
+	cloudflareMeshCancel := stack.cloudflareMeshCancel
 	engine := stack.engine
 	stack.mu.Unlock()
 
@@ -271,6 +341,15 @@ func (stack *runtimeStack) ReleaseForUpdate() error {
 		serviceRestarts.Close()
 	}
 	var failures []error
+	if cloudflareMeshCancel != nil {
+		cloudflareMeshCancel()
+	}
+	if cloudflareMeshRuntime != nil {
+		// Unlike workload containers, the Mesh sidecar is not part of the
+		// deployment controllers' quiesce set. Remove it before handing the
+		// ephemeral libpod state to the replacement daemon.
+		failures = append(failures, cloudflareMeshRuntime.Close())
+	}
 	for _, objectStoreServer := range objectStoreServers {
 		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		failures = append(failures, objectStoreServer.server.Shutdown(stopContext))
@@ -321,9 +400,20 @@ func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
 		stack.recordProjectFailure(project.ID, err)
 		return err
 	}
+	leaseStart, err := projectnetwork.HostAddress(assignment.Subnet, projectnetwork.ContainerLeaseFirstHost)
+	if err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
+	leaseEnd, err := projectnetwork.HostAddress(assignment.Subnet, projectnetwork.ContainerLeaseLastHost)
+	if err != nil {
+		stack.recordProjectFailure(project.ID, err)
+		return err
+	}
 	network, err := stack.engine.CreateNetwork(containerengine.NetworkSpec{
 		Name: assignment.NetworkName, Interface: assignment.Bridge,
 		Subnet: assignment.Subnet.String(), Gateway: assignment.Gateway.String(),
+		LeaseStart: leaseStart.String(), LeaseEnd: leaseEnd.String(),
 		Labels: map[string]string{
 			"io.platformd.owner": "project", "io.platformd.project-id": project.ID,
 		},

@@ -36,6 +36,19 @@ func TestNetlinkInspectionAndExactBridgeCleanup(t *testing.T) {
 	if !containsPrefix(occupied, netip.MustParsePrefix("10.80.42.0/24")) {
 		t.Fatalf("interface subnet missing from occupied prefixes: %v", occupied)
 	}
+	virtual := netip.MustParseAddr("10.80.42.192")
+	if err := AddVirtualAddress(bridgeName, virtual); err != nil {
+		t.Fatal(err)
+	}
+	if !linkHasAddress(t, bridge, netip.PrefixFrom(virtual, 32)) {
+		t.Fatal("project gateway virtual address was not published")
+	}
+	if err := RemoveVirtualAddress(bridgeName, virtual); err != nil {
+		t.Fatal(err)
+	}
+	if linkHasAddress(t, bridge, netip.PrefixFrom(virtual, 32)) {
+		t.Fatal("project gateway virtual address survived removal")
+	}
 	if err := RemoveBridge(bridgeName); err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +92,24 @@ func TestNetlinkInspectionAndExactBridgeCleanup(t *testing.T) {
 		}
 		t.Fatal(err)
 	}
+}
+
+func linkHasAddress(t *testing.T, link netlink.Link, expected netip.Prefix) bool {
+	t.Helper()
+	addresses, err := netlink.AddrList(link, netlink.FAMILY_V4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, address := range addresses {
+		if address.IPNet == nil {
+			continue
+		}
+		prefix, err := netip.ParsePrefix(address.IPNet.String())
+		if err == nil && prefix == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func containsPrefix(prefixes []netip.Prefix, expected netip.Prefix) bool {

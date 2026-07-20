@@ -15,19 +15,28 @@ import (
 var ErrProjectNotFound = errors.New("project not found")
 
 type CanvasResource struct {
-	ID               string
-	Kind             string
-	Name             string
-	InternalHostname string
-	ImageReference   string
-	Source           servicesource.Source
-	BucketName       string
-	Enabled          bool
-	Status           string
-	StatusMessage    string
-	ActiveDeployment string
-	ImageDigest      string
-	Volumes          []CanvasVolume
+	ID                     string
+	Kind                   string
+	Name                   string
+	InternalHostname       string
+	ImageReference         string
+	Source                 servicesource.Source
+	BucketName             string
+	Enabled                bool
+	Status                 string
+	StatusMessage          string
+	ActiveDeployment       string
+	ImageDigest            string
+	Volumes                []CanvasVolume
+	GatewayMode            string
+	GatewayTransport       string
+	GatewayProtocol        string
+	GatewaySourceAddress   string
+	GatewayListenPort      int
+	GatewayRemoteHost      string
+	GatewayRemotePort      int
+	GatewayTargetServiceID string
+	GatewayTargetPort      int
 }
 
 type CanvasVolume struct {
@@ -76,11 +85,12 @@ SELECT p.id, p.name,
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
        (SELECT count(*) FROM object_stores o WHERE o.project_id = p.id),
+	   (SELECT count(*) FROM network_gateways g WHERE g.project_id = p.id),
        p.created_at, p.updated_at
 FROM projects p
 WHERE p.id = ?`, projectID).Scan(
 		&project.ID, &project.Name, &project.ServiceCount,
-		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount,
+		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 		&project.CreatedAtMillis, &project.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -200,6 +210,34 @@ ORDER BY v.service_id, v.name, v.id`, project.ID)
 	if err := volumeRows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate project canvas volumes: %w", err)
 	}
+	gateways, err := store.NetworkGateways(ctx, project.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, gateway := range gateways {
+		resources = append(resources, CanvasResource{
+			ID: gateway.ID, Kind: "network_gateway", Name: gateway.Name,
+			InternalHostname: gateway.Name + "." + project.Name + ".internal",
+			Enabled:          true, Status: "pending", Volumes: make([]CanvasVolume, 0),
+			GatewayMode: gateway.Mode, GatewayTransport: gateway.Transport,
+			GatewayProtocol: gateway.Protocol, GatewaySourceAddress: gateway.SourceAddress,
+			GatewayListenPort: gateway.ListenPort,
+			GatewayRemoteHost: gateway.RemoteHost, GatewayRemotePort: gateway.RemotePort,
+			GatewayTargetServiceID: gateway.TargetServiceID, GatewayTargetPort: gateway.TargetPort,
+		})
+		if gateway.Mode == "export" {
+			resources[len(resources)-1].InternalHostname = fmt.Sprintf("%s:%d", gateway.SourceAddress, gateway.ListenPort)
+		}
+	}
+	sort.Slice(resources, func(left, right int) bool {
+		if resources[left].Kind == resources[right].Kind {
+			if resources[left].Name == resources[right].Name {
+				return resources[left].ID < resources[right].ID
+			}
+			return resources[left].Name < resources[right].Name
+		}
+		return resources[left].Kind < resources[right].Kind
+	})
 	return resources, nil
 }
 
@@ -250,6 +288,26 @@ WHERE project_id = ? ORDER BY id`, projectID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate project canvas connections: %w", err)
+	}
+	gatewayRows, err := store.database.QueryContext(ctx, `
+SELECT id, target_service_id FROM network_gateways
+WHERE project_id = ? AND mode = 'export' ORDER BY id`, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list project canvas gateway connections: %w", err)
+	}
+	defer gatewayRows.Close()
+	for gatewayRows.Next() {
+		var gatewayID, targetServiceID string
+		if err := gatewayRows.Scan(&gatewayID, &targetServiceID); err != nil {
+			return nil, fmt.Errorf("scan project canvas gateway connection: %w", err)
+		}
+		key := connectionKey{sourceID: gatewayID, targetID: targetServiceID}
+		if connections[key] == nil {
+			connections[key] = make(map[string]struct{})
+		}
+	}
+	if err := gatewayRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate project canvas gateway connections: %w", err)
 	}
 
 	result := make([]CanvasConnection, 0, len(connections))

@@ -27,6 +27,8 @@ func ProductionConfig(paths layout.Paths, cgroupWorkloadRoot string) Config {
 		OCIRuntime:         filepath.Join(runtimeRoot, "crun"),
 		Conmon:             filepath.Join(runtimeRoot, "conmon"),
 		CgroupWorkloadRoot: cgroupWorkloadRoot,
-		AllowedMountRoots:  []string{paths.VolumesRoot, paths.GeneratedRoot, paths.PostgresExtensionRoot},
+		AllowedMountRoots: []string{
+			paths.VolumesRoot, paths.GeneratedRoot, paths.PostgresExtensionRoot, paths.CloudflareMeshRoot,
+		},
 	}
 }

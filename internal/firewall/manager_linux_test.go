@@ -59,6 +59,13 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	if len(withMaintenance.rules) != len(withObjectStore.rules)+1 {
 		t.Fatalf("database maintenance must add exactly one forward drop: without=%d with=%d", len(withObjectStore.rules), len(withMaintenance.rules))
 	}
+	project.GatewayListeners = []GatewayListener{{
+		Address: netip.MustParseAddr("10.80.1.192"), Protocol: "tcp", Port: 5432,
+	}}
+	withGateway := compileRuleset(TableName, []Project{project})
+	if len(withGateway.rules) != len(withMaintenance.rules)+2 {
+		t.Fatalf("network gateway must add one exact accept and one cross-project drop: without=%d with=%d", len(withMaintenance.rules), len(withGateway.rules))
+	}
 }
 
 func TestEnableIPv4ForwardingAt(t *testing.T) {

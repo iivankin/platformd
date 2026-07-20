@@ -26,6 +26,7 @@ const handleProjectCollection = async (
     createdAt: mockNow(),
     id: nextMockID(state, "project"),
     name: stringField(input, "name", "mock-project"),
+    networkGatewayCount: 0,
     objectStoreCount: 0,
     postgresCount: 0,
     redisCount: 0,

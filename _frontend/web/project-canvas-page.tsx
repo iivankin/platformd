@@ -13,10 +13,12 @@ import { useNavigate, useParams } from "react-router";
 import { fetchProjectCanvas, fetchRegistrySettings } from "@/api";
 import type { ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
+import { NetworkGatewayDraftPage } from "@/network-gateway-draft-page";
 import {
   applyPendingResource,
   pendingCanvasResource,
 } from "@/pending-resource-creation";
+import type { PendingResourceCreation } from "@/pending-resource-creation";
 import { ProjectChangeBar } from "@/project-change-bar";
 import { useProjectChanges } from "@/project-changes";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
@@ -77,12 +79,74 @@ const EmptyCanvas = ({ visible }: { visible: boolean }) => {
         <Waypoints className="mx-auto size-7 text-muted-foreground" />
         <h2 className="mt-5 text-sm font-medium">Empty project canvas</h2>
         <p className="mt-2 text-xs leading-5 text-muted-foreground">
-          Add a service, PostgreSQL, Redis, or object store. Connections appear
-          from explicit references configured in service Variables.
+          Add a service, database, storage, or network gateway. Connections
+          appear from explicit references configured in service Variables.
         </p>
       </div>
     </div>
   );
+};
+
+const ProjectRouteOverlay = ({
+  canvas,
+  canvasWithDrafts,
+  deploymentID,
+  embeddedRegistryHost,
+  onDraftChange,
+  projectID,
+  resourceID,
+  routedDraft,
+  view,
+}: {
+  canvas: ProjectCanvas | null;
+  canvasWithDrafts: ProjectCanvas | null;
+  deploymentID: string;
+  embeddedRegistryHost: string;
+  onDraftChange: (draft: PendingResourceCreation) => void;
+  projectID: string;
+  resourceID: string;
+  routedDraft?: PendingResourceCreation;
+  view: string;
+}) => {
+  if (deploymentID) {
+    return <ProjectDeploymentPage canvas={canvas} />;
+  }
+  if (routedDraft?.kind === "service") {
+    return (
+      <ServiceDraftPage
+        draft={routedDraft}
+        embeddedRegistryHost={embeddedRegistryHost}
+        onChange={onDraftChange}
+        projectID={projectID}
+        projectName={canvas?.project.name ?? ""}
+        view={view}
+      />
+    );
+  }
+  if (routedDraft?.kind === "network_gateway") {
+    return (
+      <NetworkGatewayDraftPage
+        draft={routedDraft}
+        onChange={onDraftChange}
+        projectID={projectID}
+        projectName={canvas?.project.name ?? ""}
+        resources={canvasWithDrafts?.resources ?? []}
+        view={view}
+      />
+    );
+  }
+  if (routedDraft) {
+    return (
+      <ResourceDraftPage
+        draft={routedDraft}
+        onChange={onDraftChange}
+        projectID={projectID}
+        projectName={canvas?.project.name ?? ""}
+        view={view}
+      />
+    );
+  }
+  return resourceID ? <ProjectResourcePage /> : null;
 };
 
 export const ProjectCanvasPage = () => {
@@ -140,33 +204,6 @@ export const ProjectCanvasPage = () => {
     [serviceChanges]
   );
   const routedDraft = resourceDrafts[resourceID];
-  let resourceOverlay = null;
-  if (deploymentID) {
-    resourceOverlay = <ProjectDeploymentPage canvas={canvas} />;
-  } else if (routedDraft?.kind === "service") {
-    resourceOverlay = (
-      <ServiceDraftPage
-        draft={routedDraft}
-        embeddedRegistryHost={embeddedRegistryHost}
-        onChange={(draft) => setResourceDraft(draft.id, draft)}
-        projectID={projectID}
-        projectName={canvas?.project.name ?? ""}
-        view={view}
-      />
-    );
-  } else if (routedDraft) {
-    resourceOverlay = (
-      <ResourceDraftPage
-        draft={routedDraft}
-        onChange={(draft) => setResourceDraft(draft.id, draft)}
-        projectID={projectID}
-        projectName={canvas?.project.name ?? ""}
-        view={view}
-      />
-    );
-  } else if (resourceID) {
-    resourceOverlay = <ProjectResourcePage />;
-  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -369,6 +406,8 @@ export const ProjectCanvasPage = () => {
           onSelect={(kind) => {
             setCreateKind(kind);
           }}
+          projectID={projectID}
+          resources={canvas?.resources ?? []}
         />
         <EmptyCanvas visible={isCanvasEmpty === true} />
         <ReactFlow<ResourceFlowNode, ResourceFlowEdge>
@@ -416,7 +455,17 @@ export const ProjectCanvasPage = () => {
             showInteractive={false}
           />
         </ReactFlow>
-        {resourceOverlay}
+        <ProjectRouteOverlay
+          canvas={canvas}
+          canvasWithDrafts={canvasWithDrafts}
+          deploymentID={deploymentID}
+          embeddedRegistryHost={embeddedRegistryHost}
+          onDraftChange={(draft) => setResourceDraft(draft.id, draft)}
+          projectID={projectID}
+          resourceID={resourceID}
+          routedDraft={routedDraft}
+          view={view}
+        />
       </section>
     </div>
   );

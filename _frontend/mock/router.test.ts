@@ -3,9 +3,12 @@ import { describe, expect, test } from "bun:test";
 import {
   createAPIToken,
   createBackupTarget,
+  configureCloudflareMesh,
+  createNetworkGateway,
   configureGitHubApp,
   createProject,
   createRegistryRepository,
+  deleteNetworkGateway,
   deleteService,
   fetchAPITokens,
   fetchBackupGenerations,
@@ -16,6 +19,8 @@ import {
   fetchBackupTargets,
   fetchContainerFiles,
   fetchContainerPorts,
+  fetchCloudflareMeshCredential,
+  fetchCloudflareMeshSettings,
   fetchDiskPressure,
   fetchIdentity,
   fetchGitHubAppSettings,
@@ -25,7 +30,9 @@ import {
   fetchManagedPostgres,
   fetchManagedPostgresExtensions,
   fetchManagedRedis,
+  fetchHostNetworkAddresses,
   fetchMeta,
+  fetchNetworkGateway,
   fetchObjects,
   fetchObjectStore,
   fetchProjectCanvas,
@@ -69,6 +76,77 @@ const fetcher =
   };
 
 describe("mock API", () => {
+  test("creates an imported network gateway and removes it from the canvas", async () => {
+    const state = createMockState("demo");
+    const mockFetch = fetcher(state);
+
+    await expect(
+      fetchHostNetworkAddresses(undefined, mockFetch)
+    ).resolves.toContainEqual({
+      address: "100.64.0.10",
+      interface: "tailscale0",
+    });
+    const gateway = await createNetworkGateway(
+      "project-demo",
+      {
+        interfaceName: "tailscale0",
+        listenPort: 5432,
+        mode: "import",
+        name: "warehouse-db",
+        protocol: "tcp",
+        remoteHost: "100.64.0.20",
+        remotePort: 5432,
+        sourceAddress: "100.64.0.10",
+        targetPort: 0,
+        targetServiceId: "",
+        transport: "mesh",
+      },
+      mockFetch
+    );
+
+    await expect(
+      fetchNetworkGateway("project-demo", gateway.id, undefined, mockFetch)
+    ).resolves.toMatchObject({
+      interfaceName: "",
+      internalHostname: "warehouse-db.storefront.internal",
+      mode: "import",
+      sourceAddress: "",
+    });
+    let canvas = await fetchProjectCanvas("project-demo", undefined, mockFetch);
+    expect(canvas.project.networkGatewayCount).toBe(1);
+    expect(
+      canvas.resources.some((resource) => resource.id === gateway.id)
+    ).toBe(true);
+
+    await deleteNetworkGateway("project-demo", gateway.id, mockFetch);
+    canvas = await fetchProjectCanvas("project-demo", undefined, mockFetch);
+    expect(canvas.project.networkGatewayCount).toBe(0);
+    expect(
+      canvas.resources.some((resource) => resource.id === gateway.id)
+    ).toBe(false);
+  });
+
+  test("configures and reveals the installation-managed Mesh credential", async () => {
+    const state = createMockState("empty");
+    const mockFetch = fetcher(state);
+    const accountId = "0123456789abcdef0123456789abcdef";
+    const apiToken = "mock-cloudflare-mesh-api-token-value";
+
+    await expect(
+      fetchCloudflareMeshSettings(undefined, mockFetch)
+    ).resolves.toMatchObject({ configured: false, status: "not_configured" });
+    await expect(
+      configureCloudflareMesh({ accountId, apiToken }, mockFetch)
+    ).resolves.toMatchObject({
+      configured: true,
+      meshIp: "100.96.0.21",
+      status: "connected",
+    });
+    await expect(
+      fetchCloudflareMeshCredential(undefined, mockFetch)
+    ).resolves.toEqual({ accountId, apiToken });
+  });
+
   test("returns detected listening ports for live resources", async () => {
     const mockFetch = fetcher(createMockState("demo"));
 

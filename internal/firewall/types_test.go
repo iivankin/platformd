@@ -53,6 +53,12 @@ func TestCanonicalProjectsRejectsUnsafeTopology(t *testing.T) {
 				},
 			},
 		},
+		"gateway listener outside project": {
+			{
+				ID: "a", Bridge: "pd0", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1"),
+				GatewayListeners: []GatewayListener{{Address: netip.MustParseAddr("10.80.2.192"), Protocol: "tcp", Port: 5432}},
+			},
+		},
 	}
 	for name, projects := range tests {
 		t.Run(name, func(t *testing.T) {

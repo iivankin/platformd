@@ -96,3 +96,31 @@ test("counts an enabled backup policy on a managed resource draft", () => {
     },
   ]);
 });
+
+test("counts a network gateway draft as one independently deployable resource", () => {
+  const draft: PendingResourceCreation = {
+    id: "draft:gateway",
+    input: {
+      interfaceName: "tailscale0",
+      listenPort: 5432,
+      mode: "import",
+      name: "warehouse-db",
+      protocol: "tcp",
+      remoteHost: "100.64.0.20",
+      remotePort: 5432,
+      sourceAddress: "100.64.0.10",
+      targetPort: 0,
+      targetServiceId: "",
+      transport: "mesh",
+    },
+    kind: "network_gateway",
+  };
+
+  expect(pendingResourceChangeDetails(draft)).toEqual([
+    {
+      detail: "Network gateway",
+      id: "create:draft:gateway",
+      label: "Create resource",
+    },
+  ]);
+});

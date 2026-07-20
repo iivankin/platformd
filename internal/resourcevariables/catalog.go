@@ -3,9 +3,10 @@ package resourcevariables
 import "slices"
 
 var outputs = map[string][]string{
-	"postgres":     {"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "DATABASE_URL", "POSTGRES_URL"},
-	"redis":        {"REDISHOST", "REDISPORT", "REDISPASSWORD", "REDIS_URL"},
-	"object_store": {"S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"},
+	"postgres":        {"PGHOST", "PGPORT", "PGDATABASE", "PGUSER", "PGPASSWORD", "DATABASE_URL", "POSTGRES_URL"},
+	"redis":           {"REDISHOST", "REDISPORT", "REDISPASSWORD", "REDIS_URL"},
+	"object_store":    {"S3_ENDPOINT", "S3_REGION", "S3_BUCKET", "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY"},
+	"network_gateway": {"HOST", "PORT", "ADDRESS"},
 }
 
 func OutputNames(kind string) []string {

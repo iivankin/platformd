@@ -40,11 +40,11 @@ func TestManagerForwardsTCPAndUpdatesTargetWithoutRebinding(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	publicPort := availableTCPPort(t)
-	if err := manager.Add(Route{Protocol: "TCP", PublicPort: publicPort, ServiceID: "service", TargetPort: 8080}); err != nil {
+	if err := manager.Add(Route{ID: "route", Protocol: "TCP", ListenAddress: "127.0.0.1", ListenPort: publicPort, Target: ServiceTarget{ServiceID: "service", Port: 8080}}); err != nil {
 		t.Fatal(err)
 	}
 	assertTCPEcho(t, publicPort, "first")
-	if err := manager.Add(Route{Protocol: "tcp", PublicPort: publicPort, ServiceID: "service", TargetPort: 9090}); err != nil {
+	if err := manager.Add(Route{ID: "route", Protocol: "tcp", ListenAddress: "127.0.0.1", ListenPort: publicPort, Target: ServiceTarget{ServiceID: "service", Port: 9090}}); err != nil {
 		t.Fatal(err)
 	}
 	assertTCPEcho(t, publicPort, "second")
@@ -64,7 +64,7 @@ func TestManagerForwardsUDPAndRejectsUnavailableOrReservedTCPPorts(t *testing.T)
 	}
 	t.Cleanup(func() { _ = manager.Close() })
 	publicPort := availableUDPPort(t)
-	if err := manager.Add(Route{Protocol: "udp", PublicPort: publicPort, ServiceID: "service", TargetPort: 5353}); err != nil {
+	if err := manager.Add(Route{ID: "route", Protocol: "udp", ListenAddress: "127.0.0.1", ListenPort: publicPort, Target: ServiceTarget{ServiceID: "service", Port: 5353}}); err != nil {
 		t.Fatal(err)
 	}
 	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: publicPort})
@@ -90,7 +90,7 @@ func TestManagerForwardsUDPAndRejectsUnavailableOrReservedTCPPorts(t *testing.T)
 	}
 	defer occupied.Close()
 	_, occupiedPort := splitAddress(t, occupied.Addr().String())
-	if err := manager.Add(Route{Protocol: "tcp", PublicPort: occupiedPort, ServiceID: "service", TargetPort: 8080}); err == nil {
+	if err := manager.Add(Route{ID: "occupied-tcp", Protocol: "tcp", ListenAddress: "0.0.0.0", ListenPort: occupiedPort, Target: ServiceTarget{ServiceID: "service", Port: 8080}}); err == nil {
 		t.Fatal("occupied public TCP port was accepted")
 	}
 	occupiedUDP, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero})
@@ -99,11 +99,65 @@ func TestManagerForwardsUDPAndRejectsUnavailableOrReservedTCPPorts(t *testing.T)
 	}
 	defer occupiedUDP.Close()
 	_, occupiedUDPPort := splitAddress(t, occupiedUDP.LocalAddr().String())
-	if err := manager.Add(Route{Protocol: "udp", PublicPort: occupiedUDPPort, ServiceID: "service", TargetPort: 5353}); err == nil {
+	if err := manager.Add(Route{ID: "occupied-udp", Protocol: "udp", ListenAddress: "0.0.0.0", ListenPort: occupiedUDPPort, Target: ServiceTarget{ServiceID: "service", Port: 5353}}); err == nil {
 		t.Fatal("occupied public UDP port was accepted")
 	}
-	if err := manager.Add(Route{Protocol: "TCP", PublicPort: 443, ServiceID: "service", TargetPort: 8443}); err == nil {
+	if err := manager.Add(Route{ID: "reserved-https", Protocol: "tcp", ListenAddress: "127.0.0.1", ListenPort: 443, Target: ServiceTarget{ServiceID: "service", Port: 8443}}); err == nil {
 		t.Fatal("reserved HTTPS port was accepted")
+	}
+}
+
+func TestManagerForwardsToAddressTargetWithPinnedSource(t *testing.T) {
+	manager, err := New(Config{Backends: &resolverStub{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+
+	tcpBackend := tcpEchoServer(t)
+	host, port := splitAddress(t, tcpBackend.Addr().String())
+	listenPort := availableTCPPort(t)
+	if err := manager.Add(Route{
+		ID: "tcp-gateway", Protocol: "tcp", ListenAddress: "127.0.0.1", ListenPort: listenPort,
+		Target: AddressTarget{Host: host, Port: port, SourceAddress: "127.0.0.1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertTCPEcho(t, listenPort, "gateway")
+
+	udpBackend := udpEchoServer(t)
+	host, port = splitAddress(t, udpBackend.LocalAddr().String())
+	listenPort = availableUDPPort(t)
+	if err := manager.Add(Route{
+		ID: "udp-gateway", Protocol: "udp", ListenAddress: "127.0.0.1", ListenPort: listenPort,
+		Target: AddressTarget{Host: host, Port: port, SourceAddress: "127.0.0.1"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertUDPEcho(t, listenPort, "gateway")
+}
+
+func TestManagerRejectsNegativeNamespacePIDsAndSeparatesListenerOwnership(t *testing.T) {
+	manager, err := New(Config{Backends: &resolverStub{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	target := AddressTarget{Host: "127.0.0.1", Port: 8080}
+	if err := manager.Add(Route{
+		ID: "negative-listener", Protocol: "tcp", ListenAddress: "127.0.0.1", ListenPort: 9000,
+		ListenNamespacePID: -1, Target: target,
+	}); err == nil {
+		t.Fatal("negative listener namespace PID was accepted")
+	}
+	if err := manager.Add(Route{
+		ID: "negative-dial", Protocol: "tcp", ListenAddress: "127.0.0.1", ListenPort: 9000,
+		DialNamespacePID: -1, Target: target,
+	}); err == nil {
+		t.Fatal("negative dial namespace PID was accepted")
+	}
+	if routeKey("tcp", "127.0.0.1", 9000, 101) == routeKey("tcp", "127.0.0.1", 9000, 202) {
+		t.Fatal("listener ownership collides across network namespaces")
 	}
 }
 
@@ -165,6 +219,26 @@ func assertTCPEcho(t *testing.T, port int, value string) {
 	buffer := make([]byte, len(value))
 	if _, err := io.ReadFull(connection, buffer); err != nil || string(buffer) != value {
 		t.Fatalf("TCP echo = %q, %v", buffer, err)
+	}
+}
+
+func assertUDPEcho(t *testing.T, port int, value string) {
+	t.Helper()
+	client, err := net.DialUDP("udp4", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte(value)); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, len(value))
+	count, err := client.Read(buffer)
+	if err != nil || string(buffer[:count]) != value {
+		t.Fatalf("UDP echo = %q, %v", buffer[:count], err)
 	}
 }
 

@@ -58,3 +58,18 @@ func TestPlanRejectsInvalidTopologyInputs(t *testing.T) {
 		}
 	}
 }
+
+func TestHostAddressKeepsContainerAndGatewayRangesDisjoint(t *testing.T) {
+	subnet := netip.MustParsePrefix("10.80.42.0/24")
+	containerEnd, err := HostAddress(subnet, ContainerLeaseLastHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gatewayStart, err := HostAddress(subnet, GatewayFirstHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerEnd.String() != "10.80.42.191" || gatewayStart.String() != "10.80.42.192" {
+		t.Fatalf("unexpected reserved ranges: container=%s gateway=%s", containerEnd, gatewayStart)
+	}
+}

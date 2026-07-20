@@ -11,7 +11,10 @@ type PostgresDraft = Extract<PendingResourceCreation, { kind: "postgres" }>;
 type RedisDraft = Extract<PendingResourceCreation, { kind: "redis" }>;
 type StorageDraft = Extract<PendingResourceCreation, { kind: "storage" }>;
 type ManagedDatabaseDraft = PostgresDraft | RedisDraft;
-type ManagedDraft = Exclude<PendingResourceCreation, { kind: "service" }>;
+type ManagedDraft = Exclude<
+  PendingResourceCreation,
+  { kind: "network_gateway" | "service" }
+>;
 
 const numberValue = (value: string) =>
   value === "" ? undefined : Number(value);

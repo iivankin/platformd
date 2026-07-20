@@ -112,6 +112,65 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 	}
 }
 
+func TestResourceVariableResolverExpandsImportedNetworkGatewayOutputs(t *testing.T) {
+	ctx := context.Background()
+	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	project, err := store.CreateProject(ctx, state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateNetworkGateway(ctx, state.CreateNetworkGateway{
+		ID: "warehouse", ProjectID: project.ID,
+		Configuration: state.NetworkGatewayConfiguration{
+			Name: "warehouse", Mode: "import", Transport: "vpc", Protocol: "tcp",
+			InterfaceName: "wg0", SourceAddress: "10.20.0.2", ListenPort: 5432,
+			RemoteHost: "10.20.0.9", RemotePort: 5432,
+		},
+		AuditEventID: "gateway-audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	worker, err := store.CreateService(ctx, state.CreateService{
+		ID: "worker", ProjectID: project.ID, Name: "worker", Enabled: true,
+		Snapshot: serviceconfig.Snapshot{
+			Source: serviceconfig.PublicImageSource("alpine"),
+			Environment: map[string]string{
+				"WAREHOUSE_HOST":    "${{warehouse.HOST}}",
+				"WAREHOUSE_PORT":    "${{warehouse.PORT}}",
+				"WAREHOUSE_ADDRESS": "postgres://${{warehouse.ADDRESS}}/inventory",
+			},
+		},
+		AuditEventID: "worker-audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resolved, err := (resourceVariableResolver{store: store}).Resolve(ctx, worker, "deployment")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"WAREHOUSE_HOST":    "warehouse.shop.internal",
+		"WAREHOUSE_PORT":    "5432",
+		"WAREHOUSE_ADDRESS": "postgres://warehouse.shop.internal:5432/inventory",
+	}
+	for name, value := range want {
+		if resolved[name] != value {
+			t.Fatalf("resolved %s = %q, want %q", name, resolved[name], value)
+		}
+	}
+}
+
 func TestResourceVariableResolverRejectsCycles(t *testing.T) {
 	ctx := context.Background()
 	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())

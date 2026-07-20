@@ -54,6 +54,16 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 		Path:   input.LogPath,
 		Size:   input.LogSizeBytes,
 	}
+	if input.SecurityProfile == ContainerSecurityCloudflareMesh {
+		// The Cloudflare client creates and configures its own TUN interface.
+		// Keep this narrower than --privileged and aligned with Cloudflare's
+		// packaged systemd unit instead of exposing arbitrary host devices.
+		spec.CapAdd = []string{
+			"CAP_DAC_OVERRIDE", "CAP_NET_ADMIN", "CAP_NET_BIND_SERVICE", "CAP_NET_RAW",
+			"CAP_SETGID", "CAP_SETUID", "CAP_SYS_PTRACE",
+		}
+		spec.Devices = []buildspec.LinuxDevice{{Path: "/dev/net/tun"}}
+	}
 
 	if input.Network == "" {
 		spec.NetNS = specgen.Namespace{NSMode: specgen.NoNetwork}
@@ -340,6 +350,9 @@ func (e *Engine) validateContainerSpec(spec ContainerSpec) error {
 	}
 	if spec.CPUMillicores < 0 || spec.MemoryMaxBytes < 0 {
 		return fmt.Errorf("container resource limits cannot be negative")
+	}
+	if spec.SecurityProfile != ContainerSecurityDefault && spec.SecurityProfile != ContainerSecurityCloudflareMesh {
+		return fmt.Errorf("unknown container security profile %q", spec.SecurityProfile)
 	}
 	if spec.CgroupParent != "" {
 		if err := validateAbsolutePath("container cgroup parent", spec.CgroupParent); err != nil {

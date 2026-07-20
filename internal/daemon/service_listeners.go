@@ -27,7 +27,7 @@ func (repository *liveServiceListenerRepository) WithdrawService(ctx context.Con
 	var failures []error
 	for _, listener := range listeners {
 		if listener.ServiceID == serviceID {
-			failures = append(failures, repository.proxy.Remove(listener.Protocol, listener.PublicPort))
+			failures = append(failures, repository.proxy.Remove(listenerRouteID(listener.Protocol, listener.PublicPort)))
 		}
 	}
 	return errors.Join(failures...)
@@ -52,8 +52,9 @@ func (repository *liveServiceListenerRepository) AttachServiceListener(ctx conte
 	}
 
 	requested := portproxy.Route{
-		Protocol: input.Protocol, PublicPort: input.PublicPort,
-		ServiceID: input.ServiceID, TargetPort: input.TargetPort,
+		ID:       listenerRouteID(input.Protocol, input.PublicPort),
+		Protocol: input.Protocol, ListenAddress: "0.0.0.0", ListenPort: input.PublicPort,
+		Target: portproxy.ServiceTarget{ServiceID: input.ServiceID, Port: input.TargetPort},
 	}
 	if err := repository.proxy.Add(requested); err != nil {
 		return state.ServiceListener{}, state.ErrPublicPortUnavailable
@@ -66,7 +67,7 @@ func (repository *liveServiceListenerRepository) AttachServiceListener(ctx conte
 	// The socket is acquired before committing state so an unavailable VPS port
 	// can never be persisted. Restore the prior route if the state write fails.
 	if existing == nil {
-		_ = repository.proxy.Remove(input.Protocol, input.PublicPort)
+		_ = repository.proxy.Remove(listenerRouteID(input.Protocol, input.PublicPort))
 	} else {
 		_ = repository.proxy.Add(listenerRoute(*existing))
 	}
@@ -79,7 +80,7 @@ func (repository *liveServiceListenerRepository) DetachServiceListener(ctx conte
 	if err := repository.store.DetachServiceListener(ctx, input); err != nil {
 		return err
 	}
-	return repository.proxy.Remove(input.Protocol, input.PublicPort)
+	return repository.proxy.Remove(listenerRouteID(input.Protocol, input.PublicPort))
 }
 
 func (repository *liveServiceListenerRepository) Restore(ctx context.Context) error {
@@ -112,7 +113,12 @@ func (repository *liveServiceListenerRepository) matchingListener(ctx context.Co
 
 func listenerRoute(listener state.ServiceListener) portproxy.Route {
 	return portproxy.Route{
-		Protocol: listener.Protocol, PublicPort: listener.PublicPort,
-		ServiceID: listener.ServiceID, TargetPort: listener.TargetPort,
+		ID:       listenerRouteID(listener.Protocol, listener.PublicPort),
+		Protocol: listener.Protocol, ListenAddress: "0.0.0.0", ListenPort: listener.PublicPort,
+		Target: portproxy.ServiceTarget{ServiceID: listener.ServiceID, Port: listener.TargetPort},
 	}
+}
+
+func listenerRouteID(protocol string, publicPort int) string {
+	return fmt.Sprintf("service-listener:%s:%d", strings.ToLower(strings.TrimSpace(protocol)), publicPort)
 }

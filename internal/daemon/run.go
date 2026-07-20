@@ -27,6 +27,7 @@ import (
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/cgrouptree"
 	"github.com/iivankin/platformd/internal/cloudflaredns"
+	"github.com/iivankin/platformd/internal/cloudflaremesh"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerlogs"
@@ -160,6 +161,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		{ID: "object_storage", Path: paths.ObjectsRoot},
 		{ID: "logs", Path: paths.LogsRoot},
 		{ID: "backup_work", Path: paths.BackupWorkRoot},
+		{ID: "cloudflare_mesh", Path: paths.CloudflareMeshRoot},
 		{ID: "postgres_extensions", Path: paths.PostgresExtensionRoot},
 		{ID: "platform_state", Path: filepath.Dir(paths.StateDatabase)},
 		{ID: "releases", Path: paths.ReleasesRoot},
@@ -245,6 +247,30 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	})
 	if err != nil {
 		return fmt.Errorf("configure Cloudflare DNS integration: %w", err)
+	}
+	cloudflareMeshRuntime, err := cloudflaremesh.ProductionRuntime(cloudflaremesh.ProductionRuntimeConfig{
+		Engine: runtime.engine, Network: runtime.cloudflareMeshNetwork,
+		StateRoot: paths.CloudflareMeshRoot, GeneratedRoot: paths.GeneratedRoot, LogRoot: paths.LogsRoot,
+		CgroupParent: filepath.Join(cgroups.WorkloadRoot(), "cloudflare-mesh"),
+		StartupError: runtime.cloudflareMeshNetworkError,
+	})
+	if err != nil {
+		return fmt.Errorf("configure Cloudflare Mesh sidecar runtime: %w", err)
+	}
+	runtime.cloudflareMeshRuntime = cloudflareMeshRuntime
+	cloudflareMesh, err := cloudflaremesh.New(cloudflaremesh.Config{
+		Repository: store, Master: key, InstallationID: installation.ID,
+		Runtime: cloudflareMeshRuntime,
+	})
+	if err != nil {
+		return fmt.Errorf("configure Cloudflare Mesh integration: %w", err)
+	}
+	if !installation.RecoveryMode {
+		if err := cloudflareMesh.EnsureConfigured(ctx); err != nil {
+			// Mesh is an optional integration. Keep the control plane available and
+			// surface its gateways as degraded until the managed client reconnects.
+			log.Printf("managed Cloudflare Mesh is unavailable: %v", err)
+		}
 	}
 	registryHostname := ""
 	if installation.RegistryHostname != nil {
@@ -557,10 +583,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	domains := &liveDomainRepository{store: store, certificates: certificates, publicMu: publicMutationMu}
 	var serviceListeners server.ServiceListenerRepository
 	var liveServiceListeners *liveServiceListenerRepository
+	var networkGateways server.NetworkGatewayRepository
 	if !installation.RecoveryMode {
 		publicPorts, proxyErr := portproxy.New(portproxy.Config{
 			Backends: runtime,
-			OnError:  func(proxyErr error) { log.Printf("public service listener: %v", proxyErr) },
+			OnError: func(routeID string, proxyErr error) {
+				log.Printf("port proxy %s: %v", routeID, proxyErr)
+			},
 		})
 		if proxyErr != nil {
 			return fmt.Errorf("configure public service listeners: %w", proxyErr)
@@ -571,6 +600,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return err
 		}
 		serviceListeners = liveServiceListeners
+		liveNetworkGateways := &liveNetworkGatewayRepository{
+			store: store, runtime: runtime, proxy: publicPorts, mesh: cloudflareMesh,
+		}
+		if err := liveNetworkGateways.Restore(ctx); err != nil {
+			return err
+		}
+		runtime.startCloudflareMeshSupervisor(ctx, cloudflareMesh, liveNetworkGateways)
+		networkGateways = liveNetworkGateways
 	}
 	var automationHostname string
 	if installation.AutomationHostname != nil {
@@ -664,6 +701,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithServiceImageCredentials(imageCredentials),
 		server.WithDomains(domains),
 		server.WithServiceListeners(serviceListeners),
+		server.WithNetworkGateways(networkGateways),
 		server.WithAPITokens(apiTokens),
 		server.WithLogs(installation.AdminHostname, logs),
 		server.WithAudit(store),
@@ -683,6 +721,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			},
 		),
 		server.WithCloudflareDNS(cloudflareDNS),
+		server.WithCloudflareMesh(cloudflareMesh),
 		server.WithBackupTargets(backupTargets),
 		server.WithBackupResources(backupResources),
 		server.WithDatabaseVersions(databaseVersions),

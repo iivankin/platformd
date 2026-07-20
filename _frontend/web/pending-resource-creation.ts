@@ -1,6 +1,7 @@
 import {
   createManagedPostgres,
   createManagedRedis,
+  createNetworkGateway,
   createObjectStore,
   createService,
 } from "@/api";
@@ -8,6 +9,7 @@ import type {
   CreateBackupPolicyInput,
   CreateManagedPostgresInput,
   CreateManagedRedisInput,
+  NetworkGatewayInput,
   CreateObjectStoreInput,
   CreateServiceInput,
   ProjectCanvas,
@@ -42,6 +44,11 @@ export const emptyPendingServiceCreationSettings = (
 export type PendingResourceCreation =
   | {
       id: string;
+      input: NetworkGatewayInput;
+      kind: "network_gateway";
+    }
+  | {
+      id: string;
       input: CreateManagedPostgresInput;
       kind: "postgres";
       backupPolicy: PendingBackupPolicy;
@@ -68,6 +75,7 @@ export type PendingResourceCreation =
 export const newResourceDraftID = () => `draft:${crypto.randomUUID()}`;
 
 const resourceLabels: Record<PendingResourceCreation["kind"], string> = {
+  network_gateway: "Network gateway",
   postgres: "PostgreSQL",
   redis: "Redis",
   service: "Service",
@@ -114,6 +122,9 @@ export const pendingResourceChangeDetails = (
     },
   ];
   if (draft.kind !== "service") {
+    if (draft.kind === "network_gateway") {
+      return details;
+    }
     if (draft.backupPolicy.enabled) {
       details.push({
         detail: `${draft.backupPolicy.cron} · keep ${draft.backupPolicy.retentionCount}`,
@@ -164,6 +175,9 @@ export const applyPendingResource = (
         ...draft.input,
         backupPolicy: createBackupPolicyInput(draft.backupPolicy),
       });
+    }
+    case "network_gateway": {
+      return createNetworkGateway(projectID, draft.input);
     }
     case "redis": {
       return createManagedRedis(projectID, {
@@ -229,6 +243,25 @@ export const pendingCanvasResource = (
         ...common,
         imageReference: `postgres:${draft.input.imageTag}`,
         kind: "postgres",
+      };
+    }
+    case "network_gateway": {
+      return {
+        ...common,
+        gatewayListenPort: draft.input.listenPort,
+        gatewayMode: draft.input.mode,
+        gatewayProtocol: draft.input.protocol,
+        gatewayRemoteHost: draft.input.remoteHost || undefined,
+        gatewayRemotePort: draft.input.remotePort || undefined,
+        gatewaySourceAddress: draft.input.sourceAddress,
+        gatewayTargetPort: draft.input.targetPort || undefined,
+        gatewayTargetServiceId: draft.input.targetServiceId || undefined,
+        gatewayTransport: draft.input.transport,
+        internalHostname:
+          draft.input.mode === "import"
+            ? common.internalHostname
+            : `${draft.input.sourceAddress}:${draft.input.listenPort}`,
+        kind: "network_gateway",
       };
     }
     case "redis": {

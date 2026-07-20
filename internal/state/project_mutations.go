@@ -13,14 +13,15 @@ import (
 var ErrProjectNameConflict = errors.New("project name already exists")
 
 type ProjectSummary struct {
-	ID               string
-	Name             string
-	ServiceCount     int
-	PostgresCount    int
-	RedisCount       int
-	ObjectStoreCount int
-	CreatedAtMillis  int64
-	UpdatedAtMillis  int64
+	ID                  string
+	Name                string
+	ServiceCount        int
+	PostgresCount       int
+	RedisCount          int
+	ObjectStoreCount    int
+	NetworkGatewayCount int
+	CreatedAtMillis     int64
+	UpdatedAtMillis     int64
 }
 
 type CreateProject struct {
@@ -60,6 +61,7 @@ SELECT p.id, p.name,
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
        (SELECT count(*) FROM object_stores o WHERE o.project_id = p.id),
+	   (SELECT count(*) FROM network_gateways g WHERE g.project_id = p.id),
        p.created_at, p.updated_at
 FROM projects p
 ORDER BY p.name, p.id`)
@@ -72,7 +74,7 @@ ORDER BY p.name, p.id`)
 		var project ProjectSummary
 		if err := rows.Scan(
 			&project.ID, &project.Name, &project.ServiceCount,
-			&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount,
+			&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 			&project.CreatedAtMillis, &project.UpdatedAtMillis,
 		); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)

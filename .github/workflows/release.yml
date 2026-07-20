@@ -173,7 +173,7 @@ jobs:
           trap 'sudo rm -rf /var/lib/platformd/releases/current' EXIT
 
           integration_tags="containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration"
-          for package in managedpostgres managedredis daemon registry rootexec hostterminal; do
+          for package in managedpostgres managedredis daemon registry rootexec hostterminal portproxy; do
             go test -c \
               -tags "$integration_tags" \
               -o "dist/$package-integration.test" \
@@ -231,6 +231,13 @@ jobs:
             dist/hostterminal-integration.test \
             3m \
             --setenv=PLATFORMD_HOST_TERMINAL_INTEGRATION=1
+
+          sudo /usr/bin/env \
+            PLATFORMD_PORTPROXY_NAMESPACE_INTEGRATION=1 \
+            dist/portproxy-integration.test \
+              -test.run='^TestNamespaceSocketsStayInsideTargetNamespace$' \
+              -test.timeout=1m \
+              -test.v
 
           sudo /usr/bin/env \
             HOME=/root \

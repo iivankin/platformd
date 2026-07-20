@@ -5,8 +5,10 @@ package projectnetwork
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/netip"
 	"strings"
+	"syscall"
 
 	"github.com/vishvananda/netlink"
 )
@@ -95,6 +97,40 @@ func RemoveOwnedBridges() error {
 		if err := netlink.LinkDel(link); err != nil {
 			return fmt.Errorf("remove owned stale project bridge %s: %w", link.Attrs().Name, err)
 		}
+	}
+	return nil
+}
+
+func AddVirtualAddress(interfaceName string, address netip.Addr) error {
+	if !address.IsValid() || !address.Is4() || address.IsUnspecified() {
+		return fmt.Errorf("invalid project virtual address %s", address)
+	}
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		return fmt.Errorf("inspect project interface %s: %w", interfaceName, err)
+	}
+	prefix := &net.IPNet{IP: net.IP(address.AsSlice()), Mask: net.CIDRMask(32, 32)}
+	if err := netlink.AddrReplace(link, &netlink.Addr{IPNet: prefix}); err != nil {
+		return fmt.Errorf("add project virtual address %s to %s: %w", address, interfaceName, err)
+	}
+	return nil
+}
+
+func RemoveVirtualAddress(interfaceName string, address netip.Addr) error {
+	if !address.IsValid() || !address.Is4() {
+		return nil
+	}
+	link, err := netlink.LinkByName(interfaceName)
+	if err != nil {
+		var notFound netlink.LinkNotFoundError
+		if errors.As(err, &notFound) {
+			return nil
+		}
+		return fmt.Errorf("inspect project interface %s: %w", interfaceName, err)
+	}
+	prefix := &net.IPNet{IP: net.IP(address.AsSlice()), Mask: net.CIDRMask(32, 32)}
+	if err := netlink.AddrDel(link, &netlink.Addr{IPNet: prefix}); err != nil && !errors.Is(err, syscall.EADDRNOTAVAIL) {
+		return fmt.Errorf("remove project virtual address %s from %s: %w", address, interfaceName, err)
 	}
 	return nil
 }

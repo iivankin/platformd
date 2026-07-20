@@ -181,6 +181,7 @@ const staticOutputs: Record<
   Exclude<ProjectCanvas["resources"][number]["kind"], "service">,
   string[]
 > = {
+  network_gateway: ["HOST", "PORT", "ADDRESS"],
   object_store: [
     "S3_ENDPOINT",
     "S3_REGION",
@@ -250,7 +251,11 @@ export const variableSuggestions = (
       }
       continue;
     }
-    for (const output of staticOutputs[resource.kind]) {
+    const outputs =
+      resource.kind === "network_gateway" && resource.gatewayMode === "export"
+        ? []
+        : staticOutputs[resource.kind];
+    for (const output of outputs) {
       suggestions.push({
         expression: `\${{${resource.name}.${output}}}`,
         source: resource.name,

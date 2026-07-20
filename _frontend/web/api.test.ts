@@ -195,6 +195,7 @@ const project = {
   createdAt: 1,
   id: "project-id",
   name: "shop",
+  networkGatewayCount: 0,
   objectStoreCount: 0,
   postgresCount: 0,
   redisCount: 0,

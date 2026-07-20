@@ -52,11 +52,13 @@ type DerivedImageRequest struct {
 }
 
 type NetworkSpec struct {
-	Name      string
-	Interface string
-	Subnet    string
-	Gateway   string
-	Labels    map[string]string
+	Name       string
+	Interface  string
+	Subnet     string
+	Gateway    string
+	LeaseStart string
+	LeaseEnd   string
+	Labels     map[string]string
 }
 
 type Network struct {
@@ -73,23 +75,31 @@ type Mount struct {
 	ReadOnly    bool
 }
 
+type ContainerSecurityProfile string
+
+const (
+	ContainerSecurityDefault        ContainerSecurityProfile = ""
+	ContainerSecurityCloudflareMesh ContainerSecurityProfile = "cloudflare_mesh"
+)
+
 type ContainerSpec struct {
-	ImageID        string
-	Name           string
-	Entrypoint     []string
-	Command        []string
-	Environment    map[string]string
-	Labels         map[string]string
-	Network        string
-	DNSServers     []string
-	DNSSearch      []string
-	Mounts         []Mount
-	LogPath        string
-	LogSizeBytes   int64
-	LogMaxFiles    uint
-	CgroupParent   string
-	CPUMillicores  int64
-	MemoryMaxBytes int64
+	ImageID         string
+	Name            string
+	Entrypoint      []string
+	Command         []string
+	Environment     map[string]string
+	Labels          map[string]string
+	Network         string
+	DNSServers      []string
+	DNSSearch       []string
+	Mounts          []Mount
+	LogPath         string
+	LogSizeBytes    int64
+	LogMaxFiles     uint
+	CgroupParent    string
+	CPUMillicores   int64
+	MemoryMaxBytes  int64
+	SecurityProfile ContainerSecurityProfile
 }
 
 type Container struct {

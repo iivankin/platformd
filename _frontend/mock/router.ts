@@ -3,6 +3,7 @@ import { handleContainerResourcesAPI } from "./container-resources";
 import { handleCoreAPI } from "./core";
 import { handleGitHubAPI } from "./github";
 import { mockError } from "./http";
+import { handleNetworkGatewaysAPI } from "./network-gateways";
 import { handleProjectsAPI } from "./projects";
 import { handleRegistryAPI } from "./registry";
 import type { MockState } from "./state";
@@ -38,6 +39,14 @@ export const handleMockAPI = async (
   );
   if (projectsResponse) {
     return projectsResponse;
+  }
+  const networkGatewayResponse = await handleNetworkGatewaysAPI(
+    request,
+    state,
+    url.pathname
+  );
+  if (networkGatewayResponse) {
+    return networkGatewayResponse;
   }
   const registryResponse = await handleRegistryAPI(
     request,

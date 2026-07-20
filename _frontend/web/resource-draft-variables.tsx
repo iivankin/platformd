@@ -2,7 +2,10 @@ import { SectionCard } from "@/components/ui/card";
 import { PageStack } from "@/components/ui/page-stack";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
 
-type ManagedDraft = Exclude<PendingResourceCreation, { kind: "service" }>;
+type ManagedDraft = Exclude<
+  PendingResourceCreation,
+  { kind: "network_gateway" | "service" }
+>;
 
 interface DraftVariable {
   name: string;

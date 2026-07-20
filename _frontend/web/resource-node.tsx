@@ -1,6 +1,6 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { Box, Database, HardDrive, Server } from "lucide-react";
+import { Box, Database, HardDrive, Network, Server } from "lucide-react";
 import type { ComponentType } from "react";
 import { memo } from "react";
 
@@ -10,6 +10,7 @@ const resourceKinds: Record<
   ResourceFlowNode["data"]["kind"],
   { icon: ComponentType<{ className?: string }>; label: string }
 > = {
+  network_gateway: { icon: Network, label: "Network gateway" },
   object_store: { icon: HardDrive, label: "Object storage" },
   postgres: { icon: Database, label: "PostgreSQL" },
   redis: { icon: Box, label: "Redis" },
@@ -34,6 +35,16 @@ const nodeClassName = (selected: boolean, pending: boolean) => {
   return "w-64 border border-border bg-background shadow-[0_1px_2px_oklch(0_0_0/6%)]";
 };
 
+const gatewayDetail = (data: ResourceFlowNode["data"]) => {
+  if (data.kind !== "network_gateway") {
+    return;
+  }
+  if (data.gatewayMode === "import") {
+    return `${data.gatewayRemoteHost}:${data.gatewayRemotePort}`;
+  }
+  return `${data.gatewayProtocol?.toUpperCase()} ${data.gatewaySourceAddress}:${data.gatewayListenPort}`;
+};
+
 const ResourceNodeComponent = ({
   data,
   selected,
@@ -41,6 +52,7 @@ const ResourceNodeComponent = ({
   const kind = resourceKinds[data.kind];
   const Icon = kind.icon;
   const detail =
+    gatewayDetail(data) ??
     (data.source?.type === "github"
       ? data.source.github.repository
       : data.source?.image.reference) ??

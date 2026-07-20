@@ -8,15 +8,25 @@ export type ContainerPortDetectionStatus = "loading" | "ready" | "unavailable";
 export const useContainerPorts = (
   projectID: string,
   resourceKind: "postgres" | "redis" | "service",
-  resourceID: string
+  resourceID: string,
+  enabled = true
 ) => {
-  const [ports, setPorts] = useState<ContainerPort[]>([]);
-  const [status, setStatus] = useState<ContainerPortDetectionStatus>("loading");
+  const requestKey =
+    enabled && projectID && resourceID
+      ? `${projectID}:${resourceKind}:${resourceID}`
+      : "";
+  const [result, setResult] = useState<{
+    key: string;
+    ports: ContainerPort[];
+    status: Exclude<ContainerPortDetectionStatus, "loading">;
+  }>();
 
   useEffect(() => {
+    if (!requestKey) {
+      return;
+    }
     const controller = new AbortController();
     const load = async () => {
-      setStatus("loading");
       try {
         const detected = await fetchContainerPorts(
           projectID,
@@ -25,19 +35,23 @@ export const useContainerPorts = (
           controller.signal
         );
         if (!controller.signal.aborted) {
-          setPorts(detected);
-          setStatus("ready");
+          setResult({ key: requestKey, ports: detected, status: "ready" });
         }
       } catch (error) {
         if (!(error instanceof DOMException && error.name === "AbortError")) {
-          setPorts([]);
-          setStatus("unavailable");
+          setResult({ key: requestKey, ports: [], status: "unavailable" });
         }
       }
     };
     void load();
     return () => controller.abort();
-  }, [projectID, resourceID, resourceKind]);
+  }, [projectID, requestKey, resourceID, resourceKind]);
 
-  return { ports, status };
+  if (!requestKey) {
+    return { ports: [], status: "ready" as const };
+  }
+  if (result?.key !== requestKey) {
+    return { ports: [], status: "loading" as const };
+  }
+  return { ports: result.ports, status: result.status };
 };

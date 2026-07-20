@@ -1,3 +1,5 @@
+import type { ProjectCanvas } from "@/api";
+import { NetworkGatewayCreatePanel } from "@/network-gateway-create-panel";
 import { ObjectStoreCreatePanel } from "@/object-store-create-panel";
 import {
   emptyPendingBackupPolicy,
@@ -17,6 +19,7 @@ import { ServiceCreatePanel } from "@/service-create-panel";
 
 export type CreateKind =
   | "picker"
+  | "network_gateway"
   | "postgres"
   | "redis"
   | "service"
@@ -28,7 +31,11 @@ interface ProjectCreateOverlaysProperties {
   kind: CreateKind;
   onClose: () => void;
   onDrafted: (draft: PendingResourceCreation) => void;
-  onSelect: (kind: "postgres" | "redis" | "service" | "storage") => void;
+  onSelect: (
+    kind: "network_gateway" | "postgres" | "redis" | "service" | "storage"
+  ) => void;
+  projectID: string;
+  resources: ProjectCanvas["resources"];
 }
 
 export const ProjectCreateOverlays = ({
@@ -37,6 +44,8 @@ export const ProjectCreateOverlays = ({
   onClose,
   onDrafted,
   onSelect,
+  projectID,
+  resources,
 }: ProjectCreateOverlaysProperties) => (
   <>
     {kind === "picker" ? (
@@ -54,6 +63,20 @@ export const ProjectCreateOverlays = ({
             settings: emptyPendingServiceCreationSettings(input),
           });
         }}
+      />
+    ) : null}
+    {kind === "network_gateway" ? (
+      <NetworkGatewayCreatePanel
+        onClose={onClose}
+        onDrafted={(input) =>
+          onDrafted({
+            id: newResourceDraftID(),
+            input,
+            kind: "network_gateway",
+          })
+        }
+        projectID={projectID}
+        resources={resources}
       />
     ) : null}
     {kind === "redis" ? (

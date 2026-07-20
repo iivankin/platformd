@@ -15,7 +15,7 @@ type tcpEndpoint struct {
 	listener  net.Listener
 	route     atomic.Pointer[Route]
 	backends  BackendResolver
-	onError   func(error)
+	onError   func(string, error)
 	capacity  chan struct{}
 	mu        sync.Mutex
 	closed    bool
@@ -23,7 +23,7 @@ type tcpEndpoint struct {
 	waitGroup sync.WaitGroup
 }
 
-func newTCPEndpoint(listener net.Listener, route Route, backends BackendResolver, onError func(error)) *tcpEndpoint {
+func newTCPEndpoint(listener net.Listener, route Route, backends BackendResolver, onError func(string, error)) *tcpEndpoint {
 	endpoint := &tcpEndpoint{
 		listener: listener, backends: backends, onError: onError,
 		capacity: make(chan struct{}, maximumTCPConnections), active: make(map[net.Conn]struct{}),
@@ -40,7 +40,7 @@ func (endpoint *tcpEndpoint) accept() {
 		connection, err := endpoint.listener.Accept()
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				endpoint.onError(err)
+				endpoint.onError(endpoint.route.Load().ID, err)
 			}
 			return
 		}
@@ -55,31 +55,35 @@ func (endpoint *tcpEndpoint) accept() {
 	}
 }
 
-func (endpoint *tcpEndpoint) proxy(public net.Conn) {
+func (endpoint *tcpEndpoint) proxy(inbound net.Conn) {
 	defer endpoint.waitGroup.Done()
 	defer func() {
-		endpoint.track(public, false)
+		endpoint.track(inbound, false)
 		<-endpoint.capacity
-		_ = public.Close()
+		_ = inbound.Close()
 	}()
 	route := endpoint.route.Load()
-	backend, available, err := endpoint.backends.ServiceBackend(route.ServiceID, route.TargetPort)
+	backend, available, err := route.Target.Resolve(endpoint.backends)
 	if err != nil {
-		endpoint.onError(err)
+		endpoint.onError(route.ID, err)
 		return
 	}
 	if !available {
 		return
 	}
-	private, err := net.DialTimeout("tcp", backendAddress(backend), 5*time.Second)
+	dialer := net.Dialer{Timeout: 5 * time.Second}
+	if backend.SourceAddress != "" {
+		dialer.LocalAddr = &net.TCPAddr{IP: net.ParseIP(backend.SourceAddress)}
+	}
+	outbound, err := dialTCPInNamespace(route.DialNamespacePID, dialer, backendAddress(backend))
 	if err != nil {
-		endpoint.onError(err)
+		endpoint.onError(route.ID, err)
 		return
 	}
-	endpoint.track(private, true)
+	endpoint.track(outbound, true)
 	defer func() {
-		endpoint.track(private, false)
-		_ = private.Close()
+		endpoint.track(outbound, false)
+		_ = outbound.Close()
 	}()
 
 	copyDone := make(chan struct{}, 2)
@@ -90,8 +94,8 @@ func (endpoint *tcpEndpoint) proxy(public net.Conn) {
 		}
 		copyDone <- struct{}{}
 	}
-	go copyStream(private, public)
-	go copyStream(public, private)
+	go copyStream(outbound, inbound)
+	go copyStream(inbound, outbound)
 	<-copyDone
 	<-copyDone
 }

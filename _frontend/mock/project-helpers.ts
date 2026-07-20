@@ -8,7 +8,12 @@ export const projectByID = (state: MockState, projectID: string) =>
 export const touchProject = (
   state: MockState,
   projectID: string,
-  field?: "objectStoreCount" | "postgresCount" | "redisCount" | "serviceCount"
+  field?:
+    | "networkGatewayCount"
+    | "objectStoreCount"
+    | "postgresCount"
+    | "redisCount"
+    | "serviceCount"
 ) => {
   const project = projectByID(state, projectID);
   if (!project) {

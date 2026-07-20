@@ -6,6 +6,8 @@ import type {
   BackupRecord,
   BackupTarget,
   CloudflareDNSSettings,
+  CloudflareMeshCredential,
+  CloudflareMeshSettings,
   Deployment,
   DiskPressure,
   GitHubAppSettings,
@@ -17,6 +19,7 @@ import type {
   ManagedPostgres,
   ManagedRedis,
   Meta,
+  NetworkGateway,
   ObjectMetadata,
   ObjectStore,
   Operation,
@@ -46,6 +49,8 @@ export interface MockState {
   backupControlTargetId: string;
   canvases: Record<string, ProjectCanvas>;
   cloudflareDNSSettings: CloudflareDNSSettings;
+  cloudflareMeshCredential?: CloudflareMeshCredential;
+  cloudflareMeshSettings: CloudflareMeshSettings;
   containerFiles: Record<string, Record<string, string>>;
   containerPorts: Record<string, { port: number; protocol: "tcp" | "udp" }[]>;
   deployments: Record<string, Deployment[]>;
@@ -58,6 +63,7 @@ export interface MockState {
   infrastructureLogs: InfrastructureLogWindow;
   logs: Record<string, LogWindow>;
   meta: Meta;
+  networkGateways: Record<string, NetworkGateway>;
   objectMetadata: Record<string, ObjectMetadata[]>;
   objectStores: Record<string, ObjectStore>;
   operations: Record<string, Operation>;
@@ -96,6 +102,7 @@ const project: Project = {
   createdAt: now - 45 * 86_400_000,
   id: "project-demo",
   name: "storefront",
+  networkGatewayCount: 0,
   objectStoreCount: 1,
   postgresCount: 1,
   redisCount: 1,
@@ -315,6 +322,16 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   backupTargets: [],
   canvases: {},
   cloudflareDNSSettings: { configured: false, updatedAt: 0 },
+  cloudflareMeshSettings: {
+    accountId: "",
+    configured: false,
+    interfaceName: "",
+    meshIp: "",
+    nodeId: "",
+    nodeName: "",
+    status: "not_configured",
+    updatedAt: 0,
+  },
   containerFiles: {},
   containerPorts: {},
   deployments: {},
@@ -362,6 +379,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     status: "ready",
     version: "0.1.0-mock",
   },
+  networkGateways: {},
   objectMetadata: {},
   objectStores: {},
   operations: {},
@@ -399,6 +417,20 @@ export const createMockState = (scenario: MockScenario): MockState => {
   state.projects = [project];
   state.cloudflareDNSSettings = {
     configured: true,
+    updatedAt: now - 3_600_000,
+  };
+  state.cloudflareMeshCredential = {
+    accountId: "0123456789abcdef0123456789abcdef",
+    apiToken: "mock-cloudflare-mesh-api-token-value",
+  };
+  state.cloudflareMeshSettings = {
+    accountId: state.cloudflareMeshCredential.accountId,
+    configured: true,
+    interfaceName: "CloudflareWARP",
+    meshIp: "100.96.0.21",
+    nodeId: "mesh-node-mock",
+    nodeName: "platformd-installation-mock",
+    status: "connected",
     updatedAt: now - 3_600_000,
   };
   state.githubAppSettings = {

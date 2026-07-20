@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 13
+	currentSchemaVersion = 15
 	writerQueueSize      = 128
 )
 
@@ -81,6 +81,18 @@ var (
 
 	//go:embed migration_13_without_services.sql
 	migration13WithoutServices string
+
+	//go:embed migration_14.sql
+	migration14 string
+
+	//go:embed migration_14_without_services.sql
+	migration14WithoutServices string
+
+	//go:embed migration_15.sql
+	migration15 string
+
+	//go:embed migration_15_without_services.sql
+	migration15WithoutServices string
 )
 
 type Store struct {
@@ -304,13 +316,20 @@ func migrate(ctx context.Context, database *sql.DB) error {
 	switch version {
 	case currentSchemaVersion:
 		return nil
+	case 14:
+		return applyMigration15(ctx, database)
+	case 13:
+		if err := applyMigration14(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration15(ctx, database)
 	case 12:
-		return applyMigration13(ctx, database)
+		return applyMigrations13To14(ctx, database)
 	case 11:
 		if err := applyMigration12(ctx, database); err != nil {
 			return err
 		}
-		return applyMigration13(ctx, database)
+		return applyMigrations13To14(ctx, database)
 	case 10:
 		if err := applyMigration11(ctx, database); err != nil {
 			return err
@@ -318,7 +337,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration12(ctx, database); err != nil {
 			return err
 		}
-		return applyMigration13(ctx, database)
+		return applyMigrations13To14(ctx, database)
 	case 9:
 		if err := applyMigration10(ctx, database); err != nil {
 			return err
@@ -329,7 +348,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration12(ctx, database); err != nil {
 			return err
 		}
-		return applyMigration13(ctx, database)
+		return applyMigrations13To14(ctx, database)
 	case 8:
 		if err := applyMigration(ctx, database, migration9, 9); err != nil {
 			return err
@@ -343,7 +362,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration12(ctx, database); err != nil {
 			return err
 		}
-		return applyMigration13(ctx, database)
+		return applyMigrations13To14(ctx, database)
 	case 7:
 		if err := applyMigration8(ctx, database); err != nil {
 			return err
@@ -360,7 +379,7 @@ func migrate(ctx context.Context, database *sql.DB) error {
 		if err := applyMigration12(ctx, database); err != nil {
 			return err
 		}
-		return applyMigration13(ctx, database)
+		return applyMigrations13To14(ctx, database)
 	case 0:
 		transaction, err := database.BeginTx(ctx, nil)
 		if err != nil {
@@ -455,7 +474,43 @@ func applyMigrations7To9(ctx context.Context, database *sql.DB) error {
 	if err := applyMigration12(ctx, database); err != nil {
 		return err
 	}
-	return applyMigration13(ctx, database)
+	return applyMigrations13To14(ctx, database)
+}
+
+func applyMigrations13To14(ctx context.Context, database *sql.DB) error {
+	if err := applyMigration13(ctx, database); err != nil {
+		return err
+	}
+	if err := applyMigration14(ctx, database); err != nil {
+		return err
+	}
+	return applyMigration15(ctx, database)
+}
+
+func applyMigration15(ctx context.Context, database *sql.DB) error {
+	var serviceTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'services'`).Scan(&serviceTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 15: %w", err)
+	}
+	statements := migration15
+	if serviceTableCount == 0 {
+		statements = migration15WithoutServices
+	}
+	return applyMigration(ctx, database, statements, 15)
+}
+
+func applyMigration14(ctx context.Context, database *sql.DB) error {
+	var serviceTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'services'`).Scan(&serviceTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 14: %w", err)
+	}
+	statements := migration14
+	if serviceTableCount == 0 {
+		statements = migration14WithoutServices
+	}
+	return applyMigration(ctx, database, statements, 14)
 }
 
 func applyMigration13(ctx context.Context, database *sql.DB) error {

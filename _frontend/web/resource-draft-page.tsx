@@ -11,7 +11,10 @@ import { ResourceDraftVariables } from "@/resource-draft-variables";
 import { ResourceDrawer } from "@/resource-drawer";
 import { WorkspaceView } from "@/workspace-view";
 
-type ManagedDraft = Exclude<PendingResourceCreation, { kind: "service" }>;
+type ManagedDraft = Exclude<
+  PendingResourceCreation,
+  { kind: "network_gateway" | "service" }
+>;
 type ResourceDraftView = "backups" | "settings" | "variables";
 
 const draftViews: { label: string; value: ResourceDraftView }[] = [

@@ -10,6 +10,15 @@ export interface ResourceNodeData extends Record<string, unknown> {
   enabled: boolean;
   imageDigest?: string;
   imageReference?: string;
+  gatewayListenPort?: number;
+  gatewayMode?: "export" | "import";
+  gatewayProtocol?: "tcp" | "udp";
+  gatewayRemoteHost?: string;
+  gatewayRemotePort?: number;
+  gatewaySourceAddress?: string;
+  gatewayTargetPort?: number;
+  gatewayTargetServiceId?: string;
+  gatewayTransport?: "mesh" | "vpc";
   hasIncomingConnection?: boolean;
   hasOutgoingConnection?: boolean;
   source?: ServiceSource;
@@ -143,6 +152,15 @@ export const projectFlowElements = (
         bucketName: resource.bucketName,
         draft,
         enabled: resource.enabled,
+        gatewayListenPort: resource.gatewayListenPort,
+        gatewayMode: resource.gatewayMode,
+        gatewayProtocol: resource.gatewayProtocol,
+        gatewayRemoteHost: resource.gatewayRemoteHost,
+        gatewayRemotePort: resource.gatewayRemotePort,
+        gatewaySourceAddress: resource.gatewaySourceAddress,
+        gatewayTargetPort: resource.gatewayTargetPort,
+        gatewayTargetServiceId: resource.gatewayTargetServiceId,
+        gatewayTransport: resource.gatewayTransport,
         hasIncomingConnection: incomingResourceIDs.has(resource.id),
         hasOutgoingConnection: outgoingResourceIDs.has(resource.id),
         imageDigest: resource.imageDigest,

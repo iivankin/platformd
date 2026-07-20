@@ -26,14 +26,15 @@ type ProjectRepository interface {
 }
 
 type projectResponse struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	ServiceCount     int    `json:"serviceCount"`
-	PostgresCount    int    `json:"postgresCount"`
-	RedisCount       int    `json:"redisCount"`
-	ObjectStoreCount int    `json:"objectStoreCount"`
-	CreatedAt        int64  `json:"createdAt"`
-	UpdatedAt        int64  `json:"updatedAt"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	ServiceCount        int    `json:"serviceCount"`
+	PostgresCount       int    `json:"postgresCount"`
+	RedisCount          int    `json:"redisCount"`
+	ObjectStoreCount    int    `json:"objectStoreCount"`
+	NetworkGatewayCount int    `json:"networkGatewayCount"`
+	CreatedAt           int64  `json:"createdAt"`
+	UpdatedAt           int64  `json:"updatedAt"`
 }
 
 type projectCanvasResponse struct {
@@ -43,19 +44,28 @@ type projectCanvasResponse struct {
 }
 
 type projectCanvasResource struct {
-	ID               string                `json:"id"`
-	Kind             string                `json:"kind"`
-	Name             string                `json:"name"`
-	InternalHostname string                `json:"internalHostname"`
-	Source           *servicesource.Source `json:"source,omitempty"`
-	BucketName       string                `json:"bucketName,omitempty"`
-	Enabled          bool                  `json:"enabled"`
-	Status           string                `json:"status"`
-	StatusMessage    string                `json:"statusMessage,omitempty"`
-	ActiveDeployment string                `json:"activeDeploymentId,omitempty"`
-	ImageDigest      string                `json:"imageDigest,omitempty"`
-	ImageReference   string                `json:"imageReference,omitempty"`
-	Volumes          []projectCanvasVolume `json:"volumes"`
+	ID                     string                `json:"id"`
+	Kind                   string                `json:"kind"`
+	Name                   string                `json:"name"`
+	InternalHostname       string                `json:"internalHostname"`
+	Source                 *servicesource.Source `json:"source,omitempty"`
+	BucketName             string                `json:"bucketName,omitempty"`
+	Enabled                bool                  `json:"enabled"`
+	Status                 string                `json:"status"`
+	StatusMessage          string                `json:"statusMessage,omitempty"`
+	ActiveDeployment       string                `json:"activeDeploymentId,omitempty"`
+	ImageDigest            string                `json:"imageDigest,omitempty"`
+	ImageReference         string                `json:"imageReference,omitempty"`
+	Volumes                []projectCanvasVolume `json:"volumes"`
+	GatewayMode            string                `json:"gatewayMode,omitempty"`
+	GatewayTransport       string                `json:"gatewayTransport,omitempty"`
+	GatewayProtocol        string                `json:"gatewayProtocol,omitempty"`
+	GatewaySourceAddress   string                `json:"gatewaySourceAddress,omitempty"`
+	GatewayListenPort      int                   `json:"gatewayListenPort,omitempty"`
+	GatewayRemoteHost      string                `json:"gatewayRemoteHost,omitempty"`
+	GatewayRemotePort      int                   `json:"gatewayRemotePort,omitempty"`
+	GatewayTargetServiceID string                `json:"gatewayTargetServiceId,omitempty"`
+	GatewayTargetPort      int                   `json:"gatewayTargetPort,omitempty"`
 }
 
 type projectCanvasVolume struct {
@@ -106,6 +116,11 @@ func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
 				Enabled: resource.Enabled, Status: resource.Status,
 				StatusMessage: resource.StatusMessage, ActiveDeployment: resource.ActiveDeployment,
 				ImageDigest: resource.ImageDigest, ImageReference: resource.ImageReference, Volumes: volumes,
+				GatewayMode: resource.GatewayMode, GatewayTransport: resource.GatewayTransport,
+				GatewayProtocol: resource.GatewayProtocol, GatewaySourceAddress: resource.GatewaySourceAddress,
+				GatewayListenPort: resource.GatewayListenPort,
+				GatewayRemoteHost: resource.GatewayRemoteHost, GatewayRemotePort: resource.GatewayRemotePort,
+				GatewayTargetServiceID: resource.GatewayTargetServiceID, GatewayTargetPort: resource.GatewayTargetPort,
 			})
 		}
 		connections := make([]projectCanvasConnection, 0, len(canvas.Connections))
@@ -229,7 +244,8 @@ func publicProject(project state.ProjectSummary) projectResponse {
 		ID: project.ID, Name: project.Name,
 		ServiceCount: project.ServiceCount, PostgresCount: project.PostgresCount,
 		RedisCount: project.RedisCount, ObjectStoreCount: project.ObjectStoreCount,
-		CreatedAt: project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
+		NetworkGatewayCount: project.NetworkGatewayCount,
+		CreatedAt:           project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
 	}
 }
 

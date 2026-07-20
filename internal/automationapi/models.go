@@ -7,14 +7,15 @@ import (
 )
 
 type projectResponse struct {
-	ID               string `json:"id"`
-	Name             string `json:"name"`
-	ServiceCount     int    `json:"serviceCount"`
-	PostgresCount    int    `json:"postgresCount"`
-	RedisCount       int    `json:"redisCount"`
-	ObjectStoreCount int    `json:"objectStoreCount"`
-	CreatedAt        int64  `json:"createdAt"`
-	UpdatedAt        int64  `json:"updatedAt"`
+	ID                  string `json:"id"`
+	Name                string `json:"name"`
+	ServiceCount        int    `json:"serviceCount"`
+	PostgresCount       int    `json:"postgresCount"`
+	RedisCount          int    `json:"redisCount"`
+	ObjectStoreCount    int    `json:"objectStoreCount"`
+	NetworkGatewayCount int    `json:"networkGatewayCount"`
+	CreatedAt           int64  `json:"createdAt"`
+	UpdatedAt           int64  `json:"updatedAt"`
 }
 
 type serviceSummaryResponse struct {
@@ -57,8 +58,9 @@ func publicProject(project state.ProjectSummary) projectResponse {
 	return projectResponse{
 		ID: project.ID, Name: project.Name, ServiceCount: project.ServiceCount,
 		PostgresCount: project.PostgresCount, RedisCount: project.RedisCount,
-		ObjectStoreCount: project.ObjectStoreCount,
-		CreatedAt:        project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
+		ObjectStoreCount:    project.ObjectStoreCount,
+		NetworkGatewayCount: project.NetworkGatewayCount,
+		CreatedAt:           project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
 	}
 }
 

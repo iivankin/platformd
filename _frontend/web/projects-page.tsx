@@ -1,4 +1,11 @@
-import { Boxes, Database, HardDrive, Plus, Server } from "lucide-react";
+import {
+  Boxes,
+  Database,
+  HardDrive,
+  Network,
+  Plus,
+  Server,
+} from "lucide-react";
 import { Link } from "react-router";
 
 import type { Project } from "@/api";
@@ -16,7 +23,8 @@ const resourceCount = (project: Project) =>
   project.serviceCount +
   project.postgresCount +
   project.redisCount +
-  project.objectStoreCount;
+  project.objectStoreCount +
+  project.networkGatewayCount;
 
 interface ProjectsPageProperties {
   loadError: string | null;
@@ -124,6 +132,13 @@ export const ProjectsPage = ({
                 >
                   <HardDrive className="size-3" />
                   {project.objectStoreCount}
+                </span>
+                <span
+                  className="flex items-center gap-1.5"
+                  title="Network gateways"
+                >
+                  <Network className="size-3" />
+                  {project.networkGatewayCount}
                 </span>
               </div>
               <time

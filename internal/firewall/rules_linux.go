@@ -39,10 +39,18 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
 			)
 		}
+		for _, listener := range project.GatewayListeners {
+			compiled.rules = append(compiled.rules,
+				rule(table, input, append(matchGatewayListener(project, listener), verdict(expr.VerdictAccept))...),
+			)
+		}
 		compiled.rules = append(compiled.rules, rule(table, input, append(matchInputInterface(project.Bridge), verdict(expr.VerdictDrop))...))
 	}
 	for _, project := range projects {
 		compiled.rules = append(compiled.rules, rule(table, input, append(matchIPv4Destination(project.Gateway), verdict(expr.VerdictDrop))...))
+		for _, listener := range project.GatewayListeners {
+			compiled.rules = append(compiled.rules, rule(table, input, append(matchIPv4Destination(listener.Address), verdict(expr.VerdictDrop))...))
+		}
 	}
 
 	compiled.rules = append(compiled.rules, rule(table, forward, establishedRelated()...))
@@ -71,6 +79,20 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 		compiled.rules = append(compiled.rules, rule(table, postrouting, append(expressions, &expr.Masq{})...))
 	}
 	return compiled
+}
+
+func matchGatewayListener(project Project, listener GatewayListener) []expr.Any {
+	protocol := byte(unix.IPPROTO_TCP)
+	if listener.Protocol == "udp" {
+		protocol = unix.IPPROTO_UDP
+	}
+	expressions := append(matchInputInterface(project.Bridge), matchIPv4Destination(listener.Address)...)
+	return append(expressions,
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{protocol}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(listener.Port)},
+	)
 }
 
 func matchDatabaseEndpoint(project Project, endpoint DatabaseEndpoint) []expr.Any {

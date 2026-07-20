@@ -2,6 +2,7 @@ package portproxy
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -26,7 +27,7 @@ type udpEndpoint struct {
 	listener  *net.UDPConn
 	route     atomic.Pointer[Route]
 	backends  BackendResolver
-	onError   func(error)
+	onError   func(string, error)
 	mu        sync.Mutex
 	closed    bool
 	done      chan struct{}
@@ -35,7 +36,7 @@ type udpEndpoint struct {
 	waitGroup sync.WaitGroup
 }
 
-func newUDPEndpoint(listener *net.UDPConn, route Route, backends BackendResolver, onError func(error)) *udpEndpoint {
+func newUDPEndpoint(listener *net.UDPConn, route Route, backends BackendResolver, onError func(string, error)) *udpEndpoint {
 	endpoint := &udpEndpoint{
 		listener: listener, backends: backends, onError: onError,
 		done: make(chan struct{}), capacity: make(chan struct{}, maximumUDPSessions),
@@ -55,7 +56,7 @@ func (endpoint *udpEndpoint) readPublic() {
 		count, client, err := endpoint.listener.ReadFromUDP(buffer)
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				endpoint.onError(err)
+				endpoint.onError(endpoint.route.Load().ID, err)
 			}
 			return
 		}
@@ -66,7 +67,7 @@ func (endpoint *udpEndpoint) readPublic() {
 			go endpoint.forward(client, packet)
 		default:
 			// UDP has no backpressure signal. Dropping excess datagrams keeps a
-			// public flood from creating an unbounded number of goroutines.
+			// network flood from creating an unbounded number of goroutines.
 		}
 	}
 }
@@ -75,22 +76,23 @@ func (endpoint *udpEndpoint) forward(client *net.UDPAddr, packet []byte) {
 	defer endpoint.waitGroup.Done()
 	defer func() { <-endpoint.capacity }()
 	route := endpoint.route.Load()
-	backend, available, err := endpoint.backends.ServiceBackend(route.ServiceID, route.TargetPort)
+	backend, available, err := route.Target.Resolve(endpoint.backends)
 	if err != nil {
-		endpoint.onError(err)
+		endpoint.onError(route.ID, err)
 		return
 	}
 	if !available {
 		return
 	}
 	address := backendAddress(backend)
-	session, err := endpoint.session(client, backend.DeploymentID+"@"+address, address)
+	backendID := backend.ID + "@" + address + "@" + backend.SourceAddress + "@" + fmt.Sprint(route.DialNamespacePID)
+	session, err := endpoint.session(client, backendID, address, backend.SourceAddress, route.DialNamespacePID)
 	if err != nil {
-		endpoint.onError(err)
+		endpoint.onError(route.ID, err)
 		return
 	}
 	if _, err := session.private.Write(packet); err != nil && !errors.Is(err, net.ErrClosed) {
-		endpoint.onError(err)
+		endpoint.onError(route.ID, err)
 	}
 }
 
@@ -98,7 +100,7 @@ func (endpoint *udpEndpoint) Update(route Route) {
 	endpoint.route.Store(&route)
 }
 
-func (endpoint *udpEndpoint) session(client *net.UDPAddr, backendID, address string) (*udpSession, error) {
+func (endpoint *udpEndpoint) session(client *net.UDPAddr, backendID, address, sourceAddress string, namespacePID int) (*udpSession, error) {
 	key := client.String()
 	endpoint.mu.Lock()
 	defer endpoint.mu.Unlock()
@@ -115,11 +117,15 @@ func (endpoint *udpEndpoint) session(client *net.UDPAddr, backendID, address str
 	if len(endpoint.sessions) >= maximumUDPSessions {
 		endpoint.evictOldestLocked()
 	}
-	backend, err := net.ResolveUDPAddr("udp", address)
+	backend, err := net.ResolveUDPAddr("udp4", address)
 	if err != nil {
 		return nil, err
 	}
-	private, err := net.DialUDP("udp", nil, backend)
+	var source *net.UDPAddr
+	if sourceAddress != "" {
+		source = &net.UDPAddr{IP: net.ParseIP(sourceAddress)}
+	}
+	private, err := dialUDPInNamespace(namespacePID, source, backend)
 	if err != nil {
 		return nil, err
 	}
@@ -139,13 +145,13 @@ func (endpoint *udpEndpoint) readPrivate(key string, session *udpSession) {
 		count, err := session.private.Read(buffer)
 		if err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				endpoint.onError(err)
+				endpoint.onError(endpoint.route.Load().ID, err)
 			}
 			return
 		}
 		if _, err := endpoint.listener.WriteToUDP(buffer[:count], session.client); err != nil {
 			if !errors.Is(err, net.ErrClosed) {
-				endpoint.onError(err)
+				endpoint.onError(endpoint.route.Load().ID, err)
 			}
 			return
 		}

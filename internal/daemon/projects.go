@@ -36,6 +36,8 @@ func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, proje
 			resource.Status, resource.StatusMessage = repository.runtime.PostgresStatus(resource.ID)
 		case "object_store":
 			resource.Status, resource.StatusMessage = repository.runtime.ObjectStoreStatus(canvas.Project.ID)
+		case "network_gateway":
+			resource.Status, resource.StatusMessage = repository.runtime.NetworkGatewayStatus(resource.ID)
 		}
 	}
 	return canvas, nil
