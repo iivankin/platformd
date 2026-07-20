@@ -53,6 +53,8 @@ type CreateInput struct {
 	ImageTag      string
 	CPUMillicores int64
 	MemoryBytes   int64
+	BackupPolicy  state.InitialBackupPolicy
+	Credentials   *InitialCredentials
 	Actor         Actor
 }
 
@@ -122,7 +124,15 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 	if err != nil {
 		return CreateResult{}, err
 	}
-	password, err := GeneratePasswordWith(application.random)
+	var password string
+	if input.Credentials == nil {
+		password, err = GeneratePasswordWith(application.random)
+	} else {
+		password = input.Credentials.Password
+		if !validPassword(password) {
+			return CreateResult{}, fmt.Errorf("%w: initial Redis credentials are invalid", ErrInvalidInput)
+		}
+	}
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("generate managed Redis password: %w", err)
 	}
@@ -134,8 +144,9 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		ID: identifiers[0], ProjectID: input.ProjectID, Name: input.Name,
 		ImageTag: input.ImageTag, ImageDigest: digest, VolumeID: identifiers[1],
 		PasswordEncrypted: encrypted, CPUMillicores: input.CPUMillicores,
-		MemoryMaxBytes: input.MemoryBytes, AuditEventID: identifiers[2],
-		ActorKind: input.Actor.Kind, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
+		MemoryMaxBytes: input.MemoryBytes, BackupPolicy: input.BackupPolicy,
+		AuditEventID: identifiers[2],
+		ActorKind:    input.Actor.Kind, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
 		RequestCorrelationID: identifiers[3], CreatedAtMillis: timestamp.UnixMilli(),
 	})
 	if err != nil {

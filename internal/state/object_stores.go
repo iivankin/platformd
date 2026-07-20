@@ -56,6 +56,7 @@ type CreateObjectStore struct {
 	CredentialName       string
 	CredentialPermission string
 	CredentialSecret     []byte
+	BackupPolicy         InitialBackupPolicy
 	AuditEventID         string
 	ActorKind            string
 	ActorID              string
@@ -92,6 +93,10 @@ func (store *Store) CreateObjectStore(ctx context.Context, input CreateObjectSto
 		return ObjectStore{}, S3Credential{}, err
 	}
 	input.CORSOrigins = normalizedCORS
+	backupPolicy, err := normalizeInitialBackupPolicy(input.BackupPolicy)
+	if err != nil {
+		return ObjectStore{}, S3Credential{}, err
+	}
 	corsJSON, err := json.Marshal(input.CORSOrigins)
 	if err != nil {
 		return ObjectStore{}, S3Credential{}, err
@@ -118,6 +123,9 @@ func (store *Store) CreateObjectStore(ctx context.Context, input CreateObjectSto
 		if exists {
 			return ErrResourceNameConflict
 		}
+		if err := validateInitialBackupTarget(ctx, transaction, backupPolicy.TargetID); err != nil {
+			return err
+		}
 		if input.PublicHostname != "" {
 			inUse, err := publicHostnameRoleExists(ctx, transaction, input.PublicHostname)
 			if err != nil {
@@ -130,9 +138,12 @@ func (store *Store) CreateObjectStore(ctx context.Context, input CreateObjectSto
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO object_stores(
   id, project_id, name, bucket_name, public_hostname, cors_origins_json,
+  backup_target_id, backup_enabled, backup_cron, backup_retention_count,
   created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, input.ID, input.ProjectID, input.Name, input.BucketName,
-			nullableString(input.PublicHostname), string(corsJSON), input.CreatedAtMillis, input.CreatedAtMillis); err != nil {
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, input.ID, input.ProjectID, input.Name, input.BucketName,
+			nullableString(input.PublicHostname), string(corsJSON), nullableString(backupPolicy.TargetID),
+			boolInteger(backupPolicy.Enabled), nullableString(backupPolicy.Cron), backupPolicy.RetentionCount,
+			input.CreatedAtMillis, input.CreatedAtMillis); err != nil {
 			return fmt.Errorf("create object store: %w", err)
 		}
 		if _, err := transaction.ExecContext(ctx, `

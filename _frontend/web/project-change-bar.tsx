@@ -2,7 +2,7 @@ import { ChevronDown, LoaderCircle, Rocket, Undo2 } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { pendingResourceLabel } from "@/pending-resource-creation";
+import { pendingResourceChangeDetails } from "@/pending-resource-creation";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
 import type { PendingServiceSettings } from "@/service-settings-model";
 import { serviceSettingsChangeDetails } from "@/service-settings-model";
@@ -31,9 +31,17 @@ export const ProjectChangeBar = ({
       })),
     [changes]
   );
+  const resources = useMemo(
+    () =>
+      resourceDrafts.map((draft) => ({
+        details: pendingResourceChangeDetails(draft),
+        draft,
+      })),
+    [resourceDrafts]
+  );
   const total =
     services.reduce((sum, service) => sum + service.details.length, 0) +
-    resourceDrafts.length;
+    resources.reduce((sum, resource) => sum + resource.details.length, 0);
   const affectedResources = services.length + resourceDrafts.length;
 
   if (total === 0) {
@@ -105,7 +113,7 @@ export const ProjectChangeBar = ({
               ))}
             </section>
           ))}
-          {resourceDrafts.map((draft) => (
+          {resources.map(({ details, draft }) => (
             <section
               className="border-b border-border last:border-b-0"
               key={draft.id}
@@ -115,15 +123,20 @@ export const ProjectChangeBar = ({
                   {draft.input.name}
                 </span>
                 <span className="font-mono text-[9px] text-muted-foreground">
-                  1 change
+                  {details.length} {details.length === 1 ? "change" : "changes"}
                 </span>
               </header>
-              <div className="grid grid-cols-[9rem_minmax(0,1fr)] border-t border-border px-4 py-2 text-[9px]">
-                <span className="text-muted-foreground">Create resource</span>
-                <span className="truncate font-mono">
-                  {pendingResourceLabel(draft)}
-                </span>
-              </div>
+              {details.map((detail) => (
+                <div
+                  className="grid grid-cols-[9rem_minmax(0,1fr)] border-t border-border px-4 py-2 text-[9px]"
+                  key={detail.id}
+                >
+                  <span className="text-muted-foreground">{detail.label}</span>
+                  <span className="truncate font-mono" title={detail.detail}>
+                    {detail.detail}
+                  </span>
+                </div>
+              ))}
             </section>
           ))}
           <div className="flex items-center justify-between px-3 py-2">

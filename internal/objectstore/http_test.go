@@ -47,13 +47,24 @@ func TestS3HTTPPutRangeListHeadAndDelete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	draftAccessKey, err := AccessKeyID("018bcfe5-687b-7fff-bfff-ffffffffffff")
+	if err != nil {
+		t.Fatal(err)
+	}
 	created, err := application.Create(ctx, CreateInput{
 		ProjectID: "project", Name: "assets", BucketName: "shop-assets",
 		CORSOrigins: []string{"https://app.example.com"},
-		Actor:       Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
+		Credentials: &InitialCredentials{
+			AccessKey: draftAccessKey,
+			Secret:    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		},
+		Actor: Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if created.AccessKey != draftAccessKey || created.Secret != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
+		t.Fatalf("draft credentials changed during creation: %+v", created)
 	}
 	timestamp := time.Date(2026, 7, 13, 10, 11, 12, 0, time.UTC)
 	gate := admission.New()

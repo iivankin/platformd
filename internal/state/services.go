@@ -60,7 +60,9 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	if err != nil {
 		return ServiceDesired{}, err
 	}
-	if snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil {
+	// Initial setup may stage a disabled preview service before attaching its
+	// domain. UpdateService validates the exact domain count before enabling it.
+	if input.Enabled && snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil {
 		return ServiceDesired{}, ErrPreviewDomainCount
 	}
 	if snapshot.Source.Type == servicesource.PrivateImage {

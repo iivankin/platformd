@@ -56,6 +56,8 @@ type CreateInput struct {
 	ImageTag      string
 	CPUMillicores int64
 	MemoryBytes   int64
+	BackupPolicy  state.InitialBackupPolicy
+	Credentials   *InitialCredentials
 	Actor         Actor
 }
 
@@ -118,7 +120,18 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 	if err != nil {
 		return CreateResult{}, err
 	}
-	credentials, err := GenerateCredentials(identifiers[0], application.random)
+	var credentials Credentials
+	if input.Credentials == nil {
+		credentials, err = GenerateCredentials(identifiers[0], application.random)
+	} else {
+		if err = validateInitialCredentials(*input.Credentials); err != nil {
+			return CreateResult{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		credentials.DatabaseName = input.Credentials.DatabaseName
+		credentials.OwnerUsername = input.Credentials.OwnerUsername
+		credentials.OwnerPassword = input.Credentials.OwnerPassword
+		credentials.BootstrapPassword, err = generatePassword(application.random)
+	}
 	if err != nil {
 		return CreateResult{}, fmt.Errorf("generate managed PostgreSQL credentials: %w", err)
 	}
@@ -136,6 +149,7 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		DatabaseName: credentials.DatabaseName, OwnerUsername: credentials.OwnerUsername,
 		OwnerPasswordEncrypted: ownerEncrypted, BootstrapPasswordEncrypted: bootstrapEncrypted,
 		CPUMillicores: input.CPUMillicores, MemoryMaxBytes: input.MemoryBytes,
+		BackupPolicy: input.BackupPolicy,
 		AuditEventID: identifiers[2], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
 		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[3], CreatedAtMillis: timestamp.UnixMilli(),
 	})

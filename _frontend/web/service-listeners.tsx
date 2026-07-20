@@ -1,6 +1,7 @@
 import { Network, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
+import type { ContainerPort } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,10 +12,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ContainerPortCombobox } from "@/container-port-combobox";
 import type { ServiceListenerDraft } from "@/service-settings-model";
 import { serviceListenerDraftKey } from "@/service-settings-model";
+import type { ContainerPortDetectionStatus } from "@/use-container-ports";
 
 interface ServiceListenersProperties {
+  containerPorts: ContainerPort[];
+  containerPortsStatus?: ContainerPortDetectionStatus;
   disabled?: boolean;
   listeners: ServiceListenerDraft[];
   onChanged: (listeners: ServiceListenerDraft[]) => void;
@@ -23,6 +28,8 @@ interface ServiceListenersProperties {
 const validPort = (port: number) =>
   Number.isInteger(port) && port >= 1 && port <= 65_535;
 export const ServiceListeners = ({
+  containerPorts,
+  containerPortsStatus = "ready",
   disabled = false,
   listeners,
   onChanged,
@@ -102,19 +109,19 @@ export const ServiceListeners = ({
                 <span className="text-[10px]">
                   VPS :{listener.publicPort} → container
                 </span>
-                <Input
-                  aria-label={`Container port for ${listener.protocol} ${listener.publicPort}`}
+                <ContainerPortCombobox
+                  ariaLabel={`Container port for ${listener.protocol} ${listener.publicPort}`}
                   className="h-7 px-2 text-[9px]"
                   disabled={disabled}
-                  max={65_535}
-                  min={1}
-                  onChange={(event) =>
+                  onChange={(nextPort) =>
                     commit({
                       ...listener,
-                      targetPort: Number(event.target.value),
+                      targetPort: nextPort,
                     })
                   }
-                  type="number"
+                  ports={containerPorts}
+                  protocol={listener.protocol}
+                  status={containerPortsStatus}
                   value={listener.targetPort}
                 />
                 <Button
@@ -166,15 +173,15 @@ export const ServiceListeners = ({
           type="number"
           value={publicPort || ""}
         />
-        <Input
-          aria-label="Listener container port"
+        <ContainerPortCombobox
+          ariaLabel="Listener container port"
           disabled={disabled}
-          max={65_535}
-          min={1}
-          onChange={(event) => setTargetPort(Number(event.target.value))}
+          onChange={setTargetPort}
           placeholder="Container port"
-          type="number"
-          value={targetPort || ""}
+          ports={containerPorts}
+          protocol={protocol}
+          status={containerPortsStatus}
+          value={targetPort}
         />
         <Button
           disabled={

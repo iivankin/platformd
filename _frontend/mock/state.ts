@@ -47,6 +47,7 @@ export interface MockState {
   canvases: Record<string, ProjectCanvas>;
   cloudflareDNSSettings: CloudflareDNSSettings;
   containerFiles: Record<string, Record<string, string>>;
+  containerPorts: Record<string, { port: number; protocol: "tcp" | "udp" }[]>;
   deployments: Record<string, Deployment[]>;
   diskPressure: DiskPressure;
   domains: Record<string, ServiceDomain[]>;
@@ -315,6 +316,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   canvases: {},
   cloudflareDNSSettings: { configured: false, updatedAt: 0 },
   containerFiles: {},
+  containerPorts: {},
   deployments: {},
   diskPressure: {
     availableBytes: 171_798_691_840,
@@ -464,6 +466,15 @@ export const createMockState = (scenario: MockScenario): MockState => {
   state.containerFiles["postgres:postgres-main"] =
     mockContainerFiles("postgres");
   state.containerFiles["redis:redis-cache"] = mockContainerFiles("redis");
+  state.containerPorts["service:service-api"] = [
+    { port: 3000, protocol: "tcp" },
+    { port: 5353, protocol: "udp" },
+    { port: 8080, protocol: "tcp" },
+  ];
+  state.containerPorts["postgres:postgres-main"] = [
+    { port: 5432, protocol: "tcp" },
+  ];
+  state.containerPorts["redis:redis-cache"] = [{ port: 6379, protocol: "tcp" }];
   state.deployments[service.id] = [
     {
       createdAt: now - 90_000,

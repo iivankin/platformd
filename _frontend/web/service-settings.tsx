@@ -17,6 +17,7 @@ import type {
   ServiceSettingsDraft,
 } from "@/service-settings-model";
 import { ServiceVolumes } from "@/service-volumes";
+import { useContainerPorts } from "@/use-container-ports";
 
 interface ServiceSettingsProperties {
   actionError: string | null;
@@ -58,6 +59,7 @@ export const ServiceSettings = ({
   );
   const [deleting, setDeleting] = useState(false);
   const [confirmation, setConfirmation] = useState("");
+  const containerPorts = useContainerPorts(projectID, "service", serviceID);
 
   const updateDraft = (next: ServiceSettingsDraft) => {
     setDraft(next);
@@ -120,6 +122,8 @@ export const ServiceSettings = ({
       </SectionCard>
 
       <ServiceDomains
+        containerPorts={containerPorts.ports}
+        containerPortsStatus={containerPorts.status}
         disabled={busy}
         domains={draft.domains}
         onChanged={(nextDomains) =>
@@ -127,6 +131,8 @@ export const ServiceSettings = ({
         }
       />
       <ServiceListeners
+        containerPorts={containerPorts.ports}
+        containerPortsStatus={containerPorts.status}
         disabled={busy}
         listeners={draft.listeners}
         onChanged={(nextListeners) =>

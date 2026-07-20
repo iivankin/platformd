@@ -14,6 +14,7 @@ interface ServiceVolumeCreateFormProperties {
   onCreated: (volume: CreateVolumeInput) => void;
   projectID: string;
   serviceID: string;
+  suggestOwner?: boolean;
 }
 
 export const ServiceVolumeCreateForm = ({
@@ -22,6 +23,7 @@ export const ServiceVolumeCreateForm = ({
   onCreated,
   projectID,
   serviceID,
+  suggestOwner = true,
 }: ServiceVolumeCreateFormProperties) => {
   const [name, setName] = useState("");
   const [ownerUID, setOwnerUID] = useState("0");
@@ -29,6 +31,9 @@ export const ServiceVolumeCreateForm = ({
   const [error, setError] = useState<string>();
 
   useEffect(() => {
+    if (!suggestOwner) {
+      return;
+    }
     const controller = new AbortController();
     const suggest = async () => {
       try {
@@ -53,7 +58,7 @@ export const ServiceVolumeCreateForm = ({
     };
     void suggest();
     return () => controller.abort();
-  }, [projectID, serviceID]);
+  }, [projectID, serviceID, suggestOwner]);
 
   const create = () => {
     const parsedUID = Number(ownerUID);

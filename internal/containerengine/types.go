@@ -107,6 +107,11 @@ type NetworkCounters struct {
 	TXBytes uint64
 }
 
+type ListeningPort struct {
+	Port     int    `json:"port"`
+	Protocol string `json:"protocol"`
+}
+
 type ExecRequest struct {
 	Command     []string
 	Environment map[string]string

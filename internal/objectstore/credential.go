@@ -15,6 +15,13 @@ const (
 	secretEncryptionDomain = "platformd/sqlite/s3-credential-secret/v1"
 )
 
+// InitialCredentials are generated with a UI draft and persisted unchanged
+// when the draft is deployed.
+type InitialCredentials struct {
+	AccessKey string
+	Secret    string
+}
+
 func AccessKeyID(credentialID string) (string, error) {
 	compact := strings.ReplaceAll(credentialID, "-", "")
 	if len(compact) != 32 {

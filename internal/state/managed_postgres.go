@@ -49,6 +49,7 @@ type CreateManagedPostgres struct {
 	BootstrapPasswordEncrypted []byte
 	CPUMillicores              int64
 	MemoryMaxBytes             int64
+	BackupPolicy               InitialBackupPolicy
 	AuditEventID               string
 	ActorKind                  string
 	ActorID                    string
@@ -78,6 +79,10 @@ func (store *Store) CreateManagedPostgres(ctx context.Context, input CreateManag
 	if input.CPUMillicores < 0 || input.MemoryMaxBytes < 0 {
 		return ManagedPostgres{}, errors.New("managed PostgreSQL resource limits cannot be negative")
 	}
+	backupPolicy, err := normalizeInitialBackupPolicy(input.BackupPolicy)
+	if err != nil {
+		return ManagedPostgres{}, err
+	}
 	metadata := make(map[string]string)
 	if input.ActorEmail != "" {
 		metadata["actorEmail"] = input.ActorEmail
@@ -100,16 +105,22 @@ func (store *Store) CreateManagedPostgres(ctx context.Context, input CreateManag
 		if exists {
 			return ErrResourceNameConflict
 		}
+		if err := validateInitialBackupTarget(ctx, transaction, backupPolicy.TargetID); err != nil {
+			return err
+		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO managed_postgres(
   id, project_id, name, image_tag, image_digest, volume_id, database_name,
   owner_username, owner_password_encrypted, bootstrap_password_encrypted,
-  cpu_millis, memory_bytes, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  cpu_millis, memory_bytes, backup_target_id, backup_enabled, backup_cron,
+  backup_retention_count, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			input.ID, input.ProjectID, input.Name, input.ImageTag, input.ImageDigest,
 			input.VolumeID, input.DatabaseName, input.OwnerUsername,
 			input.OwnerPasswordEncrypted, input.BootstrapPasswordEncrypted,
 			nullablePositive(input.CPUMillicores), nullablePositive(input.MemoryMaxBytes),
+			nullableString(backupPolicy.TargetID), boolInteger(backupPolicy.Enabled),
+			nullableString(backupPolicy.Cron), backupPolicy.RetentionCount,
 			input.CreatedAtMillis, input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("create managed PostgreSQL resource: %w", err)

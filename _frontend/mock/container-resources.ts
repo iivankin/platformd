@@ -118,10 +118,13 @@ export const handleContainerResourcesAPI = async (
   ) {
     return json({ shells: ["/bin/sh", "/bin/bash"] });
   }
+  const key = keyFor(kind ?? "", resourceID ?? "");
+  if (request.method === "GET" && resource === "ports" && !detail) {
+    return json({ ports: state.containerPorts[key] ?? [] });
+  }
   if (resource !== "files" || (detail && detail !== "content")) {
     return undefined;
   }
-  const key = keyFor(kind ?? "", resourceID ?? "");
   const files = state.containerFiles[key] ?? {};
   const response = await handleFiles(request, files, url);
   state.containerFiles[key] = files;

@@ -1,9 +1,18 @@
 import { ObjectStoreCreatePanel } from "@/object-store-create-panel";
-import { newResourceDraftID } from "@/pending-resource-creation";
+import {
+  emptyPendingBackupPolicy,
+  emptyPendingServiceCreationSettings,
+  newResourceDraftID,
+} from "@/pending-resource-creation";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
 import { PostgresCreatePanel } from "@/postgres-create-panel";
 import { RedisCreatePanel } from "@/redis-create-panel";
 import { ResourceCreatePanel } from "@/resource-create-panel";
+import {
+  createObjectStoreDraftCredentials,
+  createPostgresDraftCredentials,
+  createRedisDraftCredentials,
+} from "@/resource-draft-credentials";
 import { ServiceCreatePanel } from "@/service-create-panel";
 
 export type CreateKind =
@@ -16,7 +25,6 @@ export type CreateKind =
 
 interface ProjectCreateOverlaysProperties {
   embeddedRegistryHost: string;
-  draft?: PendingResourceCreation;
   kind: CreateKind;
   onClose: () => void;
   onDrafted: (draft: PendingResourceCreation) => void;
@@ -24,7 +32,6 @@ interface ProjectCreateOverlaysProperties {
 }
 
 export const ProjectCreateOverlays = ({
-  draft,
   embeddedRegistryHost,
   kind,
   onClose,
@@ -39,24 +46,24 @@ export const ProjectCreateOverlays = ({
       <ServiceCreatePanel
         embeddedRegistryHost={embeddedRegistryHost}
         onClose={onClose}
-        initialDraft={draft?.kind === "service" ? draft.input : undefined}
-        onDrafted={(input) =>
+        onDrafted={(input) => {
           onDrafted({
-            id: draft?.id ?? newResourceDraftID(),
+            id: newResourceDraftID(),
             input,
             kind: "service",
-          })
-        }
+            settings: emptyPendingServiceCreationSettings(input),
+          });
+        }}
       />
     ) : null}
     {kind === "redis" ? (
       <RedisCreatePanel
         onClose={onClose}
-        initialDraft={draft?.kind === "redis" ? draft.input : undefined}
         onDrafted={(input) =>
           onDrafted({
-            id: draft?.id ?? newResourceDraftID(),
-            input,
+            backupPolicy: emptyPendingBackupPolicy(),
+            id: newResourceDraftID(),
+            input: { ...input, credentials: createRedisDraftCredentials() },
             kind: "redis",
           })
         }
@@ -65,11 +72,11 @@ export const ProjectCreateOverlays = ({
     {kind === "postgres" ? (
       <PostgresCreatePanel
         onClose={onClose}
-        initialDraft={draft?.kind === "postgres" ? draft.input : undefined}
         onDrafted={(input) =>
           onDrafted({
-            id: draft?.id ?? newResourceDraftID(),
-            input,
+            backupPolicy: emptyPendingBackupPolicy(),
+            id: newResourceDraftID(),
+            input: { ...input, credentials: createPostgresDraftCredentials() },
             kind: "postgres",
           })
         }
@@ -78,11 +85,14 @@ export const ProjectCreateOverlays = ({
     {kind === "storage" ? (
       <ObjectStoreCreatePanel
         onClose={onClose}
-        initialDraft={draft?.kind === "storage" ? draft.input : undefined}
         onDrafted={(input) =>
           onDrafted({
-            id: draft?.id ?? newResourceDraftID(),
-            input,
+            backupPolicy: emptyPendingBackupPolicy(),
+            id: newResourceDraftID(),
+            input: {
+              ...input,
+              credentials: createObjectStoreDraftCredentials(),
+            },
             kind: "storage",
           })
         }

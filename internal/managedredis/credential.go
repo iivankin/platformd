@@ -14,6 +14,12 @@ const (
 	encryptionDomain = "platformd/sqlite/managed-redis-password/v1"
 )
 
+// InitialCredentials are generated with a UI draft and persisted unchanged
+// when the draft is deployed.
+type InitialCredentials struct {
+	Password string
+}
+
 func GeneratePassword() (string, error) {
 	return GeneratePasswordWith(rand.Reader)
 }

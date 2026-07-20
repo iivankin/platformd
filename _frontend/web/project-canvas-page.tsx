@@ -30,7 +30,9 @@ import type {
 } from "@/project-flow";
 import { ProjectResourcePage } from "@/project-resource-page";
 import { resourcePath } from "@/project-resource-path";
+import { ResourceDraftPage } from "@/resource-draft-page";
 import { ResourceNode } from "@/resource-node";
+import { ServiceDraftPage } from "@/service-draft-page";
 import { applyServiceSettings } from "@/service-settings-apply";
 import { serviceSettingsChangeDetails } from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
@@ -85,13 +87,17 @@ const EmptyCanvas = ({ visible }: { visible: boolean }) => {
 
 export const ProjectCanvasPage = () => {
   const navigate = useNavigate();
-  const { deploymentID = "", projectID = "", resourceID = "" } = useParams();
+  const {
+    deploymentID = "",
+    projectID = "",
+    resourceID = "",
+    view = "",
+  } = useParams();
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
   const [metadataError, setMetadataError] = useState<string | null>(null);
   const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [createKind, setCreateKind] = useState<CreateKind>(null);
-  const [activeDraftID, setActiveDraftID] = useState<string>();
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [applyError, setApplyError] = useState<string>();
@@ -133,9 +139,31 @@ export const ProjectCanvasPage = () => {
       ),
     [serviceChanges]
   );
+  const routedDraft = resourceDrafts[resourceID];
   let resourceOverlay = null;
   if (deploymentID) {
     resourceOverlay = <ProjectDeploymentPage canvas={canvas} />;
+  } else if (routedDraft?.kind === "service") {
+    resourceOverlay = (
+      <ServiceDraftPage
+        draft={routedDraft}
+        embeddedRegistryHost={embeddedRegistryHost}
+        onChange={(draft) => setResourceDraft(draft.id, draft)}
+        projectID={projectID}
+        projectName={canvas?.project.name ?? ""}
+        view={view}
+      />
+    );
+  } else if (routedDraft) {
+    resourceOverlay = (
+      <ResourceDraftPage
+        draft={routedDraft}
+        onChange={(draft) => setResourceDraft(draft.id, draft)}
+        projectID={projectID}
+        projectName={canvas?.project.name ?? ""}
+        view={view}
+      />
+    );
   } else if (resourceID) {
     resourceOverlay = <ProjectResourcePage />;
   }
@@ -329,20 +357,16 @@ export const ProjectCanvasPage = () => {
           resourceDrafts={pendingResources}
         />
         <ProjectCreateOverlays
-          draft={activeDraftID ? resourceDrafts[activeDraftID] : undefined}
           embeddedRegistryHost={embeddedRegistryHost}
           kind={createKind}
           onClose={() => {
             setCreateKind(null);
-            setActiveDraftID(undefined);
           }}
           onDrafted={(draft) => {
             setResourceDraft(draft.id, draft);
-            setActiveDraftID(undefined);
             setCreateKind(null);
           }}
           onSelect={(kind) => {
-            setActiveDraftID(undefined);
             setCreateKind(kind);
           }}
         />
@@ -364,8 +388,11 @@ export const ProjectCanvasPage = () => {
           onNodeClick={(_event, node) => {
             const draft = resourceDrafts[node.id];
             if (draft) {
-              setActiveDraftID(draft.id);
-              setCreateKind(draft.kind);
+              const kind =
+                draft.kind === "storage" ? "object_store" : draft.kind;
+              void navigate(
+                resourcePath(projectID, draft.id, kind, "variables")
+              );
               return;
             }
             void navigate(resourcePath(projectID, node.id, node.data.kind));

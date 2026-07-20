@@ -1,17 +1,22 @@
 import { Database, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
 
-import { fetchManagedImageTags } from "@/api";
 import type { CreateManagedPostgresInput } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
+import { ManagedImageTagCombobox } from "@/managed-image-tag-combobox";
+
+type PostgresDraftInput = Omit<
+  CreateManagedPostgresInput,
+  "backupPolicy" | "credentials"
+>;
 
 interface PostgresCreatePanelProperties {
-  initialDraft?: CreateManagedPostgresInput;
+  initialDraft?: PostgresDraftInput;
   onClose: () => void;
-  onDrafted: (input: CreateManagedPostgresInput) => void;
+  onDrafted: (input: PostgresDraftInput) => void;
 }
 
 export const PostgresCreatePanel = ({
@@ -27,26 +32,6 @@ export const PostgresCreatePanel = ({
       ? String(initialDraft.memoryBytes / 1024 / 1024)
       : ""
   );
-  const [tags, setTags] = useState<string[]>([]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const page = await fetchManagedImageTags(
-          "postgres",
-          { pageSize: 50 },
-          controller.signal
-        );
-        setTags(page.tags.map((tag) => tag.name));
-      } catch {
-        // The field remains editable when Docker Hub suggestions are unavailable.
-      }
-    };
-    void load();
-    return () => controller.abort();
-  }, []);
-
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     onDrafted({
@@ -89,24 +74,14 @@ export const PostgresCreatePanel = ({
           />
         </FormField>
         <FormField label="Official PostgreSQL tag" name="postgres-tag">
-          <Input
-            autoCapitalize="none"
-            autoComplete="off"
+          <ManagedImageTagCombobox
+            engine="postgres"
             id="postgres-tag"
-            list="postgres-tags"
-            onChange={(event) => setImageTag(event.target.value)}
+            onChange={setImageTag}
             placeholder="18.3"
             required
-            spellCheck={false}
             value={imageTag}
           />
-          <datalist id="postgres-tags">
-            {tags.map((tag) => (
-              <option key={tag} value={tag}>
-                {tag}
-              </option>
-            ))}
-          </datalist>
           <p className="mt-1.5 text-[9px] leading-4 text-muted-foreground">
             Suggestions come from the official Docker Hub repository.
           </p>

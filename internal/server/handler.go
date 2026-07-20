@@ -16,6 +16,7 @@ import (
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/containerfiles"
+	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/installationsettings"
@@ -63,6 +64,7 @@ type handlerConfig struct {
 	databaseVersions        *databaseversion.Service
 	containerConsole        ContainerConsole
 	containerFiles          *containerfiles.Application
+	containerPorts          *containerports.Application
 	serverTerminal          HostTerminal
 	serverTerminalAuth      *terminalauth.Service
 	serverTerminalIdle      time.Duration
@@ -228,6 +230,12 @@ func WithContainerFiles(application *containerfiles.Application) Option {
 	}
 }
 
+func WithContainerPorts(application *containerports.Application) Option {
+	return func(config *handlerConfig) {
+		config.containerPorts = application
+	}
+}
+
 func WithServerTerminalAuth(service *terminalauth.Service) Option {
 	return func(config *handlerConfig) {
 		config.serverTerminalAuth = service
@@ -356,6 +364,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.containerFiles != nil {
 		registerContainerFileRoutes(mux, config.containerFiles)
+	}
+	if config.containerPorts != nil {
+		registerContainerPortRoutes(mux, config.containerPorts)
 	}
 	if config.serverTerminalAuth != nil {
 		registerServerTerminalAuthRoute(mux, config.serverTerminalAuth)

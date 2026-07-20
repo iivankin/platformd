@@ -38,6 +38,7 @@ import {
   fetchBackupTargets,
   fetchBackupGenerations,
   fetchBuildLog,
+  fetchContainerPorts,
   fetchService,
   fetchServiceDeployment,
   fetchServiceDeployments,
@@ -284,8 +285,10 @@ test("creates a private image service with service-owned credentials", async () 
   const service = await createService(
     "project",
     {
+      domains: [{ hostname: "api.example.com", targetPort: 8080 }],
       environment: { APP_ENV: "production" },
       healthCheck: { path: "/healthz", port: 8080, timeoutSeconds: 60 },
+      listeners: [{ protocol: "tcp", publicPort: 9000, targetPort: 8080 }],
       name: "api",
       registryCredential: { password: "secret", username: "robot" },
       source: {
@@ -295,6 +298,14 @@ test("creates a private image service with service-owned credentials", async () 
         },
         type: "private_image",
       },
+      volumes: [
+        {
+          containerPath: "/data",
+          name: "data",
+          ownerGid: 1001,
+          ownerUid: 1000,
+        },
+      ],
     },
     (_input, init) => {
       requestInit = init;
@@ -335,6 +346,18 @@ test("creates a private image service with service-owned credentials", async () 
   );
   expect(service.id).toBe("service");
   expect(requestInit?.method).toBe("POST");
+  expect(JSON.parse(String(requestInit?.body))).toMatchObject({
+    domains: [{ hostname: "api.example.com", targetPort: 8080 }],
+    listeners: [{ protocol: "tcp", publicPort: 9000, targetPort: 8080 }],
+    volumes: [
+      {
+        containerPath: "/data",
+        name: "data",
+        ownerGid: 1001,
+        ownerUid: 1000,
+      },
+    ],
+  });
 });
 
 test("reads and mutates service lifecycle with optimistic version fields", async () => {
@@ -950,9 +973,26 @@ test("uses Access-only managed Redis data routes with encoded values unchanged",
   await expect(
     createManagedRedis(
       resource.projectId,
-      { imageTag: resource.imageTag, name: resource.name },
+      {
+        backupPolicy: {
+          cron: "0 3 * * *",
+          enabled: true,
+          retentionCount: 12,
+          targetId: "backup-target",
+        },
+        credentials: { password: "draft-redis-password" },
+        imageTag: resource.imageTag,
+        name: resource.name,
+      },
       (_input, init) => {
         expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          backupPolicy: {
+            cron: "0 3 * * *",
+            enabled: true,
+            retentionCount: 12,
+            targetId: "backup-target",
+          },
+          credentials: { password: "draft-redis-password" },
           imageTag: "7.4",
           name: "cache",
         });
@@ -1093,10 +1133,23 @@ test("creates PostgreSQL and runs bounded SQL only through the admin client", as
   await expect(
     createManagedPostgres(
       resource.projectId,
-      { imageTag: "17", name: "database" },
+      {
+        credentials: {
+          databaseName: resource.databaseName,
+          ownerPassword: resource.ownerPassword,
+          ownerUsername: resource.ownerUsername,
+        },
+        imageTag: "17",
+        name: "database",
+      },
       (input, init) => {
         expect(input.toString()).toBe("/api/v1/projects/project%2Fid/postgres");
         expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          credentials: {
+            databaseName: "app_database",
+            ownerPassword: "one-time-password",
+            ownerUsername: "owner_database",
+          },
           imageTag: "17",
           name: "database",
         });
@@ -1247,6 +1300,10 @@ test("uses the Access-only object storage browser contract", async () => {
       {
         bucketName: resource.bucketName,
         corsOrigins: ["https://app.example.com"],
+        credentials: {
+          accessKey: resource.accessKey,
+          secret: resource.secret,
+        },
         name: resource.name,
       },
       (input, init) => {
@@ -1256,6 +1313,10 @@ test("uses the Access-only object storage browser contract", async () => {
         expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
           bucketName: "shop-assets",
           corsOrigins: ["https://app.example.com"],
+          credentials: {
+            accessKey: "ps3_access",
+            secret: "stored-secret",
+          },
           name: "assets",
         });
         return Promise.resolve(Response.json(resource, { status: 201 }));
@@ -1477,6 +1538,35 @@ test("lists, attaches, and detaches public service listeners", async () => {
     }
   );
   expect(detachURL).toEndWith("/listeners/udp/53000");
+});
+
+test("lists detected container ports from the live resource endpoint", async () => {
+  let requestedURL = "";
+  await expect(
+    fetchContainerPorts(
+      "project/one",
+      "service",
+      "service/two",
+      undefined,
+      (input) => {
+        requestedURL = input.toString();
+        return Promise.resolve(
+          Response.json({
+            ports: [
+              { port: 5353, protocol: "udp" },
+              { port: 8080, protocol: "tcp" },
+            ],
+          })
+        );
+      }
+    )
+  ).resolves.toEqual([
+    { port: 5353, protocol: "udp" },
+    { port: 8080, protocol: "tcp" },
+  ]);
+  expect(requestedURL).toBe(
+    "/api/v1/projects/project%2Fone/resources/service/service%2Ftwo/ports"
+  );
 });
 
 test("creates and revokes one-time API tokens", async () => {

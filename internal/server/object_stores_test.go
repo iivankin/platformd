@@ -55,7 +55,8 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 	}
 
 	create := projectRequest(http.MethodPost, "/api/v1/projects/project/object-stores", `{
-  "name":"assets","bucketName":"shop-assets","corsOrigins":[]
+  "name":"assets","bucketName":"shop-assets","corsOrigins":[],
+  "credentials":{"accessKey":"ps3_018bcfe5687b7fffbfffffffffffffff","secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 }`)
 	create.Header.Set("Origin", "https://admin.example.com")
 	createResponse := httptest.NewRecorder()

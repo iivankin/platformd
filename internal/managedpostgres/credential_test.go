@@ -35,3 +35,19 @@ func TestCredentialsRoundTripWithSeparatedEncryptionDomains(t *testing.T) {
 		t.Fatal("bootstrap ciphertext opened in owner domain")
 	}
 }
+
+func TestDraftCredentialsAcceptGeneratedValues(t *testing.T) {
+	t.Parallel()
+	credentials := InitialCredentials{
+		DatabaseName:  "app_018bcfe5687b7fffbfffffff",
+		OwnerUsername: "owner_018bcfe5687b7fffbfffffff",
+		OwnerPassword: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	}
+	if err := validateInitialCredentials(credentials); err != nil {
+		t.Fatal(err)
+	}
+	credentials.OwnerUsername = "owner-invalid!"
+	if err := validateInitialCredentials(credentials); err == nil {
+		t.Fatal("invalid draft username was accepted")
+	}
+}

@@ -23,15 +23,18 @@ export const touchProject = (
 export const addBackupPolicy = (
   state: MockState,
   resourceKind: BackupPolicy["resourceKind"],
-  resourceId: string
+  resourceId: string,
+  policy: Partial<BackupPolicy> = {}
 ) => {
   state.backupPolicies = [
     ...state.backupPolicies,
     {
-      enabled: false,
+      cron: policy.cron,
+      enabled: policy.enabled ?? false,
       resourceId,
       resourceKind,
-      retentionCount: 5,
+      retentionCount: policy.retentionCount ?? 7,
+      targetId: policy.targetId,
     },
   ];
 };

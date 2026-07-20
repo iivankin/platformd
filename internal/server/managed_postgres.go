@@ -85,10 +85,12 @@ func getManagedPostgres(application *managedpostgres.Application) http.HandlerFu
 
 func createManagedPostgres(application *managedpostgres.Application) http.HandlerFunc {
 	type requestBody struct {
-		Name          string `json:"name"`
-		ImageTag      string `json:"imageTag"`
-		CPUMillicores int64  `json:"cpuMillicores"`
-		MemoryBytes   int64  `json:"memoryBytes"`
+		Name          string                             `json:"name"`
+		ImageTag      string                             `json:"imageTag"`
+		CPUMillicores int64                              `json:"cpuMillicores"`
+		MemoryBytes   int64                              `json:"memoryBytes"`
+		BackupPolicy  initialBackupPolicyRequest         `json:"backupPolicy"`
+		Credentials   managedpostgres.InitialCredentials `json:"credentials"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAccessIdentity(response, request)
@@ -102,7 +104,9 @@ func createManagedPostgres(application *managedpostgres.Application) http.Handle
 		result, err := application.Create(request.Context(), managedpostgres.CreateInput{
 			ProjectID: request.PathValue("projectID"), Name: body.Name, ImageTag: body.ImageTag,
 			CPUMillicores: body.CPUMillicores, MemoryBytes: body.MemoryBytes,
-			Actor: managedpostgres.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+			BackupPolicy: body.BackupPolicy.statePolicy(),
+			Credentials:  &body.Credentials,
+			Actor:        managedpostgres.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
 		})
 		if err != nil {
 			writeManagedPostgresError(response, err)
@@ -222,6 +226,8 @@ func writeManagedPostgresError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "postgres_not_found", "Managed PostgreSQL resource not found")
 	case errors.Is(err, state.ErrResourceNameConflict):
 		writeAPIError(response, http.StatusConflict, "resource_name_conflict", "A project resource with this name already exists")
+	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):
+		writeAPIError(response, http.StatusBadRequest, "invalid_backup_policy", err.Error())
 	case errors.Is(err, managedpostgres.ErrImageUnavailable):
 		writeAPIError(response, http.StatusBadGateway, "managed_postgres_image_unavailable", "Unable to resolve the selected official PostgreSQL image")
 	case errors.Is(err, managedpostgres.ErrInvalidInput), errors.Is(err, managedpostgres.ErrInvalidQuery), errors.Is(err, managedimages.ErrInvalidQuery):

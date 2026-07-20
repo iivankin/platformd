@@ -269,10 +269,12 @@ func getManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 
 func createManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 	type requestBody struct {
-		Name          string `json:"name"`
-		ImageTag      string `json:"imageTag"`
-		CPUMillicores int64  `json:"cpuMillicores"`
-		MemoryBytes   int64  `json:"memoryBytes"`
+		Name          string                          `json:"name"`
+		ImageTag      string                          `json:"imageTag"`
+		CPUMillicores int64                           `json:"cpuMillicores"`
+		MemoryBytes   int64                           `json:"memoryBytes"`
+		BackupPolicy  initialBackupPolicyRequest      `json:"backupPolicy"`
+		Credentials   managedredis.InitialCredentials `json:"credentials"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAccessIdentity(response, request)
@@ -295,7 +297,9 @@ func createManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 		result, err := repository.Create(request.Context(), managedredis.CreateInput{
 			ProjectID: request.PathValue("projectID"), Name: body.Name, ImageTag: body.ImageTag,
 			CPUMillicores: body.CPUMillicores, MemoryBytes: body.MemoryBytes,
-			Actor: managedredis.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+			BackupPolicy: body.BackupPolicy.statePolicy(),
+			Credentials:  &body.Credentials,
+			Actor:        managedredis.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
 		})
 		if err != nil {
 			writeManagedRedisError(response, err)
@@ -336,6 +340,8 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "redis_not_found", "Managed Redis resource not found")
 	case errors.Is(err, state.ErrResourceNameConflict):
 		writeAPIError(response, http.StatusConflict, "resource_name_conflict", "A project resource with this name already exists")
+	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):
+		writeAPIError(response, http.StatusBadRequest, "invalid_backup_policy", err.Error())
 	case errors.Is(err, managedredis.ErrImageUnavailable):
 		writeAPIError(response, http.StatusBadGateway, "managed_redis_image_unavailable", "Unable to resolve the selected official Redis image")
 	case errors.Is(err, managedredis.ErrInvalidInput), errors.Is(err, managedimages.ErrInvalidQuery):

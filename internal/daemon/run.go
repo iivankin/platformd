@@ -30,6 +30,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerlogs"
+	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
@@ -333,6 +334,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	containerFiles, err := containerfiles.New(liveContainerResourceRepository{store: store}, runtime, runtime.engine)
 	if err != nil {
 		return fmt.Errorf("configure container files: %w", err)
+	}
+	containerPorts, err := containerports.New(liveContainerResourceRepository{store: store}, runtime, runtime.engine)
+	if err != nil {
+		return fmt.Errorf("configure container ports: %w", err)
 	}
 	volumeFilesystem := volume.NewLocalFilesystem(paths.VolumesRoot)
 	volumeCleanupError := func(cleanupErr error) { log.Printf("volume cleanup: %v", cleanupErr) }
@@ -683,6 +688,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithDatabaseVersions(databaseVersions),
 		server.WithContainerConsole(installation.AdminHostname, containerConsole),
 		server.WithContainerFiles(containerFiles),
+		server.WithContainerPorts(containerPorts),
 		server.WithServerTerminalAuth(serverTerminalAuth),
 		server.WithServerTerminal(
 			installation.AdminHostname, hostTerminal,

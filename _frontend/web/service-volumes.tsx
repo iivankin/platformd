@@ -11,10 +11,11 @@ import { ServiceVolumeRow } from "@/service-volume-row";
 interface ServiceVolumesProperties {
   mounts: Service["volumeMounts"];
   onMountsChange: (mounts: Service["volumeMounts"]) => void;
-  onPersistedVolumesChange: (volumes: Volume[]) => void;
+  onPersistedVolumesChange?: (volumes: Volume[]) => void;
   onVolumesChange: (volumes: ServiceVolumeDraft[]) => void;
   projectID: string;
   serviceID: string;
+  suggestOwner?: boolean;
   volumes: ServiceVolumeDraft[];
 }
 
@@ -25,6 +26,7 @@ export const ServiceVolumes = ({
   onVolumesChange,
   projectID,
   serviceID,
+  suggestOwner = true,
   volumes,
 }: ServiceVolumesProperties) => {
   const [creating, setCreating] = useState(false);
@@ -72,6 +74,7 @@ export const ServiceVolumes = ({
           }}
           projectID={projectID}
           serviceID={serviceID}
+          suggestOwner={suggestOwner}
         />
       ) : null}
 
@@ -92,7 +95,7 @@ export const ServiceVolumes = ({
                 );
                 onVolumesChange(nextVolumes);
                 if (!item.pendingCreation) {
-                  onPersistedVolumesChange(
+                  onPersistedVolumesChange?.(
                     nextVolumes.filter((volume) => !volume.pendingCreation)
                   );
                 }

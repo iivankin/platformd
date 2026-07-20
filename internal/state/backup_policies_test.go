@@ -52,6 +52,35 @@ func TestBackupPolicyUsesResourceRowAndCanonicalCron(t *testing.T) {
 	}
 }
 
+func TestManagedResourceCreationPersistsInitialBackupPolicy(t *testing.T) {
+	t.Parallel()
+	store := openStore(t)
+	defer store.Close()
+	ctx := context.Background()
+	createManagedRedisTestProject(t, store)
+	createBackupPolicyTarget(t, store)
+
+	resource, err := store.CreateManagedRedis(ctx, state.CreateManagedRedis{
+		ID: "redis", ProjectID: "project", Name: "cache", ImageTag: "7.4",
+		ImageDigest: "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4",
+		VolumeID:    "volume", PasswordEncrypted: []byte("sealed"), AuditEventID: "create-audit",
+		ActorKind: "access", ActorID: "user", ActorEmail: "user@example.com", CreatedAtMillis: 10,
+		BackupPolicy: state.InitialBackupPolicy{
+			TargetID: "target", Enabled: true, Cron: " 5  */2 * * 1-5 ", RetentionCount: 12,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !resource.BackupEnabled || resource.BackupCron != "5 */2 * * 1-5" || resource.BackupRetentionCount != 12 {
+		t.Fatalf("resource policy = %+v", resource)
+	}
+	policy, err := store.BackupPolicy(ctx, "redis", resource.ID)
+	if err != nil || policy.TargetID != "target" || !policy.Enabled || policy.Cron != resource.BackupCron || policy.RetentionCount != 12 {
+		t.Fatalf("backup policy = %+v, %v", policy, err)
+	}
+}
+
 func TestBackupPolicyValidationAndScheduledOccurrenceLookup(t *testing.T) {
 	t.Parallel()
 	store := openStore(t)

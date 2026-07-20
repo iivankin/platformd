@@ -12,6 +12,7 @@ import { Link } from "react-router";
 
 import { fetchGitHubAppSettings, fetchGitHubRepositories } from "@/api";
 import type {
+  CreateServiceInput,
   GitHubRepository,
   Service,
   ServiceRegistryCredential,
@@ -65,6 +66,20 @@ export const emptyServiceConfigurationDraft =
     source: defaultSource(),
   });
 
+export const serviceConfigurationDraftFromCreateInput = (
+  input: CreateServiceInput
+): ServiceConfigurationDraft => ({
+  healthEnabled: input.healthCheck !== undefined,
+  healthPath: input.healthCheck?.path ?? "/health",
+  healthPort: String(input.healthCheck?.port ?? 8080),
+  healthTimeout: String(input.healthCheck?.timeoutSeconds ?? 60),
+  registryCredential: input.registryCredential ?? {
+    password: "",
+    username: "",
+  },
+  source: input.source,
+});
+
 export const serviceConfigurationDraft = (
   service: Service
 ): ServiceConfigurationDraft => ({
@@ -105,7 +120,7 @@ const parseHealthCheck = (
 
 const validateServiceSource = (
   draft: ServiceConfigurationDraft,
-  httpDomainCount: number
+  httpDomainCount?: number
 ) => {
   if (draft.source.type === "github") {
     if (
@@ -114,7 +129,11 @@ const validateServiceSource = (
     ) {
       throw new Error("GitHub repository and branch are required");
     }
-    if (draft.source.github.pullRequestPreview && httpDomainCount !== 1) {
+    if (
+      draft.source.github.pullRequestPreview &&
+      httpDomainCount !== undefined &&
+      httpDomainCount !== 1
+    ) {
       throw new Error("PR previews require exactly one HTTP domain");
     }
   } else if (!draft.source.image.reference.trim()) {
@@ -131,7 +150,7 @@ const validateServiceSource = (
 
 export const parseServiceConfiguration = (
   draft: ServiceConfigurationDraft,
-  httpDomainCount = 0
+  httpDomainCount?: number
 ): ServiceConfigurationValues => {
   validateServiceSource(draft, httpDomainCount);
   const healthCheck = parseHealthCheck(draft);

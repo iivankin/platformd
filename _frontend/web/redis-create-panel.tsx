@@ -1,17 +1,22 @@
 import { Box, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import type { FormEvent } from "react";
 
-import { fetchManagedImageTags } from "@/api";
 import type { CreateManagedRedisInput } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
+import { ManagedImageTagCombobox } from "@/managed-image-tag-combobox";
+
+type RedisDraftInput = Omit<
+  CreateManagedRedisInput,
+  "backupPolicy" | "credentials"
+>;
 
 interface RedisCreatePanelProperties {
-  initialDraft?: CreateManagedRedisInput;
+  initialDraft?: RedisDraftInput;
   onClose: () => void;
-  onDrafted: (input: CreateManagedRedisInput) => void;
+  onDrafted: (input: RedisDraftInput) => void;
 }
 
 export const RedisCreatePanel = ({
@@ -27,26 +32,6 @@ export const RedisCreatePanel = ({
       ? String(initialDraft.memoryBytes / 1024 / 1024)
       : ""
   );
-  const [tags, setTags] = useState<string[]>([]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const page = await fetchManagedImageTags(
-          "redis",
-          { pageSize: 50 },
-          controller.signal
-        );
-        setTags(page.tags.map((tag) => tag.name));
-      } catch {
-        // The field remains editable when Docker Hub suggestions are unavailable.
-      }
-    };
-    void load();
-    return () => controller.abort();
-  }, []);
-
   const submit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     onDrafted({
@@ -89,24 +74,14 @@ export const RedisCreatePanel = ({
           />
         </FormField>
         <FormField label="Official Redis tag" name="redis-tag">
-          <Input
-            autoCapitalize="none"
-            autoComplete="off"
+          <ManagedImageTagCombobox
+            engine="redis"
             id="redis-tag"
-            list="redis-tags"
-            onChange={(event) => setImageTag(event.target.value)}
+            onChange={setImageTag}
             placeholder="8.2"
             required
-            spellCheck={false}
             value={imageTag}
           />
-          <datalist id="redis-tags">
-            {tags.map((tag) => (
-              <option key={tag} value={tag}>
-                {tag}
-              </option>
-            ))}
-          </datalist>
           <p className="mt-1.5 text-[9px] leading-4 text-muted-foreground">
             Suggestions come from the official Docker Hub repository.
           </p>

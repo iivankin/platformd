@@ -39,12 +39,14 @@ export const ServiceVariables = ({
   busy,
   onSave,
   projectID,
+  resolvedRaw = true,
   service,
 }: {
   busy: boolean;
   onSave: (environment: Record<string, string>) => Promise<boolean>;
   projectID: string;
-  service: Service;
+  resolvedRaw?: boolean;
+  service: Pick<Service, "environment" | "id">;
 }) => {
   const [rows, setRows] = useState<VariableRow[]>(() =>
     serviceVariableRows(service)
@@ -196,14 +198,16 @@ export const ServiceVariables = ({
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <Button
-            disabled={busy || resolving}
-            onClick={toggleRaw}
-            size="sm"
-            variant="ghost"
-          >
-            <Braces /> {rawButtonLabel}
-          </Button>
+          {resolvedRaw ? (
+            <Button
+              disabled={busy || resolving}
+              onClick={toggleRaw}
+              size="sm"
+              variant="ghost"
+            >
+              <Braces /> {rawButtonLabel}
+            </Button>
+          ) : null}
           <Button onClick={addVariable} size="sm" variant="outline">
             <Plus /> New variable
           </Button>

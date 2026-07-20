@@ -23,6 +23,14 @@ type Credentials struct {
 	BootstrapPassword string
 }
 
+// InitialCredentials are generated with a UI draft so references resolve
+// before deployment. The bootstrap password remains internal to platformd.
+type InitialCredentials struct {
+	DatabaseName  string
+	OwnerUsername string
+	OwnerPassword string
+}
+
 func GenerateCredentials(resourceID string, random io.Reader) (Credentials, error) {
 	if random == nil {
 		random = rand.Reader
@@ -68,6 +76,26 @@ func generatePassword(random io.Reader) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(value), nil
+}
+
+func validateInitialCredentials(credentials InitialCredentials) error {
+	if !validSQLIdentifier(credentials.DatabaseName) || !validSQLIdentifier(credentials.OwnerUsername) || !validPassword(credentials.OwnerPassword) {
+		return errors.New("managed PostgreSQL initial credentials are invalid")
+	}
+	return nil
+}
+
+func validSQLIdentifier(value string) bool {
+	if len(value) == 0 || len(value) > 63 {
+		return false
+	}
+	for index, character := range value {
+		if (character >= 'a' && character <= 'z') || character == '_' || (index > 0 && character >= '0' && character <= '9') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func sealPassword(master cryptobox.MasterKey, resourceID, password, domain, kind string) ([]byte, error) {

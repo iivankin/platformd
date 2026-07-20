@@ -10,7 +10,19 @@ import (
 	"github.com/iivankin/platformd/internal/backupcron"
 )
 
-var ErrBackupResourceNotFound = errors.New("backup resource not found")
+var (
+	ErrBackupResourceNotFound = errors.New("backup resource not found")
+	ErrInvalidBackupPolicy    = errors.New("invalid backup policy")
+)
+
+const DefaultBackupRetentionCount = 7
+
+type InitialBackupPolicy struct {
+	TargetID       string
+	Enabled        bool
+	Cron           string
+	RetentionCount int
+}
 
 type BackupPolicy struct {
 	ResourceKind   string
@@ -34,6 +46,41 @@ type SetBackupPolicy struct {
 	ActorEmail           string
 	RequestCorrelationID string
 	UpdatedAtMillis      int64
+}
+
+func normalizeInitialBackupPolicy(input InitialBackupPolicy) (InitialBackupPolicy, error) {
+	if input.RetentionCount == 0 {
+		input.RetentionCount = DefaultBackupRetentionCount
+	}
+	if input.RetentionCount < 1 || input.RetentionCount > 100 {
+		return InitialBackupPolicy{}, fmt.Errorf("%w: retention count must be between 1 and 100", ErrInvalidBackupPolicy)
+	}
+	var err error
+	if input.Cron != "" {
+		input.Cron, err = backupcron.Canonical(input.Cron)
+		if err != nil {
+			return InitialBackupPolicy{}, fmt.Errorf("%w: %v", ErrInvalidBackupPolicy, err)
+		}
+	}
+	if input.Enabled && (input.TargetID == "" || input.Cron == "") {
+		return InitialBackupPolicy{}, fmt.Errorf("%w: enabled policy requires a target and cron", ErrInvalidBackupPolicy)
+	}
+	return input, nil
+}
+
+func validateInitialBackupTarget(ctx context.Context, transaction *sql.Tx, targetID string) error {
+	if targetID == "" {
+		return nil
+	}
+	var exists int
+	if err := transaction.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM backup_targets WHERE id = ?)`, targetID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists != 1 {
+		return ErrBackupTargetNotFound
+	}
+	return nil
 }
 
 func (store *Store) BackupPolicies(ctx context.Context) ([]BackupPolicy, error) {

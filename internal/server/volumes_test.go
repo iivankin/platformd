@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -134,5 +136,117 @@ func TestVolumeAPIRejectsUnknownFields(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest || len(repository.created) != 0 {
 		t.Fatalf("unknown field = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestServiceAPICreatesInitialDomainsListenersAndMountedVolumes(t *testing.T) {
+	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(context.Background(), state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	volumeApplication, err := volume.New(volume.Config{
+		Repository: store, Filesystem: volumeFilesystemStub{}, Images: volumeImageInspectorStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := access.ProtectAdmin(
+		"admin.example.com", projectVerifier{},
+		server.Handler(
+			server.DefaultMeta("ready"), server.WithServices(store), server.WithDomains(store),
+			server.WithServiceListeners(store), server.WithVolumes(volumeApplication),
+		),
+	)
+	request := projectRequest(http.MethodPost, "/api/v1/projects/project/services", `{
+  "name":"api",
+  "enabled":false,
+  "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"nginx:stable"}},
+  "domains":[{"hostname":"api.example.com","targetPort":8080}],
+  "listeners":[{"protocol":"tcp","publicPort":9000,"targetPort":8080}],
+  "volumes":[{"name":"data","ownerUid":1000,"ownerGid":1001,"containerPath":"/data"}]
+}`)
+	request.Header.Set("Origin", "https://admin.example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create = %d/%s", response.Code, response.Body)
+	}
+
+	serviceID := strings.TrimPrefix(response.Header().Get("Location"), "/api/v1/projects/project/services/")
+	created, err := store.Service(context.Background(), "project", serviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Enabled || len(created.Snapshot.VolumeMounts) != 1 || created.Snapshot.VolumeMounts[0].ContainerPath != "/data" {
+		t.Fatalf("created service = %+v", created)
+	}
+	volumes, err := store.VolumesByService(context.Background(), "project", serviceID)
+	if err != nil || len(volumes) != 1 || created.Snapshot.VolumeMounts[0].VolumeID != volumes[0].ID {
+		t.Fatalf("created volumes/mounts = %+v/%+v, %v", volumes, created.Snapshot.VolumeMounts, err)
+	}
+	domains, err := store.ServiceDomains(context.Background(), "project", serviceID)
+	if err != nil || len(domains) != 1 || domains[0].Hostname != "api.example.com" || domains[0].TargetPort != 8080 {
+		t.Fatalf("domains = %+v, %v", domains, err)
+	}
+	listeners, err := store.ServiceListeners(context.Background(), "project", serviceID)
+	if err != nil || len(listeners) != 1 || listeners[0].Protocol != "tcp" || listeners[0].PublicPort != 9000 || listeners[0].TargetPort != 8080 {
+		t.Fatalf("listeners = %+v, %v", listeners, err)
+	}
+}
+
+func TestServiceAPIRollsBackIncompleteInitialSetup(t *testing.T) {
+	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(context.Background(), state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	volumeApplication, err := volume.New(volume.Config{
+		Repository: store, Filesystem: volumeFilesystemStub{}, Images: volumeImageInspectorStub{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := access.ProtectAdmin(
+		"admin.example.com", projectVerifier{},
+		server.Handler(
+			server.DefaultMeta("ready"), server.WithServices(store), server.WithDomains(store),
+			server.WithVolumes(volumeApplication),
+		),
+	)
+	request := projectRequest(http.MethodPost, "/api/v1/projects/project/services", `{
+  "name":"api",
+  "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"nginx:stable"}},
+  "domains":[{"hostname":"api.example.com","targetPort":0}],
+  "volumes":[{"name":"data","ownerUid":1000,"ownerGid":1001,"containerPath":"/data"}]
+}`)
+	request.Header.Set("Origin", "https://admin.example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), `"code":"invalid_domain"`) {
+		t.Fatalf("create = %d/%s", response.Code, response.Body)
+	}
+	var services, volumes int
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM services WHERE project_id = ?", "project").Scan(&services); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM volumes WHERE project_id = ?", "project").Scan(&volumes); err != nil {
+		t.Fatal(err)
+	}
+	if services != 0 || volumes != 0 {
+		t.Fatalf("incomplete service survived rollback: services=%d volumes=%d", services, volumes)
 	}
 }

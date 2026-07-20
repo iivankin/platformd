@@ -1,13 +1,17 @@
 import { Globe, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
+import type { ContainerPort } from "@/api";
 import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { ContainerPortCombobox } from "@/container-port-combobox";
 import type { ServiceDomainDraft } from "@/service-settings-model";
+import type { ContainerPortDetectionStatus } from "@/use-container-ports";
 
 interface ServiceDomainsProperties {
+  containerPorts: ContainerPort[];
+  containerPortsStatus?: ContainerPortDetectionStatus;
   disabled?: boolean;
   domains: ServiceDomainDraft[];
   onChanged: (domains: ServiceDomainDraft[]) => void;
@@ -17,6 +21,8 @@ const validPort = (port: number) =>
   Number.isInteger(port) && port >= 1 && port <= 65_535;
 
 export const ServiceDomains = ({
+  containerPorts,
+  containerPortsStatus = "ready",
   disabled = false,
   domains,
   onChanged,
@@ -72,19 +78,19 @@ export const ServiceDomains = ({
               <span className="truncate text-[10px]">{domain.hostname}</span>
               <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
                 <span>→ :</span>
-                <Input
-                  aria-label={`Container port for ${domain.hostname}`}
+                <ContainerPortCombobox
+                  ariaLabel={`Container port for ${domain.hostname}`}
                   className="h-7 min-w-0 px-2 text-[9px]"
                   disabled={disabled}
-                  max={65_535}
-                  min={1}
-                  onChange={(event) =>
+                  onChange={(nextPort) =>
                     commit({
                       ...domain,
-                      targetPort: Number(event.target.value),
+                      targetPort: nextPort,
                     })
                   }
-                  type="number"
+                  ports={containerPorts}
+                  protocol="tcp"
+                  status={containerPortsStatus}
                   value={domain.targetPort}
                 />
               </div>
@@ -114,15 +120,15 @@ export const ServiceDomains = ({
           }}
           value={hostname}
         />
-        <Input
-          aria-label="Container port"
+        <ContainerPortCombobox
+          ariaLabel="Container port"
           disabled={disabled}
-          max={65_535}
-          min={1}
-          onChange={(event) => setTargetPort(Number(event.target.value))}
+          onChange={setTargetPort}
           placeholder="Container port"
-          type="number"
-          value={targetPort || ""}
+          ports={containerPorts}
+          protocol="tcp"
+          status={containerPortsStatus}
+          value={targetPort}
         />
         <Button
           disabled={

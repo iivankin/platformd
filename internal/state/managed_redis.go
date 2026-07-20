@@ -43,6 +43,7 @@ type CreateManagedRedis struct {
 	PasswordEncrypted    []byte
 	CPUMillicores        int64
 	MemoryMaxBytes       int64
+	BackupPolicy         InitialBackupPolicy
 	AuditEventID         string
 	ActorKind            string
 	ActorID              string
@@ -72,6 +73,10 @@ func (store *Store) CreateManagedRedis(ctx context.Context, input CreateManagedR
 	if input.CPUMillicores < 0 || input.MemoryMaxBytes < 0 {
 		return ManagedRedis{}, errors.New("managed Redis resource limits cannot be negative")
 	}
+	backupPolicy, err := normalizeInitialBackupPolicy(input.BackupPolicy)
+	if err != nil {
+		return ManagedRedis{}, err
+	}
 	metadata := make(map[string]string)
 	if input.ActorEmail != "" {
 		metadata["actorEmail"] = input.ActorEmail
@@ -95,14 +100,20 @@ func (store *Store) CreateManagedRedis(ctx context.Context, input CreateManagedR
 		if exists {
 			return ErrResourceNameConflict
 		}
+		if err := validateInitialBackupTarget(ctx, transaction, backupPolicy.TargetID); err != nil {
+			return err
+		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO managed_redis(
   id, project_id, name, image_tag, image_digest, volume_id, password_encrypted,
-  cpu_millis, memory_bytes, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  cpu_millis, memory_bytes, backup_target_id, backup_enabled, backup_cron,
+  backup_retention_count, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			input.ID, input.ProjectID, input.Name, input.ImageTag, input.ImageDigest,
 			input.VolumeID, input.PasswordEncrypted, nullablePositive(input.CPUMillicores),
-			nullablePositive(input.MemoryMaxBytes), input.CreatedAtMillis, input.CreatedAtMillis,
+			nullablePositive(input.MemoryMaxBytes), nullableString(backupPolicy.TargetID),
+			boolInteger(backupPolicy.Enabled), nullableString(backupPolicy.Cron),
+			backupPolicy.RetentionCount, input.CreatedAtMillis, input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("create managed Redis resource: %w", err)
 		}

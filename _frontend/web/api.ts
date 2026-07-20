@@ -98,6 +98,13 @@ const serviceListenerSchema = z.object({
 const serviceListenersSchema = z.object({
   listeners: z.array(serviceListenerSchema),
 });
+const containerPortSchema = z.object({
+  port: z.number().int().min(1).max(65_535),
+  protocol: z.enum(["tcp", "udp"]),
+});
+const containerPortsSchema = z.object({
+  ports: z.array(containerPortSchema),
+});
 const apiErrorSchema = z.object({
   error: z.object({
     code: z.string(),
@@ -110,6 +117,7 @@ const apiErrorSchema = z.object({
 export type Project = z.infer<typeof projectSchema>;
 export type ServiceDomain = z.infer<typeof serviceDomainSchema>;
 export type ServiceListener = z.infer<typeof serviceListenerSchema>;
+export type ContainerPort = z.infer<typeof containerPortSchema>;
 
 const apiTokenSchema = z.object({
   createdAt: z.number().int().positive(),
@@ -273,12 +281,19 @@ export interface CreateVolumeInput {
   ownerUid: number;
 }
 
+export interface CreateServiceVolumeInput extends CreateVolumeInput {
+  containerPath?: string;
+}
+
 export interface CreateServiceInput {
+  domains?: Pick<ServiceDomain, "hostname" | "targetPort">[];
   environment: Record<string, string>;
   healthCheck?: z.infer<typeof healthCheckSchema>;
+  listeners?: Pick<ServiceListener, "protocol" | "publicPort" | "targetPort">[];
   name: string;
   registryCredential?: Pick<ServiceRegistryCredential, "password" | "username">;
   source: ServiceSource;
+  volumes?: CreateServiceVolumeInput[];
 }
 
 export interface UpdateServiceInput {
@@ -661,8 +676,14 @@ export type RedisKey = z.infer<typeof redisKeySchema>;
 export type RedisKeyPage = z.infer<typeof redisKeyPageSchema>;
 export type RedisPreview = z.infer<typeof redisPreviewSchema>;
 
+export interface ManagedRedisInitialCredentials {
+  password: string;
+}
+
 export interface CreateManagedRedisInput {
+  backupPolicy?: CreateBackupPolicyInput;
   cpuMillicores?: number;
+  credentials: ManagedRedisInitialCredentials;
   imageTag: string;
   memoryBytes?: number;
   name: string;
@@ -762,8 +783,16 @@ export type ManagedPostgres = z.infer<typeof managedPostgresSchema>;
 export type PostgresExtension = z.infer<typeof postgresExtensionSchema>;
 export type PostgresQueryResult = z.infer<typeof postgresQueryResultSchema>;
 
+export interface ManagedPostgresInitialCredentials {
+  databaseName: string;
+  ownerPassword: string;
+  ownerUsername: string;
+}
+
 export interface CreateManagedPostgresInput {
+  backupPolicy?: CreateBackupPolicyInput;
   cpuMillicores?: number;
+  credentials: ManagedPostgresInitialCredentials;
   imageTag: string;
   memoryBytes?: number;
   name: string;
@@ -814,11 +843,25 @@ export type ObjectMetadata = z.infer<typeof objectMetadataSchema>;
 export type ObjectPage = z.infer<typeof objectPageSchema>;
 export type ObjectPreview = z.infer<typeof objectPreviewSchema>;
 
+export interface ObjectStoreInitialCredentials {
+  accessKey: string;
+  secret: string;
+}
+
 export interface CreateObjectStoreInput {
+  backupPolicy?: CreateBackupPolicyInput;
   bucketName: string;
   corsOrigins: string[];
+  credentials: ObjectStoreInitialCredentials;
   name: string;
   publicHostname?: string;
+}
+
+export interface CreateBackupPolicyInput {
+  cron: string;
+  enabled: boolean;
+  retentionCount: number;
+  targetId: string;
 }
 
 const registrySettingsSchema = z.object({ hostname: z.string() });
@@ -3209,6 +3252,26 @@ export const fetchServiceListeners = async (
     );
   }
   return serviceListenersSchema.parse(await response.json()).listeners;
+};
+
+export const fetchContainerPorts = async (
+  projectID: string,
+  resourceKind: "postgres" | "redis" | "service",
+  resourceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ContainerPort[]> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/resources/${resourceKind}/${encodeURIComponent(resourceID)}/ports`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `container ports request failed with ${response.status}`
+    );
+  }
+  return containerPortsSchema.parse(await response.json()).ports;
 };
 
 export const attachServiceListener = async (

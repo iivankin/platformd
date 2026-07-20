@@ -108,6 +108,9 @@ func createService(config handlerConfig) http.HandlerFunc {
 		Name               string                            `json:"name"`
 		Enabled            *bool                             `json:"enabled"`
 		RegistryCredential *serviceRegistryCredentialRequest `json:"registryCredential"`
+		Domains            []initialServiceDomainRequest     `json:"domains"`
+		Listeners          []initialServiceListenerRequest   `json:"listeners"`
+		Volumes            []initialServiceVolumeRequest     `json:"volumes"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := access.IdentityFromContext(request.Context())
@@ -132,6 +135,10 @@ func createService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_name", err.Error())
 			return
 		}
+		if len(body.VolumeMounts) != 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_config", "Initial volume mounts must be configured through volumes")
+			return
+		}
 		snapshot, err := serviceconfig.Normalize(body.snapshot())
 		if err != nil {
 			writeAPIError(response, http.StatusBadRequest, "invalid_service_config", err.Error())
@@ -140,6 +147,11 @@ func createService(config handlerConfig) http.HandlerFunc {
 		enabled := true
 		if body.Enabled != nil {
 			enabled = *body.Enabled
+		}
+		setup := initialServiceSetup{Domains: body.Domains, Listeners: body.Listeners, Volumes: body.Volumes}
+		if snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil && len(setup.Domains) != 1 {
+			writeAPIError(response, http.StatusConflict, "preview_domain_count", state.ErrPreviewDomainCount.Error())
+			return
 		}
 		timestamp := config.now()
 		serviceID, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
@@ -155,9 +167,12 @@ func createService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_registry_auth", credentialErr.Error())
 			return
 		}
+		// Filesystem volumes and public ports cannot share SQLite's transaction.
+		// Keep the service stopped until every dependency exists, then enable it
+		// once; DeleteService provides compensating cleanup on any setup failure.
 		created, err := config.services.CreateService(request.Context(), state.CreateService{
 			ID: serviceID, ProjectID: request.PathValue("projectID"), Name: body.Name,
-			Enabled: enabled, Snapshot: snapshot, ImageCredential: credential,
+			Enabled: enabled && setup.empty(), Snapshot: snapshot, ImageCredential: credential,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
@@ -180,6 +195,21 @@ func createService(config handlerConfig) http.HandlerFunc {
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to create service")
 			return
+		}
+		if !setup.empty() {
+			var stage initialServiceSetupStage
+			created, stage, err = applyInitialServiceSetup(
+				request.Context(), config, created, snapshot, setup, identity, enabled,
+			)
+			if err != nil {
+				rollbackErr := rollbackInitialService(request.Context(), config, created, identity)
+				if rollbackErr != nil {
+					writeAPIError(response, http.StatusInternalServerError, "service_creation_rollback_failed", "Unable to roll back incomplete service creation")
+					return
+				}
+				writeInitialServiceSetupError(response, stage, err)
+				return
+			}
 		}
 		response.Header().Set("Location", "/api/v1/projects/"+created.ProjectID+"/services/"+created.ID)
 		response.Header().Set("X-Request-ID", correlationID)

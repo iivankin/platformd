@@ -89,7 +89,7 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 		Name:    "platformd-integration",
 		Command: []string{
 			"/bin/sh", "-c",
-			`test "$(cat /proc/1/comm)" = podman-init && test "$(readlink /proc/1/exe)" = /run/podman-init || exit 71; i=0; while [ "$i" -lt 300 ]; do echo "platformd-runtime-rotation-$i-abcdefghijklmnopqrstuvwxyz"; i=$((i+1)); done; sleep 2`,
+			`test "$(cat /proc/1/comm)" = podman-init && test "$(readlink /proc/1/exe)" = /run/podman-init || exit 71; nc -l -p 18080 >/dev/null & i=0; while [ "$i" -lt 300 ]; do echo "platformd-runtime-rotation-$i-abcdefghijklmnopqrstuvwxyz"; i=$((i+1)); done; sleep 2`,
 		},
 		Labels:       map[string]string{"io.platformd.test": "runtime"},
 		Network:      network.Name,
@@ -115,6 +115,17 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	}
 	if len(inspected.IPs[network.Name]) != 1 {
 		t.Fatalf("unexpected network addresses: %+v", inspected.IPs)
+	}
+	portDeadline := time.Now().Add(time.Second)
+	for {
+		ports, portErr := engine.ContainerListeningPorts(container.ID)
+		if portErr == nil && slices.Contains(ports, ListeningPort{Port: 18080, Protocol: "tcp"}) {
+			break
+		}
+		if time.Now().After(portDeadline) {
+			t.Fatalf("detect listening port: ports=%+v err=%v", ports, portErr)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 
 	var stdout bytes.Buffer

@@ -67,6 +67,8 @@ type CreateInput struct {
 	CORSOrigins          []string
 	CredentialName       string
 	CredentialPermission string
+	BackupPolicy         state.InitialBackupPolicy
+	Credentials          *InitialCredentials
 	Actor                Actor
 }
 
@@ -174,23 +176,38 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 	if err != nil {
 		return CreateResult{}, err
 	}
-	accessKey, err := AccessKeyID(identifiers[1])
-	if err != nil {
-		return CreateResult{}, err
+	credentialID := identifiers[1]
+	var accessKey, secret string
+	if input.Credentials == nil {
+		accessKey, err = AccessKeyID(credentialID)
+		if err != nil {
+			return CreateResult{}, err
+		}
+		secret, err = GenerateSecret(application.random)
+		if err != nil {
+			return CreateResult{}, err
+		}
+	} else {
+		accessKey = input.Credentials.AccessKey
+		secret = input.Credentials.Secret
+		credentialID, err = CredentialID(accessKey)
+		if err == nil && !validSecret(secret) {
+			err = errors.New("S3 credential secret is invalid")
+		}
+		if err != nil {
+			return CreateResult{}, fmt.Errorf("%w: initial object storage credentials are invalid: %v", ErrInvalidInput, err)
+		}
 	}
-	secret, err := GenerateSecret(application.random)
-	if err != nil {
-		return CreateResult{}, err
-	}
-	encrypted, err := SealSecret(application.master, identifiers[0], identifiers[1], secret)
+	encrypted, err := SealSecret(application.master, identifiers[0], credentialID, secret)
 	if err != nil {
 		return CreateResult{}, err
 	}
 	created, credential, err := application.repository.CreateObjectStore(ctx, state.CreateObjectStore{
 		ID: identifiers[0], ProjectID: input.ProjectID, Name: input.Name, BucketName: input.BucketName,
 		PublicHostname: input.PublicHostname, CORSOrigins: input.CORSOrigins,
-		CredentialID: identifiers[1], CredentialName: input.CredentialName,
+		CredentialID: credentialID, CredentialName: input.CredentialName,
 		CredentialPermission: input.CredentialPermission, CredentialSecret: encrypted,
+		BackupPolicy: input.BackupPolicy,
 		AuditEventID: identifiers[2], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
 		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[3], CreatedAtMillis: timestamp.UnixMilli(),
 	})

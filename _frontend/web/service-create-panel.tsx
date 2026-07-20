@@ -14,32 +14,18 @@ import {
 
 interface ServiceCreatePanelProperties {
   embeddedRegistryHost: string;
-  initialDraft?: CreateServiceInput;
   onClose: () => void;
   onDrafted: (input: CreateServiceInput) => void;
 }
 
 export const ServiceCreatePanel = ({
   embeddedRegistryHost,
-  initialDraft,
   onClose,
   onDrafted,
 }: ServiceCreatePanelProperties) => {
-  const [name, setName] = useState(initialDraft?.name ?? "");
+  const [name, setName] = useState("");
   const [configuration, setConfiguration] = useState(
-    initialDraft
-      ? () => ({
-          healthEnabled: initialDraft.healthCheck !== undefined,
-          healthPath: initialDraft.healthCheck?.path ?? "/health",
-          healthPort: String(initialDraft.healthCheck?.port ?? 8080),
-          healthTimeout: String(initialDraft.healthCheck?.timeoutSeconds ?? 60),
-          registryCredential: initialDraft.registryCredential ?? {
-            password: "",
-            username: "",
-          },
-          source: initialDraft.source,
-        })
-      : emptyServiceConfigurationDraft
+    emptyServiceConfigurationDraft
   );
   const [error, setError] = useState<string>();
 
@@ -47,9 +33,9 @@ export const ServiceCreatePanel = ({
     event.preventDefault();
     setError(undefined);
     try {
-      const parsed = parseServiceConfiguration(configuration, 0);
+      const parsed = parseServiceConfiguration(configuration);
       onDrafted({
-        environment: initialDraft?.environment ?? {},
+        environment: {},
         healthCheck: parsed.healthCheck,
         name,
         registryCredential: parsed.registryCredential,
@@ -112,9 +98,7 @@ export const ServiceCreatePanel = ({
           <Button onClick={onClose} type="button" variant="ghost">
             Cancel
           </Button>
-          <Button type="submit">
-            {initialDraft ? "Update draft" : "Add service draft"}
-          </Button>
+          <Button type="submit">Add service draft</Button>
         </div>
       </form>
     </aside>

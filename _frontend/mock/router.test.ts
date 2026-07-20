@@ -15,6 +15,7 @@ import {
   fetchBackupPolicy,
   fetchBackupTargets,
   fetchContainerFiles,
+  fetchContainerPorts,
   fetchDiskPressure,
   fetchIdentity,
   fetchGitHubAppSettings,
@@ -68,6 +69,24 @@ const fetcher =
   };
 
 describe("mock API", () => {
+  test("returns detected listening ports for live resources", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+
+    await expect(
+      fetchContainerPorts(
+        "project-demo",
+        "service",
+        "service-api",
+        undefined,
+        mockFetch
+      )
+    ).resolves.toEqual([
+      { port: 3000, protocol: "tcp" },
+      { port: 5353, protocol: "udp" },
+      { port: 8080, protocol: "tcp" },
+    ]);
+  });
+
   test("deletes a service and its canvas-owned state", async () => {
     const state = createMockState("demo");
     const mockFetch = fetcher(state);

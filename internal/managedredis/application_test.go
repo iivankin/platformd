@@ -164,12 +164,14 @@ func TestApplicationPinsImageEncryptsPasswordAndStartsDurableResource(t *testing
 	}
 	result, err := application.Create(context.Background(), CreateInput{
 		ProjectID: "project", Name: "cache", ImageTag: "7.4", CPUMillicores: 250,
-		MemoryBytes: 128 << 20, Actor: Actor{Kind: "access", ID: "user", Email: "user@example.com"},
+		MemoryBytes: 128 << 20,
+		Credentials: &InitialCredentials{Password: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+		Actor:       Actor{Kind: "access", ID: "user", Email: "user@example.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Resource.ID == "" || result.Resource.VolumeID == "" || result.RequestID == "" || result.Password == "" {
+	if result.Resource.ID == "" || result.Resource.VolumeID == "" || result.RequestID == "" || result.Password != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
 		t.Fatalf("incomplete create result: %+v", result)
 	}
 	if runtime.tag != "7.4" || runtime.startedID != result.Resource.ID || store.input.ImageDigest != testImageDigest {

@@ -105,7 +105,9 @@ func TestManagedRedisAPIReturnsPasswordFromCreateAndResourceDetails(t *testing.T
 		server.Handler(server.DefaultMeta("ready"), server.WithManagedRedis(repository)),
 	)
 	request := projectRequest(http.MethodPost, "/api/v1/projects/project/redis", `{
-  "name":"cache","imageTag":"7.4","cpuMillicores":250,"memoryBytes":134217728
+  "name":"cache","imageTag":"7.4","cpuMillicores":250,"memoryBytes":134217728,
+  "credentials":{"password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+  "backupPolicy":{"targetId":"backup-target","enabled":true,"cron":"0 3 * * *","retentionCount":12}
 }`)
 	request.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
@@ -120,7 +122,9 @@ func TestManagedRedisAPIReturnsPasswordFromCreateAndResourceDetails(t *testing.T
 	if created["password"] != "created-password" || created["hostname"] != "cache.shop.internal" || created["port"] != float64(6379) {
 		t.Fatalf("create response = %v", created)
 	}
-	if repository.input.Actor != (managedredis.Actor{Kind: "access", ID: "subject", Email: "admin@example.com"}) || repository.input.ImageTag != "7.4" {
+	if repository.input.Actor != (managedredis.Actor{Kind: "access", ID: "subject", Email: "admin@example.com"}) || repository.input.ImageTag != "7.4" ||
+		repository.input.BackupPolicy != (state.InitialBackupPolicy{TargetID: "backup-target", Enabled: true, Cron: "0 3 * * *", RetentionCount: 12}) ||
+		repository.input.Credentials == nil || repository.input.Credentials.Password != "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" {
 		t.Fatalf("create input = %+v", repository.input)
 	}
 

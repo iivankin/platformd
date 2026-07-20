@@ -96,12 +96,14 @@ func getObjectStore(application *objectstore.Application) http.HandlerFunc {
 
 func createObjectStore(application *objectstore.Application) http.HandlerFunc {
 	type requestBody struct {
-		Name                 string   `json:"name"`
-		BucketName           string   `json:"bucketName"`
-		PublicHostname       string   `json:"publicHostname"`
-		CORSOrigins          []string `json:"corsOrigins"`
-		CredentialName       string   `json:"credentialName"`
-		CredentialPermission string   `json:"credentialPermission"`
+		Name                 string                         `json:"name"`
+		BucketName           string                         `json:"bucketName"`
+		PublicHostname       string                         `json:"publicHostname"`
+		CORSOrigins          []string                       `json:"corsOrigins"`
+		CredentialName       string                         `json:"credentialName"`
+		CredentialPermission string                         `json:"credentialPermission"`
+		BackupPolicy         initialBackupPolicyRequest     `json:"backupPolicy"`
+		Credentials          objectstore.InitialCredentials `json:"credentials"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAccessIdentity(response, request)
@@ -125,7 +127,9 @@ func createObjectStore(application *objectstore.Application) http.HandlerFunc {
 			ProjectID: request.PathValue("projectID"), Name: body.Name, BucketName: body.BucketName,
 			PublicHostname: body.PublicHostname, CORSOrigins: body.CORSOrigins,
 			CredentialName: body.CredentialName, CredentialPermission: body.CredentialPermission,
-			Actor: objectstore.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+			BackupPolicy: body.BackupPolicy.statePolicy(),
+			Credentials:  &body.Credentials,
+			Actor:        objectstore.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
 		})
 		if err != nil {
 			writeObjectStoreError(response, err)
@@ -331,6 +335,8 @@ func writeObjectStoreError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "object_not_found", "Object not found")
 	case errors.Is(err, state.ErrResourceNameConflict):
 		writeAPIError(response, http.StatusConflict, "resource_name_conflict", "A project resource with this name already exists")
+	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):
+		writeAPIError(response, http.StatusBadRequest, "invalid_backup_policy", err.Error())
 	case errors.Is(err, state.ErrHostnameInUse):
 		writeAPIError(response, http.StatusConflict, "hostname_in_use", "Hostname is already assigned to another public role")
 	case errors.Is(err, state.ErrCertificateCoverage):

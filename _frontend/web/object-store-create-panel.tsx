@@ -8,10 +8,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { FormField } from "@/form-field";
 
+type ObjectStoreDraftInput = Omit<
+  CreateObjectStoreInput,
+  "backupPolicy" | "credentials"
+>;
+
 interface ObjectStoreCreatePanelProperties {
-  initialDraft?: CreateObjectStoreInput;
+  initialDraft?: ObjectStoreDraftInput;
   onClose: () => void;
-  onDrafted: (input: CreateObjectStoreInput) => void;
+  onDrafted: (input: ObjectStoreDraftInput) => void;
 }
 
 export const ObjectStoreCreatePanel = ({

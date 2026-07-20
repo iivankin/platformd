@@ -200,7 +200,9 @@ const staticOutputs: Record<
   redis: ["REDIS_URL", "REDISHOST", "REDISPORT", "REDISPASSWORD"],
 };
 
-export const serviceVariableRows = (service: Service): VariableRow[] =>
+export const serviceVariableRows = (
+  service: Pick<Service, "environment">
+): VariableRow[] =>
   Object.entries(service.environment)
     .map(([name, value]) => ({ id: crypto.randomUUID(), name, value }))
     .toSorted((left, right) => left.name.localeCompare(right.name));

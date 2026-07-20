@@ -40,6 +40,10 @@ func (*Engine) ContainerNetworkCounters(string) (NetworkCounters, error) {
 	return NetworkCounters{}, ErrUnsupported
 }
 
+func (*Engine) ContainerListeningPorts(string) ([]ListeningPort, error) {
+	return nil, ErrUnsupported
+}
+
 func (*Engine) ExecContainer(context.Context, string, ExecRequest) (int, error) {
 	return -1, ErrUnsupported
 }
