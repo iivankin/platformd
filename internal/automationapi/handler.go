@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -43,6 +44,7 @@ type Config struct {
 	Versions         *databaseversion.Service
 	ServerExec       *automation.ServerExecApplication
 	Volumes          *automation.VolumeApplication
+	PortForwards     *portforward.Application
 	Registry         registryApplication
 	RegistrySettings registrySettings
 	Admission        *admission.Gate
@@ -58,6 +60,7 @@ func Handler(config Config) (http.Handler, error) {
 		databaseVersions: config.Versions != nil, volumes: config.Volumes != nil,
 		projects: config.Projects != nil, objectStores: config.ObjectStores != nil,
 		domains: config.Domains != nil, registry: config.Registry != nil && config.RegistrySettings != nil,
+		portForwards: config.PortForwards != nil,
 	}))
 	mux.HandleFunc("GET /api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
@@ -83,6 +86,12 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(config.Volumes))
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(config.Volumes))
 		mux.HandleFunc("DELETE /api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}", deleteVolume(config.Volumes))
+	}
+	if config.PortForwards != nil {
+		mux.HandleFunc(
+			"POST /api/v1/projects/{projectID}/resources/{kind}/{resourceID}/port-forwards",
+			createPortForward(config.Hostname, config.PortForwards),
+		)
 	}
 	if config.Registry != nil && config.RegistrySettings != nil {
 		registerRegistryRoutes(mux, config.Registry, config.RegistrySettings)

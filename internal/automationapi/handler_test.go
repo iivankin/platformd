@@ -13,6 +13,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/objectstore"
+	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -34,6 +35,16 @@ type repositoryStub struct {
 	domains       []state.ServiceDomain
 	domainAttach  state.AttachServiceDomainInput
 	domainDetach  state.DetachServiceDomainInput
+}
+
+func (*repositoryStub) Resource(context.Context, string, string, string) error { return nil }
+
+func (*repositoryStub) ResolveResourceAddress(string, string, string, int) (string, error) {
+	return "10.42.0.4:5432", nil
+}
+
+func (*repositoryStub) RecordPortForwardTicket(context.Context, portforward.AuditRecord) error {
+	return nil
 }
 
 func (repository *repositoryStub) ServiceDomains(context.Context, string, string) ([]state.ServiceDomain, error) {
@@ -143,10 +154,17 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
+	portForwards, err := portforward.New(portforward.Config{
+		Repository: repository, Resolver: repository, Audit: repository,
+		NewID: func() (string, error) { return "port-forward-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	handler, err := Handler(Config{
 		Hostname: "api.example.com", Repository: repository, Projects: projects,
 		Services: services, Domains: domains, Logs: logs, Images: repository, ObjectStores: repository,
-		Volumes: volumes, Admission: admission.New(),
+		Volumes: volumes, PortForwards: portForwards, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)

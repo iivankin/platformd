@@ -108,7 +108,7 @@ func mutationTargetSchema(base map[string]any, rollback bool) map[string]any {
 
 func isAdminMutationTool(name string) bool {
 	switch name {
-	case "create_service", "update_service", "redeploy_service", "rollback_service", "create_managed_redis", "create_managed_postgres", "server_exec", "preview_managed_database_version_change", "start_managed_database_version_change", "create_service_volume", "delete_service_volume":
+	case "create_service", "update_service", "redeploy_service", "rollback_service", "create_managed_redis", "create_managed_postgres", "server_exec", "preview_managed_database_version_change", "start_managed_database_version_change", "create_service_volume", "delete_service_volume", "create_port_forward":
 		return true
 	default:
 		return false

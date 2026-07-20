@@ -14,6 +14,7 @@ type openAPIFeatures struct {
 	databaseVersions bool
 	volumes          bool
 	registry         bool
+	portForwards     bool
 }
 
 func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
@@ -68,6 +69,18 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 			schemas[name] = schema
 		}
 	}
+	if features.portForwards {
+		paths["/api/v1/projects/{projectID}/resources/{kind}/{resourceID}/port-forwards"] = portForwardOperation()
+		schemas["PortForwardRequest"] = map[string]any{
+			"type": "object", "additionalProperties": false,
+			"required": []string{"port"},
+			"properties": map[string]any{
+				"port":             map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
+				"localPort":        map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
+				"expiresInSeconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 28800},
+			},
+		}
+	}
 	document := map[string]any{
 		"openapi": "3.1.0",
 		"info": map[string]any{
@@ -86,6 +99,30 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
 	}
+}
+
+func portForwardOperation() map[string]any {
+	return map[string]any{"post": map[string]any{
+		"summary": "Create a short-lived WSS-to-TCP port forward ticket (admin token)",
+		"parameters": []map[string]any{
+			{"name": "projectID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+			{"name": "kind", "in": "path", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"service", "postgres", "redis"}}},
+			{"name": "resourceID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+		},
+		"requestBody": map[string]any{
+			"required": true,
+			"content": map[string]any{"application/json": map[string]any{
+				"schema": map[string]string{"$ref": "#/components/schemas/PortForwardRequest"},
+			}},
+		},
+		"responses": map[string]any{
+			"201": map[string]string{"description": "Short-lived bearer ticket plus CLI installation and connection instructions"},
+			"400": map[string]string{"description": "Invalid kind, port, or lifetime"},
+			"401": map[string]string{"description": "Missing or invalid API token"},
+			"403": map[string]string{"description": "Admin role or project boundary denied"},
+			"409": map[string]string{"description": "Resource is not currently running"},
+		},
+	}}
 }
 
 func volumeCollectionOperation() map[string]any {

@@ -14,6 +14,7 @@ import (
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/portforward"
 )
 
 const (
@@ -22,36 +23,38 @@ const (
 )
 
 type Handler struct {
-	hostname   string
-	version    string
-	repository Repository
-	services   *automation.ServiceApplication
-	logs       *automation.LogApplication
-	images     ManagedImageCatalog
-	redis      *automation.ManagedRedisApplication
-	postgres   *automation.ManagedPostgresApplication
-	managed    *automation.ManagedResourceApplication
-	versions   *databaseversion.Service
-	serverExec *automation.ServerExecApplication
-	volumes    *automation.VolumeApplication
-	tools      []Tool
-	admission  *admission.Gate
+	hostname     string
+	version      string
+	repository   Repository
+	services     *automation.ServiceApplication
+	logs         *automation.LogApplication
+	images       ManagedImageCatalog
+	redis        *automation.ManagedRedisApplication
+	postgres     *automation.ManagedPostgresApplication
+	managed      *automation.ManagedResourceApplication
+	versions     *databaseversion.Service
+	serverExec   *automation.ServerExecApplication
+	volumes      *automation.VolumeApplication
+	portForwards *portforward.Application
+	tools        []Tool
+	admission    *admission.Gate
 }
 
 type Config struct {
-	Hostname   string
-	Version    string
-	Repository Repository
-	Services   *automation.ServiceApplication
-	Logs       *automation.LogApplication
-	Images     ManagedImageCatalog
-	Redis      *automation.ManagedRedisApplication
-	Postgres   *automation.ManagedPostgresApplication
-	Managed    *automation.ManagedResourceApplication
-	Versions   *databaseversion.Service
-	ServerExec *automation.ServerExecApplication
-	Volumes    *automation.VolumeApplication
-	Admission  *admission.Gate
+	Hostname     string
+	Version      string
+	Repository   Repository
+	Services     *automation.ServiceApplication
+	Logs         *automation.LogApplication
+	Images       ManagedImageCatalog
+	Redis        *automation.ManagedRedisApplication
+	Postgres     *automation.ManagedPostgresApplication
+	Managed      *automation.ManagedResourceApplication
+	Versions     *databaseversion.Service
+	ServerExec   *automation.ServerExecApplication
+	Volumes      *automation.VolumeApplication
+	PortForwards *portforward.Application
+	Admission    *admission.Gate
 }
 
 type ManagedImageCatalog interface {
@@ -70,7 +73,8 @@ func New(config Config) (*Handler, error) {
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis, postgres: config.Postgres,
 		managed: config.Managed, versions: config.Versions, serverExec: config.ServerExec, volumes: config.Volumes,
-		tools: tools, admission: config.Admission,
+		portForwards: config.PortForwards,
+		tools:        tools, admission: config.Admission,
 	}, nil
 }
 

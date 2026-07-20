@@ -15,6 +15,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
@@ -151,6 +152,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		if handler.volumes != nil {
 			tools = append(tools, volumeAdminTools()...)
 		}
+		if handler.portForwards != nil {
+			tools = append(tools, portForwardAdminTool())
+		}
 	}
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
 }
@@ -246,6 +250,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.deleteVolume(request.Context(), call.Arguments, identity)
+	case "create_port_forward":
+		if handler.portForwards == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createPortForward(request.Context(), call.Arguments, identity)
 	case "create_managed_redis":
 		if handler.redis == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
@@ -275,7 +285,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) || errors.Is(err, portforward.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

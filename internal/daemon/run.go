@@ -47,6 +47,7 @@ import (
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/origin"
+	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/portproxy"
 	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/releaseconfig"
@@ -657,19 +658,26 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	portForwards, err := portforward.New(portforward.Config{
+		Repository: liveContainerResourceRepository{store: store}, Resolver: runtime,
+		Audit: livePortForwardAudit{store: store},
+	})
+	if err != nil {
+		return err
+	}
 	automationFactory, err := newAutomationHandlerFactory(automationapi.Config{
 		Repository: automationRepository, Projects: projectAutomation, Services: serviceAutomation,
 		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 		RedisStore: automationRepository, Postgres: postgresAutomation, PostgresStore: automationRepository,
 		ObjectStores: objectStoreApplication, Managed: managedResourceAutomation, Versions: databaseVersions,
 		Volumes: volumeAutomation, Registry: registryApplication, RegistrySettings: registrySettings,
-		ServerExec: serverExecAutomation, Admission: mutationAdmission,
+		ServerExec: serverExecAutomation, PortForwards: portForwards, Admission: mutationAdmission,
 	}, mcp.Config{
 		Version: version.Version, Repository: automationRepository, Services: serviceAutomation,
 		Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, Postgres: postgresAutomation,
 		Managed: managedResourceAutomation, Versions: databaseVersions, ServerExec: serverExecAutomation,
-		Volumes: volumeAutomation, Admission: mutationAdmission,
-	}, authenticator, !installation.RecoveryMode)
+		Volumes: volumeAutomation, PortForwards: portForwards, Admission: mutationAdmission,
+	}, authenticator, portForwards, !installation.RecoveryMode)
 	if err != nil {
 		return err
 	}

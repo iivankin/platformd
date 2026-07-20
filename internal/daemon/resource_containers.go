@@ -3,10 +3,42 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+	"strconv"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/state"
 )
+
+func (stack *runtimeStack) ResolveResourceAddress(projectID, kind, resourceID string, port int) (string, error) {
+	if projectID == "" || resourceID == "" || port < 1 || port > 65535 {
+		return "", errors.New("resource address input is invalid")
+	}
+	stack.mu.Lock()
+	network, exists := stack.projectNetworks[projectID]
+	stack.mu.Unlock()
+	if !exists {
+		return "", fmt.Errorf("project %s network runtime is unavailable", projectID)
+	}
+	container, active, err := stack.ResourceContainer(kind, resourceID)
+	if err != nil {
+		return "", err
+	}
+	if !active {
+		return "", errors.New("resource container is not running")
+	}
+	addresses := container.IPs[network.Name]
+	if len(addresses) != 1 {
+		return "", errors.New("resource container has no unique project network address")
+	}
+	address, err := netip.ParseAddr(addresses[0])
+	if err != nil || !address.IsValid() {
+		return "", errors.New("resource container project network address is invalid")
+	}
+	return net.JoinHostPort(address.String(), strconv.Itoa(port)), nil
+}
 
 func (stack *runtimeStack) ResourceContainer(kind, resourceID string) (containerengine.Container, bool, error) {
 	stack.mu.Lock()
