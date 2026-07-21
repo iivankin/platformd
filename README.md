@@ -65,6 +65,19 @@ bun --cwd=_frontend run dev:mock:error
 Use `PORT=3200` to change the default `http://127.0.0.1:3100` address, or pass
 `--scenario demo|empty|error` to `dev:mock` directly.
 
+The same mock UI can run in Docker:
+
+```bash
+docker build -t platformd-ui-mock _frontend
+docker run --rm -p 3100:3100 platformd-ui-mock
+```
+
+The final image runs a compiled standalone executable as a non-root user and
+does not contain Bun, source files, or `node_modules`.
+
+Select another fixture with `-e MOCK_SCENARIO=empty` or
+`-e MOCK_SCENARIO=error`.
+
 ## License
 
 platformd is available under the [Apache License 2.0](LICENSE).

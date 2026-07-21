@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -58,8 +57,6 @@ type handlerConfig struct {
 	registrySettings        RegistrySettings
 	installationSettings    *installationsettings.Application
 	githubApp               *githubapp.Application
-	onGitHubPush            func(context.Context, githubapp.PushEvent)
-	onGitHubPullRequest     func(context.Context, githubapp.PullRequestEvent)
 	cloudflareDNS           *cloudflaredns.Application
 	cloudflareMesh          *cloudflaremesh.Application
 	backupTargets           *backup.TargetApplication
@@ -190,15 +187,9 @@ func WithInstallationSettings(application *installationsettings.Application) Opt
 	}
 }
 
-func WithGitHubApp(
-	application *githubapp.Application,
-	onPush func(context.Context, githubapp.PushEvent),
-	onPullRequest func(context.Context, githubapp.PullRequestEvent),
-) Option {
+func WithGitHubApp(application *githubapp.Application) Option {
 	return func(config *handlerConfig) {
 		config.githubApp = application
-		config.onGitHubPush = onPush
-		config.onGitHubPullRequest = onPullRequest
 	}
 }
 

@@ -4,6 +4,7 @@ import { InfrastructureCapacityPage } from "@/infrastructure-capacity-page";
 import { InfrastructureLogs } from "@/infrastructure-logs";
 import { InfrastructureOperationsPage } from "@/infrastructure-operations-page";
 import { PageTabs } from "@/page-tabs";
+import type { UpdateStatusState } from "@/use-update-status";
 
 const tabs = [
   { label: "Capacity", path: "/infrastructure/capacity" },
@@ -11,13 +12,20 @@ const tabs = [
   { label: "Logs", path: "/infrastructure/logs" },
 ];
 
-export const InfrastructurePage = () => (
+export const InfrastructurePage = ({
+  update,
+}: {
+  update: UpdateStatusState;
+}) => (
   <div className="min-h-full animate-in duration-200 fade-in slide-in-from-bottom-1">
     <PageTabs label="Infrastructure pages" tabs={tabs} />
     <Routes>
       <Route element={<Navigate replace to="capacity" />} index />
       <Route element={<InfrastructureCapacityPage />} path="capacity" />
-      <Route element={<InfrastructureOperationsPage />} path="operations" />
+      <Route
+        element={<InfrastructureOperationsPage update={update} />}
+        path="operations"
+      />
       <Route element={<InfrastructureLogs />} path="logs" />
       <Route element={<Navigate replace to="capacity" />} path="*" />
     </Routes>

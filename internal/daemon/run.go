@@ -666,6 +666,18 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	onGitHubPush := func(_ context.Context, event githubapp.PushEvent) {
+		runtime.NotifyGitHubPush(ctx, store, githubApplication, event)
+	}
+	onGitHubPullRequest := func(_ context.Context, event githubapp.PullRequestEvent) {
+		runtime.NotifyGitHubPullRequest(ctx, store, githubApplication, event)
+	}
+	githubWebhook, err := server.NewGitHubWebhookHandler(server.GitHubWebhookConfig{
+		Verifier: githubApplication, OnPush: onGitHubPush, OnPullRequest: onGitHubPullRequest,
+	})
+	if err != nil {
+		return err
+	}
 	automationFactory, err := newAutomationHandlerFactory(automationapi.Config{
 		Repository: automationRepository, Projects: projectAutomation, Services: serviceAutomation,
 		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
@@ -678,7 +690,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, Postgres: postgresAutomation,
 		Managed: managedResourceAutomation, Versions: databaseVersions, ServerExec: serverExecAutomation,
 		Volumes: volumeAutomation, PortForwards: portForwards, Admission: mutationAdmission,
-	}, authenticator, portForwards, !installation.RecoveryMode)
+	}, authenticator, portForwards, githubWebhook, !installation.RecoveryMode)
 	if err != nil {
 		return err
 	}
@@ -724,15 +736,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithObjectStores(objectStoreApplication),
 		server.WithRegistry(registryApplication, registrySettings),
 		server.WithInstallationSettings(installationSettings),
-		server.WithGitHubApp(
-			githubApplication,
-			func(_ context.Context, event githubapp.PushEvent) {
-				runtime.NotifyGitHubPush(ctx, store, githubApplication, event)
-			},
-			func(_ context.Context, event githubapp.PullRequestEvent) {
-				runtime.NotifyGitHubPullRequest(ctx, store, githubApplication, event)
-			},
-		),
+		server.WithGitHubApp(githubApplication),
 		server.WithCloudflareDNS(cloudflareDNS),
 		server.WithCloudflareMesh(cloudflareMesh),
 		server.WithBackupTargets(backupTargets),

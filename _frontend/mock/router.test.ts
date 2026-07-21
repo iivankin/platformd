@@ -45,6 +45,7 @@ import {
   fetchResourceLogs,
   fetchResourceUsage,
   fetchResourceUsageHistory,
+  fetchSelfUpdateStatus,
   fetchResourceTerminalShells,
   fetchResolvedServiceEnvironment,
   fetchService,
@@ -214,6 +215,7 @@ describe("mock API", () => {
       repositories,
       tokens,
       settings,
+      updateStatus,
     ] = await Promise.all([
       fetchMeta(undefined, mockFetch),
       fetchIdentity(undefined, mockFetch),
@@ -229,6 +231,7 @@ describe("mock API", () => {
       fetchRegistryRepositories(undefined, mockFetch),
       fetchAPITokens(undefined, mockFetch),
       fetchInstallationSettings(undefined, mockFetch),
+      fetchSelfUpdateStatus(undefined, mockFetch),
     ]);
 
     expect(meta.status).toBe("ready");
@@ -253,6 +256,7 @@ describe("mock API", () => {
     expect(repositories).toHaveLength(1);
     expect(tokens).toHaveLength(2);
     expect(settings.certificates).toHaveLength(1);
+    expect(updateStatus.updateAvailable).toBe(true);
   });
 
   test("demo fixtures support the resource detail screens", async () => {

@@ -43,6 +43,7 @@ interface SidebarProperties {
   onCollapsedChange: (collapsed: boolean) => void;
   projects: Project[];
   recovery?: boolean;
+  updateAvailable?: boolean;
 }
 
 const navClassName = ({ isActive }: { isActive: boolean }) =>
@@ -203,6 +204,7 @@ export const Sidebar = ({
   onCollapsedChange,
   projects,
   recovery = false,
+  updateAvailable = false,
 }: SidebarProperties) => {
   const navigate = useNavigate();
 
@@ -299,9 +301,16 @@ export const Sidebar = ({
             <div className="my-1.5 border-t border-border" />
             {globalNavigation.map((item) => {
               const Icon = item.icon;
+              const showUpdate =
+                item.path === "/infrastructure" && updateAvailable;
               return (
                 <NavLink
-                  className={navClassName}
+                  aria-label={
+                    showUpdate ? `${item.label}, update available` : item.label
+                  }
+                  className={({ isActive }) =>
+                    cn(navClassName({ isActive }), "relative")
+                  }
                   key={item.path}
                   title={collapsed ? item.label : undefined}
                   to={item.path}
@@ -312,6 +321,19 @@ export const Sidebar = ({
                   <span className={sidebarLabelClassName(collapsed)}>
                     {item.label}
                   </span>
+                  {showUpdate ? (
+                    <span
+                      aria-hidden="true"
+                      className={cn(
+                        "shrink-0 bg-cyan-500",
+                        collapsed
+                          ? "absolute top-1.5 right-1.5 size-1.5"
+                          : "ml-auto px-1.5 py-0.5 text-[7px] tracking-[0.08em] text-black uppercase"
+                      )}
+                    >
+                      {collapsed ? null : "Update"}
+                    </span>
+                  ) : null}
                 </NavLink>
               );
             })}

@@ -2,7 +2,11 @@ import { GitFork, LockKeyhole } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
-import { configureGitHubApp, fetchGitHubAppSettings } from "@/api";
+import {
+  configureGitHubApp,
+  fetchGitHubAppSettings,
+  fetchInstallationSettings,
+} from "@/api";
 import type { GitHubAppSettings } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
@@ -14,6 +18,7 @@ export const SettingsGitHubPage = () => {
   const [appID, setAppID] = useState("");
   const [privateKey, setPrivateKey] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
+  const [automationHostname, setAutomationHostname] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -21,8 +26,12 @@ export const SettingsGitHubPage = () => {
     const controller = new AbortController();
     const load = async () => {
       try {
-        const loaded = await fetchGitHubAppSettings(controller.signal);
+        const [loaded, installation] = await Promise.all([
+          fetchGitHubAppSettings(controller.signal),
+          fetchInstallationSettings(controller.signal),
+        ]);
         setSettings(loaded);
+        setAutomationHostname(installation.automationHostname);
       } catch (loadError) {
         if (
           !(
@@ -68,9 +77,9 @@ export const SettingsGitHubPage = () => {
   };
 
   const homepageURL = globalThis.location.origin;
-  const webhookURL = `${homepageURL}${
-    settings?.webhookPath ?? "/api/v1/integrations/github/webhook"
-  }`;
+  const webhookURL = automationHostname
+    ? `https://${automationHostname}${settings?.webhookPath ?? "/api/v1/integrations/github/webhook"}`
+    : undefined;
 
   return (
     <div className="grid gap-4 p-5">

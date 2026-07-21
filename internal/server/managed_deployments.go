@@ -30,6 +30,11 @@ type runtimeDeploymentResponse struct {
 	FinishedAt   int64  `json:"finishedAt,omitempty"`
 }
 
+type runtimeDeploymentPageResponse struct {
+	Deployments []runtimeDeploymentResponse `json:"deployments"`
+	NextCursor  string                      `json:"nextCursor,omitempty"`
+}
+
 func registerManagedDeploymentRoutes(mux *http.ServeMux, collection string, repository managedDeploymentRepository, writeResourceError func(http.ResponseWriter, error)) {
 	base := "/api/v1/projects/{projectID}/" + collection + "/{resourceID}/deployments"
 	mux.HandleFunc("GET "+base, listManagedDeployments(repository, writeResourceError))
@@ -61,11 +66,14 @@ func listManagedDeployments(repository managedDeploymentRepository, writeResourc
 			writeResourceError(response, err)
 			return
 		}
-		items := make([]runtimeDeploymentResponse, 0, len(page.Deployments))
-		for _, deployment := range page.Deployments {
-			items = append(items, publicRuntimeDeployment(deployment))
+		result := runtimeDeploymentPageResponse{
+			Deployments: make([]runtimeDeploymentResponse, 0, len(page.Deployments)),
+			NextCursor:  page.NextCursor,
 		}
-		writeJSON(response, http.StatusOK, map[string]any{"deployments": items, "nextCursor": page.NextCursor})
+		for _, deployment := range page.Deployments {
+			result.Deployments = append(result.Deployments, publicRuntimeDeployment(deployment))
+		}
+		writeJSON(response, http.StatusOK, result)
 	}
 }
 

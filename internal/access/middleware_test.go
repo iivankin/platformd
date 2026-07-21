@@ -52,6 +52,7 @@ func TestProtectAdminRejectsMissingTokenCSRFAndHostMismatch(t *testing.T) {
 		status  int
 	}{
 		{name: "missing token", request: adminRequest(http.MethodGet, "/"), status: http.StatusForbidden},
+		{name: "webhook belongs to automation host", request: adminRequest(http.MethodPost, "/api/v1/integrations/github/webhook"), status: http.StatusForbidden},
 		{name: "missing origin", request: authenticatedRequest(http.MethodPost, "/api/v1/projects"), status: http.StatusForbidden},
 		{name: "wrong host", request: requestWithHost(http.MethodGet, "/", "other.example.com"), status: http.StatusMisdirectedRequest},
 	}

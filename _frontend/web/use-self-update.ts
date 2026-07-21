@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 
-import { applySelfUpdate, fetchMeta } from "@/api";
+import { APIError, applySelfUpdate, fetchMeta } from "@/api";
 
 const restartTimeout = 10 * 60 * 1000;
 
-export const useSelfUpdate = () => {
+export const useSelfUpdate = (refreshStatus?: () => Promise<void>) => {
   const [updateError, setUpdateError] = useState<string>();
   const [updating, setUpdating] = useState(false);
   const [targetVersion, setTargetVersion] = useState<string>();
@@ -57,6 +57,10 @@ export const useSelfUpdate = () => {
       setTargetVersion(result.targetVersion);
     } catch (error) {
       setUpdating(false);
+      if (error instanceof APIError && error.code === "already_up_to_date") {
+        await refreshStatus?.();
+        return;
+      }
       setUpdateError(
         error instanceof Error
           ? error.message

@@ -572,7 +572,15 @@ const selfUpdateResultSchema = z.object({
   targetVersion: z.string().min(1),
 });
 
+const selfUpdateStatusSchema = z.object({
+  currentVersion: z.string().min(1),
+  latestVersion: z.string().min(1),
+  updateAvailable: z.boolean(),
+  updateSupported: z.boolean(),
+});
+
 export type SelfUpdateResult = z.infer<typeof selfUpdateResultSchema>;
+export type SelfUpdateStatus = z.infer<typeof selfUpdateStatusSchema>;
 
 const auditEventSchema = z.object({
   action: z.string().min(1),
@@ -2163,6 +2171,23 @@ export const applySelfUpdate = async (
     );
   }
   return selfUpdateResultSchema.parse(await response.json());
+};
+
+export const fetchSelfUpdateStatus = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<SelfUpdateStatus> => {
+  const response = await fetcher("/api/v1/infrastructure/update", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `platform update check failed with ${response.status}`
+    );
+  }
+  return selfUpdateStatusSchema.parse(await response.json());
 };
 
 export const fetchAuditEvents = async (

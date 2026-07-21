@@ -91,6 +91,76 @@ func TestUpdaterStagesStopsSwitchesAndKeepsAdmissionClosed(t *testing.T) {
 	}
 }
 
+func TestUpdaterChecksSignedManifestWithoutDownloadingRelease(t *testing.T) {
+	t.Parallel()
+	paths, publicKey, privateKey := installedRelease(t, "1.0.0")
+	target, server := servedRelease(t, filepath.Dir(paths.DataRoot), "2.0.0", []string{"1.0.0"}, publicKey, privateKey)
+	updater, err := New(Config{
+		Paths: paths, ExpectedUID: os.Getuid(), ManifestURL: server.URL + "/latest.json",
+		PublicKey: publicKey, HTTPClient: server.Client(), Admission: admission.New(), Growth: allowGrowth{},
+		QuiesceWorkloads: func(context.Context) (ResumeWorkloads, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := updater.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.CurrentVersion != "1.0.0" || status.LatestVersion != "2.0.0" ||
+		!status.UpdateAvailable || !status.UpdateSupported {
+		t.Fatalf("update status = %+v", status)
+	}
+	if _, err := os.Lstat(filepath.Join(paths.ReleasesRoot, target.release.Manifest.Version)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("check downloaded or staged target release: %v", err)
+	}
+}
+
+func TestUpdaterTreatsCurrentLatestReleaseAsUpToDate(t *testing.T) {
+	t.Parallel()
+	paths, publicKey, privateKey := installedRelease(t, "1.0.0")
+	_, server := servedRelease(t, filepath.Dir(paths.DataRoot), "1.0.0", nil, publicKey, privateKey)
+	updater, err := New(Config{
+		Paths: paths, ExpectedUID: os.Getuid(), ManifestURL: server.URL + "/latest.json",
+		PublicKey: publicKey, HTTPClient: server.Client(), Admission: admission.New(), Growth: allowGrowth{},
+		QuiesceWorkloads: func(context.Context) (ResumeWorkloads, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := updater.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.UpdateAvailable || !status.UpdateSupported {
+		t.Fatalf("up-to-date status = %+v", status)
+	}
+	if _, err := updater.Apply(context.Background()); !errors.Is(err, ErrUpToDate) {
+		t.Fatalf("apply current release = %v", err)
+	}
+}
+
+func TestUpdaterReportsUnsupportedDirectUpgrade(t *testing.T) {
+	t.Parallel()
+	paths, publicKey, privateKey := installedRelease(t, "1.0.0")
+	_, server := servedRelease(t, filepath.Dir(paths.DataRoot), "2.0.0", []string{"1.5.0"}, publicKey, privateKey)
+	updater, err := New(Config{
+		Paths: paths, ExpectedUID: os.Getuid(), ManifestURL: server.URL + "/latest.json",
+		PublicKey: publicKey, HTTPClient: server.Client(), Admission: admission.New(), Growth: allowGrowth{},
+		QuiesceWorkloads: func(context.Context) (ResumeWorkloads, error) { return nil, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := updater.Check(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.UpdateAvailable || status.UpdateSupported {
+		t.Fatalf("unsupported update status = %+v", status)
+	}
+}
+
 func TestUpdaterReportsBoundedBlockersBeforePublishingSlot(t *testing.T) {
 	t.Parallel()
 	paths, publicKey, privateKey := installedRelease(t, "1.0.0")

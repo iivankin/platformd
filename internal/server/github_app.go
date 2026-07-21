@@ -14,12 +14,30 @@ import (
 
 const maximumGitHubWebhookBytes = 2 << 20
 
+const GitHubWebhookPath = "/api/v1/integrations/github/webhook"
+
+type GitHubWebhookVerifier interface {
+	VerifyWebhook(context.Context, []byte, string) error
+}
+
+type GitHubWebhookConfig struct {
+	Verifier      GitHubWebhookVerifier
+	OnPush        func(context.Context, githubapp.PushEvent)
+	OnPullRequest func(context.Context, githubapp.PullRequestEvent)
+}
+
+func NewGitHubWebhookHandler(config GitHubWebhookConfig) (http.Handler, error) {
+	if config.Verifier == nil {
+		return nil, errors.New("GitHub webhook verifier is required")
+	}
+	return handleGitHubWebhook(config), nil
+}
+
 func registerGitHubAppRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/settings/github", getGitHubAppSettings(config))
 	mux.HandleFunc("PUT /api/v1/settings/github", putGitHubAppSettings(config))
 	mux.HandleFunc("GET /api/v1/settings/github/repositories", getGitHubRepositories(config))
 	mux.HandleFunc("GET /api/v1/settings/github/repositories/{repositoryID}/paths", getGitHubRepositoryPaths(config))
-	mux.HandleFunc("POST /api/v1/integrations/github/webhook", handleGitHubWebhook(config))
 }
 
 func getGitHubRepositoryPaths(config handlerConfig) http.HandlerFunc {
@@ -58,7 +76,7 @@ func publicGitHubSettings(settings githubapp.Settings) map[string]any {
 		"appId":       settings.AppID,
 		"appSlug":     settings.AppSlug,
 		"updatedAt":   settings.UpdatedAtMillis,
-		"webhookPath": "/api/v1/integrations/github/webhook",
+		"webhookPath": GitHubWebhookPath,
 	}
 }
 
@@ -135,7 +153,7 @@ func getGitHubRepositories(config handlerConfig) http.HandlerFunc {
 	}
 }
 
-func handleGitHubWebhook(config handlerConfig) http.HandlerFunc {
+func handleGitHubWebhook(config GitHubWebhookConfig) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		request.Body = http.MaxBytesReader(response, request.Body, maximumGitHubWebhookBytes)
 		body, err := io.ReadAll(request.Body)
@@ -143,7 +161,7 @@ func handleGitHubWebhook(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "github_webhook_invalid", "Unable to read webhook body")
 			return
 		}
-		if err := config.githubApp.VerifyWebhook(request.Context(), body, request.Header.Get("X-Hub-Signature-256")); err != nil {
+		if err := config.Verifier.VerifyWebhook(request.Context(), body, request.Header.Get("X-Hub-Signature-256")); err != nil {
 			writeAPIError(response, http.StatusUnauthorized, "github_webhook_signature", err.Error())
 			return
 		}
@@ -189,14 +207,14 @@ func handleGitHubWebhook(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		callbackContext := context.WithoutCancel(request.Context())
-		if config.onGitHubPush != nil {
+		if config.OnPush != nil {
 			for _, event := range pushEvents {
-				go config.onGitHubPush(callbackContext, event)
+				go config.OnPush(callbackContext, event)
 			}
 		}
-		if config.onGitHubPullRequest != nil {
+		if config.OnPullRequest != nil {
 			for _, event := range pullRequestEvents {
-				go config.onGitHubPullRequest(callbackContext, event)
+				go config.OnPullRequest(callbackContext, event)
 			}
 		}
 		response.Header().Set("X-GitHub-Delivery", request.Header.Get("X-GitHub-Delivery"))

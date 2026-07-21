@@ -17,9 +17,10 @@ import (
 const managedRedisTestDigest = "sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4"
 
 type managedRedisRepository struct {
-	input    managedredis.CreateInput
-	resource state.ManagedRedis
-	mutation managedredis.DataMutationInput
+	input          managedredis.CreateInput
+	resource       state.ManagedRedis
+	mutation       managedredis.DataMutationInput
+	deploymentPage state.RuntimeDeploymentPage
 }
 
 func (repository *managedRedisRepository) Create(_ context.Context, input managedredis.CreateInput) (managedredis.CreateResult, error) {
@@ -76,8 +77,8 @@ func (repository *managedRedisRepository) Mutate(_ context.Context, input manage
 	return managedredis.DataMutationResult{MutationResult: managedredis.MutationResult{Affected: 1}, RequestID: "mutation-request", AuditRecorded: true}, nil
 }
 
-func (*managedRedisRepository) Deployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error) {
-	return state.RuntimeDeploymentPage{}, nil
+func (repository *managedRedisRepository) Deployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error) {
+	return repository.deploymentPage, nil
 }
 
 func (*managedRedisRepository) Deployment(context.Context, string, string, string) (state.RuntimeDeployment, error) {
@@ -172,5 +173,35 @@ func TestManagedRedisAPIReturnsPasswordFromCreateAndResourceDetails(t *testing.T
 	}
 	if repository.mutation.Actor.Kind != "access" || repository.mutation.Actor.ID != "subject" || string(repository.mutation.Mutation.Key) != "key" || string(repository.mutation.Mutation.Field) != "field" || string(repository.mutation.Mutation.Value) != "value" {
 		t.Fatalf("mutation input = %+v", repository.mutation)
+	}
+}
+
+func TestManagedRedisTerminalDeploymentPageOmitsEmptyCursor(t *testing.T) {
+	t.Parallel()
+	repository := &managedRedisRepository{resource: state.ManagedRedis{
+		ID: "redis", ProjectID: "project", ProjectName: "shop", Name: "cache",
+	}, deploymentPage: state.RuntimeDeploymentPage{Deployments: []state.RuntimeDeployment{{
+		ID: "deployment", ResourceKind: "redis", ResourceID: "redis",
+		ImageTag: "7.4", ImageDigest: managedRedisTestDigest, Status: "succeeded",
+		Active: true, CreatedAtMillis: 1_700_000_000_000,
+	}}}}
+	handler := access.ProtectAdmin(
+		"admin.example.com", projectVerifier{},
+		server.Handler(server.DefaultMeta("ready"), server.WithManagedRedis(repository)),
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/redis/redis/deployments", ""))
+	if response.Code != http.StatusOK {
+		t.Fatalf("deployment history = %d/%s", response.Code, response.Body)
+	}
+	var page map[string]json.RawMessage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(page["deployments"]), `"id":"deployment"`) {
+		t.Fatalf("deployments = %s", page["deployments"])
+	}
+	if _, exists := page["nextCursor"]; exists {
+		t.Fatalf("empty cursor was serialized: %s", page["nextCursor"])
 	}
 }

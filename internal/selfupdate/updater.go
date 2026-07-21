@@ -16,9 +16,12 @@ import (
 	"github.com/iivankin/platformd/internal/layout"
 	"github.com/iivankin/platformd/internal/releasebundle"
 	"github.com/iivankin/platformd/internal/releasemanifest"
+	"github.com/iivankin/platformd/internal/semver"
 )
 
 const maximumManifestBytes = 64 << 10
+
+var ErrUpToDate = errors.New("platform is already up to date")
 
 type ResumeWorkloads func(context.Context) error
 type QuiesceWorkloads func(context.Context) (ResumeWorkloads, error)
@@ -40,6 +43,13 @@ type Config struct {
 type Result struct {
 	PreviousVersion string `json:"previousVersion"`
 	TargetVersion   string `json:"targetVersion"`
+}
+
+type Status struct {
+	CurrentVersion  string `json:"currentVersion"`
+	LatestVersion   string `json:"latestVersion"`
+	UpdateAvailable bool   `json:"updateAvailable"`
+	UpdateSupported bool   `json:"updateSupported"`
 }
 
 type BusyError struct {
@@ -84,6 +94,25 @@ func New(config Config) (*Updater, error) {
 		}
 	}
 	return &Updater{config: config, client: client}, nil
+}
+
+func (updater *Updater) Check(ctx context.Context) (Status, error) {
+	current, target, _, err := updater.manifests(ctx)
+	if err != nil {
+		return Status{}, err
+	}
+	available, err := newerThan(target.Version, current.Version)
+	if err != nil {
+		return Status{}, err
+	}
+	status := Status{
+		CurrentVersion: current.Version, LatestVersion: target.Version,
+		UpdateAvailable: available, UpdateSupported: true,
+	}
+	if available && target.AllowsUpdateFrom(current.Version) != nil {
+		status.UpdateSupported = false
+	}
+	return status, nil
 }
 
 func (updater *Updater) Apply(ctx context.Context) (Result, error) {
@@ -149,17 +178,16 @@ func (updater *Updater) Apply(ctx context.Context) (Result, error) {
 }
 
 func (updater *Updater) prepare(ctx context.Context) (candidate, error) {
-	current, err := bootstrap.CurrentReleaseManifest(updater.config.Paths, updater.config.PublicKey, updater.config.ExpectedUID)
-	if err != nil {
-		return candidate{}, fmt.Errorf("verify current release: %w", err)
-	}
-	manifestBytes, err := updater.fetch(ctx, updater.config.ManifestURL, maximumManifestBytes)
-	if err != nil {
-		return candidate{}, fmt.Errorf("fetch latest release manifest: %w", err)
-	}
-	target, err := releasemanifest.ParseAndVerify(manifestBytes, updater.config.PublicKey)
+	current, target, manifestBytes, err := updater.manifests(ctx)
 	if err != nil {
 		return candidate{}, err
+	}
+	available, err := newerThan(target.Version, current.Version)
+	if err != nil {
+		return candidate{}, err
+	}
+	if !available {
+		return candidate{}, ErrUpToDate
 	}
 	if err := target.AllowsUpdateFrom(current.Version); err != nil {
 		return candidate{}, err
@@ -196,6 +224,34 @@ func (updater *Updater) prepare(ctx context.Context) (candidate, error) {
 		current: current, target: target, manifestBytes: append([]byte(nil), manifestBytes...),
 		binaryPath: binaryPath, publicKey: append(ed25519.PublicKey(nil), updater.config.PublicKey...),
 	}, nil
+}
+
+func (updater *Updater) manifests(ctx context.Context) (releasemanifest.Manifest, releasemanifest.Manifest, []byte, error) {
+	current, err := bootstrap.CurrentReleaseManifest(updater.config.Paths, updater.config.PublicKey, updater.config.ExpectedUID)
+	if err != nil {
+		return releasemanifest.Manifest{}, releasemanifest.Manifest{}, nil, fmt.Errorf("verify current release: %w", err)
+	}
+	manifestBytes, err := updater.fetch(ctx, updater.config.ManifestURL, maximumManifestBytes)
+	if err != nil {
+		return releasemanifest.Manifest{}, releasemanifest.Manifest{}, nil, fmt.Errorf("fetch latest release manifest: %w", err)
+	}
+	target, err := releasemanifest.ParseAndVerify(manifestBytes, updater.config.PublicKey)
+	if err != nil {
+		return releasemanifest.Manifest{}, releasemanifest.Manifest{}, nil, err
+	}
+	return current, target, manifestBytes, nil
+}
+
+func newerThan(candidateVersion, currentVersion string) (bool, error) {
+	candidate, err := semver.Parse(candidateVersion)
+	if err != nil {
+		return false, fmt.Errorf("candidate version: %w", err)
+	}
+	current, err := semver.Parse(currentVersion)
+	if err != nil {
+		return false, fmt.Errorf("current version: %w", err)
+	}
+	return semver.Compare(candidate, current) > 0, nil
 }
 
 func (updater *Updater) downloadBinary(ctx context.Context, manifest releasemanifest.Manifest, destination string) error {

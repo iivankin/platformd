@@ -35,10 +35,21 @@ const ExternalAction = ({
   </a>
 );
 
-const CopyValue = ({ label, value }: { label: string; value: string }) => {
+const CopyValue = ({
+  emptyText,
+  label,
+  value,
+}: {
+  emptyText?: string;
+  label: string;
+  value?: string;
+}) => {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
+    if (!value) {
+      return;
+    }
     await navigator.clipboard.writeText(value);
     setCopied(true);
     globalThis.setTimeout(() => setCopied(false), 1500);
@@ -50,13 +61,17 @@ const CopyValue = ({ label, value }: { label: string; value: string }) => {
         <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
           {label}
         </p>
-        <code className="mt-1 block truncate text-[9px]" title={value}>
-          {value}
+        <code
+          className={`mt-1 block truncate text-[9px] ${value ? "" : "text-muted-foreground"}`}
+          title={value ?? emptyText}
+        >
+          {value ?? emptyText}
         </code>
       </div>
       <Button
         aria-label={`Copy ${label}`}
         className="h-full border-y-0 border-r-0"
+        disabled={!value}
         onClick={() => void copy()}
         size="icon"
         type="button"
@@ -100,7 +115,7 @@ export const GitHubAppSetupGuide = ({
 }: {
   appSlug?: string;
   homepageURL: string;
-  webhookURL: string;
+  webhookURL?: string;
 }) => {
   const installURL = githubAppInstallationURL(appSlug ?? "");
 
@@ -149,7 +164,11 @@ export const GitHubAppSetupGuide = ({
       >
         <div className="grid gap-2 lg:grid-cols-2">
           <CopyValue label="Homepage URL" value={homepageURL} />
-          <CopyValue label="Webhook URL" value={webhookURL} />
+          <CopyValue
+            emptyText="Configure an Automation hostname in General settings"
+            label="Webhook URL"
+            value={webhookURL}
+          />
         </div>
       </SetupStep>
 

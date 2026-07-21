@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { fetchIdentity, fetchMeta, fetchProjects } from "@/api";
 import type { Identity, Meta, Project } from "@/api";
+import { useUpdateStatus } from "@/use-update-status";
 
 const errorMessage = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
@@ -14,6 +15,7 @@ export const useAppData = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [projectsLoading, setProjectsLoading] = useState(true);
+  const update = useUpdateStatus(meta?.status === "ready");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -100,5 +102,6 @@ export const useAppData = () => {
     projects,
     projectsError,
     projectsLoading,
+    update,
   };
 };

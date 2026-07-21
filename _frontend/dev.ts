@@ -25,11 +25,15 @@ if (!scenarios.has(scenario as MockScenario)) {
 }
 
 const state = createMockState(scenario as MockScenario);
+const hostname = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? 3100);
 
 const server = Bun.serve<MockSocketData>({
-  development: { console: true, hmr: true },
-  hostname: "127.0.0.1",
+  development:
+    process.env.NODE_ENV === "production"
+      ? false
+      : { console: true, hmr: true },
+  hostname,
   port,
   routes: {
     "/*": app,
@@ -83,3 +87,11 @@ console.log(`platformd UI: ${server.url}`);
 console.log(
   `mock scenario: ${scenario} (state resets when the server restarts)`
 );
+
+const shutdown = async () => {
+  await server.stop(true);
+  process.exit(0);
+};
+
+process.once("SIGINT", () => void shutdown());
+process.once("SIGTERM", () => void shutdown());

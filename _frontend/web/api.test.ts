@@ -77,6 +77,7 @@ import {
   fetchResourceLogs,
   fetchResourceUsage,
   fetchResourceUsageHistory,
+  fetchSelfUpdateStatus,
   deployServiceVersion,
   mutateManagedRedis,
   objectDownloadURL,
@@ -129,6 +130,28 @@ test("starts a verified self-update through the dedicated idle-only endpoint", a
   expect(calls).toEqual([
     {
       init: { headers: { Accept: "application/json" }, method: "POST" },
+      input: "/api/v1/infrastructure/update",
+    },
+  ]);
+});
+
+test("checks signed platform update availability without starting an update", async () => {
+  const calls: { input: RequestInfo | URL; init?: RequestInit }[] = [];
+  const result = await fetchSelfUpdateStatus(undefined, (input, init) => {
+    calls.push({ init, input });
+    return Promise.resolve(
+      Response.json({
+        currentVersion: "1.0.0",
+        latestVersion: "2.0.0",
+        updateAvailable: true,
+        updateSupported: true,
+      })
+    );
+  });
+  expect(result.latestVersion).toBe("2.0.0");
+  expect(calls).toEqual([
+    {
+      init: { headers: { Accept: "application/json" }, signal: undefined },
       input: "/api/v1/infrastructure/update",
     },
   ]);

@@ -69,6 +69,14 @@ const handleInfrastructure = (
   if (request.method === "GET" && resource === "logs") {
     return json(state.infrastructureLogs);
   }
+  if (request.method === "GET" && resource === "update") {
+    return json({
+      currentVersion: state.meta.version,
+      latestVersion: "0.2.0-mock",
+      updateAvailable: true,
+      updateSupported: true,
+    });
+  }
   if (request.method === "POST" && resource === "update") {
     return json({
       previousVersion: state.meta.version,

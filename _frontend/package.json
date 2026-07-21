@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:mock": "bun run compile-mock.ts",
     "build:web": "bun run build.ts",
     "check": "bun --bun ultracite check",
     "dev:mock": "bun --hot dev.ts",

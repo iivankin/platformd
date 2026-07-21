@@ -1,4 +1,4 @@
-import { Cloud, ExternalLink, LockKeyhole } from "lucide-react";
+import { CheckCircle2, Cloud, ExternalLink, LockKeyhole } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -15,6 +15,7 @@ export const SettingsCloudflarePage = () => {
   const [apiToken, setAPIToken] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -43,9 +44,11 @@ export const SettingsCloudflarePage = () => {
     event.preventDefault();
     setSaving(true);
     setError(undefined);
+    setSaved(false);
     try {
       setSettings(await configureCloudflareDNS({ apiToken }));
       setAPIToken("");
+      setSaved(true);
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -56,6 +59,13 @@ export const SettingsCloudflarePage = () => {
       setSaving(false);
     }
   };
+
+  let submitLabel = "Verify and save";
+  if (saving) {
+    submitLabel = "Verifying…";
+  } else if (settings?.configured) {
+    submitLabel = "Verify and replace";
+  }
 
   return (
     <div className="grid gap-4 p-5">
@@ -99,7 +109,15 @@ export const SettingsCloudflarePage = () => {
                 className="pr-9"
                 id="cloudflare-api-token"
                 minLength={20}
-                onChange={(event) => setAPIToken(event.target.value)}
+                onChange={(event) => {
+                  setAPIToken(event.target.value);
+                  setSaved(false);
+                }}
+                placeholder={
+                  settings?.configured
+                    ? "Token saved — enter a new token to replace it"
+                    : "Paste API token"
+                }
                 required
                 type="password"
                 value={apiToken}
@@ -110,9 +128,19 @@ export const SettingsCloudflarePage = () => {
           {error ? (
             <p className="text-[10px] text-destructive">{error}</p>
           ) : null}
-          <div className="flex justify-end border-t border-border pt-4">
-            <Button disabled={saving} type="submit">
-              {saving ? "Verifying…" : "Verify and save"}
+          <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
+            {settings?.configured ? (
+              <p className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="size-3.5" />
+                {saved ? "Token verified and saved" : "Token configured"}
+              </p>
+            ) : null}
+            <Button
+              className="ml-auto"
+              disabled={saving || apiToken.trim().length < 20}
+              type="submit"
+            >
+              {submitLabel}
             </Button>
           </div>
         </form>

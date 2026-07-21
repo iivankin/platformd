@@ -184,6 +184,7 @@ export const App = () => {
           onCollapsedChange={setCollapsed}
           projects={data.projects}
           recovery={recovering}
+          updateAvailable={Boolean(data.update.status?.updateAvailable)}
         />
 
         <main className="relative flex min-w-0 flex-1 flex-col">
@@ -265,7 +266,7 @@ export const App = () => {
                   path="/tokens"
                 />
                 <Route
-                  element={<InfrastructurePage />}
+                  element={<InfrastructurePage update={data.update} />}
                   path="/infrastructure/*"
                 />
                 <Route element={<AuditPage />} path="/audit" />

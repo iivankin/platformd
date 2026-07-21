@@ -8,6 +8,7 @@ import (
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/portforward"
+	"github.com/iivankin/platformd/internal/server"
 )
 
 type automationHandlerFactory struct {
@@ -15,6 +16,7 @@ type automationHandlerFactory struct {
 	mcp           mcp.Config
 	authenticator *automationauth.Authenticator
 	portForwards  *portforward.Application
+	githubWebhook http.Handler
 	available     bool
 }
 
@@ -23,14 +25,15 @@ func newAutomationHandlerFactory(
 	mcpConfig mcp.Config,
 	authenticator *automationauth.Authenticator,
 	portForwards *portforward.Application,
+	githubWebhook http.Handler,
 	available bool,
 ) (*automationHandlerFactory, error) {
-	if authenticator == nil || portForwards == nil {
+	if authenticator == nil || portForwards == nil || githubWebhook == nil {
 		return nil, errors.New("automation handler security dependencies are missing")
 	}
 	return &automationHandlerFactory{
 		api: apiConfig, mcp: mcpConfig, authenticator: authenticator,
-		portForwards: portForwards, available: available,
+		portForwards: portForwards, githubWebhook: githubWebhook, available: available,
 	}, nil
 }
 
@@ -57,10 +60,11 @@ func (factory *automationHandlerFactory) Build(hostname string) (http.Handler, e
 	protectedMux := http.NewServeMux()
 	protectedMux.Handle("/mcp", mcpHandler)
 	protectedMux.Handle("/", automationAPI)
-	mux := http.NewServeMux()
-	mux.Handle(portforward.EndpointPath, forwardHandler)
-	mux.Handle("/", factory.authenticator.Protect(protectedMux))
-	var handler http.Handler = mux
+	var handler http.Handler = automationHandler(
+		factory.githubWebhook,
+		forwardHandler,
+		factory.authenticator.Protect(protectedMux),
+	)
 	if !factory.available {
 		handler, err = newAvailabilityHandler(handler, false)
 		if err != nil {
@@ -68,4 +72,12 @@ func (factory *automationHandlerFactory) Build(hostname string) (http.Handler, e
 		}
 	}
 	return handler, nil
+}
+
+func automationHandler(githubWebhook, forward, protected http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("POST "+server.GitHubWebhookPath, githubWebhook)
+	mux.Handle(portforward.EndpointPath, forward)
+	mux.Handle("/", protected)
+	return mux
 }

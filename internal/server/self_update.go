@@ -10,15 +10,27 @@ import (
 )
 
 type SelfUpdater interface {
+	Check(context.Context) (selfupdate.Status, error)
 	Apply(context.Context) (selfupdate.Result, error)
 }
 
 func registerSelfUpdateRoute(mux *http.ServeMux, updater SelfUpdater, afterCommit func()) {
+	mux.HandleFunc("GET /api/v1/infrastructure/update", func(response http.ResponseWriter, request *http.Request) {
+		status, err := updater.Check(request.Context())
+		if err != nil {
+			writeAPIError(response, http.StatusBadGateway, "update_check_failed", "Unable to check for platform updates")
+			return
+		}
+		response.Header().Set("Cache-Control", "no-store")
+		writeJSON(response, http.StatusOK, status)
+	})
 	mux.HandleFunc("POST /api/v1/infrastructure/update", func(response http.ResponseWriter, request *http.Request) {
 		result, err := updater.Apply(request.Context())
 		if err != nil {
 			var busy selfupdate.BusyError
 			switch {
+			case errors.Is(err, selfupdate.ErrUpToDate):
+				writeAPIError(response, http.StatusConflict, "already_up_to_date", "Platform is already up to date")
 			case errors.As(err, &busy):
 				writeJSON(response, http.StatusConflict, map[string]any{
 					"error": map[string]string{
