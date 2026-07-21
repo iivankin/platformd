@@ -51,6 +51,8 @@ type Store interface {
 	FailDeployment(context.Context, string, string, string, int64) error
 	LatestFailedDeployment(context.Context, string, string, string) (bool, error)
 	Deployment(context.Context, string) (state.DeploymentRecord, error)
+	VolumeInitialized(context.Context, string, string, string) (bool, error)
+	RecordVolumeInitialization(context.Context, string, string, string, int64) error
 }
 
 type Engine interface {
@@ -754,6 +756,9 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 	if err := controller.engine.StartContainer(ctx, container.ID); err != nil {
 		return false, fmt.Errorf("start active service container: %w", err)
 	}
+	if err := controller.recordVolumeInitializations(ctx, desired); err != nil {
+		return false, err
+	}
 	ready, err := controller.waitReady(ctx, desired, container.ID, placement.NetworkName)
 	if err != nil {
 		return false, fmt.Errorf("restore active service readiness: %w", err)
@@ -984,6 +989,10 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 		controller.restoreOld(desired, old, hasOld)
 		return controller.fail(deploymentID, "candidate_start_failed", err)
 	}
+	if err := controller.recordVolumeInitializations(ctx, desired); err != nil {
+		controller.restoreOld(desired, old, hasOld)
+		return controller.fail(deploymentID, "volume_initialization_commit_failed", err)
+	}
 	ready, err := controller.waitReady(ctx, desired, candidate.ID, placement.NetworkName)
 	if err != nil {
 		controller.restoreOld(desired, old, hasOld)
@@ -1021,11 +1030,18 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return containerengine.Container{}, Placement{}, fmt.Errorf("create service log directory: %w", err)
 	}
-	mounts := make([]containerengine.Mount, 0, len(desired.Snapshot.VolumeMounts))
+	volumes := make([]containerengine.ManagedVolumeMount, 0, len(desired.Snapshot.VolumeMounts))
 	for _, mount := range desired.Snapshot.VolumeMounts {
-		mounts = append(mounts, containerengine.Mount{
-			Source:      filepath.Join(controller.volumeRoot, desired.ProjectID, mount.VolumeID),
+		volumePath := filepath.Join(controller.volumeRoot, desired.ProjectID, mount.VolumeID)
+		initialized, err := controller.store.VolumeInitialized(ctx, desired.ProjectID, desired.ID, mount.VolumeID)
+		if err != nil {
+			return containerengine.Container{}, Placement{}, fmt.Errorf("inspect volume initialization: %w", err)
+		}
+		volumes = append(volumes, containerengine.ManagedVolumeMount{
+			ID:          mount.VolumeID,
+			Source:      volumePath,
 			Destination: mount.ContainerPath,
+			Initialized: initialized,
 		})
 	}
 	environment := desired.Snapshot.Environment
@@ -1045,7 +1061,7 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 			"io.platformd.service-id": desired.ID, "io.platformd.deployment-id": deploymentID,
 		},
 		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
-		DNSSearch: []string{placement.DNSSearch}, Mounts: mounts,
+		DNSSearch: []string{placement.DNSSearch}, ManagedVolumes: volumes,
 		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
 		CgroupParent:  placement.CgroupParent,
 		CPUMillicores: desired.Snapshot.CPUMillicores, MemoryMaxBytes: desired.Snapshot.MemoryMaxBytes,
@@ -1054,6 +1070,17 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 		return containerengine.Container{}, Placement{}, err
 	}
 	return container, placement, nil
+}
+
+func (controller *Controller) recordVolumeInitializations(ctx context.Context, desired state.ServiceDesired) error {
+	for _, mount := range desired.Snapshot.VolumeMounts {
+		if err := controller.store.RecordVolumeInitialization(
+			ctx, desired.ProjectID, desired.ID, mount.VolumeID, controller.now().UnixMilli(),
+		); err != nil {
+			return fmt.Errorf("record volume %s initialization: %w", mount.VolumeID, err)
+		}
+	}
+	return nil
 }
 
 func (controller *Controller) waitReady(ctx context.Context, desired state.ServiceDesired, containerID, networkName string) (containerengine.Container, error) {

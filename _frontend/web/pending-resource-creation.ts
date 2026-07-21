@@ -207,8 +207,6 @@ export const applyPendingResource = (
         volumes: draft.settings.volumes.map((volume) => ({
           containerPath: mounts.get(volume.id),
           name: volume.name,
-          ownerGid: volume.ownerGid,
-          ownerUid: volume.ownerUid,
         })),
       });
     }
@@ -300,4 +298,23 @@ export const pendingCanvasResource = (
       throw new Error("Unsupported resource draft");
     }
   }
+};
+
+export const mergePendingCanvasResources = (
+  resources: ProjectCanvas["resources"],
+  drafts: PendingResourceCreation[],
+  projectName: string,
+  applyingDraftIDs: ReadonlySet<string>
+): ProjectCanvas["resources"] => {
+  const materialized = new Set(
+    resources.map((resource) => `${resource.kind}\0${resource.name}`)
+  );
+  const pending = drafts
+    .map((draft) => pendingCanvasResource(draft, projectName))
+    .filter(
+      (resource) =>
+        !applyingDraftIDs.has(resource.id) ||
+        !materialized.has(`${resource.kind}\0${resource.name}`)
+    );
+  return [...resources, ...pending];
 };

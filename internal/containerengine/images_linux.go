@@ -15,6 +15,7 @@ import (
 	commonconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/image/v5/manifest"
 	"go.podman.io/image/v5/pkg/strslice"
+	imagetypes "go.podman.io/image/v5/types"
 )
 
 func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error) {
@@ -26,6 +27,7 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		ContextDirectory:        request.ContextDirectory,
 		PullPolicy:              buildahDefine.PullIfMissing,
 		SignaturePolicyPath:     e.config.SignaturePolicy,
+		SystemContext:           &imagetypes.SystemContext{SystemRegistriesConfPath: e.config.RegistriesConf},
 		Output:                  request.Reference,
 		Out:                     log,
 		Err:                     log,

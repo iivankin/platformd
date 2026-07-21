@@ -18,14 +18,12 @@ func listVolumesTool() Tool {
 func volumeAdminTools() []Tool {
 	return []Tool{
 		{
-			Name: "create_service_volume", Description: "Create an empty ordinary writable volume owned by one service. Mount it with a separate service update. Requires an admin token.",
+			Name: "create_service_volume", Description: "Create an ordinary writable volume owned by one service. Its initial contents and permissions come from the service image on first mount. Mount it with a separate service update. Requires an admin token.",
 			InputSchema: objectSchema(map[string]any{
 				"projectId": map[string]string{"type": "string"},
 				"serviceId": map[string]string{"type": "string"},
 				"name":      map[string]string{"type": "string"},
-				"ownerUid":  map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
-				"ownerGid":  map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
-			}, []string{"projectId", "serviceId", "name", "ownerUid", "ownerGid"}),
+			}, []string{"projectId", "serviceId", "name"}),
 		},
 		{
 			Name: "delete_service_volume", Description: "Delete an unmounted ordinary service volume and its data. Requires an admin token.",
@@ -97,7 +95,6 @@ func (handler *Handler) deleteVolume(ctx context.Context, arguments json.RawMess
 func publicVolume(item state.Volume) map[string]any {
 	return map[string]any{
 		"id": item.ID, "projectId": item.ProjectID, "serviceId": item.ServiceID,
-		"name": item.Name, "ownerUid": item.OwnerUID, "ownerGid": item.OwnerGID,
-		"createdAt": item.CreatedAtMillis,
+		"name": item.Name, "createdAt": item.CreatedAtMillis,
 	}
 }

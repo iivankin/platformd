@@ -433,6 +433,57 @@ SELECT backup_target_id, updated_at FROM volumes WHERE id = 'volume'`).Scan(&vol
 	}
 }
 
+func TestVersionSixteenMigrationRemovesManualVolumeOwnership(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "platformd.db")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	database, err := sql.Open("sqlite3", "file:"+path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = database.Exec(`
+CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
+CREATE TABLE volumes(
+  id TEXT PRIMARY KEY,
+  owner_uid INTEGER NOT NULL CHECK (owner_uid >= 0),
+  owner_gid INTEGER NOT NULL CHECK (owner_gid >= 0)
+) STRICT;
+INSERT INTO volumes(id, owner_uid, owner_gid) VALUES ('volume', 1000, 1001);
+INSERT INTO schema_migrations(version, applied_at) VALUES (15, 1);
+PRAGMA user_version = 15;`)
+	if err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := state.Open(context.Background(), path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var ownershipColumns int
+	if err := store.QueryRowContext(context.Background(), `
+SELECT count(*) FROM pragma_table_info('volumes') WHERE name IN ('owner_uid', 'owner_gid')`).Scan(&ownershipColumns); err != nil {
+		t.Fatal(err)
+	}
+	if ownershipColumns != 0 {
+		t.Fatalf("%d manual ownership columns survived migration", ownershipColumns)
+	}
+	var initializationTable int
+	if err := store.QueryRowContext(context.Background(), `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'volume_initializations'`).Scan(&initializationTable); err != nil {
+		t.Fatal(err)
+	}
+	if initializationTable != 1 {
+		t.Fatal("volume initialization table was not created")
+	}
+}
+
 func TestStartupMarksOnlyNonActiveRunningDeploymentInterrupted(t *testing.T) {
 	t.Parallel()
 

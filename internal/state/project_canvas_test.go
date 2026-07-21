@@ -27,8 +27,8 @@ INSERT INTO managed_postgres(id, project_id, name, image_tag, image_digest, volu
 VALUES ('db', 'project', 'db', '17', 'sha256:db', 'db-volume', 'app', 'owner', x'01', x'02', 1, 1);
 INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_id, password_encrypted, created_at, updated_at)
 VALUES ('cache', 'project', 'cache', '8', 'sha256:cache', 'cache-volume', x'01', 1, 1);
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
-VALUES ('api-data', 'project', 'api', 'data', 1000, 1000, 1, 1);
+INSERT INTO volumes(id, project_id, service_id, name, created_at, updated_at)
+VALUES ('api-data', 'project', 'api', 'data', 1, 1);
 INSERT INTO service_volume_mounts(service_id, volume_id, container_path)
 VALUES ('api', 'api-data', '/data')`); err != nil {
 		t.Fatal(err)

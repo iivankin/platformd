@@ -1,4 +1,4 @@
-import { GitFork, LockKeyhole } from "lucide-react";
+import { CheckCircle2, GitFork, LockKeyhole } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -12,6 +12,14 @@ import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { GitHubAppSetupGuide } from "@/github-app-setup-guide";
+import { createGitHubWebhookSecret } from "@/github-webhook-secret";
+
+const submitButtonLabel = (saving: boolean, configured: boolean) => {
+  if (saving) {
+    return "Verifying…";
+  }
+  return configured ? "Verify and replace" : "Verify and save";
+};
 
 export const SettingsGitHubPage = () => {
   const [settings, setSettings] = useState<GitHubAppSettings>();
@@ -21,6 +29,7 @@ export const SettingsGitHubPage = () => {
   const [automationHostname, setAutomationHostname] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
+  const [saved, setSaved] = useState(false);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -32,6 +41,9 @@ export const SettingsGitHubPage = () => {
         ]);
         setSettings(loaded);
         setAutomationHostname(installation.automationHostname);
+        if (!loaded.configured) {
+          setWebhookSecret((current) => current || createGitHubWebhookSecret());
+        }
       } catch (loadError) {
         if (
           !(
@@ -54,6 +66,7 @@ export const SettingsGitHubPage = () => {
     event.preventDefault();
     setSaving(true);
     setError(undefined);
+    setSaved(false);
     try {
       const configuredAppID = Number(appID || settings?.appId || 0);
       const updated = await configureGitHubApp({
@@ -65,6 +78,7 @@ export const SettingsGitHubPage = () => {
       setAppID("");
       setPrivateKey("");
       setWebhookSecret("");
+      setSaved(true);
     } catch (saveError) {
       setError(
         saveError instanceof Error
@@ -86,6 +100,7 @@ export const SettingsGitHubPage = () => {
       <GitHubAppSetupGuide
         appSlug={settings?.appSlug || undefined}
         homepageURL={homepageURL}
+        webhookSecret={webhookSecret || undefined}
         webhookURL={webhookURL}
       />
       <SectionCard>
@@ -98,9 +113,16 @@ export const SettingsGitHubPage = () => {
               are encrypted with the platformd master key.
             </p>
           </div>
-          <span className="ml-auto text-[9px] text-muted-foreground">
-            {settings?.configured ? settings.appSlug : "Not configured"}
-          </span>
+          {settings?.configured ? (
+            <span className="ml-auto flex items-center gap-1.5 text-[9px] text-emerald-600 dark:text-emerald-400">
+              <CheckCircle2 className="size-3.5" />
+              Configured · {settings.appSlug}
+            </span>
+          ) : (
+            <span className="ml-auto text-[9px] text-muted-foreground">
+              Not configured
+            </span>
+          )}
         </div>
         <form className="grid gap-4 p-5" onSubmit={submit}>
           <label
@@ -111,7 +133,10 @@ export const SettingsGitHubPage = () => {
             <Input
               id="github-app-id"
               min={1}
-              onChange={(event) => setAppID(event.target.value)}
+              onChange={(event) => {
+                setAppID(event.target.value);
+                setSaved(false);
+              }}
               placeholder={settings?.appId ? String(settings.appId) : "1234567"}
               required={!settings?.appId}
               type="number"
@@ -126,7 +151,10 @@ export const SettingsGitHubPage = () => {
             <textarea
               className="min-h-40 resize-y border border-input bg-background px-2.5 py-2 font-mono text-[10px] leading-4 outline-none placeholder:text-muted-foreground/70 focus-visible:border-ring focus-visible:ring-1 focus-visible:ring-ring"
               id="github-private-key"
-              onChange={(event) => setPrivateKey(event.target.value)}
+              onChange={(event) => {
+                setPrivateKey(event.target.value);
+                setSaved(false);
+              }}
               placeholder="-----BEGIN RSA PRIVATE KEY-----"
               required
               value={privateKey}
@@ -137,25 +165,57 @@ export const SettingsGitHubPage = () => {
             htmlFor="github-webhook-secret"
           >
             Webhook secret
-            <div className="relative">
-              <Input
-                className="pr-9"
-                id="github-webhook-secret"
-                minLength={16}
-                onChange={(event) => setWebhookSecret(event.target.value)}
-                required
-                type="password"
-                value={webhookSecret}
-              />
-              <LockKeyhole className="absolute top-1/2 right-3 size-3 -translate-y-1/2 text-muted-foreground" />
+            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+              <div className="relative">
+                <Input
+                  className="pr-9"
+                  id="github-webhook-secret"
+                  minLength={16}
+                  onChange={(event) => {
+                    setWebhookSecret(event.target.value);
+                    setSaved(false);
+                  }}
+                  placeholder={
+                    settings?.configured
+                      ? "Generate a new secret to rotate the existing one"
+                      : undefined
+                  }
+                  required
+                  type="password"
+                  value={webhookSecret}
+                />
+                <LockKeyhole className="absolute top-1/2 right-3 size-3 -translate-y-1/2 text-muted-foreground" />
+              </div>
+              <Button
+                onClick={() => {
+                  setWebhookSecret(createGitHubWebhookSecret());
+                  setSaved(false);
+                }}
+                type="button"
+                variant="outline"
+              >
+                {webhookSecret ? "Regenerate" : "Generate secret"}
+              </Button>
             </div>
+            <span className="leading-4">
+              Copy the generated value into the GitHub App before saving. The
+              saved secret is write-only.
+            </span>
           </label>
           {error ? (
             <p className="text-[10px] text-destructive">{error}</p>
           ) : null}
-          <div className="flex justify-end border-t border-border pt-4">
-            <Button disabled={saving} type="submit">
-              {saving ? "Verifying…" : "Verify and save"}
+          <div className="flex flex-wrap items-center gap-3 border-t border-border pt-4">
+            {settings?.configured ? (
+              <p className="flex items-center gap-1.5 text-[10px] text-emerald-600 dark:text-emerald-400">
+                <CheckCircle2 className="size-3.5" />
+                {saved
+                  ? "GitHub App verified and saved"
+                  : `GitHub App configured as ${settings.appSlug}`}
+              </p>
+            ) : null}
+            <Button className="ml-auto" disabled={saving} type="submit">
+              {submitButtonLabel(saving, settings?.configured === true)}
             </Button>
           </div>
         </form>

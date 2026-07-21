@@ -9,7 +9,6 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/state"
@@ -64,7 +63,7 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 		t.Fatal(err)
 	}
 	volumeDomain, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: mcpVolumeFilesystem{}, Images: mcpVolumeImages{},
+		Repository: repository, Filesystem: mcpVolumeFilesystem{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -85,14 +84,8 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 
 type mcpVolumeFilesystem struct{}
 
-func (mcpVolumeFilesystem) Ensure(state.PersistentVolumeReference) error { return nil }
-func (mcpVolumeFilesystem) Remove(string, string) error                  { return nil }
-
-type mcpVolumeImages struct{}
-
-func (mcpVolumeImages) InspectImage(context.Context, string) (containerengine.Image, error) {
-	return containerengine.Image{}, nil
-}
+func (mcpVolumeFilesystem) Ensure(context.Context, state.PersistentVolumeReference) error { return nil }
+func (mcpVolumeFilesystem) Remove(context.Context, string, string) error                  { return nil }
 
 func TestMCPListsOfficialManagedImageTagsForReadToken(t *testing.T) {
 	handler := newTestHandler(t, &repositoryStub{})
@@ -203,7 +196,7 @@ func TestMCPVolumeToolsUseReadAndAdminBoundaries(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := newTestHandler(t, repository)
 
-	create := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_service_volume","arguments":{"projectId":"project","serviceId":"service","name":"data","ownerUid":1000,"ownerGid":1001}}}`), automation.Identity{TokenID: "admin", Role: "admin"})
+	create := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_service_volume","arguments":{"projectId":"project","serviceId":"service","name":"data"}}}`), automation.Identity{TokenID: "admin", Role: "admin"})
 	createResponse := httptest.NewRecorder()
 	handler.ServeHTTP(createResponse, create)
 	if strings.Contains(createResponse.Body.String(), `"isError":true`) || len(repository.volumes) != 1 || repository.volumeCreate.ActorID != "admin" {

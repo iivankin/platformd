@@ -18,8 +18,6 @@ type volumeResponse struct {
 	ProjectID string `json:"projectId"`
 	ServiceID string `json:"serviceId"`
 	Name      string `json:"name"`
-	OwnerUID  int    `json:"ownerUid"`
-	OwnerGID  int    `json:"ownerGid"`
 	CreatedAt int64  `json:"createdAt"`
 }
 
@@ -46,9 +44,7 @@ func listVolumes(application *automation.VolumeApplication) http.HandlerFunc {
 
 func createVolume(application *automation.VolumeApplication) http.HandlerFunc {
 	type requestBody struct {
-		Name     string `json:"name"`
-		OwnerUID int    `json:"ownerUid"`
-		OwnerGID int    `json:"ownerGid"`
+		Name string `json:"name"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAdminProject(response, request, request.PathValue("projectID"))
@@ -70,7 +66,7 @@ func createVolume(application *automation.VolumeApplication) http.HandlerFunc {
 		}
 		result, err := application.Create(request.Context(), identity, automation.CreateVolumeInput{
 			ProjectID: request.PathValue("projectID"), ServiceID: request.PathValue("serviceID"),
-			Name: body.Name, OwnerUID: body.OwnerUID, OwnerGID: body.OwnerGID,
+			Name: body.Name,
 		})
 		if err != nil {
 			writeVolumeError(response, err)
@@ -103,7 +99,7 @@ func deleteVolume(application *automation.VolumeApplication) http.HandlerFunc {
 func publicVolume(item state.Volume) volumeResponse {
 	return volumeResponse{
 		ID: item.ID, ProjectID: item.ProjectID, ServiceID: item.ServiceID, Name: item.Name,
-		OwnerUID: item.OwnerUID, OwnerGID: item.OwnerGID, CreatedAt: item.CreatedAtMillis,
+		CreatedAt: item.CreatedAtMillis,
 	}
 }
 

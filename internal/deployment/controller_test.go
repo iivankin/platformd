@@ -26,6 +26,7 @@ type fakeStore struct {
 	service     state.ServiceDesired
 	deployments map[string]state.BeginDeployment
 	failed      map[string]bool
+	initialized map[string]int64
 }
 
 func (store *fakeStore) DesiredService(context.Context, string) (state.ServiceDesired, error) {
@@ -73,6 +74,21 @@ func (store *fakeStore) Deployment(_ context.Context, deploymentID string) (stat
 		CommitMessage: deployment.CommitMessage, ConfigHash: deployment.ConfigHash,
 		Snapshot: snapshot, Status: "succeeded",
 	}, nil
+}
+
+func (store *fakeStore) VolumeInitialized(_ context.Context, _, _, volumeID string) (bool, error) {
+	_, ok := store.initialized[volumeID]
+	return ok, nil
+}
+
+func (store *fakeStore) RecordVolumeInitialization(_ context.Context, _, _, volumeID string, initializedAt int64) error {
+	if store.initialized == nil {
+		store.initialized = make(map[string]int64)
+	}
+	if _, exists := store.initialized[volumeID]; !exists {
+		store.initialized[volumeID] = initializedAt
+	}
+	return nil
 }
 
 type fakeEngine struct {
@@ -331,7 +347,9 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 		service: state.ServiceDesired{
 			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
 			Snapshot: serviceconfig.Snapshot{
-				Source: serviceconfig.PublicImageSource("alpine:3.22"), HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
+				Source:       serviceconfig.PublicImageSource("alpine:3.22"),
+				HealthCheck:  &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
+				VolumeMounts: []serviceconfig.VolumeMount{{VolumeID: "volume", ContainerPath: "/data"}},
 			},
 		},
 		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
@@ -378,6 +396,9 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	if len(engine.created) != 1 || len(engine.created[0].Entrypoint) != 0 || len(engine.created[0].Command) != 0 || engine.created[0].DNSSearch[0] != "shop.internal" {
 		t.Fatalf("candidate spec = %+v", engine.created)
 	}
+	if len(engine.created[0].ManagedVolumes) != 1 || engine.created[0].ManagedVolumes[0].Destination != "/data" || engine.created[0].ManagedVolumes[0].Initialized {
+		t.Fatalf("first deployment managed volumes = %+v", engine.created[0].ManagedVolumes)
+	}
 	oldContainerID := "platformd-service-deployment-1"
 	if store.service.ActiveDeploymentID != "deployment-1" || !slices.Contains(publisher.events, "publish:service:"+oldContainerID) {
 		t.Fatalf("initial publication = %+v / %+v", store.service, publisher.events)
@@ -395,6 +416,9 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	}
 	if store.service.ActiveDeploymentID != "deployment-1" || engine.containers[oldContainerID].State != "running" {
 		t.Fatalf("old runtime was not restored: %+v / %+v", store.service, engine.containers)
+	}
+	if len(engine.created) != 2 || len(engine.created[1].ManagedVolumes) != 1 || !engine.created[1].ManagedVolumes[0].Initialized {
+		t.Fatalf("second deployment managed volumes = %+v", engine.created)
 	}
 	secondContainerID := "platformd-service-deployment-2"
 	wantEngineOrder := []string{"stop:" + oldContainerID, "start:" + secondContainerID, "start:" + oldContainerID, "remove:" + secondContainerID}

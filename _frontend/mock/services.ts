@@ -340,14 +340,6 @@ const handleVolumes = async (
   if (request.method === "GET" && !volumeID) {
     return json(state.volumes[serviceID] ?? []);
   }
-  if (request.method === "GET" && volumeID === "owner-suggestion") {
-    return json({
-      exactNumeric: true,
-      imageUser: "1000:1000",
-      ownerGid: 1000,
-      ownerUid: 1000,
-    });
-  }
   if (request.method === "DELETE" && volumeID) {
     state.volumes[serviceID] = (state.volumes[serviceID] ?? []).filter(
       (volume) => volume.id !== volumeID
@@ -370,8 +362,6 @@ const handleVolumes = async (
     createdAt: mockNow(),
     id: nextMockID(state, "volume"),
     name: stringField(input, "name", "data"),
-    ownerGid: numberField(input, "ownerGid", 1000),
-    ownerUid: numberField(input, "ownerUid", 1000),
     projectId: projectID,
     serviceId: serviceID,
   };

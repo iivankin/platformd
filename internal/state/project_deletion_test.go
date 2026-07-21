@@ -20,8 +20,8 @@ INSERT INTO projects(id, name, created_at, updated_at) VALUES ('delete-me', 'ret
 INSERT INTO services(id, project_id, name, source_json, environment_json, created_at, updated_at) VALUES
  ('service-delete', 'delete-me', 'api', '{"type":"public_image","image":{"reference":"example/api:latest"}}', '{}', 1, 1),
  ('service-keep', 'keep-me', 'api', '{"type":"public_image","image":{"reference":"example/api:latest"}}', '{}', 1, 1);
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
- VALUES ('volume-delete', 'delete-me', 'service-delete', 'data', 1000, 1000, 1, 1);
+INSERT INTO volumes(id, project_id, service_id, name, created_at, updated_at)
+ VALUES ('volume-delete', 'delete-me', 'service-delete', 'data', 1, 1);
 INSERT INTO service_volume_mounts(service_id, volume_id, container_path) VALUES ('service-delete', 'volume-delete', '/data');
 INSERT INTO secrets(id, project_id, name, value_encrypted, created_at) VALUES ('secret-delete', 'delete-me', 'TOKEN', x'01', 1);
 INSERT INTO service_secret_refs(service_id, environment_name, secret_id) VALUES ('service-delete', 'TOKEN', 'secret-delete');

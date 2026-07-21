@@ -143,8 +143,8 @@ func TestDeleteServiceRemovesOwnedStateAndRecordsAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.database.Exec(`
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
-VALUES ('volume', 'project', 'service', 'data', 1000, 1000, 3, 3);
+INSERT INTO volumes(id, project_id, service_id, name, created_at, updated_at)
+VALUES ('volume', 'project', 'service', 'data', 3, 3);
 INSERT INTO service_volume_mounts(service_id, volume_id, container_path)
 VALUES ('service', 'volume', '/data');
 INSERT INTO deployments(id, service_id, image_digest, image_reference, service_config_hash, snapshot_json, status, created_at)

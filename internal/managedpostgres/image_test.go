@@ -29,6 +29,9 @@ func (*extensionImageEngine) StopContainer(string, uint) error { return errors.N
 func (*extensionImageEngine) RemoveContainer(context.Context, string, bool) error {
 	return errors.New("unexpected remove")
 }
+func (*extensionImageEngine) RemoveManagedVolume(context.Context, string) error {
+	return errors.New("unexpected managed volume removal")
+}
 func (*extensionImageEngine) InspectContainer(string) (containerengine.Container, error) {
 	return containerengine.Container{}, errors.New("unexpected inspect")
 }

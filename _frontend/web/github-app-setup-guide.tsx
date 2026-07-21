@@ -111,10 +111,12 @@ const SetupStep = ({
 export const GitHubAppSetupGuide = ({
   appSlug,
   homepageURL,
+  webhookSecret,
   webhookURL,
 }: {
   appSlug?: string;
   homepageURL: string;
+  webhookSecret?: string;
   webhookURL?: string;
 }) => {
   const installURL = githubAppInstallationURL(appSlug ?? "");
@@ -158,16 +160,21 @@ export const GitHubAppSetupGuide = ({
       </SetupStep>
 
       <SetupStep
-        description="Keep webhooks active. GitHub must be able to reach the webhook over public HTTPS."
+        description="Keep webhooks active. Copy the generated secret into GitHub together with the public HTTPS endpoint."
         number="02"
-        title="Copy the URLs"
+        title="Configure webhooks"
       >
-        <div className="grid gap-2 lg:grid-cols-2">
+        <div className="grid gap-2 lg:grid-cols-3">
           <CopyValue label="Homepage URL" value={homepageURL} />
           <CopyValue
             emptyText="Configure an Automation hostname in General settings"
             label="Webhook URL"
             value={webhookURL}
+          />
+          <CopyValue
+            emptyText="Generate a replacement secret below"
+            label="Webhook secret"
+            value={webhookSecret}
           />
         </div>
       </SetupStep>
@@ -217,15 +224,15 @@ export const GitHubAppSetupGuide = ({
       </SetupStep>
 
       <SetupStep
-        description="Use the same webhook secret in GitHub and below. GitHub generates the private key as a PEM file."
+        description="platformd generates the webhook secret. GitHub generates the private key as a PEM file."
         number="04"
         title="Save and install"
       >
         <div className="flex flex-wrap items-center gap-2">
           <p className="mr-auto max-w-2xl text-[9px] leading-4 text-muted-foreground">
-            Copy the App ID, generate a private key in the app settings, enter
-            both credentials below, then install the verified app for all or
-            selected repositories.
+            Copy the App ID, generate a private key in the app settings, and
+            paste the generated webhook secret into GitHub. Then save the
+            credentials below and install the verified app.
           </p>
           {installURL ? (
             <ExternalAction href={installURL}>Install app</ExternalAction>

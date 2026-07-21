@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { useLogTail } from "@/use-log-tail";
 
 const refreshIntervalMilliseconds = 2000;
 
@@ -31,6 +32,12 @@ export const ResourceLogs = ({
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
+  const lastRecord = window?.records.at(-1);
+  const logTailRef = useLogTail<HTMLElement>(
+    lastRecord
+      ? `${window?.records.length}:${lastRecord.timestamp}:${lastRecord.attemptId}:${lastRecord.text}`
+      : "empty"
+  );
 
   const refresh = useCallback(() => {
     setRefreshVersion((value) => value + 1);
@@ -92,7 +99,7 @@ export const ResourceLogs = ({
   ]);
 
   return (
-    <SectionCard>
+    <SectionCard ref={logTailRef}>
       <section className="flex flex-wrap items-end gap-3 border-b border-border px-5 py-4">
         <div className="mr-auto">
           <p className="text-[10px] font-medium">{title}</p>

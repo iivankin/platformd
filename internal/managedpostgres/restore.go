@@ -296,7 +296,7 @@ func (controller *Controller) removePostgresRestoreCandidate(containerID string,
 	}
 	var volumeErr error
 	if removeErr == nil {
-		volumeErr = removeManagedPostgresVolume(controller.volumeRoot, projectID, volumeID)
+		volumeErr = controller.removeManagedPostgresVolume(context.Background(), projectID, volumeID)
 	}
 	return errors.Join(stopErr, removeErr, volumeErr)
 }
@@ -312,7 +312,7 @@ func (controller *Controller) removeReplacedPostgres(
 			return fmt.Errorf("remove replaced managed PostgreSQL container: %w", err)
 		}
 	}
-	return removeManagedPostgresVolume(controller.volumeRoot, resource.ProjectID, resource.VolumeID)
+	return controller.removeManagedPostgresVolume(ctx, resource.ProjectID, resource.VolumeID)
 }
 
 func createPostgresRestoreVolume(root, projectID, volumeID string) (string, error) {
@@ -330,11 +330,14 @@ func createPostgresRestoreVolume(root, projectID, volumeID string) (string, erro
 	return volume, nil
 }
 
-func removeManagedPostgresVolume(root, projectID, volumeID string) error {
-	if !safeRoot(root) || !safePathComponent(projectID) || !safePathComponent(volumeID) {
+func (controller *Controller) removeManagedPostgresVolume(ctx context.Context, projectID, volumeID string) error {
+	if !safeRoot(controller.volumeRoot) || !safePathComponent(projectID) || !safePathComponent(volumeID) {
 		return errors.New("managed PostgreSQL volume removal input is invalid")
 	}
-	projectRoot := filepath.Join(root, projectID)
+	if err := controller.engine.RemoveManagedVolume(ctx, volumeID); err != nil {
+		return fmt.Errorf("remove managed PostgreSQL runtime volume: %w", err)
+	}
+	projectRoot := filepath.Join(controller.volumeRoot, projectID)
 	if err := os.RemoveAll(filepath.Join(projectRoot, volumeID)); err != nil {
 		return err
 	}

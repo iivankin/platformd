@@ -18,8 +18,6 @@ type PersistentVolumeReference struct {
 	ProjectID string
 	VolumeID  string
 	Kind      PersistentVolumeKind
-	OwnerUID  int
-	OwnerGID  int
 }
 
 // PersistentVolumeReferences returns every authoritative filesystem volume
@@ -27,11 +25,11 @@ type PersistentVolumeReference struct {
 // not have rows and are therefore eligible for startup cleanup.
 func (store *Store) PersistentVolumeReferences(ctx context.Context) ([]PersistentVolumeReference, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT project_id, id, 'ordinary', owner_uid, owner_gid FROM volumes
+SELECT project_id, id, 'ordinary' FROM volumes
 UNION ALL
-SELECT project_id, volume_id, 'postgres', 0, 0 FROM managed_postgres
+SELECT project_id, volume_id, 'postgres' FROM managed_postgres
 UNION ALL
-SELECT project_id, volume_id, 'redis', 0, 0 FROM managed_redis
+SELECT project_id, volume_id, 'redis' FROM managed_redis
 ORDER BY 1, 2, 3`)
 	if err != nil {
 		return nil, fmt.Errorf("list persistent volume references: %w", err)
@@ -42,10 +40,7 @@ ORDER BY 1, 2, 3`)
 	seen := make(map[string]PersistentVolumeKind)
 	for rows.Next() {
 		var reference PersistentVolumeReference
-		if err := rows.Scan(
-			&reference.ProjectID, &reference.VolumeID, &reference.Kind,
-			&reference.OwnerUID, &reference.OwnerGID,
-		); err != nil {
+		if err := rows.Scan(&reference.ProjectID, &reference.VolumeID, &reference.Kind); err != nil {
 			return nil, fmt.Errorf("scan persistent volume reference: %w", err)
 		}
 		key := reference.ProjectID + "\x00" + reference.VolumeID
@@ -55,8 +50,7 @@ ORDER BY 1, 2, 3`)
 				previous, reference.Kind, reference.ProjectID, reference.VolumeID,
 			)
 		}
-		if reference.ProjectID == "" || reference.VolumeID == "" ||
-			!validVolumeOwner(reference.OwnerUID) || !validVolumeOwner(reference.OwnerGID) {
+		if reference.ProjectID == "" || reference.VolumeID == "" {
 			return nil, errors.New("persistent volume reference is invalid")
 		}
 		seen[key] = reference.Kind

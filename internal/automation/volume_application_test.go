@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/automation"
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -27,27 +26,19 @@ func (*automationVolumeRepository) DeleteVolume(_ context.Context, input state.D
 	return state.Volume{ID: input.VolumeID, ProjectID: input.ProjectID, ServiceID: input.ServiceID}, nil
 }
 
-func (*automationVolumeRepository) Service(context.Context, string, string) (state.ServiceDesired, error) {
-	return state.ServiceDesired{}, nil
-}
-
 type automationVolumeFilesystem struct{}
 
-func (automationVolumeFilesystem) Ensure(state.PersistentVolumeReference) error { return nil }
-func (automationVolumeFilesystem) Remove(string, string) error                  { return nil }
-
-type automationVolumeImages struct{}
-
-func (automationVolumeImages) InspectImage(context.Context, string) (containerengine.Image, error) {
-	return containerengine.Image{}, nil
+func (automationVolumeFilesystem) Ensure(context.Context, state.PersistentVolumeReference) error {
+	return nil
 }
+func (automationVolumeFilesystem) Remove(context.Context, string, string) error { return nil }
 
 func TestVolumeAutomationEnforcesRoleAndProjectBoundary(t *testing.T) {
 	t.Parallel()
 
 	repository := &automationVolumeRepository{}
 	domain, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: automationVolumeFilesystem{}, Images: automationVolumeImages{},
+		Repository: repository, Filesystem: automationVolumeFilesystem{},
 	})
 	if err != nil {
 		t.Fatal(err)

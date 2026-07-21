@@ -274,7 +274,11 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 
 	contextRoot := t.TempDir()
 	dockerfile := filepath.Join(contextRoot, "Dockerfile")
-	contents := "FROM " + integrationAlpineImage + "\nRUN printf yes > /platformd-built\n"
+	// Use an unqualified Docker Hub name here: production Dockerfiles commonly
+	// use `oven/bun` or `node`, and Buildah must receive platformd's private
+	// registries.conf rather than consulting an absent host configuration.
+	shortBase := strings.TrimPrefix(integrationAlpineImage, "docker.io/library/")
+	contents := "FROM " + shortBase + "\nRUN printf yes > /platformd-built\n"
 	if err := os.WriteFile(dockerfile, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -306,6 +310,203 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 	}
 	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
 		t.Fatalf("built image verification exit = %d, %v", code, err)
+	}
+}
+
+func TestManagedVolumeUsesNamedVolumeCopyUpAndPreservesInitializedData(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0]} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	contextRoot := t.TempDir()
+	dockerfile := filepath.Join(contextRoot, "Dockerfile")
+	dockerfileContents := "FROM " + integrationAlpineImage + `
+RUN mkdir /seed && printf image-default > /seed/config.json && chown -R 1234:2345 /seed && chmod 0750 /seed && chmod 0640 /seed/config.json
+USER 1234:2345
+`
+	if err := os.WriteFile(dockerfile, []byte(dockerfileContents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buildOutput bytes.Buffer
+	image, err := engine.Build(ctx, BuildRequest{
+		ContextDirectory: contextRoot, Dockerfile: dockerfile,
+		Reference: "localhost/platformd/managed-volume-integration:latest", Log: &buildOutput,
+	})
+	if err != nil {
+		t.Fatalf("build managed volume image: %v\n%s", err, buildOutput.String())
+	}
+	defer engine.RemoveImage(context.Background(), image.ID)
+
+	volumePath := filepath.Join(config.AllowedMountRoots[0], "managed-volume")
+	if err := os.RemoveAll(volumePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(volumePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(volumePath)
+	container, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: image.ID, Name: "platformd-managed-volume-copy-up",
+		Command: []string{"/bin/sh", "-c", `test "$(cat /seed/config.json)" = image-default`},
+		ManagedVolumes: []ManagedVolumeMount{{
+			ID: "integration-volume", Source: volumePath, Destination: "/seed",
+		}},
+		LogPath: filepath.Join(config.LogRoot, "managed-volume.log"), LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveContainer(context.Background(), container.ID, true)
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
+		t.Fatalf("non-root volume read exit = %d, %v", code, err)
+	}
+	assertPathMetadata(t, volumePath, 0o750, 1234, 2345)
+	assertPathMetadata(t, filepath.Join(volumePath, "config.json"), 0o640, 1234, 2345)
+	if err := engine.RemoveContainer(ctx, container.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.RemoveManagedVolume(ctx, "integration-volume"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(volumePath, "config.json"), []byte("user-data"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	restored, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: image.ID, Name: "platformd-managed-volume-restored",
+		Command: []string{"/bin/sh", "-c", `test "$(cat /seed/config.json)" = user-data`},
+		ManagedVolumes: []ManagedVolumeMount{{
+			ID: "integration-volume", Source: volumePath, Destination: "/seed", Initialized: true,
+		}},
+		LogPath: filepath.Join(config.LogRoot, "managed-volume-restored.log"), LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveManagedVolume(context.Background(), "integration-volume")
+	defer engine.RemoveContainer(context.Background(), restored.ID, true)
+	if err := engine.StartContainer(ctx, restored.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, restored.ID); err != nil || code != 0 {
+		t.Fatalf("restored volume verification exit = %d, %v", code, err)
+	}
+}
+
+func TestStoppedContainerRemountsReplacedManagedVolumeSource(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	for _, directory := range []string{config.LogRoot, config.AllowedMountRoots[0]} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	image, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	volumePath := filepath.Join(config.AllowedMountRoots[0], "managed-volume-replacement")
+	if err := os.RemoveAll(volumePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(volumePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(volumePath)
+	if err := os.WriteFile(filepath.Join(volumePath, "value"), []byte("before"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	container, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: image.ID, Name: "platformd-managed-volume-replacement",
+		Command: []string{"/bin/sh", "-c", `while test ! -f /data/stop; do sleep 0.1; done`},
+		ManagedVolumes: []ManagedVolumeMount{{
+			ID: "integration-volume-replacement", Source: volumePath,
+			Destination: "/data", Initialized: true,
+		}},
+		LogPath:      filepath.Join(config.LogRoot, "managed-volume-replacement.log"),
+		LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveManagedVolume(context.Background(), "integration-volume-replacement")
+	defer engine.RemoveContainer(context.Background(), container.ID, true)
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := engine.StopContainer(container.ID, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, err := os.MkdirTemp(filepath.Dir(volumePath), ".managed-volume-replacement-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(replacement, "value"), []byte("after"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := volumePath + ".previous"
+	if err := os.Rename(volumePath, previous); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, volumePath); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(previous)
+
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatal(err)
+	}
+	code, err := engine.ExecContainer(ctx, container.ID, ExecRequest{
+		Command: []string{"/bin/sh", "-c", `test "$(cat /data/value)" = after`},
+	})
+	if err != nil || code != 0 {
+		t.Fatalf("replaced volume verification exit = %d, %v", code, err)
+	}
+	if err := os.WriteFile(filepath.Join(volumePath, "stop"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertPathMetadata(t *testing.T, path string, mode os.FileMode, uid, gid uint32) {
+	t.Helper()
+	info, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owner, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("metadata %s has no Unix ownership", path)
+	}
+	if info.Mode().Perm() != mode || owner.Uid != uid || owner.Gid != gid {
+		t.Fatalf("metadata %s = mode:%o owner:%d:%d, want mode:%o owner:%d:%d",
+			path, info.Mode().Perm(), owner.Uid, owner.Gid, mode, uid, gid)
 	}
 }
 
@@ -468,6 +669,48 @@ func TestPrepareStoragePurgesContainersAndKeepsImages(t *testing.T) {
 	}
 	if _, err := reopened.InspectContainer(container.ID); err == nil {
 		t.Fatal("stale container survived startup cleanup")
+	}
+}
+
+func TestPrepareStorageDetachesTransientVolumeMountsBeforeCleanup(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	durableRoot := filepath.Join(config.AllowedMountRoots[0], "prepare-storage-volume")
+	mountpoint := filepath.Join(config.VolumePath, "prepare-storage-volume", "_data")
+	if err := os.RemoveAll(durableRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(durableRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(durableRoot) })
+	if err := os.WriteFile(filepath.Join(durableRoot, "sentinel"), []byte("durable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(mountpoint, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mount(durableRoot, mountpoint, "", syscall.MS_BIND, ""); err != nil {
+		t.Fatalf("bind durable volume into transient root: %v", err)
+	}
+	t.Cleanup(func() { _ = syscall.Unmount(mountpoint, syscall.MNT_DETACH) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if _, err := PrepareStorage(ctx, config); err != nil {
+		t.Fatalf("prepare storage: %v", err)
+	}
+	contents, err := os.ReadFile(filepath.Join(durableRoot, "sentinel"))
+	if err != nil {
+		t.Fatalf("durable volume was removed through its transient mount: %v", err)
+	}
+	if string(contents) != "durable" {
+		t.Fatalf("durable sentinel = %q", contents)
+	}
+	if _, err := os.Stat(mountpoint); !os.IsNotExist(err) {
+		t.Fatalf("transient volume mountpoint survived cleanup: %v", err)
 	}
 }
 

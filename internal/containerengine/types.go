@@ -75,6 +75,17 @@ type Mount struct {
 	ReadOnly    bool
 }
 
+// ManagedVolumeMount presents platform-owned durable storage to libpod as a
+// named volume. Libpod supplies Docker-compatible first-mount copy-up and
+// ownership behavior for both service and managed-database volumes.
+type ManagedVolumeMount struct {
+	ID          string
+	Source      string
+	Destination string
+	ReadOnly    bool
+	Initialized bool
+}
+
 type ContainerSecurityProfile string
 
 const (
@@ -93,6 +104,7 @@ type ContainerSpec struct {
 	DNSServers      []string
 	DNSSearch       []string
 	Mounts          []Mount
+	ManagedVolumes  []ManagedVolumeMount
 	LogPath         string
 	LogSizeBytes    int64
 	LogMaxFiles     uint

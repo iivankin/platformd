@@ -15,7 +15,6 @@ interface ServiceVolumesProperties {
   onVolumesChange: (volumes: ServiceVolumeDraft[]) => void;
   projectID: string;
   serviceID: string;
-  suggestOwner?: boolean;
   volumes: ServiceVolumeDraft[];
 }
 
@@ -26,7 +25,6 @@ export const ServiceVolumes = ({
   onVolumesChange,
   projectID,
   serviceID,
-  suggestOwner = true,
   volumes,
 }: ServiceVolumesProperties) => {
   const [creating, setCreating] = useState(false);
@@ -72,9 +70,6 @@ export const ServiceVolumes = ({
             ]);
             setCreating(false);
           }}
-          projectID={projectID}
-          serviceID={serviceID}
-          suggestOwner={suggestOwner}
         />
       ) : null}
 

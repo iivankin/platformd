@@ -366,10 +366,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure container ports: %w", err)
 	}
-	volumeFilesystem := volume.NewLocalFilesystem(paths.VolumesRoot)
+	volumeFilesystem := volume.NewLocalFilesystem(paths.VolumesRoot, runtime.engine)
 	volumeCleanupError := func(cleanupErr error) { log.Printf("volume cleanup: %v", cleanupErr) }
 	volumeApplication, err := volume.New(volume.Config{
-		Repository: store, Filesystem: volumeFilesystem, Images: runtime.engine,
+		Repository: store, Filesystem: volumeFilesystem,
 		OnCleanupError: volumeCleanupError,
 	})
 	if err != nil {

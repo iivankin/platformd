@@ -16,7 +16,7 @@ import { Button } from "@/components/ui/button";
 import { NetworkGatewayDraftPage } from "@/network-gateway-draft-page";
 import {
   applyPendingResource,
-  pendingCanvasResource,
+  mergePendingCanvasResources,
 } from "@/pending-resource-creation";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
 import { ProjectChangeBar } from "@/project-change-bar";
@@ -175,6 +175,10 @@ export const ProjectCanvasPage = ({
     useProjectChanges(projectID);
   const serviceChangesRef = useRef(serviceChanges);
   const resourceDraftsRef = useRef(resourceDrafts);
+  const applyingResourceDraftIDsRef = useRef<ReadonlySet<string>>(new Set());
+  const [applyingResourceDraftIDs, setApplyingResourceDraftIDs] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const [nodes, setNodes, onNodesChange] =
     useNodesState<ResourceFlowNode>(emptyNodes);
   const [edges, setEdges, onEdgesChange] =
@@ -192,14 +196,14 @@ export const ProjectCanvasPage = ({
     }
     return {
       ...canvas,
-      resources: [
-        ...canvas.resources,
-        ...pendingResources.map((draft) =>
-          pendingCanvasResource(draft, canvas.project.name)
-        ),
-      ],
+      resources: mergePendingCanvasResources(
+        canvas.resources,
+        pendingResources,
+        canvas.project.name,
+        applyingResourceDraftIDs
+      ),
     };
-  }, [canvas, pendingResources]);
+  }, [applyingResourceDraftIDs, canvas, pendingResources]);
   const isCanvasEmpty = canvasWithDrafts?.resources.length === 0;
   const error = canvasError ?? metadataError;
   const pendingServices = useMemo(
@@ -219,12 +223,12 @@ export const ProjectCanvasPage = ({
         const loaded = await fetchProjectCanvas(projectID, controller.signal);
         const withDrafts = {
           ...loaded,
-          resources: [
-            ...loaded.resources,
-            ...Object.values(resourceDraftsRef.current).map((draft) =>
-              pendingCanvasResource(draft, loaded.project.name)
-            ),
-          ],
+          resources: mergePendingCanvasResources(
+            loaded.resources,
+            Object.values(resourceDraftsRef.current),
+            loaded.project.name,
+            applyingResourceDraftIDsRef.current
+          ),
         };
         const flow = projectFlowElements(
           withDrafts,
@@ -311,6 +315,9 @@ export const ProjectCanvasPage = ({
     }
     setApplyingChanges(true);
     setApplyError(undefined);
+    const resourceDraftIDs = new Set(pendingResources.map((draft) => draft.id));
+    applyingResourceDraftIDsRef.current = resourceDraftIDs;
+    setApplyingResourceDraftIDs(resourceDraftIDs);
     const operations = [
       ...pendingServices.map((change) => ({
         id: change.serviceID,
@@ -356,6 +363,8 @@ export const ProjectCanvasPage = ({
       setRefreshVersion((value) => value + 1);
     }
     setApplyError(firstError);
+    applyingResourceDraftIDsRef.current = new Set();
+    setApplyingResourceDraftIDs(new Set());
     setApplyingChanges(false);
   };
 

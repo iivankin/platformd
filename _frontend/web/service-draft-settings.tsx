@@ -80,7 +80,6 @@ export const ServiceDraftSettings = ({
         }
         projectID={projectID}
         serviceID={draft.id}
-        suggestOwner={false}
         volumes={draft.settings.volumes}
       />
 

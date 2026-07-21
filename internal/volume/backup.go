@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -32,6 +33,16 @@ func OpenLiveBackup(ctx context.Context, root string, volume state.Volume) (io.R
 	reader, writer := io.Pipe()
 	go func() {
 		archive := tar.NewWriter(writer)
+		rootHeader, headerErr := tar.FileInfoHeader(info, "")
+		if headerErr == nil {
+			rootHeader.Name = "."
+			headerErr = archive.WriteHeader(rootHeader)
+		}
+		if headerErr != nil {
+			_ = archive.Close()
+			_ = writer.CloseWithError(headerErr)
+			return
+		}
 		walkErr := filepath.WalkDir(path, func(itemPath string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
@@ -99,16 +110,27 @@ func RestoreBackup(ctx context.Context, root string, volume state.Volume, source
 	if err != nil {
 		return err
 	}
+	liveInfo, err := os.Lstat(live)
+	if err != nil {
+		return err
+	}
+	if !liveInfo.IsDir() || liveInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("ordinary volume path is not a real directory")
+	}
+	liveOwner, ok := liveInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("ordinary volume path has no Unix ownership metadata")
+	}
 	parent := filepath.Dir(live)
 	staging, err := os.MkdirTemp(parent, "."+volume.ID+"-restore-")
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(staging, 0o700); err != nil {
+	if err := os.Chown(staging, int(liveOwner.Uid), int(liveOwner.Gid)); err != nil {
 		_ = os.RemoveAll(staging)
 		return err
 	}
-	if err := os.Chown(staging, volume.OwnerUID, volume.OwnerGID); err != nil {
+	if err := os.Chmod(staging, archiveMode(liveInfo.Mode())); err != nil {
 		_ = os.RemoveAll(staging)
 		return err
 	}
@@ -155,18 +177,27 @@ func RestoreBackup(ctx context.Context, root string, volume state.Volume, source
 }
 
 func restoreArchiveEntry(root string, header *tar.Header, source io.Reader) error {
-	if header == nil || validateArchiveName(header.Name) != nil {
+	if header == nil || (header.Name != "." && validateArchiveName(header.Name) != nil) {
 		return errors.New("volume backup contains an invalid path")
 	}
 	if header.Uid < 0 || int64(header.Uid) > maximumArchiveOwnerID ||
 		header.Gid < 0 || int64(header.Gid) > maximumArchiveOwnerID {
 		return errors.New("volume backup contains an invalid owner")
 	}
+	if header.Name == "." {
+		if header.Typeflag != tar.TypeDir {
+			return errors.New("volume backup root metadata is not a directory")
+		}
+		if err := os.Chown(root, header.Uid, header.Gid); err != nil {
+			return err
+		}
+		return os.Chmod(root, archiveMode(header.FileInfo().Mode()))
+	}
 	destination := filepath.Join(root, filepath.FromSlash(header.Name))
 	if err := ensureSafeParents(root, filepath.Dir(destination)); err != nil {
 		return err
 	}
-	mode := fs.FileMode(header.Mode) & fs.ModePerm
+	mode := archiveMode(header.FileInfo().Mode())
 	switch header.Typeflag {
 	case tar.TypeDir:
 		if err := os.MkdirAll(destination, mode); err != nil {
@@ -199,7 +230,16 @@ func restoreArchiveEntry(root string, header *tar.Header, source io.Reader) erro
 	if header.Typeflag == tar.TypeSymlink {
 		return os.Lchown(destination, header.Uid, header.Gid)
 	}
-	return os.Chown(destination, header.Uid, header.Gid)
+	if err := os.Chown(destination, header.Uid, header.Gid); err != nil {
+		return err
+	}
+	// chown can clear set-ID bits, and creation is affected by umask. Apply the
+	// archived mode last so restore reproduces the durable volume metadata.
+	return os.Chmod(destination, mode)
+}
+
+func archiveMode(mode fs.FileMode) fs.FileMode {
+	return mode.Perm() | mode&(fs.ModeSetuid|fs.ModeSetgid|fs.ModeSticky)
 }
 
 func validateArchiveName(name string) error {

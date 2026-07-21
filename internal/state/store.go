@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	currentSchemaVersion = 15
+	currentSchemaVersion = 16
 	writerQueueSize      = 128
 )
 
@@ -93,6 +93,15 @@ var (
 
 	//go:embed migration_15_without_services.sql
 	migration15WithoutServices string
+
+	//go:embed migration_16.sql
+	migration16 string
+
+	//go:embed migration_16_without_services.sql
+	migration16WithoutServices string
+
+	//go:embed migration_16_without_owners.sql
+	migration16WithoutOwners string
 )
 
 type Store struct {
@@ -316,13 +325,21 @@ func migrate(ctx context.Context, database *sql.DB) error {
 	switch version {
 	case currentSchemaVersion:
 		return nil
+	case 15:
+		return applyMigration16(ctx, database)
 	case 14:
-		return applyMigration15(ctx, database)
+		if err := applyMigration15(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration16(ctx, database)
 	case 13:
 		if err := applyMigration14(ctx, database); err != nil {
 			return err
 		}
-		return applyMigration15(ctx, database)
+		if err := applyMigration15(ctx, database); err != nil {
+			return err
+		}
+		return applyMigration16(ctx, database)
 	case 12:
 		return applyMigrations13To14(ctx, database)
 	case 11:
@@ -484,7 +501,55 @@ func applyMigrations13To14(ctx context.Context, database *sql.DB) error {
 	if err := applyMigration14(ctx, database); err != nil {
 		return err
 	}
-	return applyMigration15(ctx, database)
+	if err := applyMigration15(ctx, database); err != nil {
+		return err
+	}
+	return applyMigration16(ctx, database)
+}
+
+func applyMigration16(ctx context.Context, database *sql.DB) error {
+	var volumeTableCount int
+	if err := database.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'volumes'`).Scan(&volumeTableCount); err != nil {
+		return fmt.Errorf("inspect schema before migration 16: %w", err)
+	}
+	statements := migration16
+	if volumeTableCount == 0 {
+		statements = migration16WithoutServices
+	} else {
+		rows, err := database.QueryContext(ctx, "PRAGMA table_info(volumes)")
+		if err != nil {
+			return fmt.Errorf("inspect volume columns before migration 16: %w", err)
+		}
+		ownerColumns := 0
+		for rows.Next() {
+			var columnID int
+			var name, columnType string
+			var notNull, primaryKey int
+			var defaultValue sql.NullString
+			if err := rows.Scan(&columnID, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan volume columns before migration 16: %w", err)
+			}
+			if name == "owner_uid" || name == "owner_gid" {
+				ownerColumns++
+			}
+		}
+		if err := rows.Close(); err != nil {
+			return fmt.Errorf("close volume columns before migration 16: %w", err)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("iterate volume columns before migration 16: %w", err)
+		}
+		switch ownerColumns {
+		case 0:
+			statements = migration16WithoutOwners
+		case 2:
+		default:
+			return errors.New("volume ownership schema is incomplete before migration 16")
+		}
+	}
+	return applyMigration(ctx, database, statements, 16)
 }
 
 func applyMigration15(ctx context.Context, database *sql.DB) error {

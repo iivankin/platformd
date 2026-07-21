@@ -471,11 +471,9 @@ func serviceMutationSchemas() map[string]any {
 		},
 		"VolumeCreateRequest": map[string]any{
 			"type": "object", "additionalProperties": false,
-			"required": []string{"name", "ownerUid", "ownerGid"},
+			"required": []string{"name"},
 			"properties": map[string]any{
-				"name":     map[string]string{"type": "string"},
-				"ownerUid": map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
-				"ownerGid": map[string]any{"type": "integer", "minimum": 0, "maximum": 1<<32 - 2},
+				"name": map[string]string{"type": "string"},
 			},
 		},
 		"DatabaseVersionPreviewRequest": map[string]any{

@@ -81,7 +81,12 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	if err != nil {
 		return Container{}, err
 	}
+	volumes, err := e.runtimeManagedVolumes(ctx, input.ManagedVolumes, mounts)
+	if err != nil {
+		return Container{}, err
+	}
 	spec.Mounts = mounts
+	spec.Volumes = volumes
 	spec.ResourceLimits = resourceLimits(input.CPUMillicores, input.MemoryMaxBytes)
 
 	warnings, err := generate.CompleteSpec(ctx, e.runtime, spec)
@@ -126,6 +131,12 @@ func (e *Engine) StopContainer(id string, timeoutSeconds uint) error {
 	}
 	if err := container.StopWithTimeout(timeoutSeconds); err != nil {
 		return fmt.Errorf("stop container %s: %w", id, err)
+	}
+	// Stop alone leaves libpod storage mounted. Clean it up so bind-backed
+	// named volumes are detached before a restore atomically replaces their
+	// durable source directory; Start remounts the current source afterwards.
+	if err := container.Cleanup(context.Background(), false); err != nil {
+		return fmt.Errorf("clean up stopped container %s: %w", id, err)
 	}
 	return nil
 }

@@ -22,7 +22,7 @@ func TestPersistentVolumeReferencesIncludesEveryAuthoritativePointer(t *testing.
 		t.Fatalf("references = %+v", references)
 	}
 	want := []PersistentVolumeReference{
-		{ProjectID: "project", VolumeID: "ordinary-volume", Kind: PersistentVolumeOrdinary, OwnerUID: 123, OwnerGID: 456},
+		{ProjectID: "project", VolumeID: "ordinary-volume", Kind: PersistentVolumeOrdinary},
 		{ProjectID: "project", VolumeID: "postgres-volume", Kind: PersistentVolumePostgres},
 		{ProjectID: "project", VolumeID: "redis-volume", Kind: PersistentVolumeRedis},
 	}
@@ -66,8 +66,8 @@ INSERT INTO services(
   id, project_id, name, source_json, environment_json,
   health_timeout_seconds, enabled, created_at, updated_at
 ) VALUES ('service', 'project', 'web', '{"type":"public_image","image":{"reference":"example/image:latest"}}', '{}', 60, 1, 1, 1);
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
-VALUES ('ordinary-volume', 'project', 'service', 'data', 123, 456, 1, 1);
+INSERT INTO volumes(id, project_id, service_id, name, created_at, updated_at)
+VALUES ('ordinary-volume', 'project', 'service', 'data', 1, 1);
 INSERT INTO managed_postgres(
   id, project_id, name, image_tag, image_digest, volume_id, database_name,
   owner_username, owner_password_encrypted, bootstrap_password_encrypted,

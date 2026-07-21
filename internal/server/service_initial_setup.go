@@ -24,8 +24,6 @@ type initialServiceListenerRequest struct {
 
 type initialServiceVolumeRequest struct {
 	Name          string `json:"name"`
-	OwnerUID      int    `json:"ownerUid"`
-	OwnerGID      int    `json:"ownerGid"`
 	ContainerPath string `json:"containerPath"`
 }
 
@@ -64,7 +62,7 @@ func applyInitialServiceSetup(
 		}
 		result, err := config.volumes.Create(ctx, volume.CreateInput{
 			ProjectID: created.ProjectID, ServiceID: created.ID,
-			Name: requested.Name, OwnerUID: requested.OwnerUID, OwnerGID: requested.OwnerGID,
+			Name:  requested.Name,
 			Actor: volume.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
 		})
 		if err != nil {

@@ -8,7 +8,7 @@ import (
 	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
-func TestVolumeLifecyclePersistsImmutableOwnerAndAudit(t *testing.T) {
+func TestVolumeLifecyclePersistsAndAudits(t *testing.T) {
 	t.Parallel()
 	store := openPersistentVolumeStore(t)
 	defer store.Close()
@@ -17,16 +17,13 @@ func TestVolumeLifecyclePersistsImmutableOwnerAndAudit(t *testing.T) {
 	created, err := store.CreateVolume(context.Background(), CreateVolume{
 		Volume: Volume{
 			ID: "volume", ProjectID: "project", ServiceID: service.ID,
-			Name: "data", OwnerUID: 1000, OwnerGID: 1001, CreatedAtMillis: 2,
+			Name: "data", CreatedAtMillis: 2,
 		},
 		AuditEventID: "volume-create-audit", ActorKind: "access", ActorID: "subject",
 		ActorEmail: "user@example.com", RequestCorrelationID: "request",
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if created.OwnerUID != 1000 || created.OwnerGID != 1001 {
-		t.Fatalf("created volume = %+v", created)
 	}
 	volumes, err := store.VolumesByService(context.Background(), "project", service.ID)
 	if err != nil || len(volumes) != 1 || volumes[0] != created {
@@ -42,7 +39,7 @@ FROM audit_events WHERE id = 'volume-create-audit'`).Scan(
 	}
 	if action != "volume.create" || targetKind != "volume" || targetID != created.ID ||
 		correlationID != "request" ||
-		metadata != `{"actorEmail":"user@example.com","ownerGid":"1001","ownerUid":"1000","serviceId":"service"}` {
+		metadata != `{"actorEmail":"user@example.com","serviceId":"service"}` {
 		t.Fatalf("volume audit = %q/%q/%q/%q %s", action, targetKind, targetID, correlationID, metadata)
 	}
 }
@@ -123,7 +120,7 @@ SELECT count(*) FROM audit_events WHERE id IN ('delete-audit', 'active-delete-au
 	}
 }
 
-func TestCreateVolumeRejectsDuplicateNameAndInvalidOwner(t *testing.T) {
+func TestCreateVolumeRejectsDuplicateName(t *testing.T) {
 	t.Parallel()
 	store := openPersistentVolumeStore(t)
 	defer store.Close()
@@ -133,24 +130,13 @@ func TestCreateVolumeRejectsDuplicateNameAndInvalidOwner(t *testing.T) {
 	_, err := store.CreateVolume(context.Background(), CreateVolume{
 		Volume: Volume{
 			ID: "duplicate", ProjectID: "project", ServiceID: "service",
-			Name: "data", OwnerUID: 1, OwnerGID: 1, CreatedAtMillis: 3,
+			Name: "data", CreatedAtMillis: 3,
 		},
 		AuditEventID: "duplicate-audit", ActorKind: "access", ActorID: "subject",
 		ActorEmail: "user@example.com",
 	})
 	if !errors.Is(err, ErrVolumeNameConflict) {
 		t.Fatalf("duplicate name error = %v", err)
-	}
-	_, err = store.CreateVolume(context.Background(), CreateVolume{
-		Volume: Volume{
-			ID: "invalid", ProjectID: "project", ServiceID: "service",
-			Name: "other", OwnerUID: -1, OwnerGID: 1, CreatedAtMillis: 3,
-		},
-		AuditEventID: "invalid-audit", ActorKind: "access", ActorID: "subject",
-		ActorEmail: "user@example.com",
-	})
-	if err == nil {
-		t.Fatal("negative volume owner was accepted")
 	}
 }
 
@@ -180,7 +166,7 @@ func createVolumeTestVolume(t *testing.T, store *Store) Volume {
 	volume, err := store.CreateVolume(context.Background(), CreateVolume{
 		Volume: Volume{
 			ID: "volume", ProjectID: "project", ServiceID: "service",
-			Name: "data", OwnerUID: 1000, OwnerGID: 1000, CreatedAtMillis: 2,
+			Name: "data", CreatedAtMillis: 2,
 		},
 		AuditEventID: "volume-audit", ActorKind: "access", ActorID: "subject",
 		ActorEmail: "user@example.com",

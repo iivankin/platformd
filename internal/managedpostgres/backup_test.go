@@ -41,6 +41,9 @@ func (*backupEngineStub) StopContainer(string, uint) error {
 func (*backupEngineStub) RemoveContainer(context.Context, string, bool) error {
 	return errors.New("unexpected RemoveContainer")
 }
+func (*backupEngineStub) RemoveManagedVolume(context.Context, string) error {
+	return errors.New("unexpected RemoveManagedVolume")
+}
 func (*backupEngineStub) InspectContainer(string) (containerengine.Container, error) {
 	return containerengine.Container{ID: "container", State: "running"}, nil
 }

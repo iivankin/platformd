@@ -43,8 +43,6 @@ export const applyServiceSettings = async (
           existing ??
           (await createVolume(projectID, change.serviceID, {
             name: volume.name,
-            ownerGid: volume.ownerGid,
-            ownerUid: volume.ownerUid,
           }));
         createdVolumeIDs.set(volume.id, created.id);
       })

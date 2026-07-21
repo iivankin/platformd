@@ -2,6 +2,7 @@ import { FileClock, LoaderCircle } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { fetchBuildLog } from "@/api";
+import { useLogTail } from "@/use-log-tail";
 
 export const BuildLogs = ({
   deploymentID,
@@ -16,6 +17,7 @@ export const BuildLogs = ({
 }) => {
   const [text, setText] = useState("");
   const [error, setError] = useState<string>();
+  const logTailRef = useLogTail<HTMLPreElement>(text);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -86,7 +88,10 @@ export const BuildLogs = ({
     );
   }
   return (
-    <pre className="min-h-full overflow-auto p-5 font-mono text-[10px] leading-5 break-words whitespace-pre-wrap text-foreground">
+    <pre
+      className="min-h-full overflow-auto p-5 font-mono text-[10px] leading-5 break-words whitespace-pre-wrap text-foreground"
+      ref={logTailRef}
+    >
       {text}
     </pre>
   );

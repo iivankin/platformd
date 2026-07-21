@@ -86,33 +86,43 @@ func (v *Volume) mount() error {
 		volDevice = volType
 	}
 
-	// We need to use the actual mount command.
-	// Convincing unix.Mount to use the same semantics as the mount command
-	// itself seems prohibitively difficult.
-	// TODO: might want to cache this path in the runtime?
-	mountPath, err := exec.LookPath("mount")
-	if err != nil {
-		return fmt.Errorf("locating 'mount' binary: %w", err)
-	}
-	mountArgs := []string{}
-	if volOptions != "" {
-		mountArgs = append(mountArgs, "-o", volOptions)
-	}
-	switch volType {
-	case "":
-	case define.TypeBind:
-		mountArgs = append(mountArgs, "-o", volType)
-	default:
-		mountArgs = append(mountArgs, "-t", volType)
-	}
+	if volType == define.TypeBind && volOptions == "" {
+		// platformd uses bind-backed named volumes so their durable data remains
+		// available to backup and disaster-recovery code. Use the kernel directly
+		// for this exact case because the bundled runtime intentionally does not
+		// depend on a host `mount` executable being available in PATH.
+		if err := unix.Mount(volDevice, v.config.MountPoint, "", unix.MS_BIND, ""); err != nil {
+			return fmt.Errorf("bind mounting volume %s: %w", v.Name(), err)
+		}
+	} else {
+		// We need to use the actual mount command for the general case.
+		// Convincing unix.Mount to use the same semantics as the mount command
+		// itself seems prohibitively difficult.
+		// TODO: might want to cache this path in the runtime?
+		mountPath, err := exec.LookPath("mount")
+		if err != nil {
+			return fmt.Errorf("locating 'mount' binary: %w", err)
+		}
+		mountArgs := []string{}
+		if volOptions != "" {
+			mountArgs = append(mountArgs, "-o", volOptions)
+		}
+		switch volType {
+		case "":
+		case define.TypeBind:
+			mountArgs = append(mountArgs, "-o", volType)
+		default:
+			mountArgs = append(mountArgs, "-t", volType)
+		}
 
-	mountArgs = append(mountArgs, volDevice, v.config.MountPoint)
-	mountCmd := exec.Command(mountPath, mountArgs...)
+		mountArgs = append(mountArgs, volDevice, v.config.MountPoint)
+		mountCmd := exec.Command(mountPath, mountArgs...)
 
-	logrus.Debugf("Running mount command: %s %s", mountPath, strings.Join(mountArgs, " "))
-	if output, err := mountCmd.CombinedOutput(); err != nil {
-		logrus.Debugf("Mount %v failed with %v", mountCmd, err)
-		return errors.New(string(output))
+		logrus.Debugf("Running mount command: %s %s", mountPath, strings.Join(mountArgs, " "))
+		if output, err := mountCmd.CombinedOutput(); err != nil {
+			logrus.Debugf("Mount %v failed with %v", mountCmd, err)
+			return errors.New(string(output))
+		}
 	}
 
 	logrus.Debugf("Mounted volume %s", v.Name())

@@ -8,7 +8,6 @@ import (
 	"io"
 	"time"
 
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/state"
@@ -20,16 +19,11 @@ type Repository interface {
 	CreateVolume(context.Context, state.CreateVolume) (state.Volume, error)
 	VolumesByService(context.Context, string, string) ([]state.Volume, error)
 	DeleteVolume(context.Context, state.DeleteVolume) (state.Volume, error)
-	Service(context.Context, string, string) (state.ServiceDesired, error)
-}
-
-type ImageInspector interface {
-	InspectImage(context.Context, string) (containerengine.Image, error)
 }
 
 type Filesystem interface {
-	Ensure(state.PersistentVolumeReference) error
-	Remove(projectID, volumeID string) error
+	Ensure(context.Context, state.PersistentVolumeReference) error
+	Remove(context.Context, string, string) error
 }
 
 type Actor struct {
@@ -42,8 +36,6 @@ type CreateInput struct {
 	ProjectID string
 	ServiceID string
 	Name      string
-	OwnerUID  int
-	OwnerGID  int
 	Actor     Actor
 }
 
@@ -59,17 +51,9 @@ type MutationResult struct {
 	RequestID string
 }
 
-type OwnerSuggestion struct {
-	OwnerUID     int
-	OwnerGID     int
-	ImageUser    string
-	ExactNumeric bool
-}
-
 type Config struct {
 	Repository     Repository
 	Filesystem     Filesystem
-	Images         ImageInspector
 	Random         io.Reader
 	Now            func() time.Time
 	OnCleanupError func(error)
@@ -78,14 +62,13 @@ type Config struct {
 type Application struct {
 	repository     Repository
 	filesystem     Filesystem
-	images         ImageInspector
 	random         io.Reader
 	now            func() time.Time
 	onCleanupError func(error)
 }
 
 func New(config Config) (*Application, error) {
-	if config.Repository == nil || config.Filesystem == nil || config.Images == nil {
+	if config.Repository == nil || config.Filesystem == nil {
 		return nil, errors.New("volume application dependencies are incomplete")
 	}
 	if config.Random == nil {
@@ -98,13 +81,9 @@ func New(config Config) (*Application, error) {
 		config.OnCleanupError = func(error) {}
 	}
 	return &Application{
-		repository: config.Repository, filesystem: config.Filesystem, images: config.Images,
+		repository: config.Repository, filesystem: config.Filesystem,
 		random: config.Random, now: config.Now, onCleanupError: config.OnCleanupError,
 	}, nil
-}
-
-func NewLocalFilesystem(root string) Filesystem {
-	return localFilesystem{root: root}
 }
 
 func (application *Application) List(ctx context.Context, projectID, serviceID string) ([]state.Volume, error) {
@@ -125,14 +104,12 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 	}
 	volume := state.Volume{
 		ID: identifiers[0], ProjectID: input.ProjectID, ServiceID: input.ServiceID,
-		Name: input.Name, OwnerUID: input.OwnerUID, OwnerGID: input.OwnerGID,
-		CreatedAtMillis: timestamp.UnixMilli(),
+		Name: input.Name, CreatedAtMillis: timestamp.UnixMilli(),
 	}
 	reference := state.PersistentVolumeReference{
 		ProjectID: input.ProjectID, VolumeID: volume.ID, Kind: state.PersistentVolumeOrdinary,
-		OwnerUID: input.OwnerUID, OwnerGID: input.OwnerGID,
 	}
-	if err := application.filesystem.Ensure(reference); err != nil {
+	if err := application.filesystem.Ensure(ctx, reference); err != nil {
 		return MutationResult{}, fmt.Errorf("create volume directory: %w", err)
 	}
 	created, err := application.repository.CreateVolume(ctx, state.CreateVolume{
@@ -141,7 +118,7 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		RequestCorrelationID: identifiers[2],
 	})
 	if err != nil {
-		cleanupErr := application.filesystem.Remove(input.ProjectID, volume.ID)
+		cleanupErr := application.filesystem.Remove(ctx, input.ProjectID, volume.ID)
 		return MutationResult{}, errors.Join(err, cleanupErr)
 	}
 	return MutationResult{Volume: created, RequestID: identifiers[2]}, nil
@@ -165,30 +142,11 @@ func (application *Application) Delete(ctx context.Context, input DeleteInput) (
 	if err != nil {
 		return MutationResult{}, err
 	}
-	cleanupErr := application.filesystem.Remove(deleted.ProjectID, deleted.ID)
+	cleanupErr := application.filesystem.Remove(ctx, deleted.ProjectID, deleted.ID)
 	if cleanupErr != nil {
 		application.onCleanupError(fmt.Errorf("remove deleted volume %s/%s: %w", deleted.ProjectID, deleted.ID, cleanupErr))
 	}
 	return MutationResult{Volume: deleted, RequestID: identifiers[1]}, nil
-}
-
-func (application *Application) SuggestOwner(ctx context.Context, projectID, serviceID string) (OwnerSuggestion, error) {
-	if projectID == "" || serviceID == "" {
-		return OwnerSuggestion{}, ErrInvalidInput
-	}
-	service, err := application.repository.Service(ctx, projectID, serviceID)
-	if err != nil {
-		return OwnerSuggestion{}, err
-	}
-	if service.ActiveImageDigest == "" {
-		return OwnerSuggestion{}, nil
-	}
-	image, err := application.images.InspectImage(ctx, service.ActiveImageDigest)
-	if err != nil {
-		return OwnerSuggestion{}, fmt.Errorf("inspect active service image: %w", err)
-	}
-	uid, gid, exact := parseNumericImageUser(image.User)
-	return OwnerSuggestion{OwnerUID: uid, OwnerGID: gid, ImageUser: image.User, ExactNumeric: exact}, nil
 }
 
 func validateCreate(input CreateInput) error {
@@ -197,9 +155,6 @@ func validateCreate(input CreateInput) error {
 	}
 	if err := resourcename.Validate(input.Name); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidInput, err)
-	}
-	if input.OwnerUID < 0 || uint64(input.OwnerUID) > maximumOwnerID || input.OwnerGID < 0 || uint64(input.OwnerGID) > maximumOwnerID {
-		return fmt.Errorf("%w: volume owner IDs must be between 0 and %d", ErrInvalidInput, maximumOwnerID)
 	}
 	return nil
 }

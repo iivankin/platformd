@@ -88,9 +88,6 @@ func ensureVolume(root, projectID, volumeID string) (string, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return "", errors.New("managed Redis volume is not a directory")
 	}
-	if err := os.Chmod(volume, 0o700); err != nil {
-		return "", fmt.Errorf("set managed Redis volume mode: %w", err)
-	}
 	return volume, nil
 }
 

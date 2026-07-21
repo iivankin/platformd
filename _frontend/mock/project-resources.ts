@@ -66,8 +66,6 @@ const createService: ResourceCreator = (state, projectID, input) => {
               createdAt,
               id: nextMockID(state, "volume"),
               name: stringField(fields, "name", "data"),
-              ownerGid: numberField(fields, "ownerGid", 1000),
-              ownerUid: numberField(fields, "ownerUid", 1000),
               projectId: projectID,
               serviceId: id,
             },

@@ -21,6 +21,14 @@ func TestImportControlClearsPayloadMetadataButPreservesResourceConfiguration(t *
 	}
 	if _, err := store.database.ExecContext(ctx, `
 INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
+INSERT INTO services(
+  id, project_id, name, source_json, environment_json, enabled, created_at, updated_at
+) VALUES ('service', 'project', 'api', '{"type":"public_image","image":{"reference":"alpine:3.22"}}', '{}', 1, 1, 1);
+INSERT INTO volumes(
+  id, project_id, service_id, name, created_at, updated_at
+) VALUES ('volume', 'project', 'service', 'data', 1, 1);
+INSERT INTO volume_initializations(volume_id, initialized_at)
+VALUES ('volume', 1);
 INSERT INTO object_stores(
   id, project_id, name, bucket_name, created_at, updated_at
 ) VALUES ('store', 'project', 'assets', 'assets', 1, 1);
@@ -94,6 +102,7 @@ INSERT INTO registry_uploads(
 	for _, table := range []string{
 		"registry_uploads", "registry_tags", "registry_manifests",
 		"multipart_parts", "multipart_uploads", "objects", "object_payloads",
+		"volume_initializations",
 	} {
 		var count int
 		if err := store.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {
@@ -104,7 +113,7 @@ INSERT INTO registry_uploads(
 		}
 	}
 	for _, table := range []string{
-		"registry_repositories", "registry_credentials", "object_stores", "s3_credentials",
+		"registry_repositories", "registry_credentials", "object_stores", "s3_credentials", "volumes",
 	} {
 		var count int
 		if err := store.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {

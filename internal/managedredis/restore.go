@@ -224,7 +224,7 @@ func (controller *Controller) removeRestoreCandidate(
 	}
 	var volumeErr error
 	if removeErr == nil {
-		volumeErr = removeManagedRedisVolume(controller.volumeRoot, projectID, volumeID)
+		volumeErr = controller.removeManagedRedisVolume(context.Background(), projectID, volumeID)
 	}
 	configErr := removeManagedRedisConfig(controller.generatedRoot, runtimeID)
 	return errors.Join(stopErr, removeErr, volumeErr, configErr)
@@ -246,16 +246,19 @@ func (controller *Controller) removeReplacedRuntime(
 		configID = resource.ID
 	}
 	return errors.Join(
-		removeManagedRedisVolume(controller.volumeRoot, resource.ProjectID, resource.VolumeID),
+		controller.removeManagedRedisVolume(ctx, resource.ProjectID, resource.VolumeID),
 		removeManagedRedisConfig(controller.generatedRoot, configID),
 	)
 }
 
-func removeManagedRedisVolume(root, projectID, volumeID string) error {
-	if !safeRoot(root) || !safePathComponent(projectID) || !safePathComponent(volumeID) {
+func (controller *Controller) removeManagedRedisVolume(ctx context.Context, projectID, volumeID string) error {
+	if !safeRoot(controller.volumeRoot) || !safePathComponent(projectID) || !safePathComponent(volumeID) {
 		return errors.New("managed Redis volume removal input is invalid")
 	}
-	projectRoot := filepath.Join(root, projectID)
+	if err := controller.engine.RemoveManagedVolume(ctx, volumeID); err != nil {
+		return fmt.Errorf("remove managed Redis runtime volume: %w", err)
+	}
+	projectRoot := filepath.Join(controller.volumeRoot, projectID)
 	if err := os.RemoveAll(filepath.Join(projectRoot, volumeID)); err != nil {
 		return err
 	}

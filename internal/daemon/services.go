@@ -63,7 +63,7 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 	repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
 	if repository.volumeFilesystem != nil {
 		for _, item := range deleted.Volumes {
-			repository.reportCleanupError(repository.volumeFilesystem.Remove(item.ProjectID, item.ID))
+			repository.reportCleanupError(repository.volumeFilesystem.Remove(ctx, item.ProjectID, item.ID))
 		}
 	}
 	return deleted, nil

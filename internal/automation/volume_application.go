@@ -16,8 +16,6 @@ type CreateVolumeInput struct {
 	ProjectID string `json:"projectId"`
 	ServiceID string `json:"serviceId"`
 	Name      string `json:"name"`
-	OwnerUID  int    `json:"ownerUid"`
-	OwnerGID  int    `json:"ownerGid"`
 }
 
 func NewVolumeApplication(application *volume.Application) (*VolumeApplication, error) {
@@ -49,7 +47,6 @@ func (application *VolumeApplication) Create(
 	}
 	return application.application.Create(ctx, volume.CreateInput{
 		ProjectID: input.ProjectID, ServiceID: input.ServiceID, Name: input.Name,
-		OwnerUID: input.OwnerUID, OwnerGID: input.OwnerGID,
 		Actor: volume.Actor{Kind: "token", ID: identity.TokenID},
 	})
 }

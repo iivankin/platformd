@@ -54,6 +54,7 @@ type Engine interface {
 	StartContainer(context.Context, string) error
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
+	RemoveManagedVolume(context.Context, string) error
 	InspectContainer(string) (containerengine.Container, error)
 }
 
@@ -727,6 +728,10 @@ func (controller *Controller) createContainerAttempt(
 	if !safePathComponent(runtimeID) {
 		return containerengine.Container{}, errors.New("managed Redis runtime ID is invalid")
 	}
+	volumeID := filepath.Base(volume)
+	if !safePathComponent(volumeID) {
+		return containerengine.Container{}, errors.New("managed Redis volume ID is invalid")
+	}
 	attemptID, err := controller.newID(controller.now())
 	if err != nil {
 		return containerengine.Container{}, fmt.Errorf("allocate managed Redis runtime attempt ID: %w", err)
@@ -744,10 +749,12 @@ func (controller *Controller) createContainerAttempt(
 		},
 		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
 		DNSSearch: []string{placement.DNSSearch},
-		Mounts: []containerengine.Mount{
-			{Source: volume, Destination: "/data"},
-			{Source: configPath, Destination: "/run/platformd/redis.conf", ReadOnly: true},
-		},
+		Mounts: []containerengine.Mount{{
+			Source: configPath, Destination: "/run/platformd/redis.conf", ReadOnly: true,
+		}},
+		ManagedVolumes: []containerengine.ManagedVolumeMount{{
+			ID: volumeID, Source: volume, Destination: "/data",
+		}},
 		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
 		CgroupParent: placement.CgroupParent, CPUMillicores: resource.CPUMillicores,
 		MemoryMaxBytes: resource.MemoryMaxBytes,

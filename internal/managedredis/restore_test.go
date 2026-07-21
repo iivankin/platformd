@@ -55,12 +55,13 @@ func (store *restoreStore) SwitchManagedRedisVolume(_ context.Context, input sta
 }
 
 type restoreEngine struct {
-	image      containerengine.Image
-	containers map[string]containerengine.Container
-	created    []containerengine.ContainerSpec
-	started    []string
-	stopped    []string
-	removed    []string
+	image          containerengine.Image
+	containers     map[string]containerengine.Container
+	created        []containerengine.ContainerSpec
+	started        []string
+	stopped        []string
+	removed        []string
+	removedVolumes []string
 }
 
 func (engine *restoreEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
@@ -109,6 +110,11 @@ func (engine *restoreEngine) RemoveContainer(_ context.Context, id string, _ boo
 	}
 	delete(engine.containers, id)
 	engine.removed = append(engine.removed, id)
+	return nil
+}
+
+func (engine *restoreEngine) RemoveManagedVolume(_ context.Context, id string) error {
+	engine.removedVolumes = append(engine.removedVolumes, id)
 	return nil
 }
 
@@ -169,6 +175,11 @@ func TestRestoreReplacePublishesValidatedCandidateAndDeletesOldVolume(t *testing
 	if spec.Name != "platformd-redis-runtime-id" || spec.Labels["io.platformd.redis-id"] != "redis-id" ||
 		!strings.HasSuffix(spec.LogPath, "/redis/redis-id/runtime-id/attempt-id.log") {
 		t.Fatalf("candidate identity/profile = %+v", spec)
+	}
+	if len(spec.Mounts) != 1 || !reflect.DeepEqual(spec.ManagedVolumes, []containerengine.ManagedVolumeMount{{
+		ID: "new-volume", Source: filepath.Join(fixture.volumeRoot, "project-id", "new-volume"), Destination: "/data",
+	}}) || !reflect.DeepEqual(fixture.engine.removedVolumes, []string{"old-volume"}) {
+		t.Fatalf("candidate volumes = %+v, removed = %v", spec.ManagedVolumes, fixture.engine.removedVolumes)
 	}
 	if !reflect.DeepEqual(fixture.publisher.events, []string{"withdraw:redis-id", "publish:" + candidateID}) {
 		t.Fatalf("publication events = %v", fixture.publisher.events)

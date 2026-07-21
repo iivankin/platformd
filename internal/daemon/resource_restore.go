@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/managedpostgres"
@@ -17,6 +18,7 @@ import (
 
 type ordinaryVolumeRepository interface {
 	Volume(context.Context, string) (state.Volume, error)
+	RecordVolumeInitialization(context.Context, string, string, string, int64) error
 }
 
 type ordinaryVolumeBackupConfig struct {
@@ -133,7 +135,12 @@ func resourceRestorers(
 				return err
 			}
 			return runtime.WithServiceQuiesced(ctx, stored.ServiceID, func() error {
-				return volume.RestoreBackup(ctx, config.Root, stored, request.Source.Reader)
+				if err := volume.RestoreBackup(ctx, config.Root, stored, request.Source.Reader); err != nil {
+					return err
+				}
+				return config.Store.RecordVolumeInitialization(
+					ctx, stored.ProjectID, stored.ServiceID, stored.ID, time.Now().UnixMilli(),
+				)
 			})
 		})
 	}

@@ -6,13 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 )
-
-const maximumVolumeOwnerID = int64(1<<32 - 2)
 
 var (
 	ErrVolumeNotFound     = errors.New("volume not found")
@@ -25,8 +22,6 @@ type Volume struct {
 	ProjectID       string
 	ServiceID       string
 	Name            string
-	OwnerUID        int
-	OwnerGID        int
 	CreatedAtMillis int64
 }
 
@@ -61,10 +56,7 @@ func (store *Store) CreateVolume(ctx context.Context, input CreateVolume) (Volum
 	if err := resourcename.Validate(volume.Name); err != nil {
 		return Volume{}, err
 	}
-	if !validVolumeOwner(volume.OwnerUID) || !validVolumeOwner(volume.OwnerGID) {
-		return Volume{}, fmt.Errorf("volume owner IDs must be between 0 and %d", maximumVolumeOwnerID)
-	}
-	metadata, err := volumeAuditMetadata(input.ActorEmail, volume.ServiceID, volume.OwnerUID, volume.OwnerGID)
+	metadata, err := volumeAuditMetadata(input.ActorEmail, volume.ServiceID)
 	if err != nil {
 		return Volume{}, err
 	}
@@ -82,9 +74,9 @@ SELECT id FROM volumes WHERE service_id = ? AND name = ?`, volume.ServiceID, vol
 			return fmt.Errorf("check volume name: %w", err)
 		}
 		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO volumes(id, project_id, service_id, name, owner_uid, owner_gid, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, volume.ID, volume.ProjectID, volume.ServiceID,
-			volume.Name, volume.OwnerUID, volume.OwnerGID, volume.CreatedAtMillis, volume.CreatedAtMillis,
+INSERT INTO volumes(id, project_id, service_id, name, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)`, volume.ID, volume.ProjectID, volume.ServiceID,
+			volume.Name, volume.CreatedAtMillis, volume.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("create volume: %w", err)
 		}
@@ -104,7 +96,7 @@ func (store *Store) VolumesByService(ctx context.Context, projectID, serviceID s
 		return nil, err
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+SELECT id, project_id, service_id, name, created_at
 FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY name, id`, projectID, serviceID)
 	if err != nil {
 		return nil, fmt.Errorf("list service volumes: %w", err)
@@ -129,7 +121,7 @@ func (store *Store) Volume(ctx context.Context, volumeID string) (Volume, error)
 		return Volume{}, ErrVolumeNotFound
 	}
 	volume, err := scanVolume(store.database.QueryRowContext(ctx, `
-SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+SELECT id, project_id, service_id, name, created_at
 FROM volumes WHERE id = ?`, volumeID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Volume{}, ErrVolumeNotFound
@@ -171,7 +163,7 @@ DELETE FROM volumes WHERE id = ? AND project_id = ? AND service_id = ?`,
 		if changed != 1 {
 			return ErrVolumeNotFound
 		}
-		metadata, err := volumeAuditMetadata(input.ActorEmail, deleted.ServiceID, deleted.OwnerUID, deleted.OwnerGID)
+		metadata, err := volumeAuditMetadata(input.ActorEmail, deleted.ServiceID)
 		if err != nil {
 			return err
 		}
@@ -214,7 +206,7 @@ type volumeScanner interface {
 func scanVolume(scanner volumeScanner) (Volume, error) {
 	var volume Volume
 	if err := scanner.Scan(&volume.ID, &volume.ProjectID, &volume.ServiceID, &volume.Name,
-		&volume.OwnerUID, &volume.OwnerGID, &volume.CreatedAtMillis); err != nil {
+		&volume.CreatedAtMillis); err != nil {
 		return Volume{}, fmt.Errorf("scan volume: %w", err)
 	}
 	return volume, nil
@@ -222,7 +214,7 @@ func scanVolume(scanner volumeScanner) (Volume, error) {
 
 func volumeInTransaction(ctx context.Context, transaction *sql.Tx, projectID, serviceID, volumeID string) (Volume, error) {
 	volume, err := scanVolume(transaction.QueryRowContext(ctx, `
-SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+SELECT id, project_id, service_id, name, created_at
 FROM volumes WHERE id = ? AND project_id = ? AND service_id = ?`, volumeID, projectID, serviceID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Volume{}, ErrVolumeNotFound
@@ -283,17 +275,10 @@ INSERT INTO audit_events(
 	return nil
 }
 
-func volumeAuditMetadata(actorEmail, serviceID string, ownerUID, ownerGID int) ([]byte, error) {
-	metadata := map[string]string{
-		"ownerGid": strconv.Itoa(ownerGID), "ownerUid": strconv.Itoa(ownerUID),
-		"serviceId": serviceID,
-	}
+func volumeAuditMetadata(actorEmail, serviceID string) ([]byte, error) {
+	metadata := map[string]string{"serviceId": serviceID}
 	if actorEmail != "" {
 		metadata["actorEmail"] = actorEmail
 	}
 	return json.Marshal(metadata)
-}
-
-func validVolumeOwner(value int) bool {
-	return value >= 0 && int64(value) <= maximumVolumeOwnerID
 }

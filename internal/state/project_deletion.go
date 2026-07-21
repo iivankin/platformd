@@ -104,7 +104,7 @@ func (store *Store) ProjectDeletionPlan(ctx context.Context, projectID string) (
 
 func (store *Store) projectVolumes(ctx context.Context, projectID string) ([]Volume, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+SELECT id, project_id, service_id, name, created_at
 FROM volumes WHERE project_id = ? ORDER BY id`, projectID)
 	if err != nil {
 		return nil, err

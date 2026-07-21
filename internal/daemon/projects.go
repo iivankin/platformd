@@ -126,7 +126,11 @@ func (repository liveProjectRepository) cleanupProjectFiles(plan state.ProjectDe
 		repository.reportCleanupError(errors.New("project cleanup identity is invalid"))
 		return
 	}
-	repository.reportCleanupError(os.RemoveAll(filepath.Join(repository.runtime.paths.VolumesRoot, plan.Project.ID)))
+	volumeCleanupErr := removeProjectManagedVolumes(context.Background(), repository.runtime.engine, plan)
+	repository.reportCleanupError(volumeCleanupErr)
+	if volumeCleanupErr == nil {
+		repository.reportCleanupError(os.RemoveAll(filepath.Join(repository.runtime.paths.VolumesRoot, plan.Project.ID)))
+	}
 	for _, service := range plan.Services {
 		repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
 	}
@@ -143,6 +147,33 @@ func (repository liveProjectRepository) cleanupProjectFiles(plan state.ProjectDe
 		}
 		repository.reportCleanupError(os.RemoveAll(filepath.Join(repository.runtime.paths.ObjectsRoot, resource.ID)))
 	}
+}
+
+type projectManagedVolumeRuntime interface {
+	RemoveManagedVolume(context.Context, string) error
+}
+
+func removeProjectManagedVolumes(
+	ctx context.Context,
+	runtime projectManagedVolumeRuntime,
+	plan state.ProjectDeletionPlan,
+) error {
+	var failures []error
+	remove := func(kind, volumeID string) {
+		if err := runtime.RemoveManagedVolume(ctx, volumeID); err != nil {
+			failures = append(failures, fmt.Errorf("remove %s runtime volume %s: %w", kind, volumeID, err))
+		}
+	}
+	for _, stored := range plan.Volumes {
+		remove("service", stored.ID)
+	}
+	for _, resource := range plan.Postgres {
+		remove("PostgreSQL", resource.VolumeID)
+	}
+	for _, resource := range plan.Redis {
+		remove("Redis", resource.VolumeID)
+	}
+	return errors.Join(failures...)
 }
 
 func removeProjectDirectory(root, kind, resourceID string) error {

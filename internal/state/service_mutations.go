@@ -102,7 +102,7 @@ func (store *Store) DeleteService(ctx context.Context, input DeleteServiceInput)
 			return err
 		}
 		rows, err := transaction.QueryContext(ctx, `
-SELECT id, project_id, service_id, name, owner_uid, owner_gid, created_at
+SELECT id, project_id, service_id, name, created_at
 FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY id`, input.ProjectID, input.ID)
 		if err != nil {
 			return fmt.Errorf("list service volumes for deletion: %w", err)
@@ -111,7 +111,7 @@ FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY id`, input.Project
 			var volume Volume
 			if err := rows.Scan(
 				&volume.ID, &volume.ProjectID, &volume.ServiceID, &volume.Name,
-				&volume.OwnerUID, &volume.OwnerGID, &volume.CreatedAtMillis,
+				&volume.CreatedAtMillis,
 			); err != nil {
 				rows.Close()
 				return fmt.Errorf("scan service volume for deletion: %w", err)

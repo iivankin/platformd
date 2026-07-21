@@ -1,8 +1,10 @@
 import { expect, test } from "bun:test";
 
+import type { ProjectCanvas } from "@/api";
 import {
   emptyPendingBackupPolicy,
   emptyPendingServiceCreationSettings,
+  mergePendingCanvasResources,
   pendingResourceChangeDetails,
 } from "@/pending-resource-creation";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
@@ -32,8 +34,6 @@ test("counts every dependency configured on a pending service", () => {
           createdAt: 1,
           id: "draft:volume",
           name: "data",
-          ownerGid: 1001,
-          ownerUid: 1000,
           pendingCreation: true,
           projectId: "project",
           serviceId: "draft:service",
@@ -123,4 +123,55 @@ test("counts a network gateway draft as one independently deployable resource", 
       label: "Create resource",
     },
   ]);
+});
+
+test("hides a draft once its applying resource is materialized", () => {
+  const draft: PendingResourceCreation = {
+    id: "draft:service",
+    input: {
+      environment: {},
+      name: "api",
+      source: {
+        autoUpdate: false,
+        image: { reference: "docker.io/library/nginx:stable" },
+        type: "public_image",
+      },
+    },
+    kind: "service",
+    settings: emptyPendingServiceCreationSettings({
+      environment: {},
+      name: "api",
+      source: {
+        autoUpdate: false,
+        image: { reference: "docker.io/library/nginx:stable" },
+        type: "public_image",
+      },
+    }),
+  };
+  const serverResource: ProjectCanvas["resources"][number] = {
+    enabled: true,
+    id: "service-id",
+    internalHostname: "api.storefront.internal",
+    kind: "service",
+    name: "api",
+    status: "pending",
+    volumes: [],
+  };
+
+  expect(
+    mergePendingCanvasResources(
+      [serverResource],
+      [draft],
+      "storefront",
+      new Set([draft.id])
+    )
+  ).toEqual([serverResource]);
+  expect(
+    mergePendingCanvasResources(
+      [serverResource],
+      [draft],
+      "storefront",
+      new Set()
+    )
+  ).toHaveLength(2);
 });

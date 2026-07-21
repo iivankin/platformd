@@ -18,10 +18,12 @@ func TestLiveBackupRestoresOrdinaryVolumeThroughAtomicReplacement(t *testing.T) 
 	root := t.TempDir()
 	stored := state.Volume{
 		ID: "volume", ProjectID: "project", ServiceID: "service", Name: "data",
-		OwnerUID: os.Geteuid(), OwnerGID: os.Getegid(),
 	}
 	live := filepath.Join(root, stored.ProjectID, stored.ID)
 	if err := os.MkdirAll(filepath.Join(live, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(live, 0o750|os.ModeSetgid); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(live, "nested", "data.txt"), []byte("before"), 0o640); err != nil {
@@ -64,6 +66,13 @@ func TestLiveBackupRestoresOrdinaryVolumeThroughAtomicReplacement(t *testing.T) 
 	if _, err := os.Lstat(live + ".previous"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("previous volume remains after committed restore: %v", err)
 	}
+	info, err := os.Stat(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o750 || info.Mode()&os.ModeSetgid == 0 {
+		t.Fatalf("restored volume root mode = %v", info.Mode())
+	}
 }
 
 func TestVolumeRestoreRejectsTraversalBeforeReplacingLiveData(t *testing.T) {
@@ -71,7 +80,6 @@ func TestVolumeRestoreRejectsTraversalBeforeReplacingLiveData(t *testing.T) {
 	root := t.TempDir()
 	stored := state.Volume{
 		ID: "volume", ProjectID: "project", ServiceID: "service", Name: "data",
-		OwnerUID: os.Geteuid(), OwnerGID: os.Getegid(),
 	}
 	live := filepath.Join(root, stored.ProjectID, stored.ID)
 	if err := os.MkdirAll(live, 0o700); err != nil {
@@ -111,7 +119,6 @@ func TestLiveBackupRejectsEscapingVolumeIdentity(t *testing.T) {
 	t.Parallel()
 	_, err := OpenLiveBackup(context.Background(), t.TempDir(), state.Volume{
 		ID: "volume", ProjectID: "..", ServiceID: "service", Name: "data",
-		OwnerUID: os.Geteuid(), OwnerGID: os.Getegid(),
 	})
 	if err == nil {
 		t.Fatal("escaping project identity was accepted")

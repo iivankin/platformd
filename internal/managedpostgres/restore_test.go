@@ -55,23 +55,24 @@ func (store *postgresRestoreStore) SwitchManagedPostgresVolume(_ context.Context
 }
 
 type postgresRestoreEngine struct {
-	image       containerengine.Image
-	containers  map[string]containerengine.Container
-	created     []containerengine.ContainerSpec
-	started     []string
-	stopped     []string
-	removed     []string
-	execRequest containerengine.ExecRequest
-	execPayload []byte
-	execCode    int
-	execErr     error
-	restoreList []byte
-	writtenList []byte
-	listRemoved bool
-	dumpRequest containerengine.ExecRequest
-	dumpPayload []byte
-	dumpCode    int
-	dumpErr     error
+	image          containerengine.Image
+	containers     map[string]containerengine.Container
+	created        []containerengine.ContainerSpec
+	started        []string
+	stopped        []string
+	removed        []string
+	removedVolumes []string
+	execRequest    containerengine.ExecRequest
+	execPayload    []byte
+	execCode       int
+	execErr        error
+	restoreList    []byte
+	writtenList    []byte
+	listRemoved    bool
+	dumpRequest    containerengine.ExecRequest
+	dumpPayload    []byte
+	dumpCode       int
+	dumpErr        error
 }
 
 func (*postgresRestoreEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
@@ -120,6 +121,11 @@ func (engine *postgresRestoreEngine) RemoveContainer(_ context.Context, id strin
 	}
 	delete(engine.containers, id)
 	engine.removed = append(engine.removed, id)
+	return nil
+}
+
+func (engine *postgresRestoreEngine) RemoveManagedVolume(_ context.Context, id string) error {
+	engine.removedVolumes = append(engine.removedVolumes, id)
 	return nil
 }
 
@@ -321,6 +327,12 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 	if spec.Name != "platformd-postgres-runtime-id" || spec.Labels["io.platformd.postgres-id"] != "postgres-id" ||
 		!strings.HasSuffix(spec.LogPath, "/postgres/postgres-id/runtime-id/attempt-id.log") {
 		t.Fatalf("candidate identity/profile = %+v", spec)
+	}
+	if len(spec.Mounts) != 0 || !reflect.DeepEqual(spec.ManagedVolumes, []containerengine.ManagedVolumeMount{{
+		ID: "new-volume", Source: filepath.Join(fixture.volumeRoot, "project-id", "new-volume"),
+		Destination: "/var/lib/postgresql/data",
+	}}) || !reflect.DeepEqual(fixture.engine.removedVolumes, []string{"old-volume"}) {
+		t.Fatalf("candidate volumes = %+v, removed = %v", spec.ManagedVolumes, fixture.engine.removedVolumes)
 	}
 	if !reflect.DeepEqual(fixture.publisher.events, []string{"withdraw:postgres-id", "publish:" + candidateID}) {
 		t.Fatalf("publication events = %v", fixture.publisher.events)

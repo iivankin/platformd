@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/access"
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
@@ -18,7 +17,6 @@ import (
 
 type volumeRepositoryStub struct {
 	created []state.Volume
-	service state.ServiceDesired
 }
 
 func (repository *volumeRepositoryStub) CreateVolume(_ context.Context, input state.CreateVolume) (state.Volume, error) {
@@ -46,25 +44,17 @@ func (repository *volumeRepositoryStub) DeleteVolume(_ context.Context, input st
 	return state.Volume{}, state.ErrVolumeNotFound
 }
 
-func (repository *volumeRepositoryStub) Service(context.Context, string, string) (state.ServiceDesired, error) {
-	return repository.service, nil
-}
-
 type volumeFilesystemStub struct{}
 
-func (volumeFilesystemStub) Ensure(state.PersistentVolumeReference) error { return nil }
-func (volumeFilesystemStub) Remove(string, string) error                  { return nil }
-
-type volumeImageInspectorStub struct{}
-
-func (volumeImageInspectorStub) InspectImage(context.Context, string) (containerengine.Image, error) {
-	return containerengine.Image{User: "1000:1001"}, nil
+func (volumeFilesystemStub) Ensure(context.Context, state.PersistentVolumeReference) error {
+	return nil
 }
+func (volumeFilesystemStub) Remove(context.Context, string, string) error { return nil }
 
-func TestVolumeAPICreatesListsSuggestsAndDeletes(t *testing.T) {
-	repository := &volumeRepositoryStub{service: state.ServiceDesired{ActiveImageDigest: "sha256:image"}}
+func TestVolumeAPICreatesListsAndDeletes(t *testing.T) {
+	repository := &volumeRepositoryStub{}
 	application, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: volumeFilesystemStub{}, Images: volumeImageInspectorStub{},
+		Repository: repository, Filesystem: volumeFilesystemStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -72,15 +62,7 @@ func TestVolumeAPICreatesListsSuggestsAndDeletes(t *testing.T) {
 	raw := server.Handler(server.DefaultMeta("ready"), server.WithVolumes(application))
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, raw)
 
-	suggestion := projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/volumes/owner-suggestion", "")
-	suggestionResponse := httptest.NewRecorder()
-	handler.ServeHTTP(suggestionResponse, suggestion)
-	if suggestionResponse.Code != http.StatusOK || !strings.Contains(suggestionResponse.Body.String(), `"exactNumeric":true`) ||
-		!strings.Contains(suggestionResponse.Body.String(), `"ownerUid":1000`) {
-		t.Fatalf("suggestion = %d/%s", suggestionResponse.Code, suggestionResponse.Body)
-	}
-
-	create := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/volumes", `{"name":"data","ownerUid":1000,"ownerGid":1001}`)
+	create := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/volumes", `{"name":"data"}`)
 	create.Header.Set("Origin", "https://admin.example.com")
 	createResponse := httptest.NewRecorder()
 	handler.ServeHTTP(createResponse, create)
@@ -121,7 +103,7 @@ func TestVolumeAPICreatesListsSuggestsAndDeletes(t *testing.T) {
 func TestVolumeAPIRejectsUnknownFields(t *testing.T) {
 	repository := &volumeRepositoryStub{}
 	application, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: volumeFilesystemStub{}, Images: volumeImageInspectorStub{},
+		Repository: repository, Filesystem: volumeFilesystemStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -130,7 +112,7 @@ func TestVolumeAPIRejectsUnknownFields(t *testing.T) {
 		"admin.example.com", projectVerifier{},
 		server.Handler(server.DefaultMeta("ready"), server.WithVolumes(application)),
 	)
-	request := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/volumes", `{"name":"data","ownerUid":0,"ownerGid":0,"readOnly":true}`)
+	request := projectRequest(http.MethodPost, "/api/v1/projects/project/services/service/volumes", `{"name":"data","ownerUid":0}`)
 	request.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -153,7 +135,7 @@ func TestServiceAPICreatesInitialDomainsListenersAndMountedVolumes(t *testing.T)
 	}
 
 	volumeApplication, err := volume.New(volume.Config{
-		Repository: store, Filesystem: volumeFilesystemStub{}, Images: volumeImageInspectorStub{},
+		Repository: store, Filesystem: volumeFilesystemStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -171,7 +153,7 @@ func TestServiceAPICreatesInitialDomainsListenersAndMountedVolumes(t *testing.T)
   "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"nginx:stable"}},
   "domains":[{"hostname":"api.example.com","targetPort":8080}],
   "listeners":[{"protocol":"tcp","publicPort":9000,"targetPort":8080}],
-  "volumes":[{"name":"data","ownerUid":1000,"ownerGid":1001,"containerPath":"/data"}]
+  "volumes":[{"name":"data","containerPath":"/data"}]
 }`)
 	request.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
@@ -215,7 +197,7 @@ func TestServiceAPIRollsBackIncompleteInitialSetup(t *testing.T) {
 		t.Fatal(err)
 	}
 	volumeApplication, err := volume.New(volume.Config{
-		Repository: store, Filesystem: volumeFilesystemStub{}, Images: volumeImageInspectorStub{},
+		Repository: store, Filesystem: volumeFilesystemStub{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -231,7 +213,7 @@ func TestServiceAPIRollsBackIncompleteInitialSetup(t *testing.T) {
   "name":"api",
   "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"nginx:stable"}},
   "domains":[{"hostname":"api.example.com","targetPort":0}],
-  "volumes":[{"name":"data","ownerUid":1000,"ownerGid":1001,"containerPath":"/data"}]
+  "volumes":[{"name":"data","containerPath":"/data"}]
 }`)
 	request.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()

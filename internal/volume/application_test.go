@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -16,7 +15,6 @@ type repositoryStub struct {
 	createError error
 	deleted     state.Volume
 	deleteInput state.DeleteVolume
-	service     state.ServiceDesired
 	volumes     []state.Volume
 }
 
@@ -34,32 +32,20 @@ func (repository *repositoryStub) DeleteVolume(_ context.Context, input state.De
 	return repository.deleted, nil
 }
 
-func (repository *repositoryStub) Service(context.Context, string, string) (state.ServiceDesired, error) {
-	return repository.service, nil
-}
-
 type filesystemStub struct {
 	ensured     []state.PersistentVolumeReference
 	removed     [][2]string
 	removeError error
 }
 
-func (filesystem *filesystemStub) Ensure(reference state.PersistentVolumeReference) error {
+func (filesystem *filesystemStub) Ensure(_ context.Context, reference state.PersistentVolumeReference) error {
 	filesystem.ensured = append(filesystem.ensured, reference)
 	return nil
 }
 
-func (filesystem *filesystemStub) Remove(projectID, volumeID string) error {
+func (filesystem *filesystemStub) Remove(_ context.Context, projectID, volumeID string) error {
 	filesystem.removed = append(filesystem.removed, [2]string{projectID, volumeID})
 	return filesystem.removeError
-}
-
-type imageInspectorStub struct {
-	image containerengine.Image
-}
-
-func (inspector imageInspectorStub) InspectImage(context.Context, string) (containerengine.Image, error) {
-	return inspector.image, nil
 }
 
 func TestCreateVolumePublishesDirectoryBeforeState(t *testing.T) {
@@ -67,16 +53,15 @@ func TestCreateVolumePublishesDirectoryBeforeState(t *testing.T) {
 
 	repository := &repositoryStub{}
 	filesystem := &filesystemStub{}
-	application := newApplication(t, repository, filesystem, imageInspectorStub{})
+	application := newApplication(t, repository, filesystem)
 	result, err := application.Create(context.Background(), volume.CreateInput{
-		ProjectID: "project", ServiceID: "service", Name: "data", OwnerUID: 1000, OwnerGID: 1001,
+		ProjectID: "project", ServiceID: "service", Name: "data",
 		Actor: volume.Actor{Kind: "access", ID: "subject", Email: "user@example.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(filesystem.ensured) != 1 || filesystem.ensured[0].VolumeID != result.Volume.ID ||
-		filesystem.ensured[0].OwnerUID != 1000 || filesystem.ensured[0].OwnerGID != 1001 {
+	if len(filesystem.ensured) != 1 || filesystem.ensured[0].VolumeID != result.Volume.ID {
 		t.Fatalf("ensured references = %+v", filesystem.ensured)
 	}
 	if repository.created.ID != result.Volume.ID || repository.created.AuditEventID == "" ||
@@ -90,9 +75,9 @@ func TestCreateVolumeRemovesDirectoryWhenStateRejectsMutation(t *testing.T) {
 
 	repository := &repositoryStub{createError: state.ErrVolumeNameConflict}
 	filesystem := &filesystemStub{}
-	application := newApplication(t, repository, filesystem, imageInspectorStub{})
+	application := newApplication(t, repository, filesystem)
 	_, err := application.Create(context.Background(), volume.CreateInput{
-		ProjectID: "project", ServiceID: "service", Name: "data", OwnerUID: 0, OwnerGID: 0,
+		ProjectID: "project", ServiceID: "service", Name: "data",
 		Actor: volume.Actor{Kind: "token", ID: "token"},
 	})
 	if !errors.Is(err, state.ErrVolumeNameConflict) {
@@ -110,7 +95,7 @@ func TestDeleteVolumeCommitsStateAndReportsDeferredFilesystemCleanup(t *testing.
 	filesystem := &filesystemStub{removeError: errors.New("filesystem busy")}
 	var cleanupError error
 	application, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: filesystem, Images: imageInspectorStub{},
+		Repository: repository, Filesystem: filesystem,
 		Now:            func() time.Time { return time.Unix(1_900_000_000, 0) },
 		OnCleanupError: func(err error) { cleanupError = err },
 	})
@@ -129,47 +114,14 @@ func TestDeleteVolumeCommitsStateAndReportsDeferredFilesystemCleanup(t *testing.
 	}
 }
 
-func TestOwnerSuggestionRequiresExactNumericUIDAndGID(t *testing.T) {
-	t.Parallel()
-
-	for _, test := range []struct {
-		name  string
-		user  string
-		uid   int
-		gid   int
-		exact bool
-	}{
-		{name: "pair", user: "1000:1001", uid: 1000, gid: 1001, exact: true},
-		{name: "single uid", user: "1000"},
-		{name: "symbolic", user: "app:app"},
-		{name: "root pair", user: "0:0", exact: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			repository := &repositoryStub{service: state.ServiceDesired{ActiveImageDigest: "sha256:image"}}
-			application := newApplication(t, repository, &filesystemStub{}, imageInspectorStub{
-				image: containerengine.Image{User: test.user},
-			})
-			suggestion, err := application.SuggestOwner(context.Background(), "project", "service")
-			if err != nil {
-				t.Fatal(err)
-			}
-			if suggestion.OwnerUID != test.uid || suggestion.OwnerGID != test.gid ||
-				suggestion.ExactNumeric != test.exact || suggestion.ImageUser != test.user {
-				t.Fatalf("suggestion = %+v", suggestion)
-			}
-		})
-	}
-}
-
 func newApplication(
 	t *testing.T,
 	repository volume.Repository,
 	filesystem volume.Filesystem,
-	images volume.ImageInspector,
 ) *volume.Application {
 	t.Helper()
 	application, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: filesystem, Images: images,
+		Repository: repository, Filesystem: filesystem,
 		Now: func() time.Time { return time.Unix(1_900_000_000, 0) },
 	})
 	if err != nil {

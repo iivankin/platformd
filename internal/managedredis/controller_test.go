@@ -80,6 +80,8 @@ func (engine *testEngine) RemoveContainer(context.Context, string, bool) error {
 	return nil
 }
 
+func (*testEngine) RemoveManagedVolume(context.Context, string) error { return nil }
+
 func (engine *testEngine) InspectContainer(string) (containerengine.Container, error) {
 	if !engine.started {
 		return containerengine.Container{}, errors.New("container was inspected before start")
@@ -226,8 +228,11 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 	if !reflect.DeepEqual(engine.created.Command, []string{"redis-server", "/run/platformd/redis.conf"}) || engine.created.CPUMillicores != 250 || engine.created.MemoryMaxBytes != 128<<20 {
 		t.Fatalf("container profile = %+v", engine.created)
 	}
-	if len(engine.created.Mounts) != 2 || engine.created.Mounts[0].Destination != "/data" || engine.created.Mounts[0].ReadOnly || !engine.created.Mounts[1].ReadOnly {
-		t.Fatalf("container mounts = %+v", engine.created.Mounts)
+	if len(engine.created.Mounts) != 1 || !engine.created.Mounts[0].ReadOnly ||
+		!reflect.DeepEqual(engine.created.ManagedVolumes, []containerengine.ManagedVolumeMount{{
+			ID: "volume-id", Source: filepath.Join(root, "volumes", "project-id", "volume-id"), Destination: "/data",
+		}}) {
+		t.Fatalf("container mounts = %+v managed=%+v", engine.created.Mounts, engine.created.ManagedVolumes)
 	}
 	configPath := filepath.Join(generatedRoot, resource.ID, "redis.conf")
 	config, err := os.ReadFile(configPath)

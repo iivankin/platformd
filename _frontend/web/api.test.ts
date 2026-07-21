@@ -48,7 +48,6 @@ import {
   fetchServiceLogs,
   fetchResourceTerminalShells,
   issueServerTerminalToken,
-  fetchVolumeOwnerSuggestion,
   fetchVolumes,
   fetchIdentity,
   fetchInfrastructureLogs,
@@ -346,8 +345,6 @@ test("creates a private image service with service-owned credentials", async () 
         {
           containerPath: "/data",
           name: "data",
-          ownerGid: 1001,
-          ownerUid: 1000,
         },
       ],
     },
@@ -397,8 +394,6 @@ test("creates a private image service with service-owned credentials", async () 
       {
         containerPath: "/data",
         name: "data",
-        ownerGid: 1001,
-        ownerUid: 1000,
       },
     ],
   });
@@ -479,13 +474,11 @@ test("reads and mutates service lifecycle with optimistic version fields", async
   ).resolves.toBeUndefined();
 });
 
-test("manages service-owned volumes and reads the image owner suggestion", async () => {
+test("manages service-owned volumes", async () => {
   const item = {
     createdAt: 1,
     id: "volume/id",
     name: "data",
-    ownerGid: 1001,
-    ownerUid: 1000,
     projectId: "project/id",
     serviceId: "service/id",
   };
@@ -498,34 +491,14 @@ test("manages service-owned volumes and reads the image owner suggestion", async
     })
   ).resolves.toEqual([item]);
   await expect(
-    fetchVolumeOwnerSuggestion(
-      "project/id",
-      "service/id",
-      undefined,
-      (input) => {
-        expect(input.toString()).toEndWith("/volumes/owner-suggestion");
-        return Promise.resolve(
-          Response.json({
-            exactNumeric: true,
-            imageUser: "1000:1001",
-            ownerGid: 1001,
-            ownerUid: 1000,
-          })
-        );
-      }
-    )
-  ).resolves.toMatchObject({ exactNumeric: true, ownerUid: 1000 });
-  await expect(
     createVolume(
       "project/id",
       "service/id",
-      { name: "data", ownerGid: 1001, ownerUid: 1000 },
+      { name: "data" },
       (_input, init) => {
         expect(init?.method).toBe("POST");
         expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
           name: "data",
-          ownerGid: 1001,
-          ownerUid: 1000,
         });
         return Promise.resolve(Response.json(item, { status: 201 }));
       }

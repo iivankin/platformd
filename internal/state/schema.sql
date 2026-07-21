@@ -167,8 +167,6 @@ CREATE TABLE volumes (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE RESTRICT,
   name TEXT NOT NULL,
-  owner_uid INTEGER NOT NULL CHECK (owner_uid >= 0),
-  owner_gid INTEGER NOT NULL CHECK (owner_gid >= 0),
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
@@ -185,6 +183,11 @@ CREATE TABLE service_volume_mounts (
   PRIMARY KEY (service_id, container_path),
   UNIQUE (volume_id)
 ) WITHOUT ROWID, STRICT;
+
+CREATE TABLE volume_initializations (
+  volume_id TEXT PRIMARY KEY REFERENCES volumes(id) ON DELETE CASCADE,
+  initialized_at INTEGER NOT NULL
+) STRICT;
 
 CREATE TABLE deployments (
   id TEXT PRIMARY KEY,
@@ -526,6 +529,6 @@ CREATE INDEX resource_metric_samples_retention_idx
   ON resource_metric_samples(observed_at);
 
 INSERT INTO schema_migrations(version, applied_at)
-VALUES (15, unixepoch('subsec') * 1000);
+VALUES (16, unixepoch('subsec') * 1000);
 
-PRAGMA user_version = 15;
+PRAGMA user_version = 16;

@@ -17,15 +17,12 @@ type volumeResponse struct {
 	ProjectID string `json:"projectId"`
 	ServiceID string `json:"serviceId"`
 	Name      string `json:"name"`
-	OwnerUID  int    `json:"ownerUid"`
-	OwnerGID  int    `json:"ownerGid"`
 	CreatedAt int64  `json:"createdAt"`
 }
 
 func registerVolumeRoutes(mux *http.ServeMux, application *volume.Application) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(application))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/volumes/owner-suggestion", suggestVolumeOwner(application))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}", deleteVolume(application))
 }
 
@@ -47,28 +44,9 @@ func listVolumes(application *volume.Application) http.HandlerFunc {
 	}
 }
 
-func suggestVolumeOwner(application *volume.Application) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		if _, ok := requireAccessIdentity(response, request); !ok {
-			return
-		}
-		suggestion, err := application.SuggestOwner(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
-		if err != nil {
-			writeVolumeError(response, err)
-			return
-		}
-		writeJSON(response, http.StatusOK, map[string]any{
-			"ownerUid": suggestion.OwnerUID, "ownerGid": suggestion.OwnerGID,
-			"imageUser": suggestion.ImageUser, "exactNumeric": suggestion.ExactNumeric,
-		})
-	}
-}
-
 func createVolume(application *volume.Application) http.HandlerFunc {
 	type requestBody struct {
-		Name     string `json:"name"`
-		OwnerUID int    `json:"ownerUid"`
-		OwnerGID int    `json:"ownerGid"`
+		Name string `json:"name"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := requireAccessIdentity(response, request)
@@ -90,7 +68,7 @@ func createVolume(application *volume.Application) http.HandlerFunc {
 		}
 		result, err := application.Create(request.Context(), volume.CreateInput{
 			ProjectID: request.PathValue("projectID"), ServiceID: request.PathValue("serviceID"),
-			Name: body.Name, OwnerUID: body.OwnerUID, OwnerGID: body.OwnerGID,
+			Name:  body.Name,
 			Actor: volume.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
 		})
 		if err != nil {
@@ -126,7 +104,7 @@ func deleteVolume(application *volume.Application) http.HandlerFunc {
 func publicVolume(item state.Volume) volumeResponse {
 	return volumeResponse{
 		ID: item.ID, ProjectID: item.ProjectID, ServiceID: item.ServiceID, Name: item.Name,
-		OwnerUID: item.OwnerUID, OwnerGID: item.OwnerGID, CreatedAt: item.CreatedAtMillis,
+		CreatedAt: item.CreatedAtMillis,
 	}
 }
 

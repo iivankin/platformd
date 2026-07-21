@@ -59,6 +59,11 @@ FROM installation WHERE singleton = 1`).Scan(&installationID, &teamDomain, &audi
 			"DELETE FROM multipart_uploads",
 			"DELETE FROM objects",
 			"DELETE FROM object_payloads",
+			// Resource generations are restored after the control database. Clear
+			// first-mount markers so restored volumes are marked by their resource
+			// restore, while a volume without a generation receives ordinary image
+			// copy-up on its first post-recovery deployment.
+			"DELETE FROM volume_initializations",
 		} {
 			if _, err := transaction.ExecContext(ctx, statement); err != nil {
 				return fmt.Errorf("clear resource content for recovery: %w", err)

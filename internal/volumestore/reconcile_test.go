@@ -22,8 +22,8 @@ func TestReconcileRemovesOrphansAndCreatesMissingOrdinaryVolumes(t *testing.T) {
 	}
 
 	result, err := Reconcile(context.Background(), root, []state.PersistentVolumeReference{
-		{ProjectID: "project", VolumeID: "ordinary-existing", Kind: state.PersistentVolumeOrdinary, OwnerUID: os.Geteuid(), OwnerGID: os.Getegid()},
-		{ProjectID: "project", VolumeID: "ordinary-missing", Kind: state.PersistentVolumeOrdinary, OwnerUID: os.Geteuid(), OwnerGID: os.Getegid()},
+		{ProjectID: "project", VolumeID: "ordinary-existing", Kind: state.PersistentVolumeOrdinary},
+		{ProjectID: "project", VolumeID: "ordinary-missing", Kind: state.PersistentVolumeOrdinary},
 		{ProjectID: "project", VolumeID: "postgres-active", Kind: state.PersistentVolumePostgres},
 		{ProjectID: "project", VolumeID: "redis-missing", Kind: state.PersistentVolumeRedis},
 	})
@@ -77,7 +77,7 @@ func TestReconcileRejectsReferencedSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 
 	_, err := Reconcile(context.Background(), root, []state.PersistentVolumeReference{
-		{ProjectID: "project", VolumeID: "volume", Kind: state.PersistentVolumeOrdinary, OwnerUID: os.Geteuid(), OwnerGID: os.Getegid()},
+		{ProjectID: "project", VolumeID: "volume", Kind: state.PersistentVolumeOrdinary},
 	})
 	if err == nil {
 		t.Fatal("referenced symlink was accepted")

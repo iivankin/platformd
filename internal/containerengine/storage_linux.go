@@ -37,6 +37,12 @@ func PrepareStorage(ctx context.Context, config Config) (StorageCleanupResult, e
 	}
 	// Libpod databases and locks are deliberately ephemeral product state. The
 	// graphroot is outside this tree so image layers remain available as cache.
+	// A killed daemon can leave local-volume bind mounts below VolumePath. Detach
+	// those first: walking RemoveAll through such a mount would delete the durable
+	// volume contents instead of only the transient libpod metadata.
+	if err := detachMountsBelow(config.TransientRoot); err != nil {
+		return StorageCleanupResult{}, fmt.Errorf("detach transient runtime mounts: %w", err)
+	}
 	if err := os.RemoveAll(config.TransientRoot); err != nil {
 		return StorageCleanupResult{}, fmt.Errorf("clear transient runtime state: %w", err)
 	}
@@ -146,9 +152,19 @@ func repairImageLayerPermissions(graphRoot string, layers []storage.Layer) (int,
 }
 
 func resetGraphRoot(graphRoot string) error {
-	mounts, err := mountinfo.GetMounts(mountinfo.PrefixFilter(graphRoot))
+	if err := detachMountsBelow(graphRoot); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(graphRoot); err != nil {
+		return err
+	}
+	return os.MkdirAll(graphRoot, 0o700)
+}
+
+func detachMountsBelow(root string) error {
+	mounts, err := mountinfo.GetMounts(mountinfo.PrefixFilter(root))
 	if err != nil {
-		return fmt.Errorf("list graphroot mounts: %w", err)
+		return fmt.Errorf("list mounts below %s: %w", root, err)
 	}
 	sort.Slice(mounts, func(i, j int) bool {
 		leftDepth := strings.Count(filepath.Clean(mounts[i].Mountpoint), string(filepath.Separator))
@@ -160,8 +176,5 @@ func resetGraphRoot(graphRoot string) error {
 			return fmt.Errorf("unmount %s: %w", mount.Mountpoint, err)
 		}
 	}
-	if err := os.RemoveAll(graphRoot); err != nil {
-		return err
-	}
-	return os.MkdirAll(graphRoot, 0o700)
+	return nil
 }

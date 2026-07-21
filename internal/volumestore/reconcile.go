@@ -185,8 +185,9 @@ func removeUnreferenced(
 func ensureOrdinary(projectRoot string, reference state.PersistentVolumeReference) (bool, error) {
 	path := filepath.Join(projectRoot, reference.VolumeID)
 	if err := requireDirectory(path); err == nil {
-		// Ownership is intentionally only applied during creation. Users may
-		// later repair populated volumes through an explicit console action.
+		// The runtime applies image-derived ownership and copy-up exactly once,
+		// immediately before the volume's first container mount. Reconciliation
+		// only guarantees that the durable path exists.
 		return false, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf(
@@ -208,9 +209,6 @@ func ensureOrdinary(projectRoot string, reference state.PersistentVolumeReferenc
 	if err := os.Chmod(temporary, 0o700); err != nil {
 		return false, fmt.Errorf("set ordinary volume mode: %w", err)
 	}
-	if err := os.Chown(temporary, reference.OwnerUID, reference.OwnerGID); err != nil {
-		return false, fmt.Errorf("set ordinary volume owner: %w", err)
-	}
 	if err := os.Rename(temporary, path); err != nil {
 		return false, fmt.Errorf("publish ordinary volume: %w", err)
 	}
@@ -224,18 +222,11 @@ func ensureOrdinary(projectRoot string, reference state.PersistentVolumeReferenc
 func validateReference(reference state.PersistentVolumeReference) error {
 	switch reference.Kind {
 	case state.PersistentVolumeOrdinary:
-		if !validOwner(reference.OwnerUID) || !validOwner(reference.OwnerGID) {
-			return errors.New("ordinary volume owner is invalid")
-		}
 	case state.PersistentVolumePostgres, state.PersistentVolumeRedis:
 	default:
 		return fmt.Errorf("persistent volume kind %q is invalid", reference.Kind)
 	}
 	return nil
-}
-
-func validOwner(value int) bool {
-	return value >= 0 && int64(value) <= int64(1<<32-2)
 }
 
 func ensureDirectory(path string, mode os.FileMode) error {

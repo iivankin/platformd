@@ -9,7 +9,6 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -145,7 +144,7 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 		t.Fatal(err)
 	}
 	volumeDomain, err := volume.New(volume.Config{
-		Repository: repository, Filesystem: automationVolumeFilesystem{}, Images: automationVolumeImages{},
+		Repository: repository, Filesystem: automationVolumeFilesystem{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -174,14 +173,10 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 
 type automationVolumeFilesystem struct{}
 
-func (automationVolumeFilesystem) Ensure(state.PersistentVolumeReference) error { return nil }
-func (automationVolumeFilesystem) Remove(string, string) error                  { return nil }
-
-type automationVolumeImages struct{}
-
-func (automationVolumeImages) InspectImage(context.Context, string) (containerengine.Image, error) {
-	return containerengine.Image{}, nil
+func (automationVolumeFilesystem) Ensure(context.Context, state.PersistentVolumeReference) error {
+	return nil
 }
+func (automationVolumeFilesystem) Remove(context.Context, string, string) error { return nil }
 
 func TestAutomationAPIListsOfficialManagedImageTags(t *testing.T) {
 	handler := automationHandler(t, &repositoryStub{})
@@ -384,7 +379,7 @@ func TestAutomationAPIVolumesRespectReadAndAdminRoles(t *testing.T) {
 		t.Fatalf("read volumes = %d/%s", readResponse.Code, readResponse.Body)
 	}
 
-	denied := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"data","ownerUid":0,"ownerGid":0}`))
+	denied := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"data"}`))
 	denied.Header.Set("Content-Type", "application/json")
 	denied = denied.WithContext(automation.WithIdentity(denied.Context(), automation.Identity{TokenID: "read", Role: "read"}))
 	deniedResponse := httptest.NewRecorder()
@@ -393,7 +388,7 @@ func TestAutomationAPIVolumesRespectReadAndAdminRoles(t *testing.T) {
 		t.Fatalf("read create = %d/%s", deniedResponse.Code, deniedResponse.Body)
 	}
 
-	create := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"data","ownerUid":1000,"ownerGid":1001}`))
+	create := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"data"}`))
 	create.Header.Set("Content-Type", "application/json")
 	create = create.WithContext(automation.WithIdentity(create.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
 	createResponse := httptest.NewRecorder()

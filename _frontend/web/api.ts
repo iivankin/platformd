@@ -308,26 +308,14 @@ const volumeSchema = z.object({
   createdAt: z.number().int().positive(),
   id: z.string().min(1),
   name: z.string().min(1),
-  ownerGid: z.number().int().nonnegative(),
-  ownerUid: z.number().int().nonnegative(),
   projectId: z.string().min(1),
   serviceId: z.string().min(1),
 });
 
-const volumeOwnerSuggestionSchema = z.object({
-  exactNumeric: z.boolean(),
-  imageUser: z.string(),
-  ownerGid: z.number().int().nonnegative(),
-  ownerUid: z.number().int().nonnegative(),
-});
-
 export type Volume = z.infer<typeof volumeSchema>;
-export type VolumeOwnerSuggestion = z.infer<typeof volumeOwnerSuggestionSchema>;
 
 export interface CreateVolumeInput {
   name: string;
-  ownerGid: number;
-  ownerUid: number;
 }
 
 export interface CreateServiceVolumeInput extends CreateVolumeInput {
@@ -1540,28 +1528,6 @@ export const fetchVolumes = async (
     );
   }
   return z.array(volumeSchema).parse(await response.json());
-};
-
-export const fetchVolumeOwnerSuggestion = async (
-  projectID: string,
-  serviceID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<VolumeOwnerSuggestion> => {
-  const response = await fetcher(
-    `${volumePath(projectID, serviceID)}/owner-suggestion`,
-    {
-      headers: { Accept: "application/json" },
-      signal,
-    }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `volume owner suggestion failed with ${response.status}`
-    );
-  }
-  return volumeOwnerSuggestionSchema.parse(await response.json());
 };
 
 export const createVolume = async (
