@@ -49,7 +49,7 @@ func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInp
 	return state.ServiceDesired{}, nil
 }
 
-func (*repositoryStub) List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error) {
+func (*repositoryStub) List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error) {
 	return managedimages.Page{Tags: []managedimages.Tag{{Name: "7.4-alpine"}}, Page: 1, PageSize: 50}, nil
 }
 

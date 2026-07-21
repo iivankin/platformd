@@ -178,6 +178,16 @@ func (repository *liveNetworkGatewayRepository) Restore(ctx context.Context) err
 	return nil
 }
 
+func (repository *liveNetworkGatewayRepository) WithdrawProject(gateways []state.NetworkGateway) error {
+	repository.mu.Lock()
+	defer repository.mu.Unlock()
+	var failures []error
+	for _, gateway := range gateways {
+		failures = append(failures, repository.runtime.DisableNetworkGateway(gateway, repository.proxy))
+	}
+	return errors.Join(failures...)
+}
+
 func (repository *liveNetworkGatewayRepository) ReconcileMeshNetworkGateways(ctx context.Context) error {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()

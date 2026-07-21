@@ -7,7 +7,9 @@ import (
 
 func (store *Store) ReferencedContainerImageDigests(ctx context.Context) (map[string]struct{}, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT active_image_digest FROM services WHERE active_image_digest IS NOT NULL
+SELECT deployments.image_digest
+FROM services
+JOIN deployments ON deployments.id = services.active_deployment_id
 UNION
 SELECT image_digest FROM managed_postgres
 UNION

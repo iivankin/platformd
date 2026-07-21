@@ -9,6 +9,7 @@ import {
   createProject,
   createRegistryRepository,
   deleteNetworkGateway,
+  deleteProject,
   deleteService,
   fetchAPITokens,
   fetchBackupGenerations,
@@ -522,6 +523,28 @@ describe("mock API", () => {
     expect(repositories[0]?.id).toBe(repository.id);
     expect(settings.automationHostname).toBe("api.preview.local");
     expect(githubSettings).toMatchObject({ appId: 42, configured: true });
+  });
+
+  test("deletes a project and all of its mock-owned resources", async () => {
+    const state = createMockState("demo");
+    const mockFetch = fetcher(state);
+
+    await deleteProject(
+      "project-demo",
+      { deleteBackups: true, expectedName: "storefront" },
+      mockFetch
+    );
+
+    await expect(fetchProjects(undefined, mockFetch)).resolves.toEqual([]);
+    await expect(
+      fetchProjectCanvas("project-demo", undefined, mockFetch)
+    ).rejects.toMatchObject({ code: "not_found" });
+    expect(Object.keys(state.services)).toEqual([]);
+    expect(Object.keys(state.postgres)).toEqual([]);
+    expect(Object.keys(state.redis)).toEqual([]);
+    expect(Object.keys(state.objectStores)).toEqual([]);
+    expect(state.backupPolicies).toHaveLength(1);
+    expect(state.backupPolicies[0]?.resourceKind).toBe("registry");
   });
 
   test("mock container resources expose shells and mutable file trees", async () => {

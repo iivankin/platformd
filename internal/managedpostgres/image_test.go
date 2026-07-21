@@ -81,7 +81,7 @@ func TestResolveImageRebuildsDesiredExtensionLayer(t *testing.T) {
 	}
 	resource := state.ManagedPostgres{
 		ID: "postgres", ProjectID: "project", ProjectName: "shop",
-		ImageTag: "17-bookworm", ImageDigest: restoreTestImageDigest,
+		ImageTag: "18.4-alpine3.23", ImageDigest: restoreTestImageDigest,
 	}
 	resolved, err := controller.resolveImage(context.Background(), resource)
 	if err != nil {

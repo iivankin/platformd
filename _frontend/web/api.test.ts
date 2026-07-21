@@ -24,6 +24,7 @@ import {
   detachServiceListener,
   deleteObject,
   deleteBackupTarget,
+  deleteProject,
   deleteRegistryImage,
   deleteRegistryCredential,
   deleteRegistryRepository,
@@ -223,6 +224,25 @@ test("creates a project with the exact JSON contract", async () => {
   expect(created).toEqual(project);
   expect(requestInit?.method).toBe("POST");
   expect(requestInit?.body).toBe('{"name":"shop"}');
+});
+
+test("deletes a project with explicit backup intent and exact-name confirmation", async () => {
+  let requestURL = "";
+  let requestInit: RequestInit | undefined;
+  await deleteProject(
+    "project/with slash",
+    { deleteBackups: true, expectedName: "shop" },
+    (input, init) => {
+      requestURL = input.toString();
+      requestInit = init;
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+  );
+  expect(requestURL).toBe("/api/v1/projects/project%2Fwith%20slash");
+  expect(requestInit?.method).toBe("DELETE");
+  expect(requestInit?.body).toBe(
+    '{"deleteBackups":true,"expectedName":"shop"}'
+  );
 });
 
 test("surfaces structured API errors", async () => {

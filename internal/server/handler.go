@@ -415,9 +415,19 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	mux.Handle("/", static)
 	var handler http.Handler = mux
 	if config.admission != nil {
-		handler = admission.WrapHTTPMutations(config.admission, "admin_request", "/api/v1/infrastructure/update", handler)
+		handler = admission.WrapHTTPMutations(
+			config.admission, "admin_request", "/api/v1/infrastructure/update", exclusiveAdminMutation, handler,
+		)
 	}
 	return securityHeaders(handler)
+}
+
+func exclusiveAdminMutation(request *http.Request) bool {
+	if request.Method != http.MethodDelete {
+		return false
+	}
+	projectID := strings.TrimPrefix(request.URL.Path, "/api/v1/projects/")
+	return projectID != request.URL.Path && projectID != "" && !strings.Contains(projectID, "/")
 }
 
 func handleHealth(response http.ResponseWriter, _ *http.Request) {

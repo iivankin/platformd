@@ -325,6 +325,17 @@ func (stack *runtimeStack) DeleteService(ctx context.Context, service state.Serv
 	return err
 }
 
+func (stack *runtimeStack) deleteServiceDuringProjectDeletion(ctx context.Context, service state.ServiceDesired) error {
+	stack.mu.Lock()
+	controller := stack.deployments
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return errors.New("service deployment runtime is not ready")
+	}
+	return controller.DeleteServiceDuringProjectDeletion(ctx, service)
+}
+
 func (stack *runtimeStack) DeleteServiceLogs(serviceID string) error {
 	stack.mu.Lock()
 	controller := stack.deployments

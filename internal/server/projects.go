@@ -23,6 +23,7 @@ type ProjectRepository interface {
 	Projects(context.Context) ([]state.ProjectSummary, error)
 	ProjectCanvas(context.Context, string) (state.ProjectCanvas, error)
 	CreateProject(context.Context, state.CreateProject) (state.ProjectSummary, error)
+	DeleteProject(context.Context, state.DeleteProjectInput) (state.ProjectDeletionPlan, error)
 }
 
 type projectResponse struct {
@@ -84,6 +85,57 @@ func registerProjectRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.projects))
 	mux.HandleFunc("POST /api/v1/projects", createProject(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/canvas", getProjectCanvas(config.projects))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}", deleteProject(config))
+}
+
+func deleteProject(config handlerConfig) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedName  string `json:"expectedName"`
+		DeleteBackups bool   `json:"deleteBackups"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := access.IdentityFromContext(request.Context())
+		if !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeAPIError(response, http.StatusUnsupportedMediaType, "json_required", "Content-Type must be application/json")
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, maximumProjectRequestBytes)
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var body requestBody
+		if err := decoder.Decode(&body); err != nil || requireJSONEnd(decoder) != nil || body.ExpectedName == "" {
+			writeAPIError(response, http.StatusBadRequest, "invalid_json", "Request body must contain the exact project name and backup choice")
+			return
+		}
+		timestamp := config.now()
+		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate project deletion identifiers")
+			return
+		}
+		_, err = config.projects.DeleteProject(request.Context(), state.DeleteProjectInput{
+			ID: request.PathValue("projectID"), ExpectedName: body.ExpectedName, DeleteBackups: body.DeleteBackups,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
+			RequestCorrelationID: correlationID, DeletedAtMillis: timestamp.UnixMilli(),
+		})
+		switch {
+		case errors.Is(err, state.ErrProjectNotFound):
+			writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
+		case errors.Is(err, state.ErrProjectChanged):
+			writeAPIError(response, http.StatusConflict, "project_changed", "Project name changed; reload before deleting it")
+		case err != nil:
+			writeAPIError(response, http.StatusBadGateway, "project_delete_failed", "Project resources could not be deleted safely")
+		default:
+			response.Header().Set("Cache-Control", "private, no-store")
+			response.Header().Set("X-Request-ID", correlationID)
+			response.WriteHeader(http.StatusNoContent)
+		}
+	}
 }
 
 func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {

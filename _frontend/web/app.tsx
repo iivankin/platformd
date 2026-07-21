@@ -237,15 +237,27 @@ export const App = () => {
                   path="/projects/new"
                 />
                 <Route
-                  element={<ProjectCanvasPage />}
+                  element={
+                    <ProjectCanvasPage
+                      onProjectDeleted={data.handleProjectDeleted}
+                    />
+                  }
                   path="/projects/:projectID/:resourceCollection/:resourceID/deployments/:deploymentID/:deploymentView?"
                 />
                 <Route
-                  element={<ProjectCanvasPage />}
+                  element={
+                    <ProjectCanvasPage
+                      onProjectDeleted={data.handleProjectDeleted}
+                    />
+                  }
                   path="/projects/:projectID/:resourceCollection/:resourceID/:view?"
                 />
                 <Route
-                  element={<ProjectCanvasPage />}
+                  element={
+                    <ProjectCanvasPage
+                      onProjectDeleted={data.handleProjectDeleted}
+                    />
+                  }
                   path="/projects/:projectID"
                 />
                 <Route

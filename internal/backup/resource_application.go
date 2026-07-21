@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io"
 	"time"
 
@@ -77,6 +78,15 @@ type PolicyStatus struct {
 	NextRunAtMillis int64
 }
 
+type ResourceIdentity struct {
+	Kind string
+	ID   string
+}
+
+type prefixPurger interface {
+	PurgePrefix(context.Context, string) error
+}
+
 func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplication, error) {
 	if config.Store == nil || (config.Target == nil) != (config.TargetGate == nil) {
 		return nil, errors.New("resource backup application dependencies are incomplete")
@@ -146,6 +156,56 @@ func (application *ResourceApplication) Generations(
 		return nil, err
 	}
 	return ListResourceGenerations(ctx, remote, kind, resourceID)
+}
+
+// PurgeResources removes restore points from every configured target. A
+// project can switch backup targets over its lifetime, so consulting only the
+// current policy would leave older copies behind.
+func (application *ResourceApplication) PurgeResources(ctx context.Context, resources []ResourceIdentity) error {
+	if len(resources) == 0 {
+		return nil
+	}
+	if application.target == nil || application.targetGate == nil {
+		return errors.New("resource backup remote access is not configured")
+	}
+	for _, resource := range resources {
+		if !validBackupResourceKind(resource.Kind) || !validControlIdentifier(resource.ID) {
+			return errors.New("resource backup purge input is invalid")
+		}
+	}
+	release, acquired := application.targetGate.TryAcquire()
+	if !acquired {
+		return ErrTargetBusy
+	}
+	defer release()
+	targets, err := application.target.Targets(ctx)
+	if err != nil {
+		return err
+	}
+	for _, publicTarget := range targets {
+		target, err := application.target.RuntimeTarget(ctx, publicTarget.ID)
+		if err != nil {
+			return err
+		}
+		remote, err := application.remoteFactory(remotes3.Config{
+			Endpoint: target.Endpoint, Region: target.Region, Bucket: target.Bucket, Prefix: target.Prefix,
+			AccessKeyID: target.AccessKeyID, SecretAccessKey: target.SecretAccessKey,
+		})
+		if err != nil {
+			return err
+		}
+		purger, ok := remote.(prefixPurger)
+		if !ok {
+			return errors.New("resource backup remote does not support permanent deletion")
+		}
+		for _, resource := range resources {
+			prefix := remote.Key(ResourceGenerationsPrefix(resource.Kind, resource.ID) + "/")
+			if err := purger.PurgePrefix(ctx, prefix); err != nil {
+				return fmt.Errorf("purge %s %s backups from target %s: %w", resource.Kind, resource.ID, target.ID, err)
+			}
+		}
+	}
+	return nil
 }
 
 func (application *ResourceApplication) Policies(ctx context.Context) ([]PolicyStatus, error) {

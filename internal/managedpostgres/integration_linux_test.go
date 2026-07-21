@@ -265,8 +265,8 @@ func TestOfficialPostgresProfileRunsOwnerSQLAndPersists(t *testing.T) {
 			interfaceName: "pdmp18", subnet: "10.89.54.0/24", gateway: "10.89.54.1",
 		},
 		{
-			name: "18-vector", tag: "18.4-bookworm",
-			image:         "docker.io/library/postgres@sha256:16fa100a3a6e92c0556632870455e7f8c6f3df5cefddd67d6b95292732bd7ff0",
+			name: "18-vector-alpine", tag: "18.4-alpine3.23",
+			image:         "docker.io/library/postgres@sha256:2342268e5cf8851c327dcf10fc124283448428059f9b756692b7e3302940d769",
 			interfaceName: "pdmp18v", subnet: "10.89.55.0/24", gateway: "10.89.55.1", vector: true,
 		},
 	}

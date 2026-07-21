@@ -90,6 +90,19 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		_ = first.Close()
 		t.Fatalf("live project runtime was not published: %+v", first.projectNetworks)
 	}
+	if err := first.RemoveProject("integration-c"); err != nil {
+		_ = first.Close()
+		t.Fatalf("remove live project runtime: %v", err)
+	}
+	if _, exists := first.projectNetworks["integration-c"]; exists || first.dnsZones["integration-c"] != nil ||
+		first.projectDNSServers["integration-c"] != nil {
+		_ = first.Close()
+		t.Fatalf("removed project runtime remained published: %+v", first.projectNetworks)
+	}
+	if err := first.AddProject(state.RuntimeProject{ID: "integration-c", Name: "gamma"}); err != nil {
+		_ = first.Close()
+		t.Fatalf("recreate removed project runtime: %v", err)
+	}
 	image, err := first.engine.Pull(ctx, containerengine.PullRequest{Reference: daemonIntegrationImage})
 	if err != nil {
 		_ = first.Close()

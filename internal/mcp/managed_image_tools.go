@@ -18,9 +18,5 @@ func (handler *Handler) listManagedImageTags(ctx context.Context, arguments json
 	if err := decodeArguments(arguments, &input); err != nil || input.Engine == "" || input.Page < 0 || input.PageSize < 0 || input.PageSize > managedimages.MaximumPageSize {
 		return nil, fmt.Errorf("%w: engine is required, page must be positive, and pageSize must be 1..100", errInvalidArguments)
 	}
-	page, err := handler.images.List(ctx, input.Engine, input.Page, input.PageSize)
-	if err != nil {
-		return nil, err
-	}
-	return managedimages.Filter(page, input.Search)
+	return handler.images.List(ctx, input.Engine, input.Page, input.PageSize, input.Search)
 }

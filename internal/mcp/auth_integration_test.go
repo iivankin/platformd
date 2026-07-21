@@ -105,7 +105,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 
 type managedImageCatalogStub struct{}
 
-func (managedImageCatalogStub) List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error) {
+func (managedImageCatalogStub) List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error) {
 	return managedimages.Page{}, nil
 }
 

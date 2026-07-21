@@ -37,6 +37,12 @@ const clearLastProjectID = () => {
   }
 };
 
+export const forgetLastProject = (projectID: string) => {
+  if (readLastProjectID() === projectID) {
+    clearLastProjectID();
+  }
+};
+
 export const useLastProject = (
   projects: Project[],
   projectsLoading: boolean

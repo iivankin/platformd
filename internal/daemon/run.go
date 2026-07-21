@@ -585,6 +585,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	var serviceListeners server.ServiceListenerRepository
 	var liveServiceListeners *liveServiceListenerRepository
 	var networkGateways server.NetworkGatewayRepository
+	var liveNetworkGateways *liveNetworkGatewayRepository
 	if !installation.RecoveryMode {
 		publicPorts, proxyErr := portproxy.New(portproxy.Config{
 			Backends: runtime,
@@ -601,7 +602,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return err
 		}
 		serviceListeners = liveServiceListeners
-		liveNetworkGateways := &liveNetworkGatewayRepository{
+		liveNetworkGateways = &liveNetworkGatewayRepository{
 			store: store, runtime: runtime, proxy: publicPorts, mesh: cloudflareMesh,
 		}
 		if err := liveNetworkGateways.Restore(ctx); err != nil {
@@ -699,7 +700,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	adminApplicationHandler := server.Handler(
 		server.DefaultMeta(status(installation.RecoveryMode)),
-		server.WithProjects(liveProjectRepository{store: store, runtime: runtime}),
+		server.WithProjects(liveProjectRepository{
+			store: store, runtime: runtime, backups: backupResources, domains: domains,
+			objectStores: objectStoreRepository, listeners: liveServiceListeners, gateways: liveNetworkGateways,
+			onCleanupError: func(cleanupErr error) { log.Printf("project cleanup: %v", cleanupErr) },
+		}),
 		server.WithServices(liveServiceRepository{
 			store: store, runtime: runtime, domains: domains, volumeFilesystem: volumeFilesystem,
 			onCleanupError: volumeCleanupError, listeners: liveServiceListeners,

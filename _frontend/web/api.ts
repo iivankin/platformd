@@ -1266,6 +1266,30 @@ export const createProject = async (
   return projectSchema.parse(await response.json());
 };
 
+export const deleteProject = async (
+  projectID: string,
+  input: { deleteBackups: boolean; expectedName: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "DELETE",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project deletion failed with ${response.status}`
+    );
+  }
+};
+
 export const fetchProjectCanvas = async (
   projectID: string,
   signal?: AbortSignal,

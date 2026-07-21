@@ -23,6 +23,7 @@ import { ProjectChangeBar } from "@/project-change-bar";
 import { useProjectChanges } from "@/project-changes";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
 import type { CreateKind } from "@/project-create-overlays";
+import { ProjectDeleteDialog } from "@/project-delete-dialog";
 import { ProjectDeploymentPage } from "@/project-deployment-page";
 import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
 import type {
@@ -38,6 +39,7 @@ import { ServiceDraftPage } from "@/service-draft-page";
 import { applyServiceSettings } from "@/service-settings-apply";
 import { serviceSettingsChangeDetails } from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
+import { forgetLastProject } from "@/use-last-project";
 
 const nodeTypes = { resource: ResourceNode };
 const emptyNodes: ResourceFlowNode[] = [];
@@ -149,7 +151,11 @@ const ProjectRouteOverlay = ({
   return resourceID ? <ProjectResourcePage /> : null;
 };
 
-export const ProjectCanvasPage = () => {
+export const ProjectCanvasPage = ({
+  onProjectDeleted,
+}: {
+  onProjectDeleted: (projectID: string) => void;
+}) => {
   const navigate = useNavigate();
   const {
     deploymentID = "",
@@ -364,10 +370,22 @@ export const ProjectCanvasPage = () => {
             {canvas ? `${canvas.project.name}.internal` : "Loading namespace"}
           </p>
         </div>
-        <Button onClick={() => setCreateKind("picker")} size="sm">
-          <Plus />
-          New resource
-        </Button>
+        <div className="flex items-center gap-1">
+          <Button onClick={() => setCreateKind("picker")} size="sm">
+            <Plus />
+            New resource
+          </Button>
+          {canvas ? (
+            <ProjectDeleteDialog
+              onDeleted={(deletedProjectID) => {
+                forgetLastProject(deletedProjectID);
+                onProjectDeleted(deletedProjectID);
+                void navigate("/projects", { replace: true });
+              }}
+              project={canvas.project}
+            />
+          ) : null}
+        </div>
       </section>
 
       {error ? (

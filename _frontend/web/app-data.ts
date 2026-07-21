@@ -84,8 +84,15 @@ export const useAppData = () => {
     );
   }, []);
 
+  const handleProjectDeleted = useCallback((projectID: string) => {
+    setProjects((current) =>
+      current.filter((project) => project.id !== projectID)
+    );
+  }, []);
+
   return {
     handleProjectCreated,
+    handleProjectDeleted,
     identity,
     identityError,
     meta,

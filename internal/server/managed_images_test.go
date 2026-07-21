@@ -16,12 +16,14 @@ type managedImageCatalog struct {
 	engine   managedimages.Engine
 	page     int
 	pageSize int
+	search   string
 }
 
-func (catalog *managedImageCatalog) List(_ context.Context, engine managedimages.Engine, page, pageSize int) (managedimages.Page, error) {
+func (catalog *managedImageCatalog) List(_ context.Context, engine managedimages.Engine, page, pageSize int, search string) (managedimages.Page, error) {
 	catalog.engine = engine
 	catalog.page = page
 	catalog.pageSize = pageSize
+	catalog.search = search
 	return managedimages.Page{Tags: []managedimages.Tag{{Name: "18.3"}}, Page: page, PageSize: pageSize}, nil
 }
 
@@ -36,7 +38,7 @@ func TestManagedImageTagsRequireAccessAndUseBoundedPage(t *testing.T) {
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/managed-images/postgres/tags?page=2&pageSize=25&search=18", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"18.3"`) || catalog.engine != managedimages.PostgreSQL || catalog.page != 2 || catalog.pageSize != 25 {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"18.3"`) || catalog.engine != managedimages.PostgreSQL || catalog.page != 2 || catalog.pageSize != 25 || catalog.search != "18" {
 		t.Fatalf("tags response = %d/%s catalog=%+v", response.Code, response.Body, catalog)
 	}
 }

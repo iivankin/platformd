@@ -22,6 +22,10 @@ const (
 	CacheKeyLabel   = "io.platformd.postgres-extension.cache-key"
 	BaseDigestLabel = "io.platformd.postgres-extension.base-digest"
 	RecipeSetLabel  = "io.platformd.postgres-extension.recipe-set"
+	// This value is persisted in desired extension state. Alpine bases have distinct
+	// OCI digests, so adding their build strategy does not require invalidating the
+	// byte-compatible Debian cache or rewriting installed extension recipes.
+	vectorBuildRecipeID = "debian-build-script-v1"
 )
 
 var (
@@ -44,7 +48,7 @@ func VectorRecipe() Recipe {
 		VectorVersion,
 		vectorSourceURL,
 		vectorSourceSHA,
-		"debian-build-script-v1",
+		vectorBuildRecipeID,
 	}, "\n")
 	return Recipe{
 		Name: VectorName, Version: VectorVersion, SourceURL: vectorSourceURL,

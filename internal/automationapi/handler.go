@@ -24,7 +24,7 @@ type Repository interface {
 }
 
 type ManagedImageCatalog interface {
-	List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error)
+	List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error)
 }
 
 type Config struct {
@@ -125,7 +125,7 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("POST /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change", startDatabaseVersionChange(config.Versions))
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}", readDatabaseVersionChange(config.Versions))
 	}
-	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", mux)), nil
+	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", nil, mux)), nil
 }
 
 func serveIdentity(response http.ResponseWriter, request *http.Request) {

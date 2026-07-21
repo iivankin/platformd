@@ -54,9 +54,6 @@ func (controller *Controller) resolveImageWithExtensions(
 	if len(extensions) == 0 {
 		return image, nil
 	}
-	if !postgresextension.IsDebianTag(resource.ImageTag) {
-		return containerengine.Image{}, errors.New("runtime PostgreSQL extensions require a Debian-based official PostgreSQL image")
-	}
 	if controller.extensionBuilder == nil {
 		return containerengine.Image{}, errors.New("runtime PostgreSQL extension builder is unavailable")
 	}

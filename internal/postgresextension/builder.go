@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/iivankin/platformd/internal/containerengine"
@@ -15,33 +14,64 @@ import (
 )
 
 const buildScript = `set -eu
-if [ ! -f /etc/debian_version ]; then
-  echo "runtime extension builds require a Debian-based official PostgreSQL image" >&2
-  exit 65
-fi
 case "${PG_MAJOR:-}" in
   ''|*[!0-9]*) echo "PG_MAJOR is unavailable" >&2; exit 65 ;;
 esac
-printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99platformd-network
-apt-get update
-apt-mark hold locales >/dev/null 2>&1 || true
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-$PG_MAJOR"
+case "$(uname -s):$(test -f /etc/alpine-release && echo alpine || true):$(test -f /etc/debian_version && echo debian || true)" in
+  Linux:alpine:)
+    platformd_family=alpine
+    apk add --no-cache --virtual .platformd-pgvector-build build-base
+    ;;
+  Linux::debian)
+    platformd_family=debian
+    printf 'Acquire::ForceIPv4 "true";\n' >/etc/apt/apt.conf.d/99platformd-network
+    apt-get update
+    apt-mark hold locales >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential "postgresql-server-dev-$PG_MAJOR"
+    ;;
+  *)
+    echo "runtime extension builds require an Alpine- or Debian-based official PostgreSQL image" >&2
+    exit 65
+    ;;
+esac
+if [ ! -f "$(pg_config --includedir-server)/postgres.h" ]; then
+  echo "official PostgreSQL server headers are unavailable" >&2
+  exit 65
+fi
 rm -rf /tmp/platformd-pgvector
 mkdir -p /tmp/platformd-pgvector
 tar -xzf /platformd/vector.tar.gz --strip-components=1 -C /tmp/platformd-pgvector
 cd /tmp/platformd-pgvector
 make clean
-make OPTFLAGS=""
-make install
+case "$platformd_family" in
+  alpine)
+    # Official Alpine images retain server headers but not the large Clang toolchain.
+    # PostgreSQL extensions do not require LLVM bitcode to load or execute.
+    make OPTFLAGS="" with_llvm=no
+    make install with_llvm=no
+    ;;
+  debian)
+    make OPTFLAGS=""
+    make install
+    ;;
+esac
 mkdir -p /usr/share/doc/pgvector
 cp LICENSE README.md /usr/share/doc/pgvector/
 cd /
 rm -rf /tmp/platformd-pgvector
-DEBIAN_FRONTEND=noninteractive apt-get remove -y build-essential "postgresql-server-dev-$PG_MAJOR"
-DEBIAN_FRONTEND=noninteractive apt-get autoremove -y
-apt-mark unhold locales >/dev/null 2>&1 || true
-rm -f /etc/apt/apt.conf.d/99platformd-network
-rm -rf /var/lib/apt/lists/*`
+case "$platformd_family" in
+  alpine)
+    apk del --no-cache .platformd-pgvector-build
+    rm -rf /var/cache/apk/*
+    ;;
+  debian)
+    DEBIAN_FRONTEND=noninteractive apt-get remove -y build-essential "postgresql-server-dev-$PG_MAJOR"
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y
+    apt-mark unhold locales >/dev/null 2>&1 || true
+    rm -f /etc/apt/apt.conf.d/99platformd-network
+    rm -rf /var/lib/apt/lists/*
+    ;;
+esac`
 
 type Engine interface {
 	InspectImage(context.Context, string) (containerengine.Image, error)
@@ -238,8 +268,4 @@ func progress(callback func(string), value string) {
 	if callback != nil {
 		callback(value)
 	}
-}
-
-func IsDebianTag(tag string) bool {
-	return !strings.Contains(strings.ToLower(tag), "alpine")
 }

@@ -587,6 +587,16 @@ func (controller *Controller) DeleteService(ctx context.Context, desired state.S
 	return controller.stopDisabled(ctx, desired)
 }
 
+// DeleteServiceDuringProjectDeletion skips the per-service admission lease
+// because the project DELETE request already owns the platform-wide exclusive
+// mutation lease. Taking a nested lease would reject its own cleanup.
+func (controller *Controller) DeleteServiceDuringProjectDeletion(ctx context.Context, desired state.ServiceDesired) error {
+	lock := controller.serviceLock(desired.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return controller.stopDisabled(ctx, desired)
+}
+
 func (controller *Controller) DeleteServiceLogs(serviceID string) error {
 	if serviceID == "" || filepath.Base(serviceID) != serviceID {
 		return errors.New("service log identity is invalid")

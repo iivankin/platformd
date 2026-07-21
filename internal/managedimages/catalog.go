@@ -18,6 +18,7 @@ import (
 const DefaultPageSize = 50
 const MaximumPageSize = 100
 const maximumResponseBytes = 2 << 20
+const floatingTag = "latest"
 
 var ErrInvalidQuery = errors.New("invalid managed image tag query")
 
@@ -68,8 +69,12 @@ func New(baseURL string, httpClient *http.Client) (*Client, error) {
 	return &Client{baseURL: parsed, httpClient: httpClient}, nil
 }
 
-func (client *Client) List(ctx context.Context, engine Engine, page, pageSize int) (Page, error) {
+func (client *Client) List(ctx context.Context, engine Engine, page, pageSize int, search string) (Page, error) {
 	repository, err := Repository(engine)
+	if err != nil {
+		return Page{}, err
+	}
+	search, err = validateSearch(search)
 	if err != nil {
 		return Page{}, err
 	}
@@ -88,6 +93,9 @@ func (client *Client) List(ctx context.Context, engine Engine, page, pageSize in
 	query := requestURL.Query()
 	query.Set("page", strconv.Itoa(page))
 	query.Set("page_size", strconv.Itoa(pageSize))
+	if search != "" {
+		query.Set("name", search)
+	}
 	requestURL.RawQuery = query.Encode()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, requestURL.String(), nil)
 	if err != nil {
@@ -116,9 +124,14 @@ func (client *Client) List(ctx context.Context, engine Engine, page, pageSize in
 	if payload.Count < 0 {
 		return Page{}, errors.New("Docker Hub tag response has a negative count")
 	}
-	result := Page{Tags: make([]Tag, 0, len(payload.Results)), Page: page, PageSize: pageSize, Total: payload.Count}
+	result := Page{
+		Tags:     make([]Tag, 0, len(payload.Results)),
+		Page:     page,
+		PageSize: pageSize,
+		Total:    visibleTagTotal(payload.Count, search),
+	}
 	for _, remote := range payload.Results {
-		if !validRemoteTag(repository, remote.Name) {
+		if remote.Name == floatingTag || !validRemoteTag(repository, remote.Name) {
 			continue
 		}
 		updated, err := time.Parse(time.RFC3339Nano, remote.LastUpdated)
@@ -145,6 +158,15 @@ func (client *Client) List(ctx context.Context, engine Engine, page, pageSize in
 	result.RateLimitRemaining, _ = strconv.Atoi(response.Header.Get("X-RateLimit-Remaining"))
 	result.RateLimitReset, _ = strconv.ParseInt(response.Header.Get("X-RateLimit-Reset"), 10, 64)
 	return result, nil
+}
+
+func visibleTagTotal(remoteTotal int, search string) int {
+	// Docker Hub applies `name` before pagination. Keep the public total aligned
+	// with the list after hiding the one floating tag from both official catalogs.
+	if remoteTotal > 0 && (search == "" || strings.Contains(floatingTag, search)) {
+		return remoteTotal - 1
+	}
+	return remoteTotal
 }
 
 func Repository(engine Engine) (string, error) {
@@ -174,23 +196,12 @@ func Reference(engine Engine, tag string) (string, error) {
 	return tagged.String(), nil
 }
 
-func Filter(page Page, search string) (Page, error) {
-	search = strings.TrimSpace(search)
+func validateSearch(search string) (string, error) {
+	search = strings.ToLower(strings.TrimSpace(search))
 	if len(search) > 128 || strings.ContainsRune(search, '\x00') {
-		return Page{}, fmt.Errorf("%w: search must contain at most 128 bytes without NUL", ErrInvalidQuery)
+		return "", fmt.Errorf("%w: search must contain at most 128 bytes without NUL", ErrInvalidQuery)
 	}
-	if search == "" {
-		return page, nil
-	}
-	needle := strings.ToLower(search)
-	filtered := page
-	filtered.Tags = make([]Tag, 0, len(page.Tags))
-	for _, tag := range page.Tags {
-		if strings.Contains(strings.ToLower(tag.Name), needle) {
-			filtered.Tags = append(filtered.Tags, tag)
-		}
-	}
-	return filtered, nil
+	return search, nil
 }
 
 func validRemoteTag(repository, tag string) bool {

@@ -7,12 +7,22 @@ import (
 	"net/http"
 )
 
-func WrapHTTPMutations(gate *Gate, kind string, skipPath string, next http.Handler) http.Handler {
+func WrapHTTPMutations(gate *Gate, kind string, skipPath string, exclusive func(*http.Request) bool, next http.Handler) http.Handler {
 	if gate == nil || next == nil || !validField(kind) {
 		panic("admission HTTP middleware configuration is invalid")
 	}
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		if !mutationMethod(request.Method) || request.URL.Path == skipPath {
+			next.ServeHTTP(response, request)
+			return
+		}
+		if exclusive != nil && exclusive(request) {
+			lease, _, err := gate.TryUpdate()
+			if err != nil {
+				writeUpdating(response)
+				return
+			}
+			defer lease.Release()
 			next.ServeHTTP(response, request)
 			return
 		}

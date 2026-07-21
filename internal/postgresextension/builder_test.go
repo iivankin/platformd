@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/containerengine"
@@ -114,6 +115,11 @@ func TestBuilderCachesDerivedImageWithoutDatabaseVolume(t *testing.T) {
 	}
 	if len(spec.DNSServers) != 1 || spec.DNSServers[0] != "10.90.0.1" || len(spec.DNSSearch) != 0 {
 		t.Fatalf("builder DNS = servers=%v search=%v", spec.DNSServers, spec.DNSSearch)
+	}
+	if len(spec.Command) != 1 || !strings.Contains(spec.Command[0], "/etc/alpine-release") ||
+		!strings.Contains(spec.Command[0], "apk add --no-cache --virtual .platformd-pgvector-build build-base") ||
+		!strings.Contains(spec.Command[0], `make OPTFLAGS="" with_llvm=no`) {
+		t.Fatalf("builder command does not provision Alpine pgvector: %q", spec.Command)
 	}
 	second, err := builder.Ensure(context.Background(), request)
 	if err != nil || second.ID != first.ID || len(engine.created) != 1 || growth.calls != 1 {

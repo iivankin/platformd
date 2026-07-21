@@ -58,7 +58,7 @@ type Config struct {
 }
 
 type ManagedImageCatalog interface {
-	List(context.Context, managedimages.Engine, int, int) (managedimages.Page, error)
+	List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error)
 }
 
 func New(config Config) (*Handler, error) {

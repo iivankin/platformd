@@ -17,10 +17,7 @@ func listManagedImageTags(catalog ManagedImageCatalog) http.HandlerFunc {
 		if !ok {
 			return
 		}
-		result, err := catalog.List(request.Context(), managedimages.Engine(request.PathValue("engine")), page, pageSize)
-		if err == nil {
-			result, err = managedimages.Filter(result, request.URL.Query().Get("search"))
-		}
+		result, err := catalog.List(request.Context(), managedimages.Engine(request.PathValue("engine")), page, pageSize, request.URL.Query().Get("search"))
 		switch {
 		case err == nil:
 			writeJSON(response, http.StatusOK, result)

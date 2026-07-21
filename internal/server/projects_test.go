@@ -84,6 +84,25 @@ func TestProjectAPIRequiresAccessAndCommitsAudit(t *testing.T) {
 		t.Fatalf("audit count = %d, %v", auditCount, err)
 	}
 
+	deleteWrongName := projectRequest(http.MethodDelete, "/api/v1/projects/"+created["id"].(string), `{"expectedName":"wrong","deleteBackups":false}`)
+	deleteWrongName.Header.Set("Origin", "https://admin.example.com")
+	deleteWrongNameResponse := httptest.NewRecorder()
+	protected.ServeHTTP(deleteWrongNameResponse, deleteWrongName)
+	if deleteWrongNameResponse.Code != http.StatusConflict {
+		t.Fatalf("wrong-name deletion status/body = %d/%s", deleteWrongNameResponse.Code, deleteWrongNameResponse.Body)
+	}
+
+	deleteRequest := projectRequest(http.MethodDelete, "/api/v1/projects/"+created["id"].(string), `{"expectedName":"shop","deleteBackups":false}`)
+	deleteRequest.Header.Set("Origin", "https://admin.example.com")
+	deleteResponse := httptest.NewRecorder()
+	protected.ServeHTTP(deleteResponse, deleteRequest)
+	if deleteResponse.Code != http.StatusNoContent || deleteResponse.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("delete status/headers = %d, %v: %s", deleteResponse.Code, deleteResponse.Header(), deleteResponse.Body)
+	}
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM audit_events WHERE actor_id = 'subject' AND action = 'project.delete'").Scan(&auditCount); err != nil || auditCount != 1 {
+		t.Fatalf("delete audit count = %d, %v", auditCount, err)
+	}
+
 	directResponse := httptest.NewRecorder()
 	raw.ServeHTTP(directResponse, httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil))
 	if directResponse.Code != http.StatusForbidden {

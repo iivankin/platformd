@@ -45,6 +45,7 @@ type runtimeStack struct {
 	networks                   []string
 	projectFailures            []projectnetwork.Failure
 	dnsServers                 []*internaldns.Server
+	projectDNSServers          map[string]*internaldns.Server
 	dnsZones                   map[string]*internaldns.Zone
 	projectNetworks            map[string]containerengine.Network
 	paths                      layout.Paths
@@ -143,6 +144,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		firewallProjects:           make(map[string]firewall.Project),
 		projectFailures:            projectFailures,
 		dnsZones:                   make(map[string]*internaldns.Zone),
+		projectDNSServers:          make(map[string]*internaldns.Server),
 		projectNetworks:            make(map[string]containerengine.Network),
 		paths:                      paths,
 		cgroupRoot:                 cgroupWorkloadRoot,
@@ -236,6 +238,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 			stack.cloudflareMeshNetworkError = nil
 		} else {
 			stack.dnsZones[assignment.ProjectID] = zone
+			stack.projectDNSServers[assignment.ProjectID] = dnsServer
 			stack.projectNetworks[assignment.ProjectID] = network
 		}
 		firewallProjects = append(firewallProjects, firewall.Project{
@@ -464,9 +467,77 @@ func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
 	stack.networks = append(stack.networks, network.Name)
 	stack.dnsServers = append(stack.dnsServers, dnsServer)
 	stack.dnsZones[project.ID] = zone
+	stack.projectDNSServers[project.ID] = dnsServer
 	stack.projectNetworks[project.ID] = network
 	stack.firewallProjects[project.ID] = firewallProject
 	return nil
+}
+
+// RemoveProject tears down the project-only network after every workload and
+// listener has been withdrawn. SQLite remains authoritative, so this method is
+// deliberately idempotent for cleanup retries after a committed deletion.
+func (stack *runtimeStack) RemoveProject(projectID string) error {
+	stack.mu.Lock()
+	if stack.closed {
+		stack.mu.Unlock()
+		return errors.New("container runtime is closed")
+	}
+	network, exists := stack.projectNetworks[projectID]
+	dnsServer := stack.projectDNSServers[projectID]
+	objectServer := stack.objectStoreServers[projectID]
+	candidate := make([]firewall.Project, 0, len(stack.firewallProjects))
+	for currentID, current := range stack.firewallProjects {
+		if currentID != projectID {
+			candidate = append(candidate, current)
+		}
+	}
+	if err := stack.firewall.Apply(candidate); err != nil {
+		stack.mu.Unlock()
+		return err
+	}
+	delete(stack.firewallProjects, projectID)
+	delete(stack.projectNetworks, projectID)
+	delete(stack.dnsZones, projectID)
+	delete(stack.projectDNSServers, projectID)
+	delete(stack.objectStoreServers, projectID)
+	delete(stack.objectStoreFailures, projectID)
+	stack.networks = slices.DeleteFunc(stack.networks, func(name string) bool { return exists && name == network.Name })
+	stack.dnsServers = slices.DeleteFunc(stack.dnsServers, func(server *internaldns.Server) bool { return server == dnsServer })
+	stack.mu.Unlock()
+
+	var failures []error
+	if objectServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		failures = append(failures, objectServer.server.Shutdown(ctx))
+		cancel()
+	}
+	if dnsServer != nil {
+		failures = append(failures, dnsServer.Close())
+	}
+	if exists {
+		failures = append(failures, stack.engine.RemoveNetwork(network.Name))
+	}
+	failures = append(failures, projectnetwork.RemoveBridge(projectnetwork.BridgeName(projectID)))
+	return errors.Join(failures...)
+}
+
+func (stack *runtimeStack) stopProjectDatabases(ctx context.Context, postgres []state.ManagedPostgres, redis []state.ManagedRedis) error {
+	stack.mu.Lock()
+	postgresController := stack.managedPostgres
+	redisController := stack.managedRedis
+	stack.mu.Unlock()
+	var failures []error
+	if postgresController != nil {
+		for _, resource := range postgres {
+			failures = append(failures, postgresController.Stop(ctx, resource.ID))
+		}
+	}
+	if redisController != nil {
+		for _, resource := range redis {
+			failures = append(failures, redisController.Stop(ctx, resource.ID))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 func (stack *runtimeStack) ensureForwarder(gateway netip.Addr) error {

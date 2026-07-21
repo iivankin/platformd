@@ -5,12 +5,28 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/iivankin/platformd/internal/remotes3"
 	"github.com/iivankin/platformd/internal/state"
 )
+
+type purgeRecordingRemote struct {
+	*memoryControlRemote
+	prefix string
+	purged []string
+}
+
+func (remote *purgeRecordingRemote) Key(relative string) string {
+	return strings.TrimSuffix(remote.prefix, "/") + "/" + strings.TrimPrefix(relative, "/")
+}
+
+func (remote *purgeRecordingRemote) PurgePrefix(_ context.Context, prefix string) error {
+	remote.purged = append(remote.purged, prefix)
+	return nil
+}
 
 func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t *testing.T) {
 	t.Parallel()
@@ -70,6 +86,51 @@ func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t
 	}
 }
 
+func TestResourceApplicationPurgesEveryResourceFromEveryBackupTarget(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, target, targetGate, master := resourceJobTarget(t, t.TempDir())
+	defer store.Close()
+	sealedSecret, err := SealTargetSecret(master, "installation-id", "secondary-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
+		Target: state.BackupTarget{
+			ID: "secondary", Name: "Secondary", Endpoint: "https://secondary.example.com", Region: "us-east-1",
+			Bucket: "bucket", Prefix: "secondary-prefix", AccessKeyID: "access", SecretAccessKeyEncrypted: sealedSecret,
+		},
+		AuditEventID: "secondary-audit", ActorKind: "access", ActorID: "test", ActorEmail: "test@example.com",
+		UpdatedAtMillis: time.Unix(6, 0).UnixMilli(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	remotes := map[string]*purgeRecordingRemote{
+		"https://s3.example.com":        {memoryControlRemote: newMemoryControlRemote(), prefix: "prefix"},
+		"https://secondary.example.com": {memoryControlRemote: newMemoryControlRemote(), prefix: "secondary-prefix"},
+	}
+	application, err := NewResourceApplication(ResourceApplicationConfig{
+		Store: store, Target: target, TargetGate: targetGate, Master: master,
+		RemoteFactory: func(config remotes3.Config) (ControlRemote, error) { return remotes[config.Endpoint], nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resources := []ResourceIdentity{{Kind: "postgres", ID: "database"}, {Kind: "volume", ID: "uploads"}}
+	if err := application.PurgeResources(ctx, resources); err != nil {
+		t.Fatal(err)
+	}
+	for endpoint, remote := range remotes {
+		want := []string{
+			remote.Key("resources/postgres/database/generations/"),
+			remote.Key("resources/volume/uploads/generations/"),
+		}
+		if len(remote.purged) != len(want) || remote.purged[0] != want[0] || remote.purged[1] != want[1] {
+			t.Fatalf("target %s purged %v, want %v", endpoint, remote.purged, want)
+		}
+	}
+}
+
 func TestResourceApplicationDerivesNextRunWithoutPersistingSchedulerState(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -80,7 +141,7 @@ func TestResourceApplicationDerivesNextRunWithoutPersistingSchedulerState(t *tes
 	defer store.Close()
 	createBackupInstallation(t, store)
 	if _, err := store.SetBackupTarget(ctx, state.SetBackupTarget{
-		Target: state.BackupTarget{ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("sealed")},
+		Target:       state.BackupTarget{ID: "target", Name: "Primary", Endpoint: "https://s3.example.com", Region: "region", Bucket: "bucket", AccessKeyID: "access", SecretAccessKeyEncrypted: []byte("sealed")},
 		AuditEventID: "target-audit", ActorKind: "access", ActorID: "user", ActorEmail: "user@example.com", UpdatedAtMillis: 2,
 	}); err != nil {
 		t.Fatal(err)
@@ -109,7 +170,7 @@ func TestResourceApplicationDerivesNextRunWithoutPersistingSchedulerState(t *tes
 	updated, err := application.SetPolicy(ctx, PolicyInput{
 		ResourceKind: "redis", ResourceID: "redis-1", Enabled: true,
 		TargetID: "target",
-		Cron: "0 12 * * *", RetentionCount: 7,
+		Cron:     "0 12 * * *", RetentionCount: 7,
 		Actor: Actor{Kind: "access", ID: "user", Email: "user@example.com"},
 	})
 	if err != nil {
