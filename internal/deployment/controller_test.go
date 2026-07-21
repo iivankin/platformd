@@ -38,6 +38,26 @@ func (store *fakeStore) BeginDeployment(_ context.Context, deployment state.Begi
 	return nil
 }
 
+func (store *fakeStore) UpdateDeploymentSource(_ context.Context, deploymentID, digest, reference, revision, message string) error {
+	deployment := store.deployments[deploymentID]
+	deployment.ImageDigest = digest
+	deployment.ImageReference = reference
+	deployment.SourceRevision = revision
+	deployment.CommitMessage = message
+	store.deployments[deploymentID] = deployment
+	return nil
+}
+
+func (store *fakeStore) FinishDeployment(_ context.Context, deploymentID, status, _, _ string, _ int64) error {
+	deployment := store.deployments[deploymentID]
+	deployment.Status = status
+	store.deployments[deploymentID] = deployment
+	if status == "failed" {
+		store.failed[deployment.ConfigHash+":"+deployment.ImageDigest] = true
+	}
+	return nil
+}
+
 func (store *fakeStore) ActivateDeployment(_ context.Context, _, deploymentID, expected string, _ int64) error {
 	if store.service.ActiveDeploymentID != expected {
 		return state.ErrServiceChanged
@@ -50,9 +70,7 @@ func (store *fakeStore) ActivateDeployment(_ context.Context, _, deploymentID, e
 }
 
 func (store *fakeStore) FailDeployment(_ context.Context, deploymentID, _, _ string, _ int64) error {
-	deployment := store.deployments[deploymentID]
-	store.failed[deployment.ConfigHash+":"+deployment.ImageDigest] = true
-	return nil
+	return store.FinishDeployment(context.Background(), deploymentID, "failed", "", "", 0)
 }
 
 func (store *fakeStore) LatestFailedDeployment(_ context.Context, _, configHash, imageDigest string) (bool, error) {
@@ -189,7 +207,7 @@ func (resolver imageSourceResolverFunc) Resolve(ctx context.Context, reference s
 	return resolver(ctx, reference)
 }
 
-type sourceResolverFunc func(context.Context, state.ServiceDesired, string, string, io.Writer, bool) (SourceResolution, error)
+type sourceResolverFunc func(context.Context, state.ServiceDesired, string, string, io.Writer, bool, SourceBuildStarted) (SourceResolution, error)
 
 func (resolver sourceResolverFunc) Resolve(
 	ctx context.Context,
@@ -198,8 +216,9 @@ func (resolver sourceResolverFunc) Resolve(
 	revision string,
 	log io.Writer,
 	force bool,
+	onBuildStarted SourceBuildStarted,
 ) (SourceResolution, error) {
-	return resolver(ctx, desired, deploymentID, revision, log, force)
+	return resolver(ctx, desired, deploymentID, revision, log, force, onBuildStarted)
 }
 
 type reportEvent struct {
@@ -265,11 +284,18 @@ func TestGitHubDeploymentReportingFollowsLocalOutcome(t *testing.T) {
 			clock := int64(0)
 			controller, err := New(Config{
 				Store: store, Engine: engine, Publisher: &fakePublisher{}, Growth: allowGrowth, Admission: admission.New(),
-				Sources: sourceResolverFunc(func(context.Context, state.ServiceDesired, string, string, io.Writer, bool) (SourceResolution, error) {
-					return SourceResolution{
+				Sources: sourceResolverFunc(func(_ context.Context, _ state.ServiceDesired, _ string, _ string, _ io.Writer, _ bool, started SourceBuildStarted) (SourceResolution, error) {
+					resolution := SourceResolution{
 						Image:          containerengine.Image{ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"},
 						ImageReference: "localhost/platformd-build/service:commit", Revision: "commit-sha", CommitMessage: "change",
-					}, nil
+					}
+					if err := started(resolution); err != nil {
+						return resolution, err
+					}
+					if _, visible := store.deployments["deployment"]; !visible {
+						t.Fatal("deployment attempt was not visible when the GitHub build started")
+					}
+					return resolution, nil
 				}),
 				Reporter: reporter,
 				Placement: func(state.ServiceDesired) (Placement, error) {

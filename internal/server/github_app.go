@@ -53,11 +53,16 @@ func getGitHubRepositoryPaths(config handlerConfig) http.HandlerFunc {
 		ref := strings.TrimSpace(request.URL.Query().Get("ref"))
 		query := strings.TrimSpace(request.URL.Query().Get("q"))
 		kind := request.URL.Query().Get("kind")
-		if ref == "" || len(ref) > 255 || len(query) > 512 || (kind != "dockerfile" && kind != "path") {
+		if ref == "" || len(ref) > 255 || len(query) > 512 ||
+			(kind != string(githubapp.RepositoryPathDockerfile) &&
+				kind != string(githubapp.RepositoryPathDirectory) &&
+				kind != string(githubapp.RepositoryPathAny)) {
 			writeAPIError(response, http.StatusBadRequest, "invalid_repository_path_query", "ref and a valid path kind are required")
 			return
 		}
-		paths, err := config.githubApp.RepositoryPaths(request.Context(), repositoryID, ref, query, kind == "dockerfile")
+		paths, err := config.githubApp.RepositoryPaths(
+			request.Context(), repositoryID, ref, query, githubapp.RepositoryPathKind(kind),
+		)
 		if errors.Is(err, state.ErrGitHubAppNotConfigured) {
 			writeAPIError(response, http.StatusConflict, "github_app_not_configured", "Configure the GitHub App first")
 			return
@@ -181,7 +186,7 @@ func handleGitHubWebhook(config GitHubWebhookConfig) http.HandlerFunc {
 			if parseErr == nil {
 				pullRequestEvents = append(pullRequestEvents, event)
 			}
-		case "check_suite", "check_run":
+		case "check_suite":
 			push, pushErr := githubapp.ParseCheckEvent(body)
 			if pushErr == nil {
 				pushEvents = append(pushEvents, push)
@@ -194,6 +199,12 @@ func handleGitHubWebhook(config GitHubWebhookConfig) http.HandlerFunc {
 			} else if !errors.Is(previewErr, githubapp.ErrWebhookEventIgnored) && err == nil {
 				err = previewErr
 			}
+		case "check_run":
+			// GitHub emits a completed check_run for each job and then one
+			// completed check_suite for the commit. The suite is the single
+			// authoritative trigger; consuming both creates duplicate attempts.
+			response.WriteHeader(http.StatusAccepted)
+			return
 		default:
 			response.WriteHeader(http.StatusAccepted)
 			return

@@ -47,6 +47,8 @@ func (err *SourceSkippedError) Error() string {
 type Store interface {
 	DesiredService(context.Context, string) (state.ServiceDesired, error)
 	BeginDeployment(context.Context, state.BeginDeployment) error
+	UpdateDeploymentSource(context.Context, string, string, string, string, string) error
+	FinishDeployment(context.Context, string, string, string, string, int64) error
 	ActivateDeployment(context.Context, string, string, string, int64) error
 	FailDeployment(context.Context, string, string, string, int64) error
 	LatestFailedDeployment(context.Context, string, string, string) (bool, error)
@@ -125,8 +127,10 @@ type SourceResolution struct {
 	CommitMessage  string
 }
 
+type SourceBuildStarted func(SourceResolution) error
+
 type SourceResolver interface {
-	Resolve(context.Context, state.ServiceDesired, string, string, io.Writer, bool) (SourceResolution, error)
+	Resolve(context.Context, state.ServiceDesired, string, string, io.Writer, bool, SourceBuildStarted) (SourceResolution, error)
 }
 
 type ReportStatus string
@@ -302,6 +306,52 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 	var image containerengine.Image
 	var sourceRevision string
 	var commitMessage string
+	var reportID string
+	deploymentStarted := false
+	beginDeployment := func(resolution SourceResolution) error {
+		if deploymentStarted {
+			return nil
+		}
+		imageReference = resolution.ImageReference
+		sourceRevision = resolution.Revision
+		commitMessage = resolution.CommitMessage
+		if err := controller.store.BeginDeployment(ctx, state.BeginDeployment{
+			ID: deploymentID, ServiceID: serviceID, ImageDigest: resolution.Image.Digest,
+			ImageReference: imageReference, SourceRevision: sourceRevision, CommitMessage: commitMessage,
+			ConfigHash: configHash, SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
+		}); err != nil {
+			return err
+		}
+		deploymentStarted = true
+		reportID = controller.startReport(ctx, desired, deploymentID, sourceRevision, buildLogPath)
+		return nil
+	}
+	failDeployment := func(code string, failure error) error {
+		if !deploymentStarted {
+			if beginErr := beginDeployment(SourceResolution{
+				Image: image, ImageReference: imageReference, Revision: sourceRevision, CommitMessage: commitMessage,
+			}); beginErr != nil {
+				return errors.Join(failure, beginErr)
+			}
+		}
+		finishErr := controller.store.FinishDeployment(
+			ctx, deploymentID, "failed", code, failure.Error(), controller.now().UnixMilli(),
+		)
+		controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
+		return errors.Join(failure, finishErr)
+	}
+	finishAttempt := func(status, code, message string) error {
+		if !deploymentStarted {
+			return nil
+		}
+		finishErr := controller.store.FinishDeployment(ctx, deploymentID, status, code, message, controller.now().UnixMilli())
+		reportStatus := ReportSucceeded
+		if status == "interrupted" {
+			reportStatus = ReportFailed
+		}
+		controller.finishReport(desired, deploymentID, reportID, reportStatus, buildLogPath)
+		return finishErr
+	}
 	if normalized.Source.Type == servicesource.GitHubImage {
 		if controller.sources == nil {
 			return errors.New("GitHub source resolution is not configured")
@@ -311,61 +361,69 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return openErr
 		}
 		resolution, resolveErr := controller.sources.Resolve(
-			ctx, desired, deploymentID, sourceRevisionOverride, logFile, force,
+			ctx, desired, deploymentID, sourceRevisionOverride, logFile, force, beginDeployment,
 		)
 		closeErr := logFile.Close()
 		if closeErr != nil && resolveErr == nil {
-			return closeErr
+			resolveErr = closeErr
 		}
 		imageReference = resolution.ImageReference
 		sourceRevision = resolution.Revision
 		commitMessage = resolution.CommitMessage
 		var skipped *SourceSkippedError
 		if errors.As(resolveErr, &skipped) {
-			finishedAt := controller.now()
-			if err := controller.store.BeginDeployment(ctx, state.BeginDeployment{
-				ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
-				SourceRevision: sourceRevision, CommitMessage: commitMessage,
-				ConfigHash: configHash, SnapshotJSON: snapshotJSON,
-				Status: "skipped", CreatedAtMillis: startedAt.UnixMilli(), FinishedAtMillis: finishedAt.UnixMilli(),
-			}); err != nil {
-				return err
+			if deploymentStarted {
+				if err := finishAttempt("skipped", "source_checks_failed", skipped.Reason); err != nil {
+					return err
+				}
+			} else {
+				finishedAt := controller.now()
+				if err := controller.store.BeginDeployment(ctx, state.BeginDeployment{
+					ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
+					SourceRevision: sourceRevision, CommitMessage: commitMessage,
+					ConfigHash: configHash, SnapshotJSON: snapshotJSON,
+					Status: "skipped", CreatedAtMillis: startedAt.UnixMilli(), FinishedAtMillis: finishedAt.UnixMilli(),
+				}); err != nil {
+					return err
+				}
 			}
 			_ = appendBuildLog(buildLogPath, "Deployment skipped: "+skipped.Reason)
 			return nil
 		}
 		if resolveErr != nil {
-			if !errors.Is(resolveErr, ErrSourceChecksPending) {
-				if beginErr := controller.store.BeginDeployment(ctx, state.BeginDeployment{
-					ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
-					SourceRevision: sourceRevision, CommitMessage: commitMessage,
-					ConfigHash: configHash, SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
-				}); beginErr == nil {
-					reportID := controller.startReport(ctx, desired, deploymentID, sourceRevision, buildLogPath)
-					_ = controller.store.FailDeployment(ctx, deploymentID, "source_resolution_failed", resolveErr.Error(), controller.now().UnixMilli())
-					controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
-				}
+			if errors.Is(resolveErr, ErrSourceChecksPending) && !deploymentStarted {
+				return resolveErr
 			}
-			return resolveErr
+			return failDeployment("source_resolution_failed", resolveErr)
 		}
 		image = resolution.Image
-	} else if imageReference == "" {
-		return errors.New("image source reference is empty")
+		if !deploymentStarted {
+			if err := beginDeployment(resolution); err != nil {
+				return err
+			}
+		}
+	} else {
+		if imageReference == "" {
+			return errors.New("image source reference is empty")
+		}
+		if err := beginDeployment(SourceResolution{ImageReference: imageReference}); err != nil {
+			return err
+		}
 	}
 	credential := ImageCredential{}
 	if normalized.Source.Type == servicesource.PrivateImage {
 		if controller.credentials == nil {
-			return errors.New("image credential resolution is not configured")
+			return failDeployment("source_resolution_failed", errors.New("image credential resolution is not configured"))
 		}
 		credential, err = controller.credentials.Resolve(ctx, desired)
 		if err != nil {
-			return fmt.Errorf("resolve image credential: %w", err)
+			return failDeployment("source_resolution_failed", fmt.Errorf("resolve image credential: %w", err))
 		}
 	}
 
 	if normalized.Source.Type != servicesource.GitHubImage {
 		if err := appendBuildLog(buildLogPath, "Resolving "+imageReference); err != nil {
-			return err
+			return failDeployment("build_log_failed", err)
 		}
 		image, err = controller.pull(ctx, containerengine.PullRequest{
 			Reference: imageReference,
@@ -374,71 +432,64 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			Refresh:   !serviceconfig.IsDigestReference(imageReference),
 		})
 		if err != nil {
-			if beginErr := controller.store.BeginDeployment(ctx, state.BeginDeployment{
-				ID: deploymentID, ServiceID: serviceID, ImageReference: imageReference,
-				ConfigHash: configHash, SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
-			}); beginErr == nil {
-				_ = controller.store.FailDeployment(ctx, deploymentID, "source_resolution_failed", err.Error(), controller.now().UnixMilli())
-			}
 			_ = appendBuildLog(buildLogPath, "Source resolution failed: "+err.Error())
-			return fmt.Errorf("resolve and pull service image: %w", err)
+			return failDeployment("source_resolution_failed", fmt.Errorf("resolve and pull service image: %w", err))
 		}
 		if err := appendBuildLog(buildLogPath, "Resolved "+image.Digest); err != nil {
-			return err
+			return failDeployment("build_log_failed", err)
 		}
 	}
 	if image.ID == "" || image.Digest == "" {
-		return errors.New("pulled image has no ID or digest")
+		return failDeployment("source_resolution_failed", errors.New("pulled image has no ID or digest"))
 	}
 	if servicesource.IsImage(normalized.Source) {
 		if _, err := serviceconfig.PinnedReference(imageReference, image.Digest); err != nil {
-			return err
+			return failDeployment("source_resolution_failed", err)
 		}
+	}
+	if err := controller.store.UpdateDeploymentSource(
+		ctx, deploymentID, image.Digest, imageReference, sourceRevision, commitMessage,
+	); err != nil {
+		return failDeployment("state_update_failed", err)
 	}
 
 	current, err := controller.store.DesiredService(ctx, serviceID)
 	if err != nil {
-		return err
+		return failDeployment("state_load_failed", err)
 	}
 	currentNormalized, _, currentHash, err := serviceconfig.Canonical(current.Snapshot)
 	if err != nil {
-		return err
+		return failDeployment("state_load_failed", err)
 	}
 	if !current.Enabled || currentHash != configHash {
+		_ = finishAttempt("interrupted", "service_changed", state.ErrServiceChanged.Error())
 		return state.ErrServiceChanged
 	}
 	desired = current
 	desired.Snapshot = currentNormalized
 	if !force && desired.ActiveImageDigest == image.Digest && desired.ActiveConfigHash == configHash {
-		_ = os.Remove(buildLogPath)
 		active, ok := controller.activeContainer(serviceID)
 		if !ok || active.deploymentID != desired.ActiveDeploymentID {
-			return errors.New("active deployment has no matching runtime container")
+			return failDeployment("runtime_state_missing", errors.New("active deployment has no matching runtime container"))
+		}
+		if err := finishAttempt("skipped", "no_changes", "The resolved source and service configuration are already active"); err != nil {
+			return err
 		}
 		return controller.publisher.Publish(desired, active.container)
 	}
 	if !force {
 		blocked, err := controller.store.LatestFailedDeployment(ctx, serviceID, configHash, image.Digest)
 		if err != nil {
-			return err
+			return failDeployment("state_load_failed", err)
 		}
 		if blocked {
-			_ = os.Remove(buildLogPath)
+			_ = finishAttempt("skipped", "blocked_pair", ErrBlockedPair.Error())
 			return ErrBlockedPair
 		}
 	}
-
-	if err := controller.store.BeginDeployment(ctx, state.BeginDeployment{
-		ID: deploymentID, ServiceID: serviceID, ImageDigest: image.Digest,
-		ImageReference: imageReference, SourceRevision: sourceRevision, CommitMessage: commitMessage, ConfigHash: configHash,
-		SnapshotJSON: snapshotJSON, CreatedAtMillis: startedAt.UnixMilli(),
-	}); err != nil {
-		return err
-	}
 	if err := appendBuildLog(buildLogPath, "Image ready; starting deployment"); err != nil {
-		return controller.fail(deploymentID, "build_log_failed", err)
+		return failDeployment("build_log_failed", err)
 	}
-	reportID := controller.startReport(ctx, desired, deploymentID, sourceRevision, buildLogPath)
 	deployErr := controller.runDeployment(ctx, desired, deploymentID, image.ID)
 	if deployErr != nil {
 		controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
@@ -792,7 +843,7 @@ func (controller *Controller) rebuildGitHubDeployment(
 	}
 	_, _ = io.WriteString(logFile, "\nRebuilding the active GitHub revision because its local image is missing\n")
 	resolution, resolveErr := controller.sources.Resolve(
-		ctx, desired, active.ID, active.SourceRevision, logFile, true,
+		ctx, desired, active.ID, active.SourceRevision, logFile, true, nil,
 	)
 	closeErr := logFile.Close()
 	if err := errors.Join(resolveErr, closeErr); err != nil {

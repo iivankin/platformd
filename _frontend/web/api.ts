@@ -3753,7 +3753,7 @@ export const fetchGitHubRepositoryPaths = async (
   repositoryID: number,
   ref: string,
   query: string,
-  kind: "dockerfile" | "path",
+  kind: "directory" | "dockerfile" | "path",
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<GitHubRepositoryPath[]> => {

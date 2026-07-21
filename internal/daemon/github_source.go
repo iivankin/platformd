@@ -36,6 +36,7 @@ func (resolver githubSourceResolver) Resolve(
 	revisionOverride string,
 	log io.Writer,
 	force bool,
+	onBuildStarted deployment.SourceBuildStarted,
 ) (deployment.SourceResolution, error) {
 	if resolver.github == nil {
 		return deployment.SourceResolution{}, errors.New("GitHub App is not configured")
@@ -68,6 +69,12 @@ func (resolver githubSourceResolver) Resolve(
 			return result, deployment.ErrSourceChecksPending
 		case githubapp.ChecksFailed:
 			return result, &deployment.SourceSkippedError{Reason: "GitHub CI checks did not pass"}
+		}
+	}
+	result.ImageReference = "localhost/platformd-build/" + desired.ID + ":" + commit.SHA
+	if onBuildStarted != nil {
+		if err := onBuildStarted(result); err != nil {
+			return result, fmt.Errorf("record GitHub build start: %w", err)
 		}
 	}
 
@@ -109,7 +116,6 @@ func (resolver githubSourceResolver) Resolve(
 	if info, err := os.Stat(dockerfilePath); err != nil || !info.Mode().IsRegular() {
 		return result, errors.New("GitHub Dockerfile does not exist")
 	}
-	result.ImageReference = "localhost/platformd-build/" + desired.ID + ":" + commit.SHA
 	_, _ = fmt.Fprintf(log, "Building %s from %s\n", result.ImageReference, github.DockerfilePath)
 	image, err := resolver.engine.Build(ctx, containerengine.BuildRequest{
 		ContextDirectory: contextPath,

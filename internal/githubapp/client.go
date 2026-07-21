@@ -30,6 +30,14 @@ type RepositoryPath struct {
 	Type string `json:"type"`
 }
 
+type RepositoryPathKind string
+
+const (
+	RepositoryPathAny        RepositoryPathKind = "path"
+	RepositoryPathDirectory  RepositoryPathKind = "directory"
+	RepositoryPathDockerfile RepositoryPathKind = "dockerfile"
+)
+
 type Commit struct {
 	SHA          string
 	Message      string
@@ -231,8 +239,11 @@ func (application *Application) RepositoryPaths(
 	repositoryID int64,
 	ref string,
 	query string,
-	dockerfilesOnly bool,
+	kind RepositoryPathKind,
 ) ([]RepositoryPath, error) {
+	if kind != RepositoryPathAny && kind != RepositoryPathDirectory && kind != RepositoryPathDockerfile {
+		return nil, errors.New("GitHub repository path kind is invalid")
+	}
 	repository, token, err := application.repositoryToken(ctx, repositoryID)
 	if err != nil {
 		return nil, err
@@ -258,8 +269,15 @@ func (application *Application) RepositoryPaths(
 		if candidate == "" || (item.Type != "blob" && item.Type != "tree") {
 			continue
 		}
-		if dockerfilesOnly && (item.Type != "blob" || !strings.Contains(strings.ToLower(candidate), "dockerfile")) {
-			continue
+		switch kind {
+		case RepositoryPathDirectory:
+			if item.Type != "tree" {
+				continue
+			}
+		case RepositoryPathDockerfile:
+			if item.Type != "blob" || !strings.Contains(strings.ToLower(candidate), "dockerfile") {
+				continue
+			}
 		}
 		if needle != "" && !strings.Contains(strings.ToLower(candidate), needle) {
 			continue

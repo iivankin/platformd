@@ -34,6 +34,18 @@ func (deployer *fakeDeployer) DeployService(_ context.Context, serviceID string,
 	return nil
 }
 
+type blockingDeployer struct {
+	calls   chan string
+	release chan struct{}
+	once    sync.Once
+}
+
+func (deployer *blockingDeployer) DeployService(_ context.Context, serviceID string, _ bool) error {
+	deployer.calls <- serviceID
+	deployer.once.Do(func() { <-deployer.release })
+	return nil
+}
+
 func TestEmbeddedReferenceSleepsUntilExactCommitNotification(t *testing.T) {
 	store := &fakeStore{service: state.ServiceDesired{
 		ID: "service", Enabled: true,
@@ -169,6 +181,84 @@ func TestTrackStopsWatcherAfterServicePinsDigest(t *testing.T) {
 		t.Fatal("digest-pinned service is still tracked")
 	}
 	assertNoCall(t, deployer.calls)
+}
+
+func TestReconcileImmediatelyRunsNonAutoUpdatingService(t *testing.T) {
+	store := &fakeStore{service: state.ServiceDesired{
+		ID: "service", Enabled: true,
+		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("docker.io/library/alpine:3.22")},
+	}}
+	store.service.Snapshot.Source.AutoUpdate = false
+	deployer := &fakeDeployer{calls: make(chan string, 1)}
+	watcher, err := New(Config{
+		Store: store, Deployer: deployer,
+		IsEmbedded:             func(string) bool { return false },
+		RemoteInterval:         time.Hour,
+		RemoteMaximumBackoff:   2 * time.Hour,
+		EmbeddedRetry:          time.Second,
+		EmbeddedMaximumBackoff: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := watcher.Start(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Reconcile(ctx, "service"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case serviceID := <-deployer.calls:
+		if serviceID != "service" {
+			t.Fatalf("service ID = %q", serviceID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reconcile did not run immediately")
+	}
+}
+
+func TestReconcileDoesNotLoseMutationWhileOneShotDeploymentRuns(t *testing.T) {
+	store := &fakeStore{service: state.ServiceDesired{
+		ID: "service", Enabled: true,
+		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("docker.io/library/alpine:3.22")},
+	}}
+	store.service.Snapshot.Source.AutoUpdate = false
+	deployer := &blockingDeployer{calls: make(chan string, 2), release: make(chan struct{})}
+	watcher, err := New(Config{
+		Store: store, Deployer: deployer,
+		IsEmbedded:             func(string) bool { return false },
+		RemoteInterval:         time.Hour,
+		RemoteMaximumBackoff:   2 * time.Hour,
+		EmbeddedRetry:          time.Second,
+		EmbeddedMaximumBackoff: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := watcher.Start(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := watcher.Reconcile(ctx, "service"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-deployer.calls:
+	case <-time.After(time.Second):
+		t.Fatal("first reconcile did not start")
+	}
+	if err := watcher.Reconcile(ctx, "service"); err != nil {
+		t.Fatal(err)
+	}
+	close(deployer.release)
+	select {
+	case <-deployer.calls:
+	case <-time.After(time.Second):
+		t.Fatal("mutation queued during deployment was lost")
+	}
 }
 
 func assertNoCall(t *testing.T, calls <-chan string) {

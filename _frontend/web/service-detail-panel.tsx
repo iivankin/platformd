@@ -106,6 +106,8 @@ export const ServiceDetailPanel = ({
   const [volumes, setVolumes] = useState<Volume[]>([]);
   const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [nextCursor, setNextCursor] = useState<string>();
+  const [awaitingDeploymentAfter, setAwaitingDeploymentAfter] =
+    useState<number>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string | null>(null);
 
@@ -164,6 +166,68 @@ export const ServiceDetailPanel = ({
     return () => controller.abort();
   }, [load]);
 
+  const deploymentInProgress =
+    deployments[0]?.status === "running" ||
+    deployments[0]?.status === "waiting";
+
+  useEffect(() => {
+    if (
+      view !== "deployments" ||
+      !(deploymentInProgress || awaitingDeploymentAfter)
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    const refresh = async () => {
+      try {
+        const [loadedService, page] = await Promise.all([
+          fetchService(projectID, serviceID, controller.signal),
+          fetchServiceDeployments(
+            projectID,
+            serviceID,
+            undefined,
+            controller.signal
+          ),
+        ]);
+        setService(loadedService);
+        setDeployments(page.deployments);
+        setNextCursor(page.nextCursor);
+        const [latest] = page.deployments;
+        if (
+          awaitingDeploymentAfter &&
+          latest &&
+          latest.createdAt >= awaitingDeploymentAfter
+        ) {
+          setAwaitingDeploymentAfter(undefined);
+        }
+      } catch (refreshError) {
+        if (
+          !(
+            refreshError instanceof DOMException &&
+            refreshError.name === "AbortError"
+          )
+        ) {
+          setError(
+            refreshError instanceof Error
+              ? refreshError.message
+              : "Unable to refresh deployment"
+          );
+        }
+      }
+    };
+    const timer = globalThis.setInterval(() => void refresh(), 1000);
+    return () => {
+      globalThis.clearInterval(timer);
+      controller.abort();
+    };
+  }, [
+    awaitingDeploymentAfter,
+    deploymentInProgress,
+    projectID,
+    serviceID,
+    view,
+  ]);
+
   const apply = async (
     name: string,
     action: () => Promise<Service>
@@ -174,7 +238,9 @@ export const ServiceDetailPanel = ({
     setBusy(name);
     setError(null);
     try {
-      setService(await action());
+      const updated = await action();
+      setService(updated);
+      setAwaitingDeploymentAfter(updated.updatedAt);
       const page = await fetchServiceDeployments(projectID, serviceID);
       setDeployments(page.deployments);
       setNextCursor(page.nextCursor);

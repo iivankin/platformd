@@ -245,7 +245,7 @@ func (application *Application) Deploy(ctx context.Context, serviceID string, ev
 	if err != nil {
 		return application.fail(ctx, desired, event, previewID, githubDeploymentID, commentID, hostname, "build_log_failed", err)
 	}
-	resolution, resolveErr := application.sources.Resolve(ctx, desired, previewID, event.Revision, logFile, false)
+	resolution, resolveErr := application.sources.Resolve(ctx, desired, previewID, event.Revision, logFile, false, nil)
 	closeErr := logFile.Close()
 	if closeErr != nil && resolveErr == nil {
 		resolveErr = closeErr

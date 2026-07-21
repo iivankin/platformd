@@ -43,6 +43,7 @@ const handleGitHubRepositoryReads = (
     const parameters = new URL(request.url).searchParams;
     const query = parameters.get("q")?.trim().toLowerCase() ?? "";
     const dockerfilesOnly = parameters.get("kind") === "dockerfile";
+    const directoriesOnly = parameters.get("kind") === "directory";
     const paths = [
       { path: "Dockerfile", type: "blob" },
       { path: "apps", type: "tree" },
@@ -54,6 +55,7 @@ const handleGitHubRepositoryReads = (
         (!dockerfilesOnly ||
           (item.type === "blob" &&
             item.path.toLowerCase().includes("dockerfile"))) &&
+        (!directoriesOnly || item.type === "tree") &&
         (!query || item.path.toLowerCase().includes(query))
     );
     return json({

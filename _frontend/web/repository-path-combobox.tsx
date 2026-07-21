@@ -22,7 +22,7 @@ export const RepositoryPathCombobox = ({
   branch: string;
   excludedPaths?: string[];
   id: string;
-  kind: "dockerfile" | "path";
+  kind: "directory" | "dockerfile" | "path";
   onChange: (value: string) => void;
   onSelect?: (value: string) => void;
   placeholder?: string;
@@ -30,10 +30,14 @@ export const RepositoryPathCombobox = ({
   value: string;
 }) => {
   const [items, setItems] = useState<GitHubRepositoryPath[]>([]);
-  const query = value.trim();
-  const visibleItems = items.filter(
-    (item) => !isTriggerPathCovered(item.path, excludedPaths)
-  );
+  const input = value.trim();
+  const query = kind === "directory" && input === "." ? "" : input;
+  const includeRepositoryRoot =
+    kind === "directory" && (input === "" || input === ".");
+  const visibleItems = [
+    ...(includeRepositoryRoot ? [{ path: ".", type: "tree" as const }] : []),
+    ...items,
+  ].filter((item) => !isTriggerPathCovered(item.path, excludedPaths));
 
   useEffect(() => {
     if (repositoryID <= 0 || !branch.trim()) {

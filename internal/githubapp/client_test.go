@@ -137,12 +137,19 @@ func TestCreateDeploymentAndStatusUseInstallationRepository(t *testing.T) {
 	if updatedCommentBody != "Preview ready" {
 		t.Fatalf("updated comment body = %q", updatedCommentBody)
 	}
-	paths, err := application.RepositoryPaths(context.Background(), 23, "main", "apps", true)
+	paths, err := application.RepositoryPaths(context.Background(), 23, "main", "apps", RepositoryPathDockerfile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(paths) != 1 || paths[0].Path != "apps/api/Dockerfile" || paths[0].Type != "blob" {
 		t.Fatalf("repository path suggestions = %+v", paths)
+	}
+	directories, err := application.RepositoryPaths(context.Background(), 23, "main", "apps", RepositoryPathDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(directories) != 1 || directories[0].Path != "apps/api" || directories[0].Type != "tree" {
+		t.Fatalf("repository directory suggestions = %+v", directories)
 	}
 }
 

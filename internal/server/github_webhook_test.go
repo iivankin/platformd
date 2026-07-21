@@ -74,3 +74,42 @@ func TestGitHubWebhookDispatchesVerifiedPush(t *testing.T) {
 		t.Fatal("verified push was not dispatched")
 	}
 }
+
+func TestGitHubWebhookUsesCheckSuiteAsSingleCICompletionTrigger(t *testing.T) {
+	t.Parallel()
+	verifier := &githubWebhookVerifier{}
+	events := make(chan githubapp.PushEvent, 2)
+	handler, err := server.NewGitHubWebhookHandler(server.GitHubWebhookConfig{
+		Verifier: verifier,
+		OnPush: func(_ context.Context, event githubapp.PushEvent) {
+			events <- event
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revision := strings.Repeat("b", 40)
+	body := `{"action":"completed","repository":{"id":42},"check_suite":{"head_branch":"main","head_sha":"` + revision + `"}}`
+	for _, eventName := range []string{"check_run", "check_suite"} {
+		request := httptest.NewRequest(http.MethodPost, server.GitHubWebhookPath, strings.NewReader(body))
+		request.Header.Set("X-GitHub-Event", eventName)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("%s response = %d", eventName, response.Code)
+		}
+	}
+	select {
+	case event := <-events:
+		if event.RepositoryID != 42 || event.Revision != revision || !event.ChecksEvent {
+			t.Fatalf("event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("check suite was not dispatched")
+	}
+	select {
+	case event := <-events:
+		t.Fatalf("duplicate check event dispatched: %+v", event)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

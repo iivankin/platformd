@@ -26,6 +26,7 @@ type serviceRuntime interface {
 	DeleteService(context.Context, state.ServiceDesired) error
 	DeleteServiceLogs(string) error
 	stopServicePreviews(context.Context, string, string) error
+	ReconcileService(context.Context, string) error
 	TrackService(context.Context, string, bool) error
 	recordServiceFailure(string, error)
 }
@@ -160,11 +161,9 @@ func (repository liveServiceRepository) CreateService(ctx context.Context, input
 		return state.ServiceDesired{}, err
 	}
 	if created.Enabled {
-		// Desired state stays committed even when the first pull is temporarily
-		// unavailable; watcher/reconcile retries registry errors without inventing
-		// a durable job queue.
-		deployErr := repository.runtime.DeployService(ctx, created.ID, false)
-		repository.finishReconcile(ctx, created.ID, deployErr)
+		if reconcileErr := repository.runtime.ReconcileService(ctx, created.ID); reconcileErr != nil {
+			repository.runtime.recordServiceFailure(created.ID, reconcileErr)
+		}
 	}
 	return repository.store.DesiredService(ctx, created.ID)
 }
@@ -179,8 +178,9 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 			return state.ServiceDesired{}, err
 		}
 	}
-	deployErr := repository.runtime.DeployService(ctx, updated.ID, false)
-	repository.finishReconcile(ctx, updated.ID, deployErr)
+	if reconcileErr := repository.runtime.ReconcileService(ctx, updated.ID); reconcileErr != nil {
+		repository.runtime.recordServiceFailure(updated.ID, reconcileErr)
+	}
 	return repository.store.DesiredService(ctx, updated.ID)
 }
 

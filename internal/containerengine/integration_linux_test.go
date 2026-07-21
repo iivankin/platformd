@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"os/exec"
@@ -310,6 +311,87 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 	}
 	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
 		t.Fatalf("built image verification exit = %d, %v", code, err)
+	}
+}
+
+func TestPublicRepositoryDockerfileBuild(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	if err := os.MkdirAll(config.LogRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+
+	// Pin the public repository commit so this integration test exercises a
+	// real-world Dockerfile without depending on a moving branch.
+	const sourceRoot = "https://raw.githubusercontent.com/docker-library/hello-world/b30c7e65908f41cba39d96014a45c36e9865db6d/amd64/"
+	contextRoot := t.TempDir()
+	downloadIntegrationFile(t, ctx, sourceRoot+"Dockerfile", filepath.Join(contextRoot, "Dockerfile"), 0o600)
+	downloadIntegrationFile(t, ctx, sourceRoot+"hello", filepath.Join(contextRoot, "hello"), 0o700)
+	var buildOutput bytes.Buffer
+	image, err := engine.Build(ctx, BuildRequest{
+		ContextDirectory: contextRoot,
+		Dockerfile:       filepath.Join(contextRoot, "Dockerfile"),
+		Reference:        "localhost/platformd/public-repository-integration:latest",
+		Log:              &buildOutput,
+	})
+	if err != nil {
+		t.Fatalf("build public repository Dockerfile: %v\n%s", err, buildOutput.String())
+	}
+	defer engine.RemoveImage(context.Background(), image.ID)
+	logPath := filepath.Join(config.LogRoot, "public-repository-build.log")
+	container, err := engine.CreateContainer(ctx, ContainerSpec{
+		ImageID: image.ID, Name: "platformd-public-repository-build",
+		LogPath: logPath, LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.RemoveContainer(context.Background(), container.ID, true)
+	if err := engine.StartContainer(ctx, container.ID); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
+		t.Fatalf("public repository image exit = %d, %v", code, err)
+	}
+	output, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(output, []byte("Hello from Docker!")) {
+		t.Fatalf("public repository image output = %q", output)
+	}
+}
+
+func downloadIntegrationFile(t *testing.T, ctx context.Context, url, destination string, mode os.FileMode) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("download %s: %v", url, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("download %s: %s", url, response.Status)
+	}
+	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, copyErr := io.Copy(file, io.LimitReader(response.Body, 10<<20))
+	if err := errors.Join(copyErr, file.Close()); err != nil {
+		t.Fatalf("write %s: %v", destination, err)
 	}
 }
 

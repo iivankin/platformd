@@ -132,20 +132,62 @@ WHERE id = ? AND status = 'running'`, finishedAtMillis, deploymentID); err != ni
 }
 
 func (store *Store) FailDeployment(ctx context.Context, deploymentID, code, message string, finishedAtMillis int64) error {
-	if deploymentID == "" || code == "" || finishedAtMillis <= 0 {
-		return errors.New("fail deployment input is incomplete")
+	return store.FinishDeployment(ctx, deploymentID, "failed", code, message, finishedAtMillis)
+}
+
+// UpdateDeploymentSource fills the immutable source identity once a pull or
+// build has resolved it. The deployment row is created before that potentially
+// slow operation so clients can observe the running attempt immediately.
+func (store *Store) UpdateDeploymentSource(
+	ctx context.Context,
+	deploymentID string,
+	imageDigest string,
+	imageReference string,
+	sourceRevision string,
+	commitMessage string,
+) error {
+	if deploymentID == "" {
+		return errors.New("deployment ID is required")
 	}
 	return store.Write(ctx, func(transaction *sql.Tx) error {
 		result, err := transaction.ExecContext(ctx, `
 UPDATE deployments
-SET status = 'failed', error_code = ?, error_message = ?, finished_at = ?
-WHERE id = ? AND status = 'running'`, code, message, finishedAtMillis, deploymentID)
+SET image_digest = ?, image_reference = ?, source_revision = ?, source_commit_message = ?
+WHERE id = ? AND status = 'running'`,
+			imageDigest, imageReference, nullableString(sourceRevision), nullableString(commitMessage), deploymentID,
+		)
 		if err != nil {
-			return fmt.Errorf("fail deployment: %w", err)
+			return fmt.Errorf("update deployment source: %w", err)
 		}
 		changed, err := result.RowsAffected()
 		if err != nil {
-			return fmt.Errorf("count failed deployment update: %w", err)
+			return fmt.Errorf("count deployment source update: %w", err)
+		}
+		if changed != 1 {
+			return ErrServiceChanged
+		}
+		return nil
+	})
+}
+
+func (store *Store) FinishDeployment(ctx context.Context, deploymentID, status, code, message string, finishedAtMillis int64) error {
+	if deploymentID == "" || code == "" || finishedAtMillis <= 0 {
+		return errors.New("finish deployment input is incomplete")
+	}
+	if status != "failed" && status != "interrupted" && status != "skipped" {
+		return errors.New("deployment can only finish as failed, interrupted, or skipped")
+	}
+	return store.Write(ctx, func(transaction *sql.Tx) error {
+		result, err := transaction.ExecContext(ctx, `
+UPDATE deployments
+SET status = ?, error_code = ?, error_message = ?, finished_at = ?
+WHERE id = ? AND status = 'running'`, status, code, message, finishedAtMillis, deploymentID)
+		if err != nil {
+			return fmt.Errorf("finish deployment: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count finished deployment update: %w", err)
 		}
 		if changed != 1 {
 			return ErrServiceChanged

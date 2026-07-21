@@ -160,6 +160,16 @@ func (stack *runtimeStack) TrackService(ctx context.Context, serviceID string, r
 	return watcher.Track(ctx, serviceID, retry)
 }
 
+func (stack *runtimeStack) ReconcileService(ctx context.Context, serviceID string) error {
+	stack.mu.Lock()
+	watcher := stack.serviceWatcher
+	stack.mu.Unlock()
+	if watcher == nil {
+		return errors.New("service watcher is not configured")
+	}
+	return watcher.Reconcile(ctx, serviceID)
+}
+
 func (stack *runtimeStack) NotifyEmbeddedImage(imageReference string) {
 	stack.mu.Lock()
 	watcher := stack.serviceWatcher

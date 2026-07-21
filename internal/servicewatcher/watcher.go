@@ -52,11 +52,12 @@ type Watcher struct {
 }
 
 type serviceLoop struct {
-	wake      chan struct{}
-	reset     chan time.Duration
-	stop      chan struct{}
-	reference string
-	embedded  bool
+	wake       chan struct{}
+	reset      chan time.Duration
+	stop       chan struct{}
+	reference  string
+	embedded   bool
+	generation uint64
 }
 
 func New(config Config) (*Watcher, error) {
@@ -177,6 +178,41 @@ func (watcher *Watcher) NotifyService(serviceID string) {
 	}
 }
 
+// Reconcile schedules one immediate deployment from durable desired state.
+// Unlike Track, it also creates a short-lived loop for disabled, digest-pinned,
+// and non-auto-updating services so HTTP mutations never wait for image work.
+func (watcher *Watcher) Reconcile(ctx context.Context, serviceID string) error {
+	desired, err := watcher.store.DesiredService(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	reference := servicesource.ImageReference(desired.Snapshot.Source)
+	watcher.mu.Lock()
+	if !watcher.started || watcher.ctx == nil {
+		watcher.mu.Unlock()
+		return errors.New("service watcher is not started")
+	}
+	loop := watcher.services[serviceID]
+	if loop == nil {
+		loop = &serviceLoop{
+			wake: make(chan struct{}, 1), reset: make(chan time.Duration, 1), stop: make(chan struct{}),
+			reference:  reference,
+			embedded:   desired.Snapshot.Source.Type == servicesource.RegistryImage,
+			generation: 1,
+		}
+		watcher.services[serviceID] = loop
+		runContext := watcher.ctx
+		go watcher.runService(runContext, serviceID, loop, false)
+	} else {
+		loop.reference = reference
+		loop.embedded = desired.Snapshot.Source.Type == servicesource.RegistryImage
+		loop.generation++
+	}
+	watcher.mu.Unlock()
+	coalesce(loop.wake)
+	return nil
+}
+
 // NotifyEmbedded is called only after the embedded registry committed the tag.
 // Exact normalized references prevent unrelated services from waking.
 func (watcher *Watcher) NotifyEmbedded(imageReference string) {
@@ -226,16 +262,24 @@ func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *
 		case <-ctx.Done():
 			return
 		}
+		watcher.mu.Lock()
+		generation := loop.generation
+		watcher.mu.Unlock()
 		err := watcher.deployer.DeployService(ctx, serviceID, false)
 		<-watcher.slots
 
 		desired, loadErr := watcher.store.DesiredService(ctx, serviceID)
-		if loadErr != nil || !desired.Enabled {
+		if loadErr != nil {
 			return
 		}
 		reference := servicesource.ImageReference(desired.Snapshot.Source)
-		if !desired.Snapshot.Source.AutoUpdate || (reference != "" && serviceconfig.IsDigestReference(reference)) {
-			return
+		if !desired.Enabled || !desired.Snapshot.Source.AutoUpdate ||
+			(reference != "" && serviceconfig.IsDigestReference(reference)) {
+			if watcher.finishOneShot(serviceID, loop, generation) {
+				return
+			}
+			delay = 0
+			continue
 		}
 		watcher.updateLoop(loop, reference)
 		if errors.Is(err, deployment.ErrBlockedPair) {
@@ -251,6 +295,19 @@ func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *
 		failures = 0
 		delay = watcher.normalDelay(loop)
 	}
+}
+
+// finishOneShot removes a completed on-demand loop only when no newer
+// mutation arrived while it was deploying. The generation check closes the
+// otherwise tiny race where a coalesced update could be lost during teardown.
+func (watcher *Watcher) finishOneShot(serviceID string, loop *serviceLoop, generation uint64) bool {
+	watcher.mu.Lock()
+	defer watcher.mu.Unlock()
+	if watcher.services[serviceID] != loop || loop.generation != generation {
+		return false
+	}
+	delete(watcher.services, serviceID)
+	return true
 }
 
 func (watcher *Watcher) initialDelay(loop *serviceLoop, retry bool) time.Duration {

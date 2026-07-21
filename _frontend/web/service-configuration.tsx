@@ -423,11 +423,13 @@ const SourceFields = ({
             htmlFor="service-source-context"
           >
             Build context
-            <Input
+            <RepositoryPathCombobox
+              branch={draft.github.branch}
               id="service-source-context"
-              onChange={(event) =>
-                updateGitHub({ contextPath: event.target.value })
-              }
+              kind="directory"
+              onChange={(contextPath) => updateGitHub({ contextPath })}
+              placeholder="Select or enter a repository directory"
+              repositoryID={draft.github.repositoryId}
               value={draft.github.contextPath}
             />
           </label>

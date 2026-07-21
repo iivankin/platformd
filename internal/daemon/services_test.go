@@ -17,6 +17,7 @@ type fakeServiceRuntime struct {
 	deployErr       error
 	deployForce     []bool
 	deployRevisions []string
+	reconciled      []string
 	trackRetry      []bool
 	failures        []error
 	deleted         []string
@@ -52,6 +53,11 @@ func (runtime *fakeServiceRuntime) DeleteServiceLogs(serviceID string) error {
 
 func (*fakeServiceRuntime) stopServicePreviews(context.Context, string, string) error { return nil }
 
+func (runtime *fakeServiceRuntime) ReconcileService(_ context.Context, serviceID string) error {
+	runtime.reconciled = append(runtime.reconciled, serviceID)
+	return nil
+}
+
 func (runtime *fakeServiceRuntime) TrackService(_ context.Context, _ string, retry bool) error {
 	runtime.trackRetry = append(runtime.trackRetry, retry)
 	return nil
@@ -83,8 +89,8 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.deployForce) != 1 || runtime.deployForce[0] {
-		t.Fatalf("create force calls = %v", runtime.deployForce)
+	if len(runtime.reconciled) != 1 || runtime.reconciled[0] != created.ID || len(runtime.deployForce) != 0 {
+		t.Fatalf("create runtime calls = reconciled %v, deploy %v", runtime.reconciled, runtime.deployForce)
 	}
 	if _, err := repository.UpdateService(context.Background(), state.UpdateServiceInput{
 		ID: created.ID, ProjectID: created.ProjectID, Enabled: false, Snapshot: created.Snapshot,
@@ -93,8 +99,8 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.deployForce) != 2 || runtime.deployForce[1] {
-		t.Fatalf("update force calls = %v", runtime.deployForce)
+	if len(runtime.reconciled) != 2 || runtime.reconciled[1] != created.ID || len(runtime.deployForce) != 0 {
+		t.Fatalf("update runtime calls = reconciled %v, deploy %v", runtime.reconciled, runtime.deployForce)
 	}
 
 	current, err := store.DesiredService(context.Background(), created.ID)
@@ -120,7 +126,7 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	if !errors.Is(err, state.ErrServiceReconcileFailed) {
 		t.Fatalf("redeploy error = %v", err)
 	}
-	if len(runtime.deployForce) != 3 || !runtime.deployForce[2] || len(runtime.trackRetry) != 3 || !runtime.trackRetry[2] {
+	if len(runtime.deployForce) != 1 || !runtime.deployForce[0] || len(runtime.trackRetry) != 1 || !runtime.trackRetry[0] {
 		t.Fatalf("runtime calls = force %v, retry %v", runtime.deployForce, runtime.trackRetry)
 	}
 	current, err = store.DesiredService(context.Background(), created.ID)
