@@ -60,6 +60,10 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	if oldRuntime.resource.VolumeID != resource.VolumeID || oldRuntime.resource.ImageDigest != resource.ImageDigest {
 		return errors.New("managed PostgreSQL runtime does not match the active pointer")
 	}
+	restoreExtensions, err := controller.restoreExtensionNames(ctx, resource.ID, oldRuntime, true)
+	if err != nil {
+		return err
+	}
 	endpoint, err := postgresVersionEndpoint(controller.engine, oldRuntime)
 	if err != nil {
 		return err
@@ -164,6 +168,11 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	)
 	if err != nil {
 		return fmt.Errorf("initialize managed PostgreSQL version-change candidate: %w", err)
+	}
+	if err := controller.prepareRestoreExtensions(
+		ctx, target, candidate, placement.NetworkName, restoreExtensions,
+	); err != nil {
+		return err
 	}
 	progress("transferring_dump")
 	if err := controller.transferVersionDump(ctx, oldRuntime, candidate.ID, target, ownerPassword); err != nil {

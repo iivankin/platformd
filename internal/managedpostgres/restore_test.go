@@ -161,6 +161,8 @@ type postgresRestoreConnection struct {
 	bootstrapCalls int
 	pingCalls      int
 	closeCalls     int
+	extensions     []Extension
+	changes        []string
 }
 
 func (connection *postgresRestoreConnection) Bootstrap(context.Context, string, string, string) error {
@@ -177,11 +179,14 @@ func (*postgresRestoreConnection) Query(context.Context, string) (QueryResult, e
 	return QueryResult{}, nil
 }
 
-func (*postgresRestoreConnection) Extensions(context.Context) ([]Extension, error) {
-	return nil, nil
+func (connection *postgresRestoreConnection) Extensions(context.Context) ([]Extension, error) {
+	return connection.extensions, nil
 }
 
-func (*postgresRestoreConnection) ChangeExtension(context.Context, string, bool) error {
+func (connection *postgresRestoreConnection) ChangeExtension(_ context.Context, name string, install bool) error {
+	if install {
+		connection.changes = append(connection.changes, name)
+	}
 	return nil
 }
 
@@ -227,6 +232,11 @@ func (maintenance *recordingPostgresMaintenance) BlockDatabase(
 func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T) {
 	t.Parallel()
 	fixture := newPostgresRestoreFixture(t, nil)
+	fixture.connection.extensions = []Extension{
+		{Name: "plpgsql", InstalledVersion: "1.0"},
+		{Name: "vector", InstalledVersion: "0.8.2"},
+		{Name: "file_fdw"},
+	}
 	dump := []byte("PGDMP-custom-format")
 	if err := fixture.controller.RestoreReplace(context.Background(), "postgres-id", bytes.NewReader(dump), Actor{
 		Kind: "system", ID: "disaster_restore",
@@ -249,6 +259,9 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 	if !reflect.DeepEqual(fixture.engine.execRequest.Command, wantCommand) ||
 		fixture.engine.execRequest.Environment["PGPASSWORD"] != "owner-password" {
 		t.Fatalf("pg_restore request = %+v", fixture.engine.execRequest)
+	}
+	if !reflect.DeepEqual(fixture.connection.changes, []string{"plpgsql", "vector"}) {
+		t.Fatalf("restore candidate extensions = %v", fixture.connection.changes)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.volumeRoot, "project-id", "old-volume")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old volume still exists: %v", err)
@@ -327,6 +340,7 @@ type postgresRestoreFixture struct {
 	controller  *Controller
 	store       *postgresRestoreStore
 	engine      *postgresRestoreEngine
+	connection  *postgresRestoreConnection
 	publisher   *postgresRestorePublisher
 	maintenance *recordingPostgresMaintenance
 	volumeRoot  string
@@ -360,6 +374,7 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 	}
 	publisher := &postgresRestorePublisher{}
 	maintenance := &recordingPostgresMaintenance{}
+	connection := &postgresRestoreConnection{}
 	ids := []string{"new-volume", "runtime-id", "audit-id", "correlation-id", "attempt-id"}
 	controller, err := NewController(ControllerConfig{
 		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowthGate{}, Maintenance: maintenance, Admission: admission.New(),
@@ -372,7 +387,7 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 			}, nil
 		},
 		Dial: func(context.Context, string, string, string, string) (Connection, error) {
-			return &postgresRestoreConnection{}, nil
+			return connection, nil
 		},
 		VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
 		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
@@ -394,7 +409,8 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		resource: resource, container: engine.containers["old-container"], network: "network",
 	})
 	return postgresRestoreFixture{
-		controller: controller, store: store, engine: engine, publisher: publisher, maintenance: maintenance,
+		controller: controller, store: store, engine: engine, connection: connection,
+		publisher: publisher, maintenance: maintenance,
 		volumeRoot: volumeRoot,
 	}
 }

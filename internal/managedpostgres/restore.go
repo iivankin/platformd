@@ -41,6 +41,10 @@ func (controller *Controller) RestoreReplace(
 	if oldRunning && oldRuntime.resource.VolumeID != resource.VolumeID {
 		return errors.New("managed PostgreSQL runtime does not match the active volume")
 	}
+	restoreExtensions, err := controller.restoreExtensionNames(ctx, resource.ID, oldRuntime, oldRunning)
+	if err != nil {
+		return err
+	}
 	ownerPassword, err := controller.ownerPassword(resource)
 	if err != nil {
 		return fmt.Errorf("open managed PostgreSQL owner password: %w", err)
@@ -104,6 +108,11 @@ func (controller *Controller) RestoreReplace(
 	)
 	if err != nil {
 		return fmt.Errorf("initialize managed PostgreSQL restore candidate: %w", err)
+	}
+	if err := controller.prepareRestoreExtensions(
+		ctx, resource, candidate, placement.NetworkName, restoreExtensions,
+	); err != nil {
+		return err
 	}
 	if err := controller.restoreDump(ctx, candidate.ID, resource, ownerPassword, dump); err != nil {
 		return err
