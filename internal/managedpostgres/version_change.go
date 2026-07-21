@@ -60,10 +60,6 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	if oldRuntime.resource.VolumeID != resource.VolumeID || oldRuntime.resource.ImageDigest != resource.ImageDigest {
 		return errors.New("managed PostgreSQL runtime does not match the active pointer")
 	}
-	restoreExtensions, err := controller.restoreExtensionNames(ctx, resource.ID, oldRuntime, true)
-	if err != nil {
-		return err
-	}
 	endpoint, err := postgresVersionEndpoint(controller.engine, oldRuntime)
 	if err != nil {
 		return err
@@ -169,13 +165,10 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	if err != nil {
 		return fmt.Errorf("initialize managed PostgreSQL version-change candidate: %w", err)
 	}
-	if err := controller.prepareRestoreExtensions(
-		ctx, target, candidate, placement.NetworkName, restoreExtensions,
-	); err != nil {
-		return err
-	}
 	progress("transferring_dump")
-	if err := controller.transferVersionDump(ctx, oldRuntime, candidate.ID, target, ownerPassword); err != nil {
+	if err := controller.transferVersionDump(
+		ctx, oldRuntime, candidate, placement.NetworkName, target, ownerPassword,
+	); err != nil {
 		return err
 	}
 	progress("validating_target")
@@ -278,7 +271,8 @@ WHERE datname = current_database() AND usename = current_user AND pid <> pg_back
 func (controller *Controller) transferVersionDump(
 	ctx context.Context,
 	source activeRuntime,
-	targetContainerID string,
+	targetContainer containerengine.Container,
+	targetNetwork string,
 	target state.ManagedPostgres,
 	ownerPassword string,
 ) error {
@@ -291,7 +285,9 @@ func (controller *Controller) transferVersionDump(
 		_ = writer.CloseWithError(dumpErr)
 		dumpDone <- dumpErr
 	}()
-	restoreErr := controller.restoreDump(transferContext, targetContainerID, target, ownerPassword, reader)
+	restoreErr := controller.restoreDump(
+		transferContext, targetContainer, targetNetwork, target, ownerPassword, reader,
+	)
 	if restoreErr != nil {
 		cancel()
 		_ = reader.CloseWithError(restoreErr)

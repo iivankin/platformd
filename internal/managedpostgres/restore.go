@@ -41,10 +41,6 @@ func (controller *Controller) RestoreReplace(
 	if oldRunning && oldRuntime.resource.VolumeID != resource.VolumeID {
 		return errors.New("managed PostgreSQL runtime does not match the active volume")
 	}
-	restoreExtensions, err := controller.restoreExtensionNames(ctx, resource.ID, oldRuntime, oldRunning)
-	if err != nil {
-		return err
-	}
 	ownerPassword, err := controller.ownerPassword(resource)
 	if err != nil {
 		return fmt.Errorf("open managed PostgreSQL owner password: %w", err)
@@ -109,12 +105,9 @@ func (controller *Controller) RestoreReplace(
 	if err != nil {
 		return fmt.Errorf("initialize managed PostgreSQL restore candidate: %w", err)
 	}
-	if err := controller.prepareRestoreExtensions(
-		ctx, resource, candidate, placement.NetworkName, restoreExtensions,
+	if err := controller.restoreDump(
+		ctx, candidate, placement.NetworkName, resource, ownerPassword, dump,
 	); err != nil {
-		return err
-	}
-	if err := controller.restoreDump(ctx, candidate.ID, resource, ownerPassword, dump); err != nil {
 		return err
 	}
 	if err := controller.probeRestoredCandidate(ctx, candidate.ID, placement.NetworkName, resource, ownerPassword); err != nil {
@@ -174,16 +167,30 @@ func validRestoreActor(actor Actor) bool {
 
 func (controller *Controller) restoreDump(
 	ctx context.Context,
-	containerID string,
+	candidate containerengine.Container,
+	networkName string,
 	resource state.ManagedPostgres,
 	ownerPassword string,
 	dump io.Reader,
-) error {
-	reader := &postgresContextReader{ctx: ctx, source: dump}
+) (resultErr error) {
+	reader, restoreList, extensions, cleanup, err := controller.prepareRestoreArchive(ctx, candidate.ID, dump)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	if err := controller.prepareRestoreExtensions(ctx, resource, candidate, networkName, extensions); err != nil {
+		return err
+	}
+	if err := controller.writeRestoreList(ctx, candidate.ID, restoreList); err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, controller.removeRestoreList(ctx, candidate.ID))
+	}()
 	var stderr boundedDiagnostic
-	code, execErr := controller.engine.ExecContainer(ctx, containerID, containerengine.ExecRequest{
+	code, execErr := controller.engine.ExecContainer(ctx, candidate.ID, containerengine.ExecRequest{
 		Command: []string{
-			"pg_restore", "--exit-on-error", "--no-owner", "--no-acl",
+			"pg_restore", "--exit-on-error", "--no-owner", "--no-acl", "--use-list=" + postgresRestoreListPath,
 			"--host=127.0.0.1", "--port=5432", "--dbname=" + resource.DatabaseName,
 			"--username=" + resource.OwnerUsername,
 		},

@@ -65,6 +65,9 @@ type postgresRestoreEngine struct {
 	execPayload []byte
 	execCode    int
 	execErr     error
+	restoreList []byte
+	writtenList []byte
+	listRemoved bool
 	dumpRequest containerengine.ExecRequest
 	dumpPayload []byte
 	dumpCode    int
@@ -141,6 +144,33 @@ func (engine *postgresRestoreEngine) ExecContainer(_ context.Context, _ string, 
 			_, _ = io.WriteString(request.Stderr, engine.dumpErr.Error())
 		}
 		return engine.dumpCode, engine.dumpErr
+	}
+	if len(request.Command) > 1 && request.Command[0] == "pg_restore" && request.Command[1] == "--list" {
+		if request.Stdin == nil || request.Stdout == nil {
+			return -1, errors.New("pg_restore list streams are missing")
+		}
+		if _, err := io.Copy(io.Discard, request.Stdin); err != nil {
+			return -1, err
+		}
+		if _, err := request.Stdout.Write(engine.restoreList); err != nil {
+			return -1, err
+		}
+		return 0, nil
+	}
+	if len(request.Command) > 0 && request.Command[0] == "sh" {
+		if request.Stdin == nil {
+			return -1, errors.New("restore list stdin is missing")
+		}
+		payload, err := io.ReadAll(request.Stdin)
+		if err != nil {
+			return -1, err
+		}
+		engine.writtenList = payload
+		return 0, nil
+	}
+	if len(request.Command) > 0 && request.Command[0] == "rm" {
+		engine.listRemoved = true
+		return 0, nil
 	}
 	engine.execRequest = request
 	if request.Stdin == nil {
@@ -232,11 +262,11 @@ func (maintenance *recordingPostgresMaintenance) BlockDatabase(
 func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T) {
 	t.Parallel()
 	fixture := newPostgresRestoreFixture(t, nil)
-	fixture.connection.extensions = []Extension{
-		{Name: "plpgsql", InstalledVersion: "1.0"},
-		{Name: "vector", InstalledVersion: "0.8.2"},
-		{Name: "file_fdw"},
-	}
+	fixture.engine.restoreList = []byte(`1; 3079 100 EXTENSION - plpgsql
+2; 3079 101 EXTENSION - vector
+3; 0 0 COMMENT - EXTENSION vector
+4; 1259 102 TABLE public people application_owner
+`)
 	dump := []byte("PGDMP-custom-format")
 	if err := fixture.controller.RestoreReplace(context.Background(), "postgres-id", bytes.NewReader(dump), Actor{
 		Kind: "system", ID: "disaster_restore",
@@ -253,7 +283,7 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 		t.Fatalf("pg_restore stdin = %q", fixture.engine.execPayload)
 	}
 	wantCommand := []string{
-		"pg_restore", "--exit-on-error", "--no-owner", "--no-acl",
+		"pg_restore", "--exit-on-error", "--no-owner", "--no-acl", "--use-list=" + postgresRestoreListPath,
 		"--host=127.0.0.1", "--port=5432", "--dbname=application_db", "--username=application_owner",
 	}
 	if !reflect.DeepEqual(fixture.engine.execRequest.Command, wantCommand) ||
@@ -262,6 +292,19 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 	}
 	if !reflect.DeepEqual(fixture.connection.changes, []string{"plpgsql", "vector"}) {
 		t.Fatalf("restore candidate extensions = %v", fixture.connection.changes)
+	}
+	for _, excluded := range []string{
+		";1; 3079 100 EXTENSION - plpgsql",
+		";2; 3079 101 EXTENSION - vector",
+		";3; 0 0 COMMENT - EXTENSION vector",
+	} {
+		if !bytes.Contains(fixture.engine.writtenList, []byte(excluded)) {
+			t.Fatalf("restore list did not exclude %q: %s", excluded, fixture.engine.writtenList)
+		}
+	}
+	if !bytes.Contains(fixture.engine.writtenList, []byte("4; 1259 102 TABLE public people application_owner")) ||
+		!fixture.engine.listRemoved {
+		t.Fatalf("restore list = %s, removed = %v", fixture.engine.writtenList, fixture.engine.listRemoved)
 	}
 	if _, err := os.Stat(filepath.Join(fixture.volumeRoot, "project-id", "old-volume")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("old volume still exists: %v", err)
@@ -364,7 +407,8 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 	}
 	store := &postgresRestoreStore{resource: resource, switchErr: switchErr}
 	engine := &postgresRestoreEngine{
-		image: containerengine.Image{ID: "image-id", Digest: restoreTestImageDigest},
+		image:       containerengine.Image{ID: "image-id", Digest: restoreTestImageDigest},
+		restoreList: []byte("1; 1259 100 TABLE public people application_owner\n"),
 		containers: map[string]containerengine.Container{
 			"old-container": {
 				ID: "old-container", State: "running",
