@@ -72,9 +72,14 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = first.Close() })
-	if len(first.networks) != len(projects) || len(first.projectFailures) != 0 {
+	if len(first.networks) != len(projects)+1 || len(first.projectNetworks) != len(projects) ||
+		first.cloudflareMeshNetwork.Name == "" || first.cloudflareMeshNetworkError != nil || len(first.projectFailures) != 0 {
 		_ = first.Close()
-		t.Fatalf("unexpected project network reconcile: networks=%v failures=%v", first.networks, first.projectFailures)
+		t.Fatalf(
+			"unexpected network reconcile: networks=%v projects=%v mesh=%+v mesh_error=%v failures=%v",
+			first.networks, first.projectNetworks, first.cloudflareMeshNetwork,
+			first.cloudflareMeshNetworkError, first.projectFailures,
+		)
 	}
 	assertProjectObjectStore(t, ctx, first, paths)
 	if err := first.AddProject(state.RuntimeProject{ID: "integration-c", Name: "gamma"}); err != nil {
