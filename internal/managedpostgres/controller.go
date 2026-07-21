@@ -659,10 +659,11 @@ func (controller *Controller) createContainerAttempt(
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return containerengine.Container{}, err
 	}
+	storage := storageProfileForTag(resource.ImageTag)
 	return controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID: imageID, Name: "platformd-postgres-" + runtimeID,
 		Environment: map[string]string{
-			"PGDATA": "/var/lib/postgresql/data/pgdata", "POSTGRES_USER": "postgres",
+			"PGDATA": storage.pgData, "POSTGRES_USER": "postgres",
 			"POSTGRES_DB": "postgres", "POSTGRES_PASSWORD": bootstrapPassword,
 		},
 		Labels: map[string]string{
@@ -672,7 +673,7 @@ func (controller *Controller) createContainerAttempt(
 		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
 		DNSSearch: []string{placement.DNSSearch},
 		ManagedVolumes: []containerengine.ManagedVolumeMount{{
-			ID: volumeID, Source: volume, Destination: "/var/lib/postgresql/data",
+			ID: volumeID, Source: volume, Destination: storage.volumeDestination,
 		}},
 		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
 		CgroupParent: placement.CgroupParent, CPUMillicores: resource.CPUMillicores,

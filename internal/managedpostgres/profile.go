@@ -5,8 +5,38 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+const (
+	legacyVolumeDestination = "/var/lib/postgresql/data"
+	legacyPGData            = "/var/lib/postgresql/data/pgdata"
+	versionedVolumeRoot     = "/var/lib/postgresql"
+)
+
+type storageProfile struct {
+	volumeDestination string
+	pgData            string
+}
+
+func storageProfileForTag(tag string) storageProfile {
+	majorEnd := 0
+	for majorEnd < len(tag) && tag[majorEnd] >= '0' && tag[majorEnd] <= '9' {
+		majorEnd++
+	}
+	major, err := strconv.Atoi(tag[:majorEnd])
+	if err == nil && major >= 18 {
+		// PostgreSQL 18 moved the image volume to the parent directory so that
+		// major-version upgrades can keep separate clusters below one mount.
+		// Mounting the legacy child path is shadowed by the image's parent VOLUME.
+		return storageProfile{
+			volumeDestination: versionedVolumeRoot,
+			pgData:            filepath.Join(versionedVolumeRoot, strconv.Itoa(major), "docker"),
+		}
+	}
+	return storageProfile{volumeDestination: legacyVolumeDestination, pgData: legacyPGData}
+}
 
 func ensureVolume(root, projectID, volumeID string) (string, error) {
 	if !safeRoot(root) || !safePathComponent(projectID) || !safePathComponent(volumeID) {

@@ -41,6 +41,11 @@ func TestPostgresChangeVersionStreamsDumpAndSwitchesImageVolumePointer(t *testin
 	if string(fixture.engine.execPayload) != string(fixture.engine.dumpPayload) {
 		t.Fatalf("pg_restore payload = %q, want %q", fixture.engine.execPayload, fixture.engine.dumpPayload)
 	}
+	created := fixture.engine.created[0]
+	if created.Environment["PGDATA"] != "/var/lib/postgresql/18/docker" ||
+		len(created.ManagedVolumes) != 1 || created.ManagedVolumes[0].Destination != "/var/lib/postgresql" {
+		t.Fatalf("PostgreSQL 18 storage profile = env %v, volumes %+v", created.Environment, created.ManagedVolumes)
+	}
 	if len(fixture.engine.dumpRequest.Command) == 0 || fixture.engine.dumpRequest.Command[0] != "pg_dump" ||
 		fixture.engine.dumpRequest.Environment["PGPASSWORD"] != "owner-password" {
 		t.Fatalf("pg_dump request = %+v", fixture.engine.dumpRequest)

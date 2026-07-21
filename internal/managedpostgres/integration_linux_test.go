@@ -557,7 +557,8 @@ SELECT round((embedding <-> '[1,2,3]')::numeric, 3) FROM embeddings WHERE id = 2
 		Command: []string{"sh", "-ceu", `test -f "$PGDATA/PG_VERSION"; printf %s "$PGDATA"`},
 		Stdout:  &profileOutput, Stderr: &profileError,
 	})
-	if execErr != nil || exitCode != 0 || profileOutput.String() != "/var/lib/postgresql/data/pgdata" {
+	wantPGData := storageProfileForTag(profile.tag).pgData
+	if execErr != nil || exitCode != 0 || profileOutput.String() != wantPGData {
 		t.Fatalf("PGDATA profile = %q, exit=%d, stderr=%q, error=%v", profileOutput.String(), exitCode, profileError.String(), execErr)
 	}
 	if err := controller.Stop(ctx, resource.ID); err != nil {
