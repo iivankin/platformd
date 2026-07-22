@@ -29,6 +29,8 @@ import (
 )
 
 const (
+	buildNetworkID            = "~platformd-build"
+	buildNetworkName          = "build"
 	cloudflareMeshNetworkID   = "~platformd-cloudflare-mesh"
 	cloudflareMeshNetworkName = "cloudflare-mesh"
 )
@@ -70,6 +72,7 @@ type runtimeStack struct {
 	objectStoreFailures        map[string]error
 	networkGatewayFailures     map[string]error
 	networkGatewayPublications map[string]networkGatewayPublication
+	buildNetwork               containerengine.Network
 	cloudflareMeshNetwork      containerengine.Network
 	cloudflareMeshNetworkError error
 	cloudflareMeshRuntime      interface{ Close() error }
@@ -84,8 +87,12 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	if err := firewall.EnableIPv4Forwarding(); err != nil {
 		return nil, err
 	}
-	projectInputs := make([]projectnetwork.Project, 0, len(projects)+1)
+	projectInputs := make([]projectnetwork.Project, 0, len(projects)+2)
 	var cleanupFailures []projectnetwork.Failure
+	if err := projectnetwork.RemoveBridge(projectnetwork.BridgeName(buildNetworkID)); err != nil {
+		return nil, fmt.Errorf("remove stale build bridge: %w", err)
+	}
+	projectInputs = append(projectInputs, projectnetwork.Project{ID: buildNetworkID, Name: buildNetworkName})
 	if err := projectnetwork.RemoveBridge(projectnetwork.BridgeName(cloudflareMeshNetworkID)); err != nil {
 		cleanupFailures = append(cleanupFailures, projectnetwork.Failure{ProjectID: cloudflareMeshNetworkID, Err: err})
 	} else {
@@ -105,6 +112,11 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	projectPlan, err := projectnetwork.Plan(projectInputs, occupied)
 	if err != nil {
 		return nil, err
+	}
+	for _, failure := range projectPlan.Failures {
+		if failure.ProjectID == buildNetworkID {
+			return nil, fmt.Errorf("plan build network: %w", failure.Err)
+		}
 	}
 	disallowedResolvers := make([]netip.Addr, 0, len(projectPlan.Assignments))
 	for _, assignment := range projectPlan.Assignments {
@@ -177,7 +189,12 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		labels := map[string]string{
 			"io.platformd.owner": "project", "io.platformd.project-id": assignment.ProjectID,
 		}
-		if assignment.ProjectID == cloudflareMeshNetworkID {
+		switch assignment.ProjectID {
+		case buildNetworkID:
+			labels = map[string]string{
+				"io.platformd.owner": "system", "io.platformd.component": "build",
+			}
+		case cloudflareMeshNetworkID:
 			labels = map[string]string{
 				"io.platformd.owner": "system", "io.platformd.component": "cloudflare-mesh",
 			}
@@ -189,9 +206,12 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 			Labels: labels,
 		})
 		if createErr != nil {
-			if assignment.ProjectID == cloudflareMeshNetworkID {
+			switch assignment.ProjectID {
+			case buildNetworkID:
+				return nil, errors.Join(fmt.Errorf("create build network: %w", createErr), stack.Close())
+			case cloudflareMeshNetworkID:
 				stack.cloudflareMeshNetworkError = createErr
-			} else {
+			default:
 				stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: assignment.ProjectID, Err: createErr})
 			}
 			continue
@@ -202,9 +222,12 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 				ProjectID: assignment.ProjectID,
 				Err:       fmt.Errorf("network inspect differs from requested topology: %+v", network),
 			}
-			if assignment.ProjectID == cloudflareMeshNetworkID {
+			switch assignment.ProjectID {
+			case buildNetworkID:
+				return nil, errors.Join(fmt.Errorf("inspect build network: %w", failure.Err), stack.Close())
+			case cloudflareMeshNetworkID:
 				stack.cloudflareMeshNetworkError = failure.Err
-			} else {
+			default:
 				stack.projectFailures = append(stack.projectFailures, failure)
 			}
 			continue
@@ -224,19 +247,25 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		})
 		if dnsErr != nil {
 			_ = engine.RemoveNetwork(network.Name)
-			if assignment.ProjectID == cloudflareMeshNetworkID {
+			switch assignment.ProjectID {
+			case buildNetworkID:
+				return nil, errors.Join(fmt.Errorf("start build network DNS: %w", dnsErr), stack.Close())
+			case cloudflareMeshNetworkID:
 				stack.cloudflareMeshNetworkError = dnsErr
-			} else {
+			default:
 				stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: assignment.ProjectID, Err: dnsErr})
 			}
 			continue
 		}
 		stack.networks = append(stack.networks, network.Name)
 		stack.dnsServers = append(stack.dnsServers, dnsServer)
-		if assignment.ProjectID == cloudflareMeshNetworkID {
+		switch assignment.ProjectID {
+		case buildNetworkID:
+			stack.buildNetwork = network
+		case cloudflareMeshNetworkID:
 			stack.cloudflareMeshNetwork = network
 			stack.cloudflareMeshNetworkError = nil
-		} else {
+		default:
 			stack.dnsZones[assignment.ProjectID] = zone
 			stack.projectDNSServers[assignment.ProjectID] = dnsServer
 			stack.projectNetworks[assignment.ProjectID] = network
@@ -247,6 +276,9 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 			ObjectStoreEnabled: objectStores[assignment.ProjectID],
 		})
 		stack.firewallProjects[assignment.ProjectID] = firewallProjects[len(firewallProjects)-1]
+	}
+	if stack.buildNetwork.Name == "" {
+		return nil, errors.Join(errors.New("build network was not created"), stack.Close())
 	}
 	if err := manager.Apply(firewallProjects); err != nil {
 		return nil, errors.Join(err, stack.Close())

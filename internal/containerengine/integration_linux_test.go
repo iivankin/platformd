@@ -272,6 +272,8 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	buildNetwork := createBuildTestNetwork(t, engine)
+	defer engine.RemoveNetwork(buildNetwork.Name)
 
 	contextRoot := t.TempDir()
 	dockerfile := filepath.Join(contextRoot, "Dockerfile")
@@ -288,6 +290,8 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 		ContextDirectory: contextRoot,
 		Dockerfile:       dockerfile,
 		Reference:        "localhost/platformd/build-integration:latest",
+		Network:          buildNetwork.Name,
+		Timeout:          2 * time.Minute,
 		Log:              &buildOutput,
 	})
 	if err != nil {
@@ -329,6 +333,8 @@ func TestPublicRepositoryDockerfileBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	buildNetwork := createBuildTestNetwork(t, engine)
+	defer engine.RemoveNetwork(buildNetwork.Name)
 
 	// Pin the public repository commit so this integration test exercises a
 	// real-world Dockerfile without depending on a moving branch.
@@ -341,6 +347,8 @@ func TestPublicRepositoryDockerfileBuild(t *testing.T) {
 		ContextDirectory: contextRoot,
 		Dockerfile:       filepath.Join(contextRoot, "Dockerfile"),
 		Reference:        "localhost/platformd/public-repository-integration:latest",
+		Network:          buildNetwork.Name,
+		Timeout:          2 * time.Minute,
 		Log:              &buildOutput,
 	})
 	if err != nil {
@@ -395,6 +403,19 @@ func downloadIntegrationFile(t *testing.T, ctx context.Context, url, destination
 	}
 }
 
+func createBuildTestNetwork(t *testing.T, engine *Engine) Network {
+	t.Helper()
+	network, err := engine.CreateNetwork(NetworkSpec{
+		Name: "platformd-build-integration", Interface: "pdit-build",
+		Subnet: "10.89.46.0/24", Gateway: "10.89.46.1",
+		Labels: map[string]string{"io.platformd.test": "build"},
+	})
+	if err != nil {
+		t.Fatalf("create build network: %v", err)
+	}
+	return network
+}
+
 func TestManagedVolumeUsesNamedVolumeCopyUpAndPreservesInitializedData(t *testing.T) {
 	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
 		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
@@ -412,6 +433,8 @@ func TestManagedVolumeUsesNamedVolumeCopyUpAndPreservesInitializedData(t *testin
 		t.Fatal(err)
 	}
 	defer engine.Close()
+	buildNetwork := createBuildTestNetwork(t, engine)
+	defer engine.RemoveNetwork(buildNetwork.Name)
 
 	contextRoot := t.TempDir()
 	dockerfile := filepath.Join(contextRoot, "Dockerfile")
@@ -425,7 +448,8 @@ USER 1234:2345
 	var buildOutput bytes.Buffer
 	image, err := engine.Build(ctx, BuildRequest{
 		ContextDirectory: contextRoot, Dockerfile: dockerfile,
-		Reference: "localhost/platformd/managed-volume-integration:latest", Log: &buildOutput,
+		Reference: "localhost/platformd/managed-volume-integration:latest",
+		Network:   buildNetwork.Name, Timeout: 2 * time.Minute, Log: &buildOutput,
 	})
 	if err != nil {
 		t.Fatalf("build managed volume image: %v\n%s", err, buildOutput.String())
@@ -877,10 +901,29 @@ func TestProjectFirewallPacketPolicy(t *testing.T) {
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 1, "nc", "-z", "-w", "2", projectA.Gateway.String(), "9001")
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "3", containerAPeer.IPs["packet-a"][0], "8080")
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 1, "nc", "-z", "-w", "2", containerB.IPs["packet-b"][0], "8080")
-	masquerade := startMasqueradeProbe(t)
+	masquerade := startMasqueradeProbe(t, 2)
 	assertContainerCommandCode(t, ctx, engine, containerA.ID, 0, "nc", "-z", "-w", "5", masquerade.address, masquerade.port)
+	buildContextRoot := t.TempDir()
+	buildDockerfile := filepath.Join(buildContextRoot, "Dockerfile")
+	buildContents := fmt.Sprintf(
+		"FROM %s\nRUN nc -z -w 5 %s %s\n",
+		integrationAlpineImage, masquerade.address, masquerade.port,
+	)
+	if err := os.WriteFile(buildDockerfile, []byte(buildContents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var buildOutput bytes.Buffer
+	built, err := engine.Build(ctx, BuildRequest{
+		ContextDirectory: buildContextRoot, Dockerfile: buildDockerfile,
+		Reference: "localhost/platformd/build-network-integration:latest",
+		Network:   projectA.ID, Timeout: time.Minute, Log: &buildOutput,
+	})
+	if err != nil {
+		t.Fatalf("build RUN egress through managed network: %v\n%s", err, buildOutput.String())
+	}
+	t.Cleanup(func() { _ = engine.RemoveImage(context.Background(), built.ID) })
 	if err := masquerade.verify(ctx); err != nil {
-		t.Fatalf("masqueraded egress: %v", err)
+		t.Fatalf("build RUN masqueraded egress: %v", err)
 	}
 
 	udpResult := make(chan error, 1)

@@ -28,6 +28,7 @@ type RuntimeEngine interface {
 type ProductionRuntimeConfig struct {
 	Engine        RuntimeEngine
 	Network       containerengine.Network
+	BuildNetwork  string
 	StateRoot     string
 	GeneratedRoot string
 	LogRoot       string
@@ -37,7 +38,7 @@ type ProductionRuntimeConfig struct {
 }
 
 func (config ProductionRuntimeConfig) validate() error {
-	if config.Engine == nil ||
+	if config.Engine == nil || config.BuildNetwork == "" ||
 		config.StateRoot == "" || config.GeneratedRoot == "" || config.LogRoot == "" || config.CgroupParent == "" {
 		return errors.New("Cloudflare Mesh sidecar runtime configuration is incomplete")
 	}

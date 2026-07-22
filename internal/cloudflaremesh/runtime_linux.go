@@ -22,12 +22,13 @@ import (
 )
 
 const (
-	cloudflareWarpVersion = "2026.6.836.0"
-	cloudflarePackageURL  = "https://pkg.cloudflareclient.com/pool/trixie/main/c/cloudflare-warp/cloudflare-warp_2026.6.836.0_amd64.deb"
-	cloudflarePackageSHA  = "bfd0f9dac4cfbd55a1e9c684c9927feaee9e310029021ec7e0d780ff6ec82d5b"
-	cloudflareBaseImage   = "docker.io/library/debian@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f"
-	cloudflareImage       = "localhost/platformd/cloudflare-mesh:" + cloudflareWarpVersion
-	cloudflareImageLabel  = "io.platformd.cloudflare-warp-version"
+	cloudflareWarpVersion  = "2026.6.836.0"
+	cloudflarePackageURL   = "https://pkg.cloudflareclient.com/pool/trixie/main/c/cloudflare-warp/cloudflare-warp_2026.6.836.0_amd64.deb"
+	cloudflarePackageSHA   = "bfd0f9dac4cfbd55a1e9c684c9927feaee9e310029021ec7e0d780ff6ec82d5b"
+	cloudflareBaseImage    = "docker.io/library/debian@sha256:9bb8a3626890e084ab54e888fdd7c4b6d2f119071cd4c5dc5fecb4d73062aa5f"
+	cloudflareImage        = "localhost/platformd/cloudflare-mesh:" + cloudflareWarpVersion
+	cloudflareImageLabel   = "io.platformd.cloudflare-warp-version"
+	cloudflareBuildTimeout = 15 * time.Minute
 )
 
 type productionRuntime struct {
@@ -189,7 +190,8 @@ ENTRYPOINT ["/bin/warp-svc"]
 		logWriter = logFile
 	}
 	image, err := runtime.config.Engine.Build(ctx, containerengine.BuildRequest{
-		ContextDirectory: contextRoot, Dockerfile: dockerfile, Reference: cloudflareImage, Log: logWriter,
+		ContextDirectory: contextRoot, Dockerfile: dockerfile, Reference: cloudflareImage,
+		Network: runtime.config.BuildNetwork, Timeout: cloudflareBuildTimeout, Log: logWriter,
 	})
 	if err != nil {
 		return containerengine.Image{}, fmt.Errorf("build Cloudflare Mesh sidecar image: %w", err)

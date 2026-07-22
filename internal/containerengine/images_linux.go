@@ -11,6 +11,7 @@ import (
 	"github.com/containers/buildah"
 	buildahDefine "github.com/containers/buildah/define"
 	"github.com/containers/podman/v5/libpod"
+	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.podman.io/common/libimage"
 	commonconfig "go.podman.io/common/pkg/config"
 	"go.podman.io/image/v5/manifest"
@@ -19,15 +20,23 @@ import (
 )
 
 func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error) {
-	if request.ContextDirectory == "" || request.Dockerfile == "" || request.Reference == "" || request.Log == nil {
+	if request.ContextDirectory == "" || request.Dockerfile == "" || request.Reference == "" ||
+		request.Network == "" || request.Timeout <= 0 || request.Log == nil {
 		return Image{}, errors.New("image build request is incomplete")
 	}
+	buildContext, cancel := context.WithTimeout(ctx, request.Timeout)
+	defer cancel()
 	log := io.MultiWriter(request.Log)
-	id, _, err := e.runtime.Build(ctx, buildahDefine.BuildOptions{
-		ContextDirectory:        request.ContextDirectory,
-		PullPolicy:              buildahDefine.PullIfMissing,
-		SignaturePolicyPath:     e.config.SignaturePolicy,
-		SystemContext:           &imagetypes.SystemContext{SystemRegistriesConfPath: e.config.RegistriesConf},
+	id, _, err := e.runtime.Build(buildContext, buildahDefine.BuildOptions{
+		ContextDirectory:    request.ContextDirectory,
+		PullPolicy:          buildahDefine.PullIfMissing,
+		SignaturePolicyPath: e.config.SignaturePolicy,
+		SystemContext:       &imagetypes.SystemContext{SystemRegistriesConfPath: e.config.RegistriesConf},
+		NamespaceOptions: []buildahDefine.NamespaceOption{{
+			Name: string(specs.NetworkNamespace), Path: request.Network,
+		}},
+		ConfigureNetwork:        buildahDefine.NetworkEnabled,
+		NetworkInterface:        e.runtime.Network(),
 		Output:                  request.Reference,
 		Out:                     log,
 		Err:                     log,
@@ -38,6 +47,9 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		ForceRmIntermediateCtrs: true,
 	}, request.Dockerfile)
 	if err != nil {
+		if errors.Is(buildContext.Err(), context.DeadlineExceeded) {
+			return Image{}, fmt.Errorf("build image %s exceeded %s: %w", request.Reference, request.Timeout, buildContext.Err())
+		}
 		return Image{}, fmt.Errorf("build image %s: %w", request.Reference, err)
 	}
 	return e.inspectImage(ctx, id)

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
@@ -18,6 +19,7 @@ import (
 )
 
 const maximumExpandedRepositoryBytes = 2 << 30
+const githubBuildTimeout = 30 * time.Minute
 
 type githubBuildEngine interface {
 	Build(context.Context, containerengine.BuildRequest) (containerengine.Image, error)
@@ -27,6 +29,7 @@ type githubSourceResolver struct {
 	github        *githubapp.Application
 	engine        githubBuildEngine
 	generatedRoot string
+	buildNetwork  string
 }
 
 func (resolver githubSourceResolver) Resolve(
@@ -121,6 +124,8 @@ func (resolver githubSourceResolver) Resolve(
 		ContextDirectory: contextPath,
 		Dockerfile:       dockerfilePath,
 		Reference:        result.ImageReference,
+		Network:          resolver.buildNetwork,
+		Timeout:          githubBuildTimeout,
 		Log:              log,
 	})
 	result.Image = image

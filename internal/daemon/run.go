@@ -250,7 +250,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure Cloudflare DNS integration: %w", err)
 	}
 	cloudflareMeshRuntime, err := cloudflaremesh.ProductionRuntime(cloudflaremesh.ProductionRuntimeConfig{
-		Engine: runtime.engine, Network: runtime.cloudflareMeshNetwork,
+		Engine: runtime.engine, Network: runtime.cloudflareMeshNetwork, BuildNetwork: runtime.buildNetwork.Name,
 		StateRoot: paths.CloudflareMeshRoot, GeneratedRoot: paths.GeneratedRoot, LogRoot: paths.LogsRoot,
 		CgroupParent: filepath.Join(cgroups.WorkloadRoot(), "cloudflare-mesh"),
 		StartupError: runtime.cloudflareMeshNetworkError,
@@ -265,13 +265,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	})
 	if err != nil {
 		return fmt.Errorf("configure Cloudflare Mesh integration: %w", err)
-	}
-	if !installation.RecoveryMode {
-		if err := cloudflareMesh.EnsureConfigured(ctx); err != nil {
-			// Mesh is an optional integration. Keep the control plane available and
-			// surface its gateways as degraded until the managed client reconnects.
-			log.Printf("managed Cloudflare Mesh is unavailable: %v", err)
-		}
 	}
 	registryHostname := ""
 	if installation.RegistryHostname != nil {
@@ -322,15 +315,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
 	if !installation.RecoveryMode {
-		if err := runtime.ReconcileManagedPostgres(ctx, store); err != nil {
-			return fmt.Errorf("reconcile managed PostgreSQL: %w", err)
-		}
-		if err := runtime.ReconcileManagedRedis(ctx, store); err != nil {
-			return fmt.Errorf("reconcile managed Redis: %w", err)
-		}
-		if err := runtime.ReconcileDeployments(ctx, store); err != nil {
-			return fmt.Errorf("reconcile service deployments: %w", err)
-		}
 		go runImageCacheCleanup(ctx, store, runtime.engine)
 	}
 	resourceMetrics, err := resourcemetrics.NewApplication(store, cgroupUsage, runtime, resourcemetrics.Config{})
@@ -823,6 +807,20 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err := sdnotify.Ready("platformd admin control plane is ready"); err != nil {
 			return err
 		}
+		if !installation.RecoveryMode {
+			// Runtime reconciliation can pull or build third-party images. Keep all
+			// workload work outside the control-plane readiness path so a slow
+			// registry or Dockerfile cannot take the admin API down.
+			go logRuntimeReconcile(ctx, "managed PostgreSQL", func() error {
+				return runtime.ReconcileManagedPostgres(ctx, store)
+			})
+			go logRuntimeReconcile(ctx, "managed Redis", func() error {
+				return runtime.ReconcileManagedRedis(ctx, store)
+			})
+			go logRuntimeReconcile(ctx, "service deployments", func() error {
+				return runtime.ReconcileDeployments(ctx, store)
+			})
+		}
 		if err := bootstrap.FinalizeSuccessfulUpdate(paths, releasePublicKey, 0); err != nil {
 			log.Printf("release readiness cleanup failed: %v", err)
 		}
@@ -831,6 +829,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		return nil
 	})
+}
+
+func logRuntimeReconcile(ctx context.Context, component string, reconcile func() error) {
+	if err := reconcile(); err != nil && ctx.Err() == nil {
+		log.Printf("reconcile %s: %v", component, err)
+	}
 }
 
 func startRegistryUploadCleanup(ctx context.Context, application *registry.Application, gate *admission.Gate) {

@@ -16,6 +16,8 @@ type BuildRequest struct {
 	ContextDirectory string
 	Dockerfile       string
 	Reference        string
+	Network          string
+	Timeout          time.Duration
 	Log              io.Writer
 }
 

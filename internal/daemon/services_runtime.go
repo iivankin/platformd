@@ -36,7 +36,10 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
 		Environment:  resourceVariableResolver{store: store, master: master},
 		ImageSources: imageSources, Growth: stack.growth, Admission: stack.admission,
-		Sources:   githubSourceResolver{github: githubApplication, engine: stack.engine, generatedRoot: stack.paths.GeneratedRoot},
+		Sources: githubSourceResolver{
+			github: githubApplication, engine: stack.engine, generatedRoot: stack.paths.GeneratedRoot,
+			buildNetwork: stack.buildNetwork.Name,
+		},
 		Reporter:  githubDeploymentReporter{github: githubApplication, adminHostname: adminHostname},
 		Placement: stack.servicePlacement,
 		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,

@@ -32,8 +32,11 @@ type masqueradeProbe struct {
 // startMasqueradeProbe creates a deterministic external network namespace.
 // It proves forwarding and source NAT without depending on Internet egress
 // policy of the CI runner.
-func startMasqueradeProbe(t *testing.T) masqueradeProbe {
+func startMasqueradeProbe(t *testing.T, expectedConnections int) masqueradeProbe {
 	t.Helper()
+	if expectedConnections < 1 {
+		t.Fatal("masquerade probe requires at least one connection")
+	}
 	hostNamespace, peerNamespace := createProbeNamespaces(t)
 
 	hostLink := &netlink.Veth{
@@ -93,7 +96,7 @@ func startMasqueradeProbe(t *testing.T) masqueradeProbe {
 		}
 		listener, err := net.ListenTCP("tcp4", &net.TCPAddr{IP: net.ParseIP(masqueradePeerAddress), Port: 18443})
 		ready <- readyResult{listener: listener, err: err}
-		if err == nil {
+		for connectionIndex := 0; err == nil && connectionIndex < expectedConnections; connectionIndex++ {
 			connection, acceptErr := listener.AcceptTCP()
 			if acceptErr == nil {
 				remote, ok := connection.RemoteAddr().(*net.TCPAddr)
