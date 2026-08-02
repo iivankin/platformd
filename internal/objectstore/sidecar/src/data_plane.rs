@@ -10,6 +10,7 @@ use s3s::{
     service::{S3Service, S3ServiceBuilder},
 };
 use serde::Deserialize;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
@@ -392,9 +393,7 @@ impl DataPlane {
         }
 
         let project = Arc::new(ProjectState::new(config.stores, self.gates.clone()).await?);
-        let listener = TcpListener::bind(address)
-            .await
-            .map_err(|error| format!("bind project S3 endpoint: {error}"))?;
+        let listener = bind_project_listener(address)?;
         let cancel = CancellationToken::new();
         let task = tokio::spawn(serve_project(
             listener,
@@ -500,6 +499,36 @@ impl DataPlane {
             stop_endpoint(endpoint).await;
         }
     }
+}
+
+fn bind_project_listener(address: SocketAddr) -> Result<TcpListener, String> {
+    let socket = Socket::new(
+        Domain::for_address(address),
+        Type::STREAM,
+        Some(Protocol::TCP),
+    )
+    .map_err(|error| format!("create project S3 socket: {error}"))?;
+    // Netavark materializes a project bridge on its first attached container,
+    // while the S3 endpoint must be ready as soon as the project is created.
+    #[cfg(target_os = "linux")]
+    match address {
+        SocketAddr::V4(_) => socket.set_freebind_v4(true),
+        SocketAddr::V6(_) => socket.set_freebind_v6(true),
+    }
+    .map_err(|error| format!("enable project S3 freebind: {error}"))?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|error| format!("make project S3 socket nonblocking: {error}"))?;
+    socket
+        .bind(&SockAddr::from(address))
+        .map_err(|error| format!("bind project S3 endpoint: {error}"))?;
+    let backlog = i32::try_from(MAX_DATA_PLANE_CONNECTIONS)
+        .map_err(|_| "project S3 listen backlog is too large".to_owned())?;
+    socket
+        .listen(backlog)
+        .map_err(|error| format!("listen on project S3 endpoint: {error}"))?;
+    TcpListener::from_std(socket.into())
+        .map_err(|error| format!("register project S3 listener: {error}"))
 }
 
 async fn ensure_store_gates(
@@ -801,7 +830,11 @@ fn allowed_cors_headers(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::bind_project_listener;
     use super::{DataPlaneStore, MaintenanceMode, ProjectState, StoreGate};
+    #[cfg(target_os = "linux")]
+    use std::net::SocketAddr;
     use std::{collections::HashMap, sync::Arc};
     use tokio::sync::RwLock;
 
@@ -848,6 +881,17 @@ mod tests {
             panic!("duplicate bucket must fail");
         };
         assert_eq!(error, "duplicate data-plane bucket name");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn project_listener_binds_before_gateway_interface_exists() {
+        let address: SocketAddr = "192.0.2.1:0".parse().expect("test address");
+        let listener = bind_project_listener(address).expect("freebind listener");
+        assert_eq!(
+            listener.local_addr().expect("listener address").ip(),
+            address.ip()
+        );
     }
 
     #[tokio::test]

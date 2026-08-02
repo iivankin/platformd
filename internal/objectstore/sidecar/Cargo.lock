@@ -3427,6 +3427,7 @@ dependencies = [
  "s3s",
  "serde",
  "serde_json",
+ "socket2",
  "tempfile",
  "time",
  "tokio",

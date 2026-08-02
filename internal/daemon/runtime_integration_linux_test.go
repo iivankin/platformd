@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/projectnetwork"
 	"github.com/iivankin/platformd/internal/state"
+	"golang.org/x/sys/unix"
 )
 
 const daemonIntegrationImage = "docker.io/library/alpine@sha256:7c8cb692ae09657cbc4a3f3cbd0e8d5a2690ba38386aaaf252dbb060bf5eb2e6"
@@ -179,8 +181,18 @@ type daemonObjectDataPlaneStub struct {
 	server *http.Server
 }
 
-func (stub *daemonObjectDataPlaneStub) ConfigureDataPlaneProject(_ context.Context, _, listenAddress string, _ []objectstore.DataPlaneStore) error {
-	listener, err := net.Listen("tcp", listenAddress)
+func (stub *daemonObjectDataPlaneStub) ConfigureDataPlaneProject(ctx context.Context, _, listenAddress string, _ []objectstore.DataPlaneStore) error {
+	// Match the production sidecar: the project bridge is created lazily by netavark.
+	listenConfig := net.ListenConfig{Control: func(_, _ string, raw syscall.RawConn) error {
+		var socketErr error
+		if err := raw.Control(func(descriptor uintptr) {
+			socketErr = unix.SetsockoptInt(int(descriptor), unix.SOL_IP, unix.IP_FREEBIND, 1)
+		}); err != nil {
+			return err
+		}
+		return socketErr
+	}}
+	listener, err := listenConfig.Listen(ctx, "tcp4", listenAddress)
 	if err != nil {
 		return err
 	}
