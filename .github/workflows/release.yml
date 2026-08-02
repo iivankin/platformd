@@ -125,10 +125,11 @@ jobs:
 
       - name: Verify Rust S3 and SDK conformance
         run: |
+          rm -rf "$PWD/.build/runtime-linux-amd64"
+          cargo clean --manifest-path internal/objectstore/sidecar/Cargo.toml
           cargo test --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
           cargo clippy --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
           cargo clean --manifest-path internal/objectstore/sidecar/Cargo.toml
-          rm -rf "$PWD/.build/runtime-linux-amd64"
           python3 -m venv "$RUNNER_TEMP/platformd-s3-python"
           "$RUNNER_TEMP/platformd-s3-python/bin/pip" \
             --disable-pip-version-check \
