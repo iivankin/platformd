@@ -1,5 +1,7 @@
 name: Release
 
+# Releases are intentionally manual because publishing also signs immutable assets.
+
 on:
   workflow_dispatch:
     inputs:
