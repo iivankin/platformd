@@ -120,6 +120,9 @@ func (reader *Reader) readSource(
 		if ctx.Err() != nil {
 			return nil, false, fmt.Errorf("read %s journal: %w", name, ctx.Err())
 		}
+		if journalGrepHasNoMatches(err, arguments, stdout, stderr) {
+			return nil, false, nil
+		}
 		return nil, false, fmt.Errorf("read %s journal: %w: %s", name, err, sanitizeMessage(stderr.String()))
 	}
 	records, err := parseOutput(stdout.Bytes(), stdout.truncated)
@@ -127,6 +130,21 @@ func (reader *Reader) readSource(
 		return nil, false, err
 	}
 	return records, stdout.truncated, nil
+}
+
+func journalGrepHasNoMatches(err error, arguments []string, stdout, stderr *boundedBuffer) bool {
+	var exitError interface{ ExitCode() int }
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 1 ||
+		len(stdout.Bytes()) != 0 || len(stderr.Bytes()) != 0 {
+		return false
+	}
+	for _, argument := range arguments {
+		if strings.HasPrefix(argument, "--grep=") {
+			// journalctl uses status 1 for a successful grep with zero matches.
+			return true
+		}
+	}
+	return false
 }
 
 type commandRunner struct {

@@ -13,10 +13,11 @@ type runnerStub struct {
 	calls     [][]string
 	output    string
 	outputs   []string
+	stderr    string
 	err       error
 }
 
-func (runner *runnerStub) Run(_ context.Context, arguments []string, stdout, _ io.Writer) error {
+func (runner *runnerStub) Run(_ context.Context, arguments []string, stdout, stderr io.Writer) error {
 	runner.arguments = append([]string(nil), arguments...)
 	runner.calls = append(runner.calls, append([]string(nil), arguments...))
 	output := runner.output
@@ -24,7 +25,54 @@ func (runner *runnerStub) Run(_ context.Context, arguments []string, stdout, _ i
 		output = runner.outputs[len(runner.calls)-1]
 	}
 	_, _ = io.WriteString(stdout, output)
+	_, _ = io.WriteString(stderr, runner.stderr)
 	return runner.err
+}
+
+type runnerExitError int
+
+func (err runnerExitError) Error() string {
+	return "journalctl exited"
+}
+
+func (err runnerExitError) ExitCode() int {
+	return int(err)
+}
+
+func TestJournalGrepWithNoMatchesIsAnEmptySource(t *testing.T) {
+	reader, err := NewReaderWithRunner(&runnerStub{err: runnerExitError(1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, truncated, err := reader.readSource(
+		context.Background(), "kernel", []string{"--dmesg", "--grep=incident"}, 10, "",
+	)
+	if err != nil || len(records) != 0 || truncated {
+		t.Fatalf("empty grep result = records=%v truncated=%t err=%v", records, truncated, err)
+	}
+}
+
+func TestJournalExitOneWithoutEmptyGrepRemainsAnError(t *testing.T) {
+	for name, runner := range map[string]*runnerStub{
+		"no grep":     {err: runnerExitError(1)},
+		"grep stderr": {err: runnerExitError(1), stderr: "journal failure"},
+		"grep output": {err: runnerExitError(1), output: "partial output"},
+		"grep exit 2": {err: runnerExitError(2)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			reader, err := NewReaderWithRunner(runner)
+			if err != nil {
+				t.Fatal(err)
+			}
+			arguments := []string{"--unit=platformd.service"}
+			if name != "no grep" {
+				arguments = []string{"--grep=incident"}
+			}
+			if _, _, err := reader.readSource(context.Background(), name, arguments, 10, ""); err == nil {
+				t.Fatal("journalctl failure was treated as an empty result")
+			}
+		})
+	}
 }
 
 func TestReaderUsesFixedUnitAndReturnsBoundedNewestRecords(t *testing.T) {
