@@ -2,18 +2,24 @@ import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
 } from "react";
 import type { ReactNode } from "react";
 
 import type { PendingResourceCreation } from "@/pending-resource-creation";
+import {
+  loadStoredProjectChanges,
+  saveStoredProjectChanges,
+} from "@/project-changes-storage";
+import type {
+  AllProjectChanges,
+  AllProjectResourceDrafts,
+  ProjectResourceDrafts,
+  ProjectServiceChanges,
+} from "@/project-changes-storage";
 import type { PendingServiceSettings } from "@/service-settings-model";
-
-type ProjectServiceChanges = Record<string, PendingServiceSettings>;
-type AllProjectChanges = Record<string, ProjectServiceChanges>;
-type ProjectResourceDrafts = Record<string, PendingResourceCreation>;
-type AllProjectResourceDrafts = Record<string, ProjectResourceDrafts>;
 
 interface ProjectChangesContextValue {
   changes: AllProjectChanges;
@@ -41,13 +47,13 @@ export const ProjectChangesProvider = ({
 }: {
   children: ReactNode;
 }) => {
-  const [changes, setChanges] = useState<AllProjectChanges>({});
-  const [resourceDrafts, setResourceDrafts] =
-    useState<AllProjectResourceDrafts>({});
+  const [stored, setStored] = useState(loadStoredProjectChanges);
+  const { changes, resourceDrafts } = stored;
+  useEffect(() => saveStoredProjectChanges(stored), [stored]);
   const setServiceChange = useCallback(
     (projectID: string, serviceID: string, change?: PendingServiceSettings) => {
-      setChanges((current) => {
-        const project = { ...current[projectID] };
+      setStored((current) => {
+        const project = { ...current.changes[projectID] };
         const nextProject = change
           ? { ...project, [serviceID]: change }
           : Object.fromEntries(
@@ -56,21 +62,27 @@ export const ProjectChangesProvider = ({
               )
             );
         if (Object.keys(nextProject).length === 0) {
-          return Object.fromEntries(
-            Object.entries(current).filter(
-              ([candidateID]) => candidateID !== projectID
-            )
-          );
+          return {
+            ...current,
+            changes: Object.fromEntries(
+              Object.entries(current.changes).filter(
+                ([candidateID]) => candidateID !== projectID
+              )
+            ),
+          };
         }
-        return { ...current, [projectID]: nextProject };
+        return {
+          ...current,
+          changes: { ...current.changes, [projectID]: nextProject },
+        };
       });
     },
     []
   );
   const setResourceDraft = useCallback(
     (projectID: string, draftID: string, draft?: PendingResourceCreation) => {
-      setResourceDrafts((current) => {
-        const project = { ...current[projectID] };
+      setStored((current) => {
+        const project = { ...current.resourceDrafts[projectID] };
         const nextProject = draft
           ? { ...project, [draftID]: draft }
           : Object.fromEntries(
@@ -79,13 +91,22 @@ export const ProjectChangesProvider = ({
               )
             );
         if (Object.keys(nextProject).length === 0) {
-          return Object.fromEntries(
-            Object.entries(current).filter(
-              ([candidateID]) => candidateID !== projectID
-            )
-          );
+          return {
+            ...current,
+            resourceDrafts: Object.fromEntries(
+              Object.entries(current.resourceDrafts).filter(
+                ([candidateID]) => candidateID !== projectID
+              )
+            ),
+          };
         }
-        return { ...current, [projectID]: nextProject };
+        return {
+          ...current,
+          resourceDrafts: {
+            ...current.resourceDrafts,
+            [projectID]: nextProject,
+          },
+        };
       });
     },
     []

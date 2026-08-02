@@ -47,10 +47,10 @@ func (store *Store) SetRegistryHostname(ctx context.Context, input SetRegistryHo
 			var inUse int
 			if err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
-  SELECT 1 FROM installation WHERE admin_hostname = ? OR automation_hostname = ?
+  SELECT 1 FROM installation WHERE admin_hostname = ?
   UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
-)`, hostname, hostname, hostname, hostname).Scan(&inUse); err != nil {
+)`, hostname, hostname, hostname).Scan(&inUse); err != nil {
 				return fmt.Errorf("check registry hostname role: %w", err)
 			}
 			if inUse == 1 {

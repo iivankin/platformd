@@ -1,5 +1,5 @@
-import { Activity, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { Activity, LoaderCircle, Server } from "lucide-react";
+import { useMemo, useState } from "react";
 
 import type {
   ResourceUsage as Usage,
@@ -7,18 +7,13 @@ import type {
   ResourceUsageKind,
   ResourceUsageRange,
 } from "@/api";
-import { SectionCard } from "@/components/ui/card";
 import { MetricChart } from "@/metric-chart";
 import type { MetricSeries } from "@/metric-chart";
 import {
   useCurrentResourceUsage,
   useResourceUsageHistory,
 } from "@/use-resource-usage";
-
-export {
-  cpuMillicoresBetween,
-  networkBytesPerSecondBetween,
-} from "@/resource-usage-rates";
+import { useScopeUsage } from "@/use-scope-usage";
 
 const emptyPoints: ResourceUsageHistory["points"] = [];
 
@@ -30,32 +25,143 @@ const ranges: { label: string; value: ResourceUsageRange }[] = [
   { label: "30d", value: "30d" },
 ];
 
+const chartColors = {
+  danger: "#fb7185",
+  primary: "#38bdf8",
+  secondary: "#fbbf24",
+} as const;
+
 const cpuSeries: MetricSeries[] = [
   {
-    color: "var(--chart-2)",
-    label: "Usage",
+    color: chartColors.primary,
+    label: "Average",
     value: (point) => point.cpuMillicores,
+  },
+  {
+    color: chartColors.primary,
+    label: "Peak (2s avg)",
+    strokeDasharray: "3 2",
+    value: (point) => point.cpuPeakMillicores,
   },
 ];
 
 const memorySeries: MetricSeries[] = [
   {
-    color: "var(--chart-1)",
-    label: "Working set",
+    color: chartColors.secondary,
+    label: "Average",
     value: (point) => point.memoryBytes,
+  },
+  {
+    color: chartColors.secondary,
+    label: "Peak",
+    strokeDasharray: "3 2",
+    value: (point) => point.memoryPeakBytes,
   },
 ];
 
 const networkSeries: MetricSeries[] = [
   {
-    color: "var(--chart-3)",
+    color: chartColors.primary,
     label: "Ingress",
     value: (point) => point.networkIngressBytesPerSecond,
   },
   {
-    color: "var(--chart-1)",
+    color: chartColors.primary,
+    label: "Ingress peak (2s avg)",
+    strokeDasharray: "3 2",
+    value: (point) => point.networkIngressPeakBytesPerSecond,
+  },
+  {
+    color: chartColors.secondary,
     label: "Egress",
     value: (point) => point.networkEgressBytesPerSecond,
+  },
+  {
+    color: chartColors.secondary,
+    label: "Egress peak (2s avg)",
+    strokeDasharray: "3 2",
+    value: (point) => point.networkEgressPeakBytesPerSecond,
+  },
+];
+
+const httpRequestSeries: MetricSeries[] = [
+  {
+    color: chartColors.primary,
+    label: "Requests avg",
+    value: (point) => point.proxy?.http.requestsPerSecond,
+  },
+  {
+    color: chartColors.primary,
+    label: "Requests peak (1s)",
+    strokeDasharray: "3 2",
+    value: (point) => point.proxy?.http.requestsPeakPerSecond,
+  },
+  {
+    color: chartColors.secondary,
+    label: "4xx",
+    value: (point) => point.proxy?.http.responses4xxPerSecond,
+  },
+  {
+    color: chartColors.danger,
+    label: "5xx",
+    value: (point) => point.proxy?.http.responses5xxPerSecond,
+  },
+];
+
+const httpLatencySeries: MetricSeries[] = [
+  {
+    color: chartColors.primary,
+    label: "p50",
+    value: (point) => point.proxy?.http.latencyP50Millis,
+  },
+  {
+    color: chartColors.secondary,
+    label: "p95",
+    value: (point) => point.proxy?.http.latencyP95Millis,
+  },
+  {
+    color: chartColors.danger,
+    label: "p99",
+    value: (point) => point.proxy?.http.latencyP99Millis,
+  },
+];
+
+const tcpSeries: MetricSeries[] = [
+  {
+    color: chartColors.primary,
+    label: "Connections avg",
+    value: (point) => point.proxy?.tcp.connectionsPerSecond,
+  },
+  {
+    color: chartColors.primary,
+    label: "Connections peak (1s)",
+    strokeDasharray: "3 2",
+    value: (point) => point.proxy?.tcp.connectionsPeakPerSecond,
+  },
+];
+
+const udpSeries: MetricSeries[] = [
+  {
+    color: chartColors.primary,
+    label: "Ingress avg",
+    value: (point) => point.proxy?.udp.ingressPacketsPerSecond,
+  },
+  {
+    color: chartColors.primary,
+    label: "Ingress peak (1s)",
+    strokeDasharray: "3 2",
+    value: (point) => point.proxy?.udp.ingressPacketsPeakPerSecond,
+  },
+  {
+    color: chartColors.secondary,
+    label: "Egress avg",
+    value: (point) => point.proxy?.udp.egressPacketsPerSecond,
+  },
+  {
+    color: chartColors.secondary,
+    label: "Egress peak (1s)",
+    strokeDasharray: "3 2",
+    value: (point) => point.proxy?.udp.egressPacketsPeakPerSecond,
   },
 ];
 
@@ -71,6 +177,10 @@ const formatBytes = (value: number) => {
 };
 
 const formatRate = (value: number) => `${formatBytes(value)}/s`;
+
+const formatPerSecond = (value: number) => `${value.toFixed(1)}/s`;
+
+const formatMilliseconds = (value: number) => `${Math.round(value)} ms`;
 
 const formatMillicores = (value: number) =>
   value >= 1000 ? `${(value / 1000).toFixed(1)} vCPU` : `${Math.round(value)}m`;
@@ -143,10 +253,12 @@ const UsageHeader = ({
   error,
   loading,
   state,
+  title = "Resource usage",
 }: {
   error?: string;
   loading: boolean;
   state: string;
+  title?: string;
 }) => (
   <div className="flex min-h-11 flex-wrap items-center gap-2 border-b border-border px-4 py-2.5 text-[9px] text-muted-foreground">
     {loading ? (
@@ -154,7 +266,7 @@ const UsageHeader = ({
     ) : (
       <Activity className="size-3" />
     )}
-    <span className="tracking-[0.12em] uppercase">Resource usage</span>
+    <span className="tracking-[0.12em] uppercase">{title}</span>
     <span className="ml-auto">{error ?? state}</span>
   </div>
 );
@@ -165,38 +277,57 @@ const UsageSummary = ({
   cpuLimit,
   memoryLimit,
   usage,
+  aggregate = false,
+  showHostCapacity = true,
 }: {
   actualCPU?: number;
   actualNetwork?: { egress: number; ingress: number };
   cpuLimit?: number;
   memoryLimit?: number;
   usage: Usage | null;
+  aggregate?: boolean;
+  showHostCapacity?: boolean;
 }) => {
   const actualMemory = usage?.running ? formatBytes(usage.memoryBytes) : "—";
+  const resourceDetail = usage
+    ? `${usage.runningResources.toLocaleString()} / ${usage.totalResources.toLocaleString()} resources running`
+    : "Reading resources…";
   return (
-    <div className="grid sm:grid-cols-2 lg:grid-cols-4">
+    <div
+      className={`grid sm:grid-cols-2 ${showHostCapacity ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}
+    >
       <Metric
-        detail={`Limit ${cpuLimit ? `${cpuLimit.toLocaleString()}m` : "unlimited"}`}
+        detail={
+          aggregate
+            ? resourceDetail
+            : `Limit ${cpuLimit ? `${cpuLimit.toLocaleString()}m` : "unlimited"}`
+        }
         label="CPU now"
         value={cpuValueFor(usage, actualCPU)}
       />
       <Metric
-        detail={`Limit ${memoryLimit ? formatBytes(memoryLimit) : "unlimited"}`}
+        detail={
+          aggregate
+            ? "All running workloads"
+            : `Limit ${memoryLimit ? formatBytes(memoryLimit) : "unlimited"}`
+        }
         label="Memory now"
         value={actualMemory}
       />
       <Metric
-        detail="Ingress ↓  Egress ↑"
+        detail="Public ingress ↓  egress ↑"
         label="Network now"
         value={networkValueFor(usage, actualNetwork)}
       />
-      <Metric
-        detail={
-          usage ? `${usage.hostCpuCores.toLocaleString()} vCPU` : "Reading…"
-        }
-        label="Host capacity"
-        value={usage ? formatBytes(usage.hostMemoryBytes) : "—"}
-      />
+      {showHostCapacity ? (
+        <Metric
+          detail={
+            usage ? `${usage.hostCpuCores.toLocaleString()} vCPU` : "Reading…"
+          }
+          label="Host capacity"
+          value={usage ? formatBytes(usage.hostMemoryBytes) : "—"}
+        />
+      ) : null}
     </div>
   );
 };
@@ -206,13 +337,19 @@ const RangeSelector = ({
   historyError,
   onChange,
   range,
+  standalone = false,
 }: {
   history: ResourceUsageHistory | null;
   historyError?: string;
   onChange: (range: ResourceUsageRange) => void;
   range: ResourceUsageRange;
+  standalone?: boolean;
 }) => (
-  <div className="flex items-center gap-1 border-t border-border px-4 py-2.5">
+  <div
+    className={`flex items-center gap-1 px-4 py-2.5 ${
+      standalone ? "border border-border bg-card" : "border-t border-border"
+    }`}
+  >
     <span className="mr-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
       Range
     </span>
@@ -289,6 +426,445 @@ const UsageCharts = ({
   );
 };
 
+const proxyValue = (value?: number) =>
+  value === undefined ? "Sampling…" : formatPerSecond(value);
+
+const latencyValue = (value?: number) =>
+  value === undefined ? "—" : formatMilliseconds(value);
+
+interface ProtocolUsageProps {
+  history: ResourceUsageHistory | null;
+  historyError?: string;
+  usage: Usage | null;
+}
+
+type HTTPMetrics = NonNullable<Usage["proxy"]>["http"];
+
+const emptyHTTPMetrics: HTTPMetrics = {
+  activeRequests: 0,
+  activeRequestsPeak: 0,
+  requestsTotal: 0,
+};
+
+const combinedRate = (first?: number, second?: number) =>
+  first === undefined || second === undefined ? undefined : first + second;
+
+const ProtocolHeader = ({
+  title,
+  usage,
+}: {
+  title: string;
+  usage: Usage | null;
+}) => (
+  <UsageHeader
+    loading={!usage}
+    state={usage?.proxy ? "Live" : "Waiting for traffic"}
+    title={title}
+  />
+);
+
+const HTTPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
+  const http = usage?.proxy?.http ?? emptyHTTPMetrics;
+  const points = history?.points ?? emptyPoints;
+  const emptyLabel = emptyLabelFor(history, historyError);
+  const from = history?.from ?? 0;
+  const to = history?.to ?? 0;
+  return (
+    <section className="border border-border bg-card">
+      <ProtocolHeader title="HTTP traffic" usage={usage} />
+      <div className="grid sm:grid-cols-2 xl:grid-cols-4">
+        <Metric
+          detail={`${http.requestsTotal.toLocaleString()} total requests`}
+          label="Request rate"
+          value={proxyValue(http.requestsPerSecond)}
+        />
+        <Metric
+          detail={`${http.activeRequestsPeak.toLocaleString()} peak · includes SSE/WebSocket`}
+          label="Active requests"
+          value={http.activeRequests.toLocaleString()}
+        />
+        <Metric
+          detail={`p50 ${latencyValue(http.latencyP50Millis)} · p99 ${latencyValue(http.latencyP99Millis)}`}
+          label="Latency p95"
+          value={latencyValue(http.latencyP95Millis)}
+        />
+        <Metric
+          detail="4xx and 5xx responses"
+          label="Error rate"
+          value={proxyValue(
+            combinedRate(http.responses4xxPerSecond, http.responses5xxPerSecond)
+          )}
+        />
+      </div>
+      <div className="grid grid-cols-2 border-t border-border xl:grid-cols-4">
+        <Metric
+          detail="Successful"
+          label="2xx"
+          value={proxyValue(http.responses2xxPerSecond)}
+        />
+        <Metric
+          detail="Redirects"
+          label="3xx"
+          value={proxyValue(http.responses3xxPerSecond)}
+        />
+        <Metric
+          detail="Client errors"
+          label="4xx"
+          value={proxyValue(http.responses4xxPerSecond)}
+        />
+        <Metric
+          detail="Server errors"
+          label="5xx"
+          value={proxyValue(http.responses5xxPerSecond)}
+        />
+      </div>
+      <div className="grid border-t border-border xl:grid-cols-2">
+        <div className="min-w-0 xl:border-r xl:border-border">
+          <MetricChart
+            emptyLabel={emptyLabel}
+            formatValue={formatPerSecond}
+            from={from}
+            minimumMaximum={1}
+            points={points}
+            series={httpRequestSeries}
+            title="HTTP request rate"
+            to={to}
+          />
+        </div>
+        <div className="min-w-0 border-t border-border xl:border-t-0">
+          <MetricChart
+            emptyLabel={emptyLabel}
+            formatValue={formatMilliseconds}
+            from={from}
+            minimumMaximum={10}
+            points={points}
+            series={httpLatencySeries}
+            title="HTTP latency"
+            to={to}
+          />
+        </div>
+      </div>
+    </section>
+  );
+};
+
+const TCPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
+  const proxy = usage?.proxy;
+  const points = history?.points ?? emptyPoints;
+  return (
+    <section className="border border-border bg-card">
+      <ProtocolHeader title="TCP traffic" usage={usage} />
+      <div className="grid sm:grid-cols-3">
+        <Metric
+          detail="Accepted connections per second"
+          label="Connection rate"
+          value={proxyValue(proxy?.tcp.connectionsPerSecond)}
+        />
+        <Metric
+          detail={`${(proxy?.tcp.activeConnectionsPeak ?? 0).toLocaleString()} peak in latest interval`}
+          label="Active connections"
+          value={(proxy?.tcp.activeConnections ?? 0).toLocaleString()}
+        />
+        <Metric
+          detail="Since the daemon started"
+          label="Total connections"
+          value={(proxy?.tcp.connectionsTotal ?? 0).toLocaleString()}
+        />
+      </div>
+      <div className="border-t border-border">
+        <MetricChart
+          emptyLabel={emptyLabelFor(history, historyError)}
+          formatValue={formatPerSecond}
+          from={history?.from ?? 0}
+          minimumMaximum={1}
+          points={points}
+          series={tcpSeries}
+          title="TCP connection rate"
+          to={history?.to ?? 0}
+        />
+      </div>
+    </section>
+  );
+};
+
+const UDPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
+  const proxy = usage?.proxy;
+  const points = history?.points ?? emptyPoints;
+  return (
+    <section className="border border-border bg-card">
+      <ProtocolHeader title="UDP traffic" usage={usage} />
+      <div className="grid sm:grid-cols-2 xl:grid-cols-4">
+        <Metric
+          detail="Public packets received"
+          label="Ingress packets"
+          value={proxyValue(proxy?.udp.ingressPacketsPerSecond)}
+        />
+        <Metric
+          detail="Public packets sent"
+          label="Egress packets"
+          value={proxyValue(proxy?.udp.egressPacketsPerSecond)}
+        />
+        <Metric
+          detail="Since the daemon started"
+          label="Ingress total"
+          value={(proxy?.udp.ingressPacketsTotal ?? 0).toLocaleString()}
+        />
+        <Metric
+          detail="Since the daemon started"
+          label="Egress total"
+          value={(proxy?.udp.egressPacketsTotal ?? 0).toLocaleString()}
+        />
+      </div>
+      <div className="border-t border-border">
+        <MetricChart
+          emptyLabel={emptyLabelFor(history, historyError)}
+          formatValue={formatPerSecond}
+          from={history?.from ?? 0}
+          minimumMaximum={1}
+          points={points}
+          series={udpSeries}
+          title="UDP packet rate"
+          to={history?.to ?? 0}
+        />
+      </div>
+    </section>
+  );
+};
+
+const ProtocolUsage = (props: ProtocolUsageProps) => (
+  <>
+    <HTTPUsage {...props} />
+    <TCPUsage {...props} />
+    <UDPUsage {...props} />
+  </>
+);
+
+type HostMetrics = NonNullable<Usage["host"]>;
+
+const emptyHostMetrics: HostMetrics = {
+  cpuCores: 1,
+  memoryPeakBytes: 0,
+  memoryTotalBytes: 1,
+  memoryUsedBytes: 0,
+  networkInterface: "—",
+  observedAt: 1,
+};
+
+const VPSCurrent = ({ host }: { host?: HostMetrics }) => {
+  const values = host ?? emptyHostMetrics;
+  const cpuPercent =
+    values.cpuMillicores === undefined
+      ? undefined
+      : (values.cpuMillicores / (values.cpuCores * 1000)) * 100;
+  const memoryPercent =
+    (values.memoryUsedBytes / values.memoryTotalBytes) * 100;
+  const network =
+    values.networkIngressBytesPerSecond !== undefined &&
+    values.networkEgressBytesPerSecond !== undefined
+      ? `${formatRate(values.networkIngressBytesPerSecond)} ↓  ${formatRate(values.networkEgressBytesPerSecond)} ↑`
+      : "Sampling…";
+  return (
+    <>
+      <div className="flex min-h-11 items-center gap-2 border-b border-border px-4 py-2.5 text-[9px] text-muted-foreground">
+        <Server className="size-3" />
+        <span className="tracking-[0.12em] uppercase">VPS total</span>
+        <span className="ml-auto">{host ? "Live" : "Reading host…"}</span>
+      </div>
+      <div className="grid sm:grid-cols-3">
+        <Metric
+          detail={
+            host
+              ? `${formatMillicores(values.cpuMillicores ?? 0)} / ${values.cpuCores} vCPU`
+              : "Reading CPU…"
+          }
+          label="CPU total"
+          value={
+            cpuPercent === undefined ? "Sampling…" : `${cpuPercent.toFixed(1)}%`
+          }
+        />
+        <Metric
+          detail={
+            host ? `${memoryPercent.toFixed(1)}% used` : "Reading memory…"
+          }
+          label="RAM total"
+          value={
+            host
+              ? `${formatBytes(values.memoryUsedBytes)} / ${formatBytes(values.memoryTotalBytes)}`
+              : "—"
+          }
+        />
+        <Metric
+          detail={
+            host
+              ? `${values.networkInterface} host traffic`
+              : "Detecting uplink…"
+          }
+          label="Network total"
+          value={network}
+        />
+      </div>
+    </>
+  );
+};
+
+const VPSCharts = ({
+  cpuCores,
+  history,
+  historyError,
+}: {
+  cpuCores: number;
+  history: ResourceUsageHistory | null;
+  historyError?: string;
+}) => {
+  const cpuSeriesForHost = useMemo<MetricSeries[]>(
+    () => [
+      {
+        color: chartColors.primary,
+        label: "Average",
+        value: (point) =>
+          point.cpuMillicores === undefined
+            ? undefined
+            : (point.cpuMillicores / (cpuCores * 1000)) * 100,
+      },
+      {
+        color: chartColors.primary,
+        label: "Peak (2s avg)",
+        strokeDasharray: "3 2",
+        value: (point) =>
+          point.cpuPeakMillicores === undefined
+            ? undefined
+            : (point.cpuPeakMillicores / (cpuCores * 1000)) * 100,
+      },
+    ],
+    [cpuCores]
+  );
+  const points = history?.points ?? emptyPoints;
+  const emptyLabel = emptyLabelFor(history, historyError);
+  const from = history?.from ?? 0;
+  const to = history?.to ?? 0;
+  return (
+    <div className="grid border-t border-border xl:grid-cols-2">
+      <div className="min-w-0 xl:border-r xl:border-border">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={(value) => `${value.toFixed(1)}%`}
+          from={from}
+          minimumMaximum={10}
+          points={points}
+          series={cpuSeriesForHost}
+          title="VPS CPU"
+          to={to}
+        />
+      </div>
+      <div className="min-w-0 border-t border-border xl:border-t-0">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={formatBytes}
+          from={from}
+          minimumMaximum={1024 ** 3}
+          points={points}
+          series={memorySeries}
+          title="VPS RAM"
+          to={to}
+        />
+      </div>
+      <div className="min-w-0 border-t border-border xl:col-span-2">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={formatRate}
+          from={from}
+          minimumMaximum={1024}
+          points={points}
+          series={networkSeries}
+          title="VPS network"
+          to={to}
+        />
+      </div>
+    </div>
+  );
+};
+
+const VPSUsage = ({
+  history,
+  historyError,
+  usage,
+}: {
+  history: ResourceUsageHistory | null;
+  historyError?: string;
+  usage: Usage | null;
+}) => {
+  const host = usage?.host;
+  return (
+    <section className="border border-border bg-card">
+      <VPSCurrent host={host} />
+      <VPSCharts
+        cpuCores={host?.cpuCores ?? 1}
+        history={history}
+        historyError={historyError}
+      />
+    </section>
+  );
+};
+
+const UsageContent = ({
+  aggregate = false,
+  cpuLimit,
+  cpuMillicores,
+  currentError,
+  history,
+  historyError,
+  memoryBytes,
+  network,
+  onRangeChange,
+  range,
+  showHostCapacity = true,
+  showRange = true,
+  title,
+  usage,
+}: {
+  aggregate?: boolean;
+  cpuLimit?: number;
+  cpuMillicores?: number;
+  currentError?: string;
+  history: ResourceUsageHistory | null;
+  historyError?: string;
+  memoryBytes?: number;
+  network?: { egress: number; ingress: number };
+  onRangeChange: (range: ResourceUsageRange) => void;
+  range: ResourceUsageRange;
+  showHostCapacity?: boolean;
+  showRange?: boolean;
+  title: string;
+  usage: Usage | null;
+}) => (
+  <section className="border border-border bg-card">
+    <UsageHeader
+      error={currentError}
+      loading={!usage && !currentError}
+      state={statusFor(usage)}
+      title={title}
+    />
+    <UsageSummary
+      actualCPU={cpuMillicores}
+      actualNetwork={network}
+      aggregate={aggregate}
+      cpuLimit={cpuLimit}
+      memoryLimit={memoryBytes}
+      showHostCapacity={showHostCapacity}
+      usage={usage}
+    />
+    {showRange ? (
+      <RangeSelector
+        history={history}
+        historyError={historyError}
+        onChange={onRangeChange}
+        range={range}
+      />
+    ) : null}
+    <UsageCharts history={history} historyError={historyError} />
+  </section>
+);
+
 export const ResourceUsage = ({
   cpuMillicores,
   kind,
@@ -314,26 +890,101 @@ export const ResourceUsage = ({
   );
 
   return (
-    <SectionCard>
-      <UsageHeader
-        error={currentError}
-        loading={!usage && !currentError}
-        state={statusFor(usage)}
-      />
-      <UsageSummary
-        actualCPU={actualCPU}
-        actualNetwork={actualNetwork}
+    <div className="space-y-4">
+      <UsageContent
         cpuLimit={cpuMillicores}
-        memoryLimit={memoryBytes}
-        usage={usage}
-      />
-      <RangeSelector
+        cpuMillicores={actualCPU}
+        currentError={currentError}
         history={history}
         historyError={historyError}
+        memoryBytes={memoryBytes}
+        network={actualNetwork}
+        onRangeChange={setRange}
+        range={range}
+        title="Resource usage"
+        usage={usage}
+      />
+      {kind === "service" ? (
+        <ProtocolUsage
+          history={history}
+          historyError={historyError}
+          usage={usage}
+        />
+      ) : null}
+    </div>
+  );
+};
+
+export const ProjectUsage = ({ projectID }: { projectID: string }) => {
+  const [range, setRange] = useState<ResourceUsageRange>("1h");
+  const metrics = useScopeUsage({ id: projectID, kind: "project" }, range);
+  return (
+    <div>
+      <header className="border-b border-border px-6 py-5">
+        <h3 className="text-sm font-medium">Usage</h3>
+        <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">
+          Combined CPU, memory, and public traffic for this project.
+        </p>
+      </header>
+      <div className="space-y-4 p-4 lg:p-6">
+        <UsageContent
+          aggregate
+          cpuMillicores={metrics.cpuMillicores}
+          currentError={metrics.currentError}
+          history={metrics.history}
+          historyError={metrics.historyError}
+          network={metrics.network}
+          onRangeChange={setRange}
+          range={range}
+          title="Project resources"
+          usage={metrics.usage}
+        />
+        <ProtocolUsage
+          history={metrics.history}
+          historyError={metrics.historyError}
+          usage={metrics.usage}
+        />
+      </div>
+    </div>
+  );
+};
+
+export const InstallationUsage = () => {
+  const [range, setRange] = useState<ResourceUsageRange>("1h");
+  const metrics = useScopeUsage({ kind: "installation" }, range);
+  return (
+    <main className="space-y-4 p-4 lg:p-6">
+      <RangeSelector
+        history={metrics.history}
+        historyError={metrics.historyError}
         onChange={setRange}
         range={range}
+        standalone
       />
-      <UsageCharts history={history} historyError={historyError} />
-    </SectionCard>
+      <VPSUsage
+        history={metrics.hostHistory}
+        historyError={metrics.hostHistoryError}
+        usage={metrics.usage}
+      />
+      <UsageContent
+        aggregate
+        cpuMillicores={metrics.cpuMillicores}
+        currentError={metrics.currentError}
+        history={metrics.history}
+        historyError={metrics.historyError}
+        network={metrics.network}
+        onRangeChange={setRange}
+        range={range}
+        showHostCapacity={false}
+        showRange={false}
+        title="Platform resources"
+        usage={metrics.usage}
+      />
+      <ProtocolUsage
+        history={metrics.history}
+        historyError={metrics.historyError}
+        usage={metrics.usage}
+      />
+    </main>
   );
 };

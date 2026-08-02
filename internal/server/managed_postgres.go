@@ -229,18 +229,18 @@ func writeManagedPostgresError(response http.ResponseWriter, err error) {
 	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):
 		writeAPIError(response, http.StatusBadRequest, "invalid_backup_policy", err.Error())
 	case errors.Is(err, managedpostgres.ErrImageUnavailable):
-		writeAPIError(response, http.StatusBadGateway, "managed_postgres_image_unavailable", "Unable to resolve the selected official PostgreSQL image")
+		writeAPIError(response, http.StatusBadGateway, "managed_postgres_image_unavailable", "Unable to resolve the selected official PostgreSQL image", err)
 	case errors.Is(err, managedpostgres.ErrInvalidInput), errors.Is(err, managedpostgres.ErrInvalidQuery), errors.Is(err, managedimages.ErrInvalidQuery):
 		writeAPIError(response, http.StatusBadRequest, "invalid_managed_postgres", err.Error())
 	case errors.Is(err, managedpostgres.ErrMaintenance):
 		writeAPIError(response, http.StatusConflict, "resource_busy", "Managed PostgreSQL is in maintenance")
 	case errors.Is(err, managedpostgres.ErrNotRunning):
-		writeAPIError(response, http.StatusServiceUnavailable, "postgres_not_running", "Managed PostgreSQL resource is not running")
+		writeAPIError(response, http.StatusServiceUnavailable, "postgres_not_running", "Managed PostgreSQL resource is not running", err)
 	case errors.Is(err, context.DeadlineExceeded):
-		writeAPIError(response, http.StatusGatewayTimeout, "postgres_query_timeout", "PostgreSQL query exceeded the execution limit")
+		writeAPIError(response, http.StatusGatewayTimeout, "postgres_query_timeout", "PostgreSQL query exceeded the execution limit", err)
 	case errors.As(err, &postgresError):
 		writeAPIError(response, http.StatusUnprocessableEntity, "postgres_query_failed", postgresError.Error())
 	default:
-		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage PostgreSQL resource")
+		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage PostgreSQL resource", err)
 	}
 }

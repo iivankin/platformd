@@ -2,7 +2,6 @@ package containerconsole
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -71,7 +70,7 @@ type Config struct {
 	Runtime   Runtime
 	Audit     AuditRepository
 	Now       func() time.Time
-	NewID     func(time.Time) (string, error)
+	NewID     func() (string, error)
 }
 
 type Application struct {
@@ -79,7 +78,7 @@ type Application struct {
 	runtime   Runtime
 	audit     AuditRepository
 	now       func() time.Time
-	newID     func(time.Time) (string, error)
+	newID     func() (string, error)
 }
 
 func New(config Config) (*Application, error) {
@@ -92,9 +91,7 @@ func New(config Config) (*Application, error) {
 	}
 	newID := config.NewID
 	if newID == nil {
-		newID = func(timestamp time.Time) (string, error) {
-			return id.NewWith(timestamp, rand.Reader)
-		}
+		newID = id.New
 	}
 	return &Application{resources: config.Resources, runtime: config.Runtime, audit: config.Audit, now: now, newID: newID}, nil
 }
@@ -114,7 +111,7 @@ func (application *Application) Open(ctx context.Context, input OpenInput) (term
 		return nil, errors.New("service has no running container")
 	}
 	startedAt := application.now()
-	auditID, err := application.newID(startedAt)
+	auditID, err := application.newID()
 	if err != nil {
 		return nil, fmt.Errorf("generate terminal audit ID: %w", err)
 	}
@@ -138,7 +135,7 @@ func (application *Application) Open(ctx context.Context, input OpenInput) (term
 
 func (application *Application) finish(input OpenInput, containerID string, startedAt time.Time, reason string, exitCode int, runErr error) error {
 	finishedAt := application.now()
-	auditID, err := application.newID(finishedAt)
+	auditID, err := application.newID()
 	if err != nil {
 		return fmt.Errorf("generate terminal completion audit ID: %w", err)
 	}

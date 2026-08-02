@@ -206,6 +206,7 @@ func uploadObject(application *objectstore.Application) http.HandlerFunc {
 		created, err := application.Put(request.Context(), objectstore.PutInput{
 			StoreID: store.ID, ObjectKey: request.URL.Query().Get("key"),
 			ContentType: request.Header.Get("Content-Type"), Body: request.Body,
+			BodySize: request.ContentLength, BodySizeKnown: request.ContentLength >= 0,
 		})
 		if err != nil {
 			writeObjectStoreError(response, err)
@@ -268,7 +269,7 @@ func previewObject(application *objectstore.Application) http.HandlerFunc {
 	}
 }
 
-func publicObjectMetadata(object state.ObjectMetadata) objectMetadataResponse {
+func publicObjectMetadata(object objectstore.ObjectMetadata) objectMetadataResponse {
 	return objectMetadataResponse{
 		ObjectKey: object.ObjectKey, ContentType: object.ContentType, ETag: object.ETag,
 		Size: object.Size, CreatedAt: object.CreatedAtMillis, UpdatedAt: object.UpdatedAtMillis,
@@ -331,7 +332,7 @@ func writeObjectStoreError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
 	case errors.Is(err, state.ErrObjectStoreNotFound):
 		writeAPIError(response, http.StatusNotFound, "object_store_not_found", "Object store not found")
-	case errors.Is(err, state.ErrObjectNotFound):
+	case errors.Is(err, objectstore.ErrObjectNotFound):
 		writeAPIError(response, http.StatusNotFound, "object_not_found", "Object not found")
 	case errors.Is(err, state.ErrResourceNameConflict):
 		writeAPIError(response, http.StatusConflict, "resource_name_conflict", "A project resource with this name already exists")
@@ -344,6 +345,6 @@ func writeObjectStoreError(response http.ResponseWriter, err error) {
 	case errors.Is(err, objectstore.ErrInvalidInput):
 		writeAPIError(response, http.StatusBadRequest, "invalid_object_store", err.Error())
 	default:
-		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage object store")
+		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage object store", err)
 	}
 }

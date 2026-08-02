@@ -55,25 +55,25 @@ func (store *Store) RecordManagedPostgresQuery(ctx context.Context, input Record
 	if input.ErrorClass != "" {
 		metadata["errorClass"] = input.ErrorClass
 	}
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
 	return store.Write(ctx, func(transaction *sql.Tx) error {
-		var exists int
+		var name string
 		if err := transaction.QueryRowContext(ctx, `
-SELECT EXISTS(SELECT 1 FROM managed_postgres WHERE id = ? AND project_id = ?)`, input.ResourceID, input.ProjectID).Scan(&exists); err != nil {
+SELECT name FROM managed_postgres WHERE id = ? AND project_id = ?`, input.ResourceID, input.ProjectID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
+			return ErrManagedPostgresNotFound
+		} else if err != nil {
 			return err
 		}
-		if exists == 0 {
-			return ErrManagedPostgresNotFound
+		metadata["name"] = name
+		metadataJSON, err := json.Marshal(metadata)
+		if err != nil {
+			return err
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, 'postgres.query', 'postgres', ?, ?, ?, ?, ?)`,
-			input.AuditEventID, input.ActorID, input.ResourceID, nullableString(input.RequestCorrelationID),
+) VALUES (?, ?, 'access', ?, 'postgres.query', 'postgres', ?, ?, ?, ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorID, input.ResourceID, nullableString(input.RequestCorrelationID),
 			input.Result, string(metadataJSON), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit managed PostgreSQL query: %w", err)
@@ -101,29 +101,29 @@ func (store *Store) RecordManagedPostgresExtension(ctx context.Context, input Re
 	if input.ErrorClass != "" {
 		metadata["errorClass"] = input.ErrorClass
 	}
-	metadataJSON, err := json.Marshal(metadata)
-	if err != nil {
-		return err
-	}
 	action := "postgres.extension.uninstall"
 	if input.Install {
 		action = "postgres.extension.install"
 	}
 	return store.Write(ctx, func(transaction *sql.Tx) error {
-		var exists int
+		var name string
 		if err := transaction.QueryRowContext(ctx, `
-SELECT EXISTS(SELECT 1 FROM managed_postgres WHERE id = ? AND project_id = ?)`, input.ResourceID, input.ProjectID).Scan(&exists); err != nil {
+SELECT name FROM managed_postgres WHERE id = ? AND project_id = ?`, input.ResourceID, input.ProjectID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
+			return ErrManagedPostgresNotFound
+		} else if err != nil {
 			return err
 		}
-		if exists == 0 {
-			return ErrManagedPostgresNotFound
+		metadata["name"] = name
+		metadataJSON, err := json.Marshal(metadata)
+		if err != nil {
+			return err
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, ?, 'postgres', ?, ?, ?, ?, ?)`,
-			input.AuditEventID, input.ActorID, action, input.ResourceID,
+) VALUES (?, ?, 'access', ?, ?, 'postgres', ?, ?, ?, ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorID, action, input.ResourceID,
 			nullableString(input.RequestCorrelationID), input.Result, string(metadataJSON),
 			input.CreatedAtMillis,
 		); err != nil {

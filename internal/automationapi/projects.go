@@ -34,7 +34,7 @@ func createProject(application *automation.ProjectApplication) http.HandlerFunc 
 		case err != nil:
 			writeError(response, http.StatusInternalServerError, "internal_error", "Unable to create project")
 		default:
-			response.Header().Set("Location", "/api/v1/projects/"+result.Project.ID)
+			response.Header().Set("Location", "/public/api/v1/projects/"+result.Project.ID)
 			response.Header().Set("X-Request-ID", result.RequestID)
 			writeJSON(response, http.StatusCreated, publicProject(result.Project))
 		}

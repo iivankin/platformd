@@ -24,4 +24,8 @@ func TestSidecarContainerSpecIsIsolatedAndPersistent(t *testing.T) {
 	if len(spec.DNSServers) != 1 || spec.DNSServers[0] != config.Network.Gateway || spec.CPUMillicores != 0 || spec.MemoryMaxBytes != 0 {
 		t.Fatalf("sidecar network or resource configuration = %+v", spec)
 	}
+	if spec.LogDriver != containerengine.ContainerLogJournald || spec.LogPath != "" ||
+		spec.LogSizeBytes != 0 || spec.LogMaxFiles != 0 {
+		t.Fatalf("sidecar log configuration = %+v", spec)
+	}
 }

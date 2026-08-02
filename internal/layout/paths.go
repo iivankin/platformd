@@ -18,6 +18,7 @@ type Paths struct {
 	VolumesRoot           string
 	RegistryRoot          string
 	ObjectsRoot           string
+	ObjectStoreSocket     string
 	BackupWorkRoot        string
 	CloudflareMeshRoot    string
 	PostgresExtensionRoot string
@@ -49,6 +50,7 @@ func FromRoots(dataRoot, configRoot, runtimeRoot, localBinary, unitFile string) 
 		VolumesRoot:           filepath.Join(dataRoot, "volumes"),
 		RegistryRoot:          filepath.Join(dataRoot, "registry"),
 		ObjectsRoot:           filepath.Join(dataRoot, "objects"),
+		ObjectStoreSocket:     filepath.Join(runtimeRoot, "objectstore", "sidecar.sock"),
 		BackupWorkRoot:        filepath.Join(dataRoot, "backups", "work"),
 		CloudflareMeshRoot:    filepath.Join(dataRoot, "cloudflare-mesh"),
 		PostgresExtensionRoot: filepath.Join(dataRoot, "postgres-extensions"),

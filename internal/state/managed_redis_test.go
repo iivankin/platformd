@@ -41,7 +41,7 @@ func TestCreateManagedRedisIsProjectScopedAndAudited(t *testing.T) {
 SELECT action, target_kind, target_id, metadata_json FROM audit_events WHERE id = 'audit'`).Scan(&action, &targetKind, &targetID, &metadata); err != nil {
 		t.Fatal(err)
 	}
-	if action != "redis.create" || targetKind != "redis" || targetID != "redis" || metadata != `{"actorEmail":"user@example.com"}` {
+	if action != "redis.create" || targetKind != "redis" || targetID != "redis" || metadata != `{"actorEmail":"user@example.com","name":"cache"}` {
 		t.Fatalf("unexpected audit: %q %q %q %s", action, targetKind, targetID, metadata)
 	}
 }
@@ -54,7 +54,7 @@ func TestCreateManagedRedisRejectsSharedNamespaceAndRollsBackAudit(t *testing.T)
 	createManagedRedisTestProject(t, store)
 	if _, err := store.CreateService(ctx, state.CreateService{
 		ID: "service", ProjectID: "project", Name: "cache", Enabled: true,
-		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("redis:latest"),},
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("redis:latest")},
 		AuditEventID: "service-audit", ActorKind: "token", ActorID: "token",
 		CreatedAtMillis: 2,
 	}); err != nil {

@@ -232,7 +232,7 @@ func setRegistryHostname(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate Registry identifiers")
 			return

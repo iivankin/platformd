@@ -2,10 +2,8 @@ package automation
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/id"
@@ -26,7 +24,6 @@ type ServerExecAudit interface {
 type ServerExecApplication struct {
 	executor ServerExecutor
 	audit    ServerExecAudit
-	random   io.Reader
 	now      func() time.Time
 }
 
@@ -40,17 +37,14 @@ type ServerExecResult struct {
 	RequestID string
 }
 
-func NewServerExecApplication(executor ServerExecutor, audit ServerExecAudit, random io.Reader, now func() time.Time) (*ServerExecApplication, error) {
+func NewServerExecApplication(executor ServerExecutor, audit ServerExecAudit, now func() time.Time) (*ServerExecApplication, error) {
 	if executor == nil || audit == nil {
 		return nil, errors.New("server exec application dependencies are incomplete")
-	}
-	if random == nil {
-		random = rand.Reader
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &ServerExecApplication{executor: executor, audit: audit, random: random, now: now}, nil
+	return &ServerExecApplication{executor: executor, audit: audit, now: now}, nil
 }
 
 func (application *ServerExecApplication) Execute(ctx context.Context, identity Identity, input ServerExecInput) (ServerExecResult, error) {
@@ -58,11 +52,11 @@ func (application *ServerExecApplication) Execute(ctx context.Context, identity 
 		return ServerExecResult{}, ErrUnboundAdminRequired
 	}
 	timestamp := application.now()
-	auditID, err := id.NewWith(timestamp, application.random)
+	auditID, err := id.New()
 	if err != nil {
 		return ServerExecResult{}, fmt.Errorf("allocate server exec audit ID: %w", err)
 	}
-	requestID, err := id.NewWith(timestamp, application.random)
+	requestID, err := id.New()
 	if err != nil {
 		return ServerExecResult{}, fmt.Errorf("allocate server exec request ID: %w", err)
 	}

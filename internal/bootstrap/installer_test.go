@@ -179,7 +179,7 @@ func testVerifiedRelease(t *testing.T, root string) (bootstrap.VerifiedRelease, 
 
 func writeRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -28,17 +28,19 @@ const priorities = [
 ] as const;
 const logColumns =
   "minmax(180px,200px) minmax(84px,100px) minmax(130px,170px) minmax(360px,1fr)";
+const pageSize = 500;
 
 export const InfrastructureLogs = () => {
   const [journal, setJournal] = useState<InfrastructureLogWindow>();
   const [contains, setContains] = useState("");
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState<string>();
 
   const load = useCallback(async (signal?: AbortSignal) => {
     setLoading(true);
     try {
-      setJournal(await fetchInfrastructureLogs(500, signal));
+      setJournal(await fetchInfrastructureLogs({ limit: pageSize }, signal));
       setError(undefined);
     } catch (loadError) {
       if (
@@ -47,7 +49,7 @@ export const InfrastructureLogs = () => {
         setError(
           loadError instanceof Error
             ? loadError.message
-            : "Unable to read the platform journal"
+            : "Unable to read the system journal"
         );
       }
     } finally {
@@ -61,8 +63,9 @@ export const InfrastructureLogs = () => {
     const controller = new AbortController();
     const loadInitial = async () => {
       try {
-        const window = await fetchInfrastructureLogs(500, controller.signal);
-        setJournal(window);
+        setJournal(
+          await fetchInfrastructureLogs({ limit: pageSize }, controller.signal)
+        );
         setError(undefined);
       } catch (loadError) {
         if (
@@ -73,7 +76,7 @@ export const InfrastructureLogs = () => {
           setError(
             loadError instanceof Error
               ? loadError.message
-              : "Unable to read the platform journal"
+              : "Unable to read the system journal"
           );
         }
       } finally {
@@ -85,6 +88,42 @@ export const InfrastructureLogs = () => {
     void loadInitial();
     return () => controller.abort();
   }, []);
+
+  const loadMore = useCallback(async () => {
+    const beforeCursor = journal?.nextCursor;
+    if (!beforeCursor || loadingMore) {
+      return;
+    }
+    setLoadingMore(true);
+    try {
+      const page = await fetchInfrastructureLogs({
+        beforeCursor,
+        limit: pageSize,
+      });
+      setJournal((current) => {
+        if (!current) {
+          return page;
+        }
+        const cursors = new Set(current.records.map((record) => record.cursor));
+        return {
+          nextCursor: page.nextCursor,
+          records: [
+            ...current.records,
+            ...page.records.filter((record) => !cursors.has(record.cursor)),
+          ],
+        };
+      });
+      setError(undefined);
+    } catch (loadError) {
+      setError(
+        loadError instanceof Error
+          ? loadError.message
+          : "Unable to read older system journal records"
+      );
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [journal?.nextCursor, loadingMore]);
 
   const records = useMemo(() => {
     const needle = contains.trim().toLocaleLowerCase();
@@ -107,9 +146,9 @@ export const InfrastructureLogs = () => {
           </div>
           <div>
             <p className="text-[9px] tracking-[0.15em] text-muted-foreground uppercase">
-              platformd.service
+              platformd + subsystems + host incidents
             </p>
-            <p className="mt-1 text-sm font-medium">Platform journal</p>
+            <p className="mt-1 text-sm font-medium">System journal</p>
           </div>
         </div>
         <label
@@ -129,7 +168,7 @@ export const InfrastructureLogs = () => {
           </span>
         </label>
         <Button
-          disabled={loading}
+          disabled={loading || loadingMore}
           onClick={() => void load()}
           size="sm"
           type="button"
@@ -146,14 +185,8 @@ export const InfrastructureLogs = () => {
           {error}
         </SectionCard>
       ) : null}
-      {journal?.truncated ? (
-        <SectionCard className="bg-amber-500/5 px-5 py-2.5 text-[10px] text-amber-700 ring-amber-500/30 dark:text-amber-300">
-          Only the bounded newest journal window is loaded.
-        </SectionCard>
-      ) : null}
-
-      <SectionCard aria-label="Platform journal records" className="font-mono">
-        <DataTable label="Platform journal records">
+      <SectionCard aria-label="System journal records" className="font-mono">
+        <DataTable label="System journal records">
           <DataTableHeader>
             <DataTableRow columns={logColumns} header>
               <DataTableCell header>Time</DataTableCell>
@@ -187,10 +220,25 @@ export const InfrastructureLogs = () => {
         </DataTable>
         {records.length === 0 ? (
           <p className="px-5 py-12 text-center text-[10px] text-muted-foreground">
-            {loading
-              ? "Reading platform journal…"
-              : "No matching platform logs"}
+            {loading ? "Reading system journal…" : "No matching system logs"}
           </p>
+        ) : null}
+        {journal?.nextCursor ? (
+          <div className="flex items-center justify-between gap-3 border-t border-border px-5 py-3">
+            <span className="text-[10px] text-muted-foreground">
+              {journal.records.length.toLocaleString()} records loaded
+            </span>
+            <Button
+              disabled={loading || loadingMore}
+              onClick={() => void loadMore()}
+              size="sm"
+              type="button"
+              variant="outline"
+            >
+              <RefreshCw className={cn(loadingMore && "animate-spin")} />
+              {loadingMore ? "Loading…" : "Load older"}
+            </Button>
+          </div>
         ) : null}
       </SectionCard>
     </PageStack>

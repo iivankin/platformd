@@ -2,36 +2,43 @@ package resourcemetrics
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/iivankin/platformd/internal/cgroupstats"
+	"github.com/iivankin/platformd/internal/hostmetrics"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type metricStoreStub struct {
-	targets  []state.ResourceMetricTarget
-	samples  []state.ResourceMetricSample
-	recorded []state.ResourceMetricSample
-	cutoff   int64
+	targets          []state.ResourceMetricTarget
+	projects         []string
+	samples          []state.ResourceMetricSample
+	aggregateSamples []state.AggregateMetricSample
+	batches          []state.MetricBatch
 }
 
 func (store *metricStoreStub) ResourceMetricTargets(context.Context) ([]state.ResourceMetricTarget, error) {
 	return store.targets, nil
 }
 
-func (store *metricStoreStub) RecordResourceMetricSamples(_ context.Context, samples []state.ResourceMetricSample) error {
-	store.recorded = append(store.recorded, samples...)
+func (store *metricStoreStub) ResourceMetricProjectIDs(context.Context) ([]string, error) {
+	return store.projects, nil
+}
+
+func (store *metricStoreStub) RecordMetricBatch(_ context.Context, batch state.MetricBatch) error {
+	store.batches = append(store.batches, batch)
 	return nil
+}
+
+func (store *metricStoreStub) AggregateMetricSamples(context.Context, string, string, int64, int64) ([]state.AggregateMetricSample, error) {
+	return store.aggregateSamples, nil
 }
 
 func (store *metricStoreStub) ResourceMetricSamples(context.Context, string, string, int64, int64) ([]state.ResourceMetricSample, error) {
 	return store.samples, nil
-}
-
-func (store *metricStoreStub) DeleteResourceMetricSamplesBefore(_ context.Context, cutoff int64) error {
-	store.cutoff = cutoff
-	return nil
 }
 
 type usageReaderStub struct {
@@ -42,84 +49,375 @@ func (reader usageReaderStub) Read(cgroupstats.Kind, string) (cgroupstats.Sample
 	return reader.sample, nil
 }
 
+type mappedUsageReader struct {
+	samples map[metricKey]cgroupstats.Sample
+	errors  map[metricKey]error
+}
+
+func (reader *mappedUsageReader) Read(kind cgroupstats.Kind, resourceID string) (cgroupstats.Sample, error) {
+	key := metricKey{kind: string(kind), id: resourceID}
+	return reader.samples[key], reader.errors[key]
+}
+
 type networkReaderStub struct {
-	counters  NetworkCounters
-	available bool
+	counters map[string]trafficmetrics.Counters
+	complete bool
+	err      error
 }
 
-func (reader networkReaderStub) ReadResourceNetwork(cgroupstats.Kind, string) (NetworkCounters, bool, error) {
-	return reader.counters, reader.available, nil
+func (reader networkReaderStub) PublicNetworkCounters() (PublicNetworkSnapshot, error) {
+	return PublicNetworkSnapshot{Counters: reader.counters, Complete: reader.complete}, reader.err
 }
 
-func TestHistoryCalculatesRatesAndLeavesCounterResetsEmpty(t *testing.T) {
-	from := int64(3_600_000)
-	store := &metricStoreStub{samples: []state.ResourceMetricSample{
-		metricSample(from-60_000, 100_000, 100, 1_000, 2_000),
-		metricSample(from, 160_000, 200, 7_000, 5_000),
-		metricSample(from+60_000, 10_000, 300, 100, 100),
+type hostReaderStub struct {
+	sample hostmetrics.Sample
+}
+
+func (reader hostReaderStub) Read() (hostmetrics.Sample, error) {
+	return reader.sample, nil
+}
+
+func TestLiveSamplingUsesExactElapsedTimeAndTypedProtocolMetrics(t *testing.T) {
+	clock := time.Unix(100, 0)
+	store := &metricStoreStub{
+		targets: []state.ResourceMetricTarget{
+			{Kind: "service", ResourceID: "api", ProjectID: "project"},
+			{Kind: "redis", ResourceID: "cache", ProjectID: "project"},
+		},
+		projects: []string{"project"},
+	}
+	usage := &mappedUsageReader{samples: map[metricKey]cgroupstats.Sample{
+		{kind: "service", id: "api"}: {CPUUsageMicros: 1_000_000, MemoryBytes: 100, MemoryPeakBytes: 100, HostCPUCores: 8, HostMemoryBytes: 1000, Running: true},
+		{kind: "redis", id: "cache"}: {CPUUsageMicros: 2_000_000, MemoryBytes: 200, HostCPUCores: 8, HostMemoryBytes: 1000, Running: true},
 	}}
-	application, err := NewApplication(store, usageReaderStub{}, networkReaderStub{}, Config{
-		Now: func() time.Time { return time.UnixMilli(from + time.Hour.Milliseconds()) },
+	initialTraffic := trafficmetrics.Counters{
+		IngressBytes: 1000, EgressBytes: 500,
+		HTTPRequestsTotal: 10, HTTPResponses2xxTotal: 8, HTTPResponses4xxTotal: 1, HTTPResponses5xxTotal: 1,
+		TCPConnectionsTotal: 4, UDPIngressPackets: 20, UDPEgressPackets: 10,
+	}
+	initialTraffic.HTTPDurationBuckets[4] = 10
+	network := &networkReaderStub{counters: map[string]trafficmetrics.Counters{"api": initialTraffic}, complete: true}
+	host := &hostReaderStub{sample: hostmetrics.Sample{
+		CPUUnits: 1_000, CPUIdleUnits: 400, CPUCores: 8,
+		MemoryUsedBytes: 600, MemoryTotalBytes: 1_000,
+		NetworkRXBytes: 1_000, NetworkTXBytes: 500, NetworkInterface: "eth0",
+	}}
+	application, err := NewApplication(store, usage, network, host, Config{
+		LiveInterval: time.Second, PersistInterval: time.Minute,
+		Now: func() time.Time { return clock },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	history, err := application.History(context.Background(), cgroupstats.Service, "api", time.Hour)
-	if err != nil {
-		t.Fatal(err)
+	application.collect(context.Background(), func(err error) { t.Fatalf("first collect: %v", err) })
+	clock = clock.Add(2 * time.Second)
+	usage.samples[metricKey{kind: "service", id: "api"}] = cgroupstats.Sample{CPUUsageMicros: 1_500_000, MemoryBytes: 110, MemoryPeakBytes: 175, HostCPUCores: 8, HostMemoryBytes: 1000, Running: true}
+	usage.samples[metricKey{kind: "redis", id: "cache"}] = cgroupstats.Sample{CPUUsageMicros: 2_200_000, MemoryBytes: 210, HostCPUCores: 8, HostMemoryBytes: 1000, Running: true}
+	nextTraffic := trafficmetrics.Counters{
+		IngressBytes: 3000, EgressBytes: 1500,
+		HTTPRequestsTotal: 14, HTTPRequestsPeakPerSecond: 4, HTTPActiveRequests: 2, HTTPActiveRequestsPeak: 5,
+		HTTPResponses2xxTotal: 10, HTTPResponses4xxTotal: 2, HTTPResponses5xxTotal: 2,
+		TCPConnectionsTotal: 6, TCPConnectionsPeakPerSecond: 3, TCPActiveConnections: 1, TCPActiveConnectionsPeak: 4,
+		UDPIngressPackets: 26, UDPIngressPacketsPeakPerSecond: 5,
+		UDPEgressPackets: 14, UDPEgressPacketsPeakPerSecond: 4,
+		ProtocolRatePeaksAvailable: true,
 	}
-	if len(history.Points) != 2 || history.StepMillis != time.Minute.Milliseconds() {
-		t.Fatalf("history = %+v", history)
+	nextTraffic.HTTPDurationBuckets[4] = 14
+	network.counters["api"] = nextTraffic
+	host.sample.CPUUnits, host.sample.CPUIdleUnits = 1_800, 600
+	host.sample.MemoryUsedBytes = 650
+	host.sample.NetworkRXBytes, host.sample.NetworkTXBytes = 5_000, 2_500
+	application.collect(context.Background(), func(err error) { t.Fatalf("second collect: %v", err) })
+
+	service, err := application.Read(cgroupstats.Service, "api")
+	if err != nil || service.CPUMillicores == nil || *service.CPUMillicores != 250 ||
+		service.NetworkIngressBytesPerSecond == nil || *service.NetworkIngressBytesPerSecond != 1000 ||
+		service.MemoryPeakBytes != 175 || service.Proxy == nil || service.Proxy.HTTP.RequestsPerSecond == nil || *service.Proxy.HTTP.RequestsPerSecond != 2 ||
+		service.Proxy.HTTP.RequestsPeakPerSecond == nil || *service.Proxy.HTTP.RequestsPeakPerSecond != 4 ||
+		service.Proxy.HTTP.ActiveRequestsPeak != 5 ||
+		service.Proxy.HTTP.LatencyP95Millis == nil || *service.Proxy.HTTP.LatencyP95Millis != 100 ||
+		service.Proxy.TCP.ConnectionsPerSecond == nil || *service.Proxy.TCP.ConnectionsPerSecond != 1 ||
+		service.Proxy.TCP.ConnectionsPeakPerSecond == nil || *service.Proxy.TCP.ConnectionsPeakPerSecond != 3 ||
+		service.Proxy.UDP.IngressPacketsPerSecond == nil || *service.Proxy.UDP.IngressPacketsPerSecond != 3 {
+		t.Fatalf("service live usage = %+v, %v", service, err)
 	}
-	first := history.Points[0]
-	if first.CPUMillicores == nil || *first.CPUMillicores != 1 ||
-		first.NetworkIngressBytesPerSecond == nil || *first.NetworkIngressBytesPerSecond != 100 ||
-		first.NetworkEgressBytesPerSecond == nil || *first.NetworkEgressBytesPerSecond != 50 {
-		t.Fatalf("first point = %+v", first)
+	project, err := application.ReadProject("project")
+	if err != nil || project.CPUMillicores == nil || *project.CPUMillicores != 350 ||
+		project.MemoryBytes != 320 || project.RunningResources != 2 || project.TotalResources != 2 ||
+		project.Proxy == nil || project.Proxy.HTTP.ActiveRequests != 2 || project.Proxy.HTTP.ActiveRequestsPeak != 5 ||
+		project.Proxy.HTTP.RequestsPeakPerSecond == nil || *project.Proxy.HTTP.RequestsPeakPerSecond != 4 {
+		t.Fatalf("project live usage = %+v, %v", project, err)
 	}
-	second := history.Points[1]
-	if second.CPUMillicores != nil || second.NetworkIngressBytesPerSecond != nil || second.NetworkEgressBytesPerSecond != nil {
-		t.Fatalf("reset point = %+v", second)
+	installation, err := application.ReadInstallation()
+	if err != nil || installation.Host == nil || installation.Host.CPUMillicores == nil ||
+		*installation.Host.CPUMillicores != 6000 || installation.Host.NetworkIngressBytesPerSecond == nil ||
+		*installation.Host.NetworkIngressBytesPerSecond != 2000 {
+		t.Fatalf("installation live usage = %+v, %v", installation, err)
 	}
 }
 
-func TestCollectStoresNetworkCountersAndAppliesRetention(t *testing.T) {
-	now := time.UnixMilli(40 * 24 * time.Hour.Milliseconds())
-	store := &metricStoreStub{targets: []state.ResourceMetricTarget{{Kind: "redis", ResourceID: "cache"}}}
-	application, err := NewApplication(store, usageReaderStub{sample: cgroupstats.Sample{
-		ObservedAtMillis: now.UnixMilli(), CPUUsageMicros: 42, MemoryBytes: 84, Running: true,
-	}}, networkReaderStub{counters: NetworkCounters{RXBytes: 126, TXBytes: 168}, available: true}, Config{
-		Now: func() time.Time { return now },
+func TestAggregateDoesNotSumPeaksFromDifferentServiceWindows(t *testing.T) {
+	average, peak := 1.0, 10.0
+	service := Current{Sample: cgroupstats.Sample{MemoryBytes: 100}, MemoryPeakBytes: 250, Proxy: &ProxyMetrics{
+		HTTP: HTTPMetrics{
+			RequestsPerSecond: &average, RequestsPeakPerSecond: &peak,
+			Responses2xxPerSecond: &average, Responses3xxPerSecond: &average,
+			Responses4xxPerSecond: &average, Responses5xxPerSecond: &average,
+			ActiveRequests: 1, ActiveRequestsPeak: 10,
+		},
+		TCP: TCPMetrics{
+			ConnectionsPerSecond: &average, ConnectionsPeakPerSecond: &peak,
+			ActiveConnections: 1, ActiveConnectionsPeak: 10,
+		},
+		UDP: UDPMetrics{
+			IngressPacketsPerSecond: &average, IngressPacketsPeakPerSecond: &peak,
+			EgressPacketsPerSecond: &average, EgressPacketsPeakPerSecond: &peak,
+		},
+	}}
+	builder := newAggregateBuilder()
+	builder.add(service, true)
+	builder.add(service, true)
+	aggregate := builder.finish()
+	if aggregate.MemoryBytes != 200 || aggregate.MemoryPeakBytes != 200 || aggregate.Proxy == nil || aggregate.Proxy.HTTP.RequestsPeakPerSecond == nil ||
+		*aggregate.Proxy.HTTP.RequestsPeakPerSecond != 2 || aggregate.Proxy.HTTP.ActiveRequestsPeak != 2 ||
+		aggregate.Proxy.TCP.ConnectionsPeakPerSecond == nil || *aggregate.Proxy.TCP.ConnectionsPeakPerSecond != 2 ||
+		aggregate.Proxy.TCP.ActiveConnectionsPeak != 2 || aggregate.Proxy.UDP.IngressPacketsPeakPerSecond == nil ||
+		*aggregate.Proxy.UDP.IngressPacketsPeakPerSecond != 2 {
+		t.Fatalf("aggregate protocol peaks = %+v", aggregate.Proxy)
+	}
+}
+
+func TestProxyRatesSurviveIncompleteNftablesSampleWithoutRecoverySpike(t *testing.T) {
+	clock := time.Unix(200, 0)
+	key := metricKey{kind: "service", id: "api"}
+	store := &metricStoreStub{
+		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project"}},
+		projects: []string{"project"},
+	}
+	usage := &mappedUsageReader{samples: map[metricKey]cgroupstats.Sample{
+		key: {CPUUsageMicros: 1_000_000, MemoryBytes: 100, Running: true},
+	}}
+	network := &networkReaderStub{
+		counters: map[string]trafficmetrics.Counters{"api": {HTTPRequestsTotal: 10, IngressBytes: 1_000}},
+		complete: true,
+	}
+	application, err := NewApplication(store, usage, network, hostReaderStub{}, Config{
+		LiveInterval: time.Second, PersistInterval: time.Minute, Now: func() time.Time { return clock },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	application.collect(context.Background(), func(err error) { t.Fatalf("collect: %v", err) })
-	if len(store.recorded) != 1 || store.recorded[0].NetworkRXBytes == nil || *store.recorded[0].NetworkRXBytes != 126 ||
-		store.recorded[0].NetworkTXBytes == nil || *store.recorded[0].NetworkTXBytes != 168 {
-		t.Fatalf("recorded = %+v", store.recorded)
+	application.collect(context.Background(), func(err error) { t.Fatalf("initial collect: %v", err) })
+
+	clock = clock.Add(2 * time.Second)
+	network.counters["api"] = trafficmetrics.Counters{HTTPRequestsTotal: 12, IngressBytes: 1_200}
+	network.complete = false
+	network.err = errors.New("nftables unavailable")
+	application.collect(context.Background(), func(error) {})
+	current, err := application.Read(cgroupstats.Service, "api")
+	if err != nil || current.Proxy == nil || current.Proxy.HTTP.RequestsPerSecond == nil ||
+		*current.Proxy.HTTP.RequestsPerSecond != 1 || current.NetworkAvailable {
+		t.Fatalf("incomplete network sample = %+v, %v", current, err)
 	}
-	if want := now.Add(-Retention).UnixMilli(); store.cutoff != want {
-		t.Fatalf("cutoff = %d, want %d", store.cutoff, want)
+
+	clock = clock.Add(2 * time.Second)
+	network.counters["api"] = trafficmetrics.Counters{HTTPRequestsTotal: 14, IngressBytes: 1_400}
+	network.complete = true
+	network.err = nil
+	application.collect(context.Background(), func(err error) { t.Fatalf("recovery collect: %v", err) })
+	current, err = application.Read(cgroupstats.Service, "api")
+	if err != nil || current.Proxy == nil || current.Proxy.HTTP.RequestsPerSecond == nil ||
+		*current.Proxy.HTTP.RequestsPerSecond != 1 || current.NetworkIngressBytesPerSecond != nil {
+		t.Fatalf("recovered network sample = %+v, %v", current, err)
 	}
 }
 
-func TestHistoryDoesNotBridgeCollectorGaps(t *testing.T) {
+func TestCollectKeepsActiveResourceRollupAcrossCgroupReadFailure(t *testing.T) {
+	clock := time.Unix(250, 0)
+	key := metricKey{kind: "service", id: "api"}
+	store := &metricStoreStub{
+		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project"}},
+		projects: []string{"project"},
+	}
+	usage := &mappedUsageReader{
+		samples: map[metricKey]cgroupstats.Sample{
+			key: {CPUUsageMicros: 1_000_000, MemoryBytes: 100, Running: true},
+		},
+		errors: make(map[metricKey]error),
+	}
+	application, err := NewApplication(store, usage, networkReaderStub{complete: true}, hostReaderStub{}, Config{
+		LiveInterval: time.Second, PersistInterval: time.Minute, Now: func() time.Time { return clock },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application.collect(context.Background(), func(err error) { t.Fatalf("initial collect: %v", err) })
+
+	clock = clock.Add(2 * time.Second)
+	usage.samples[key] = cgroupstats.Sample{CPUUsageMicros: 1_200_000, MemoryBytes: 110, Running: true}
+	application.collect(context.Background(), func(err error) { t.Fatalf("second collect: %v", err) })
+
+	clock = clock.Add(2 * time.Second)
+	usage.errors[key] = errors.New("cgroup temporarily unavailable")
+	application.collect(context.Background(), func(error) {})
+
+	clock = clock.Add(2 * time.Second)
+	delete(usage.errors, key)
+	usage.samples[key] = cgroupstats.Sample{CPUUsageMicros: 1_400_000, MemoryBytes: 120, Running: true}
+	application.collect(context.Background(), func(err error) { t.Fatalf("recovery collect: %v", err) })
+
+	batch := application.rollup.batch(clock, Retention)
+	if len(batch.Resources) != 1 || batch.Resources[0].DurationMillis != 4_000 ||
+		batch.Resources[0].CPUDurationMillis != 2_000 {
+		t.Fatalf("resource rollup after cgroup recovery = %+v", batch.Resources)
+	}
+}
+
+func TestMinuteRollupUsesCounterDeltasAndKeepsTwoSecondPeak(t *testing.T) {
+	start := time.Unix(100, 0)
+	key := metricKey{kind: "service", id: "api"}
+	seed := Current{Sample: cgroupstats.Sample{ObservedAtMillis: start.UnixMilli(), MemoryBytes: 100, Running: true}, MemoryPeakBytes: 100}
+	accumulator := newMinuteAccumulator(start, map[metricKey]Current{key: seed}, nil, Current{})
+	current := seed
+	var requestsTotal uint64
+	for index, delta := range []uint64{2, 40, 0} {
+		current.ObservedAtMillis = start.Add(time.Duration(index+1) * 2 * time.Second).UnixMilli()
+		current.MemoryBytes = uint64(110 + index*10)
+		current.MemoryPeakBytes = current.MemoryBytes
+		if index == 1 {
+			current.MemoryPeakBytes = 500
+		}
+		traffic := &trafficDelta{httpRequests: delta}
+		traffic.httpDurationBuckets[4] = delta
+		current.interval = metricInterval{duration: 2 * time.Second, cpuUsageMicros: uint64Pointer(delta * 1000), networkIngressBytes: uint64Pointer(delta * 1000), networkEgressBytes: uint64Pointer(delta * 500), traffic: traffic}
+		cpu := int64(delta) / 2
+		ingress, egress := int64(delta*500), int64(delta*250)
+		requestRate, zeroRate := float64(delta)/2, float64(0)
+		requestsTotal += delta
+		current.Proxy = &ProxyMetrics{
+			HTTP: HTTPMetrics{RequestsPerSecond: &requestRate, RequestsPeakPerSecond: &requestRate, RequestsTotal: requestsTotal},
+			TCP:  TCPMetrics{ConnectionsPerSecond: &zeroRate, ConnectionsPeakPerSecond: &zeroRate},
+			UDP:  UDPMetrics{IngressPacketsPerSecond: &zeroRate, IngressPacketsPeakPerSecond: &zeroRate, EgressPacketsPerSecond: &zeroRate, EgressPacketsPeakPerSecond: &zeroRate},
+		}
+		current.CPUMillicores, current.CPUPeakMillicores = int64Pointer(cpu), int64Pointer(cpu)
+		current.NetworkIngressBytesPerSecond, current.NetworkIngressPeakBytesPerSecond = int64Pointer(ingress), int64Pointer(ingress)
+		current.NetworkEgressBytesPerSecond, current.NetworkEgressPeakBytesPerSecond = int64Pointer(egress), int64Pointer(egress)
+		accumulator.add(
+			start.Add(time.Duration(index+1)*2*time.Second), map[metricKey]struct{}{key: {}},
+			map[metricKey]Current{key: current}, nil, Current{},
+		)
+	}
+	batch := accumulator.batch(start.Add(6*time.Second), Retention)
+	if len(batch.Resources) != 1 {
+		t.Fatalf("batch = %+v", batch)
+	}
+	sample := batch.Resources[0]
+	if sample.CPUMillicores == nil || *sample.CPUMillicores != 7 || sample.CPUPeakMillicores == nil || *sample.CPUPeakMillicores != 20 ||
+		sample.CPUDurationMillis != 6_000 || sample.NetworkDurationMillis != 6_000 || sample.ProxyDurationMillis != 6_000 ||
+		sample.NetworkIngressBytesPerSecond == nil || *sample.NetworkIngressBytesPerSecond != 7000 ||
+		sample.NetworkIngressPeakBytesPerSecond == nil || *sample.NetworkIngressPeakBytesPerSecond != 20_000 ||
+		sample.MemoryBytes != 120 || sample.MemoryPeakBytes != 500 || sample.Proxy == nil ||
+		sample.Proxy.HTTP.RequestsPerSecond == nil || *sample.Proxy.HTTP.RequestsPerSecond != 7 ||
+		sample.Proxy.HTTP.RequestsPeakPerSecond == nil || *sample.Proxy.HTTP.RequestsPeakPerSecond != 20 ||
+		sample.Proxy.HTTP.DurationBuckets[4] != 42 {
+		t.Fatalf("rolled sample = %+v", sample)
+	}
+}
+
+func TestMinuteRollupKeepsActiveResourceAcrossTransientReadGap(t *testing.T) {
+	start := time.Unix(300, 0)
+	key := metricKey{kind: "service", id: "api"}
+	seed := Current{Sample: cgroupstats.Sample{ObservedAtMillis: start.UnixMilli(), MemoryBytes: 100, Running: true}, MemoryPeakBytes: 100}
+	accumulator := newMinuteAccumulator(start, map[metricKey]Current{key: seed}, nil, Current{})
+	active := map[metricKey]struct{}{key: {}}
+	cpu := int64(100)
+	current := seed
+	current.CPUMillicores, current.CPUPeakMillicores = &cpu, &cpu
+	current.interval = metricInterval{duration: 2 * time.Second, cpuUsageMicros: uint64Pointer(200)}
+	accumulator.add(start.Add(2*time.Second), active, map[metricKey]Current{key: current}, nil, Current{})
+	accumulator.add(start.Add(4*time.Second), active, map[metricKey]Current{}, nil, Current{})
+	accumulator.add(start.Add(6*time.Second), active, map[metricKey]Current{key: current}, nil, Current{})
+
+	batch := accumulator.batch(start.Add(6*time.Second), Retention)
+	if len(batch.Resources) != 1 || batch.Resources[0].DurationMillis != 4_000 ||
+		batch.Resources[0].CPUDurationMillis != 4_000 {
+		t.Fatalf("rollup after transient gap = %+v", batch.Resources)
+	}
+	accumulator.add(start.Add(8*time.Second), map[metricKey]struct{}{}, map[metricKey]Current{}, nil, Current{})
+	if batch = accumulator.batch(start.Add(8*time.Second), Retention); len(batch.Resources) != 0 {
+		t.Fatalf("deleted resource remained in rollup: %+v", batch.Resources)
+	}
+}
+
+func TestHistoryWeightsMinuteAveragesAndMergesLatencyHistograms(t *testing.T) {
 	from := int64(3_600_000)
-	points := aggregate([]state.ResourceMetricSample{
-		metricSample(from-10*time.Minute.Milliseconds(), 100, 100, 100, 100),
-		metricSample(from, 1_000, 200, 1_000, 1_000),
-	}, from, time.Minute)
-	if len(points) != 1 || points[0].CPUMillicores != nil ||
-		points[0].NetworkIngressBytesPerSecond != nil || points[0].NetworkEgressBytesPerSecond != nil {
-		t.Fatalf("gap point = %+v", points)
+	averageOne, peakOne := int64(10), int64(100)
+	averageTwo, peakTwo := int64(30), int64(40)
+	egressOne, egressPeakOne := int64(20), int64(120)
+	egressTwo, egressPeakTwo := int64(40), int64(50)
+	firstProxy, secondProxy := validProxySample(), validProxySample()
+	*firstProxy.HTTP.RequestsPerSecond, *firstProxy.HTTP.RequestsPeakPerSecond = 10, 10
+	*secondProxy.HTTP.RequestsPerSecond, *secondProxy.HTTP.RequestsPeakPerSecond = 30, 30
+	firstProxy.HTTP.DurationBuckets[0], firstProxy.HTTP.DurationBuckets[5] = 95, 5
+	secondProxy.HTTP.DurationBuckets[0] = 100
+	points := aggregateResources([]state.ResourceMetricSample{
+		{Kind: "service", ResourceID: "api", ObservedAt: from, MetricValues: state.MetricValues{
+			DurationMillis: 60_000, CPUDurationMillis: 30_000, NetworkDurationMillis: 30_000, ProxyDurationMillis: 30_000,
+			CPUMillicores: &averageOne, CPUPeakMillicores: &peakOne,
+			MemoryBytes: 100, MemoryPeakBytes: 150,
+			NetworkIngressBytesPerSecond: &averageOne, NetworkIngressPeakBytesPerSecond: &peakOne,
+			NetworkEgressBytesPerSecond: &egressOne, NetworkEgressPeakBytesPerSecond: &egressPeakOne,
+			Proxy: firstProxy,
+		}},
+		{Kind: "service", ResourceID: "api", ObservedAt: from + 60_000, MetricValues: state.MetricValues{
+			DurationMillis: 120_000, CPUDurationMillis: 120_000, NetworkDurationMillis: 120_000, ProxyDurationMillis: 120_000,
+			CPUMillicores: &averageTwo, CPUPeakMillicores: &peakTwo,
+			MemoryBytes: 400, MemoryPeakBytes: 450,
+			NetworkIngressBytesPerSecond: &averageTwo, NetworkIngressPeakBytesPerSecond: &peakTwo,
+			NetworkEgressBytesPerSecond: &egressTwo, NetworkEgressPeakBytesPerSecond: &egressPeakTwo,
+			Proxy: secondProxy,
+		}},
+	}, from, 5*time.Minute)
+	if len(points) != 1 || points[0].CPUMillicores == nil || *points[0].CPUMillicores != 26 ||
+		points[0].CPUPeakMillicores == nil || *points[0].CPUPeakMillicores != 100 || points[0].Proxy == nil ||
+		points[0].Proxy.HTTP.RequestsPerSecond == nil || *points[0].Proxy.HTTP.RequestsPerSecond != 26 ||
+		points[0].MemoryBytes != 300 || points[0].MemoryPeakBytes != 450 ||
+		points[0].NetworkIngressBytesPerSecond == nil || *points[0].NetworkIngressBytesPerSecond != 26 ||
+		points[0].NetworkEgressBytesPerSecond == nil || *points[0].NetworkEgressBytesPerSecond != 36 ||
+		points[0].Proxy.HTTP.LatencyP95Millis == nil || *points[0].Proxy.HTTP.LatencyP95Millis != 5 {
+		t.Fatalf("history points = %+v", points)
 	}
 }
 
-func metricSample(observedAt int64, cpu, memory, rx, tx uint64) state.ResourceMetricSample {
-	return state.ResourceMetricSample{
-		Kind: "service", ResourceID: "api", ObservedAt: observedAt,
-		CPUUsageMicros: cpu, MemoryBytes: memory,
-		NetworkRXBytes: &rx, NetworkTXBytes: &tx, Running: true,
+func TestHistoryWindowUsesDashboardBucketDensity(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		window  time.Duration
+		buckets int
+	}{
+		{window: time.Hour, buckets: 60},
+		{window: 6 * time.Hour, buckets: 72},
+		{window: 24 * time.Hour, buckets: 96},
+		{window: 7 * 24 * time.Hour, buckets: 168},
+		{window: 30 * 24 * time.Hour, buckets: 120},
 	}
+	for _, test := range tests {
+		step, err := stepForWindow(test.window)
+		if err != nil {
+			t.Fatalf("step for %s: %v", test.window, err)
+		}
+		if got := int(test.window / step); got != test.buckets {
+			t.Fatalf("buckets for %s = %d, want %d", test.window, got, test.buckets)
+		}
+	}
+}
+
+func validProxySample() *state.ProxyMetricSample {
+	average, peak := 1.0, 2.0
+	sample := &state.ProxyMetricSample{}
+	sample.HTTP.RequestsPerSecond, sample.HTTP.RequestsPeakPerSecond = &average, &peak
+	sample.TCP.ConnectionsPerSecond, sample.TCP.ConnectionsPeakPerSecond = &average, &peak
+	sample.UDP.IngressPacketsPerSecond, sample.UDP.IngressPacketsPeakPerSecond = &average, &peak
+	sample.UDP.EgressPacketsPerSecond, sample.UDP.EgressPacketsPeakPerSecond = &average, &peak
+	return sample
 }

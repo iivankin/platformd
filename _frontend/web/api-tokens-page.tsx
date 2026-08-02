@@ -138,7 +138,7 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
     <PageStack className="animate-in duration-200 fade-in slide-in-from-bottom-1">
       <SectionCard className="flex min-h-14 items-center justify-between gap-4 px-5 py-3">
         <div>
-          <p className="text-xs font-medium">Automation credentials</p>
+          <p className="text-xs font-medium">API credentials</p>
           <p className="mt-1 text-[10px] text-muted-foreground">
             REST and MCP · secrets are displayed once
           </p>

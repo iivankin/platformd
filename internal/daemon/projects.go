@@ -6,21 +6,31 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type liveProjectRepository struct {
-	store          *state.Store
-	runtime        *runtimeStack
-	backups        *backup.ResourceApplication
-	domains        *liveDomainRepository
-	objectStores   *liveObjectStoreRepository
-	listeners      *liveServiceListenerRepository
-	gateways       *liveNetworkGatewayRepository
-	onCleanupError func(error)
+	store           *state.Store
+	runtime         *runtimeStack
+	backups         *backup.ResourceApplication
+	domains         *liveDomainRepository
+	objectStores    *liveObjectStoreRepository
+	objectStoreData objectStoreDataCleaner
+	listeners       *liveServiceListenerRepository
+	gateways        *liveNetworkGatewayRepository
+	traffic         *trafficmetrics.Registry
+	onCleanupError  func(error)
 }
+
+type objectStoreDataCleaner interface {
+	DeleteStoreData(context.Context, string) error
+}
+
+const objectStoreCleanupTimeout = 30 * time.Second
 
 func (repository liveProjectRepository) Projects(ctx context.Context) ([]state.ProjectSummary, error) {
 	return repository.store.Projects(ctx)
@@ -110,9 +120,16 @@ func (repository liveProjectRepository) DeleteProject(ctx context.Context, input
 	if err != nil {
 		return state.ProjectDeletionPlan{}, err
 	}
+	// Keep the Rust project endpoint alive while its per-store maintenance gates
+	// drain requests and delete the physical buckets. Removing it first would
+	// make DeleteStoreData unable to acquire the restore gate.
+	repository.cleanupObjectStoreData(deleted.ObjectStores)
 	repository.reportCleanupError(repository.runtime.RemoveProject(input.ID))
 	if repository.domains != nil {
 		repository.reportCleanupError(repository.domains.reload(ctx))
+	}
+	for _, service := range deleted.Services {
+		repository.traffic.Forget(service.ID)
 	}
 	if repository.objectStores != nil {
 		repository.reportCleanupError(repository.objectStores.reloadPublicRoutes(ctx))
@@ -140,12 +157,16 @@ func (repository liveProjectRepository) cleanupProjectFiles(plan state.ProjectDe
 	for _, resource := range plan.Redis {
 		repository.reportCleanupError(removeProjectDirectory(repository.runtime.paths.LogsRoot, "redis", resource.ID))
 	}
-	for _, resource := range plan.ObjectStores {
-		if filepath.Base(resource.ID) != resource.ID {
-			repository.reportCleanupError(fmt.Errorf("object store cleanup identity %q is invalid", resource.ID))
-			continue
+}
+
+func (repository liveProjectRepository) cleanupObjectStoreData(stores []state.ObjectStore) {
+	for _, resource := range stores {
+		if repository.objectStoreData != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), objectStoreCleanupTimeout)
+			err := repository.objectStoreData.DeleteStoreData(ctx, resource.ID)
+			cancel()
+			repository.reportCleanupError(err)
 		}
-		repository.reportCleanupError(os.RemoveAll(filepath.Join(repository.runtime.paths.ObjectsRoot, resource.ID)))
 	}
 }
 

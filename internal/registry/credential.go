@@ -81,7 +81,7 @@ func (application *Application) CreateCredential(ctx context.Context, input Crea
 		return CreateCredentialResult{}, err
 	}
 	now := application.now()
-	identifiers, err := application.identifiers(now, 3)
+	identifiers, err := application.identifiers(3)
 	if err != nil {
 		return CreateCredentialResult{}, err
 	}
@@ -121,7 +121,7 @@ func (application *Application) DeleteCredential(ctx context.Context, repository
 		return "", fmt.Errorf("%w: credential deletion input is incomplete", ErrInvalidInput)
 	}
 	now := application.now()
-	identifiers, err := application.identifiers(now, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return "", err
 	}

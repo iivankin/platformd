@@ -130,7 +130,7 @@ func createNetworkGateway(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		gatewayID, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		gatewayID, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate network gateway identifiers")
 			return
@@ -157,7 +157,7 @@ func updateNetworkGateway(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate network gateway identifiers")
 			return
@@ -183,7 +183,7 @@ func deleteNetworkGateway(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate network gateway identifiers")
 			return

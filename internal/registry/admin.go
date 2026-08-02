@@ -60,7 +60,7 @@ func (application *Application) SetPublicPull(ctx context.Context, input SetPubl
 		return state.RegistryRepository{}, "", fmt.Errorf("%w: repository policy actor or repository is incomplete", ErrInvalidInput)
 	}
 	now := application.now()
-	identifiers, err := application.identifiers(now, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return state.RegistryRepository{}, "", err
 	}
@@ -374,7 +374,7 @@ func validateDeleteInput(input DeleteInput) error {
 
 func (application *Application) adminMutation(input DeleteInput) (state.RegistryAdminMutation, string, error) {
 	now := application.now()
-	identifiers, err := application.identifiers(now, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return state.RegistryAdminMutation{}, "", err
 	}

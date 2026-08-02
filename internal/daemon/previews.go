@@ -28,6 +28,7 @@ func (stack *runtimeStack) ConfigurePreviews(
 		Sources: githubSourceResolver{
 			github: github, engine: stack.engine, generatedRoot: stack.paths.GeneratedRoot,
 			buildNetwork: stack.buildNetwork.Name,
+			variables:    resourceVariableResolver{store: store, master: master},
 		},
 		GitHub: github, DNS: dns, Growth: stack.growth, Admission: stack.admission,
 		Placement: stack.previewPlacement, RoutesChanged: domains.reload,

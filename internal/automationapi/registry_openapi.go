@@ -3,18 +3,18 @@ package automationapi
 import "net/http"
 
 func addRegistryPaths(paths map[string]any) {
-	paths["/api/v1/registry"] = registryReadOperation("Read the embedded Registry hostname")
-	paths["/api/v1/registry/hostname"] = registryMutationOperation("Set or clear the embedded Registry hostname (unbound admin token)", "put", http.StatusOK, "RegistryHostnameRequest")
-	paths["/api/v1/registry/repositories"] = registryCollectionOperation()
-	paths["/api/v1/registry/repositories/{repositoryID}"] = registryRepositoryOperation()
-	paths["/api/v1/registry/repositories/{repositoryID}/public-pull"] = registryMutationOperation("Enable or disable anonymous pulls (unbound admin token)", "put", http.StatusOK, "RegistryPublicPullRequest")
-	paths["/api/v1/registry/repositories/{repositoryID}/images"] = registryReadOperation("List Registry manifests with bounded cursor pagination")
-	paths["/api/v1/registry/repositories/{repositoryID}/images/{digest}"] = registryReadOperation("Read one Registry manifest and its referenced blobs")
-	paths["/api/v1/registry/repositories/{repositoryID}/tags/{tag}"] = registryDeleteOperation("Delete one Registry tag (unbound admin token)", http.StatusOK)
-	paths["/api/v1/registry/repositories/{repositoryID}/manifests/{digest}"] = registryDeleteOperation("Delete an unreferenced Registry manifest (unbound admin token)", http.StatusOK)
-	paths["/api/v1/registry/repositories/{repositoryID}/credentials"] = registryCredentialCollectionOperation()
-	paths["/api/v1/registry/repositories/{repositoryID}/credentials/{credentialID}"] = registryDeleteOperation("Delete one Registry credential (unbound admin token)", http.StatusNoContent)
-	paths["/api/v1/registry/repositories/{repositoryID}/cleanup"] = registryMutationOperation("Preview or delete unreferenced Registry blobs (unbound admin token)", "post", http.StatusOK, "RegistryCleanupRequest")
+	paths["/public/api/v1/registry"] = registryReadOperation("Read the embedded Registry hostname")
+	paths["/public/api/v1/registry/hostname"] = registryMutationOperation("Set or clear the embedded Registry hostname (unbound admin token)", "put", http.StatusOK, "RegistryHostnameRequest")
+	paths["/public/api/v1/registry/repositories"] = registryCollectionOperation()
+	paths["/public/api/v1/registry/repositories/{repositoryID}"] = registryRepositoryOperation()
+	paths["/public/api/v1/registry/repositories/{repositoryID}/public-pull"] = registryMutationOperation("Enable or disable anonymous pulls (unbound admin token)", "put", http.StatusOK, "RegistryPublicPullRequest")
+	paths["/public/api/v1/registry/repositories/{repositoryID}/images"] = registryReadOperation("List Registry manifests with bounded cursor pagination")
+	paths["/public/api/v1/registry/repositories/{repositoryID}/images/{digest}"] = registryReadOperation("Read one Registry manifest and its referenced blobs")
+	paths["/public/api/v1/registry/repositories/{repositoryID}/tags/{tag}"] = registryDeleteOperation("Delete one Registry tag (unbound admin token)", http.StatusOK)
+	paths["/public/api/v1/registry/repositories/{repositoryID}/manifests/{digest}"] = registryDeleteOperation("Delete an unreferenced Registry manifest (unbound admin token)", http.StatusOK)
+	paths["/public/api/v1/registry/repositories/{repositoryID}/credentials"] = registryCredentialCollectionOperation()
+	paths["/public/api/v1/registry/repositories/{repositoryID}/credentials/{credentialID}"] = registryDeleteOperation("Delete one Registry credential (unbound admin token)", http.StatusNoContent)
+	paths["/public/api/v1/registry/repositories/{repositoryID}/cleanup"] = registryMutationOperation("Preview or delete unreferenced Registry blobs (unbound admin token)", "post", http.StatusOK, "RegistryCleanupRequest")
 }
 
 func registryCollectionOperation() map[string]any {

@@ -193,7 +193,7 @@ func TestBackupResourcePolicyHistoryAndImmediateRunAPI(t *testing.T) {
 		Store: store, Worker: manualBackupRunner{record: state.BackupRecord{
 			ID: "backup", TargetID: "target", ResourceKind: "redis", ResourceID: "redis", GenerationID: "generation",
 			Status: "running", StartedAtMillis: 20,
-		}}, Restores: restores, Random: bytes.NewReader(serverSequenceBytes(100)), Now: func() time.Time { return time.UnixMilli(10) },
+		}}, Restores: restores, Now: func() time.Time { return time.UnixMilli(10) },
 	})
 	if err != nil {
 		t.Fatal(err)

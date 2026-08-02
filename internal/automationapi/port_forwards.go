@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -18,9 +19,9 @@ type portForwardRequest struct {
 type portForwardResponse struct {
 	ID           string                   `json:"id"`
 	Ticket       string                   `json:"ticket"`
-	ProjectID    string                   `json:"projectId"`
+	Project      string                   `json:"project"`
+	Resource     string                   `json:"resource"`
 	ResourceKind string                   `json:"resourceKind"`
-	ResourceID   string                   `json:"resourceId"`
 	Port         int                      `json:"port"`
 	ExpiresAt    string                   `json:"expiresAt"`
 	Instructions portforward.Instructions `json:"instructions"`
@@ -28,9 +29,12 @@ type portForwardResponse struct {
 
 func createPortForward(hostname string, application *portforward.Application) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
-		projectID := request.PathValue("projectID")
-		identity, ok := requireAdminProject(response, request, projectID)
+		identity, ok := requireIdentity(response, request)
 		if !ok {
+			return
+		}
+		if !identity.IsAdmin() {
+			writeError(response, http.StatusForbidden, "admin_token_required", "An admin token is required")
 			return
 		}
 		var body portForwardRequest
@@ -46,16 +50,15 @@ func createPortForward(hostname string, application *portforward.Application) ht
 			return
 		}
 		grant, err := application.Create(request.Context(), identity, portforward.CreateInput{
-			ProjectID: projectID, ResourceKind: request.PathValue("kind"),
-			ResourceID: request.PathValue("resourceID"), Port: body.Port,
+			Project: request.PathValue("projectName"), Resource: request.PathValue("resourceName"), Port: body.Port,
 			LifetimeSeconds: body.ExpiresInSeconds,
 		})
 		if writePortForwardError(response, err) {
 			return
 		}
 		writeJSON(response, http.StatusCreated, portForwardResponse{
-			ID: grant.ID, Ticket: grant.Ticket, ProjectID: grant.ProjectID,
-			ResourceKind: grant.ResourceKind, ResourceID: grant.ResourceID, Port: grant.Port,
+			ID: grant.ID, Ticket: grant.Ticket, Project: grant.Project, Resource: grant.Resource,
+			ResourceKind: grant.ResourceKind, Port: grant.Port,
 			ExpiresAt:    grant.ExpiresAt.Format(time.RFC3339),
 			Instructions: portforward.ConnectionInstructions(hostname, grant.Ticket, localPort),
 		})
@@ -67,9 +70,15 @@ func writePortForwardError(response http.ResponseWriter, err error) bool {
 		return false
 	}
 	switch {
+	case errors.Is(err, automation.ErrAdminRequired):
+		writeError(response, http.StatusForbidden, "admin_token_required", "An admin token is required")
+	case errors.Is(err, automation.ErrProjectBoundary):
+		writeError(response, http.StatusForbidden, "project_forbidden", "Project is outside this token boundary")
 	case errors.Is(err, portforward.ErrInvalidInput):
 		writeError(response, http.StatusBadRequest, "invalid_port_forward", "Port forward input is invalid")
-	case errors.Is(err, state.ErrServiceNotFound), errors.Is(err, state.ErrManagedPostgresNotFound), errors.Is(err, state.ErrManagedRedisNotFound):
+	case errors.Is(err, state.ErrProjectNotFound):
+		writeError(response, http.StatusNotFound, "project_not_found", "Project was not found")
+	case errors.Is(err, state.ErrProjectResourceNotFound):
 		writeError(response, http.StatusNotFound, "resource_not_found", "Port forward resource was not found")
 	case errors.Is(err, portforward.ErrTargetUnavailable):
 		writeError(response, http.StatusConflict, "target_unavailable", "Port forward target is not running")

@@ -2,10 +2,8 @@ package rootexec
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -22,7 +20,6 @@ var ErrInvalidRequest = errors.New("invalid server exec request")
 
 type Runner struct {
 	createLeaf     func(string) (Leaf, error)
-	random         io.Reader
 	now            func() time.Time
 	commandBytes   int
 	outputBytes    int
@@ -36,14 +33,11 @@ func New(config Config) (*Runner, error) {
 		config.MaximumTimeout < config.DefaultTimeout || config.MaximumParallel < 1 {
 		return nil, errors.New("server exec dependencies and limits are incomplete")
 	}
-	if config.Random == nil {
-		config.Random = rand.Reader
-	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
 	return &Runner{
-		createLeaf: config.CreateLeaf, random: config.Random, now: config.Now,
+		createLeaf: config.CreateLeaf, now: config.Now,
 		commandBytes: config.CommandBytes, outputBytes: config.OutputBytes,
 		defaultTimeout: config.DefaultTimeout, maximumTimeout: config.MaximumTimeout,
 		semaphore: make(chan struct{}, config.MaximumParallel),
@@ -69,7 +63,7 @@ func (runner *Runner) Execute(ctx context.Context, request Request) (Result, err
 	}
 
 	started := runner.now()
-	executionID, err := id.NewWith(started, runner.random)
+	executionID, err := id.New()
 	if err != nil {
 		return Result{}, fmt.Errorf("allocate server exec ID: %w", err)
 	}

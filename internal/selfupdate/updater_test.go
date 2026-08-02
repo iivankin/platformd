@@ -275,7 +275,7 @@ func TestPreviousBinaryRollbackIsAllowedOnlyAtItsSchemaVersion(t *testing.T) {
 	wrongSchema := rollback
 	wrongSchema.SchemaVersion++
 	if err := wrongSchema.Run(context.Background()); err == nil || !strings.Contains(err.Error(), "rollback is forbidden") {
-		t.Fatalf("post-migration rollback = %v", err)
+		t.Fatalf("mismatched-schema rollback = %v", err)
 	}
 	assertLink(t, paths.Current, "2.0.0")
 	if starts != 0 {
@@ -413,7 +413,7 @@ func buildRelease(t *testing.T, root, version, binaryURL string, supported []str
 
 func writeUpdateRuntimeProfile(t *testing.T, root, version string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"} {
 		value := []byte("#!/bin/sh\n# " + version + "\nexit 0\n")
 		if err := os.WriteFile(filepath.Join(root, name), value, 0o755); err != nil {
 			t.Fatal(err)

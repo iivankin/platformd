@@ -55,7 +55,7 @@ func TestAutomationAuthenticatorVerifiesBearerAndSetsScopedIdentity(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	const publicID = "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	const publicID = "abcdefghijklmnopqrstuvwx"
 	value, secret, err := apitoken.Generate(publicID, bytes.NewReader(bytes.Repeat([]byte{0x21}, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestAutomationAuthenticatorVerifiesBearerAndSetsScopedIdentity(t *testing.T
 		}
 		response.WriteHeader(http.StatusNoContent)
 	}))
-	request := httptest.NewRequest(http.MethodPost, "https://api.example.com/mcp", nil)
+	request := httptest.NewRequest(http.MethodPost, "https://admin.example.com/public/mcp", nil)
 	request.RemoteAddr = "192.0.2.5:1234"
 	request.Header.Set("Authorization", "Bearer "+value)
 	request.Header.Set("CF-Connecting-IP", "203.0.113.8")
@@ -110,7 +110,7 @@ func TestAutomationAuthenticatorRejectsInvalidAndRateLimitedRequests(t *testing.
 	protected := authenticator.Protect(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Fatal("invalid request reached protected handler")
 	}))
-	request := httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://admin.example.com/api/v1/projects", nil)
 	request.Header.Set("Authorization", "Bearer malformed")
 	response := httptest.NewRecorder()
 	protected.ServeHTTP(response, request)
@@ -136,7 +136,7 @@ func TestAutomationAuthenticatorReturnsFixedRetryAfterOnEleventhPairFailure(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	const publicID = "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	const publicID = "abcdefghijklmnopqrstuvwx"
 	_, goodSecret, err := apitoken.Generate(publicID, bytes.NewReader(bytes.Repeat([]byte{0x31}, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,7 @@ func TestAutomationAuthenticatorReturnsFixedRetryAfterOnEleventhPairFailure(t *t
 	}
 	handler := authenticator.Protect(http.NotFoundHandler())
 	for attempt := 1; attempt <= 11; attempt++ {
-		request := httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects", nil)
+		request := httptest.NewRequest(http.MethodGet, "https://admin.example.com/api/v1/projects", nil)
 		request.RemoteAddr = "192.0.2.9:1234"
 		request.Header.Set("Authorization", "Bearer "+badValue)
 		response := httptest.NewRecorder()

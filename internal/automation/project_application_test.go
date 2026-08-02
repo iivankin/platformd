@@ -1,7 +1,6 @@
 package automation
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -23,7 +22,7 @@ func (creator *projectCreatorStub) CreateProjectByToken(_ context.Context, input
 
 func TestProjectApplicationRequiresUnboundAdminAndBuildsTokenAudit(t *testing.T) {
 	creator := &projectCreatorStub{}
-	application, err := NewProjectApplication(creator, bytes.NewReader(make([]byte, 96)), func() time.Time {
+	application, err := NewProjectApplication(creator, func() time.Time {
 		return time.UnixMilli(1_700_000_000_000)
 	})
 	if err != nil {

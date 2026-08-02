@@ -1,6 +1,7 @@
 package firewall
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net/netip"
 	"slices"
@@ -23,6 +24,17 @@ type Project struct {
 	ObjectStoreEnabled       bool
 	BlockedDatabaseEndpoints []DatabaseEndpoint
 	GatewayListeners         []GatewayListener
+	PublicTrafficEndpoints   []PublicTrafficEndpoint
+}
+
+type PublicTrafficEndpoint struct {
+	ServiceID string
+	Address   netip.Addr
+}
+
+type PublicTrafficCounters struct {
+	IngressBytes uint64
+	EgressBytes  uint64
 }
 
 type GatewayListener struct {
@@ -62,6 +74,10 @@ func canonicalProjects(projects []Project) ([]Project, error) {
 				return order
 			}
 			return int(left.Port) - int(right.Port)
+		})
+		project.PublicTrafficEndpoints = slices.Clone(project.PublicTrafficEndpoints)
+		slices.SortFunc(project.PublicTrafficEndpoints, func(left, right PublicTrafficEndpoint) int {
+			return strings.Compare(left.ServiceID, right.ServiceID)
 		})
 		if err := validateProject(*project); err != nil {
 			return nil, err
@@ -120,7 +136,22 @@ func validateProject(project Project) error {
 			return fmt.Errorf("firewall project %q has duplicate gateway listener %+v", project.ID, listener)
 		}
 	}
+	for index, endpoint := range project.PublicTrafficEndpoints {
+		if endpoint.ServiceID == "" || strings.ContainsRune(endpoint.ServiceID, 0) ||
+			!endpoint.Address.IsValid() || !endpoint.Address.Is4() || !project.Subnet.Contains(endpoint.Address) ||
+			endpoint.Address == project.Gateway {
+			return fmt.Errorf("firewall project %q has invalid public traffic endpoint %+v", project.ID, endpoint)
+		}
+		if index > 0 && endpoint.ServiceID == project.PublicTrafficEndpoints[index-1].ServiceID {
+			return fmt.Errorf("firewall project %q has duplicate public traffic service %q", project.ID, endpoint.ServiceID)
+		}
+	}
 	return nil
+}
+
+func publicCounterName(direction, serviceID string) string {
+	digest := sha256.Sum256([]byte(serviceID))
+	return fmt.Sprintf("public-%s-%x", direction, digest[:12])
 }
 
 func lastAddress(prefix netip.Prefix) netip.Addr {

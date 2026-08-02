@@ -99,7 +99,7 @@ func createObjectStore(application objectStoreApplication) http.HandlerFunc {
 			writeObjectStoreMutationError(response, err)
 			return
 		}
-		response.Header().Set("Location", "/api/v1/projects/"+result.Store.ProjectID+"/object-stores/"+result.Store.ID)
+		response.Header().Set("Location", "/public/api/v1/projects/"+result.Store.ProjectID+"/object-stores/"+result.Store.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicObjectStore(result.Store, result))
 	}

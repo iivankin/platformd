@@ -141,7 +141,7 @@ FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY id`, input.Project
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.delete", ServiceID: input.ID,
+			ProjectID: input.ProjectID, Action: "service.delete", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.DeletedAtMillis,
 			Metadata: map[string]string{"name": service.Name, "volumeCount": fmt.Sprintf("%d", len(result.Volumes))},
 		})
@@ -185,7 +185,7 @@ func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput)
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.update", ServiceID: input.ID,
+			ProjectID: input.ProjectID, Action: "service.update", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: updatedAt,
 		})
 	})
@@ -257,7 +257,7 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.deploy_version", ServiceID: input.ID,
+			ProjectID: input.ProjectID, Action: "service.deploy_version", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: updatedAt,
 			Metadata: map[string]string{"deploymentId": input.DeploymentID},
 		})
@@ -320,7 +320,7 @@ WHERE id = ? AND project_id = ? AND updated_at = ?`, input.ID, input.ProjectID, 
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.deployment_remove", ServiceID: input.ID,
+			ProjectID: input.ProjectID, Action: "service.deployment_remove", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: map[string]string{"deploymentId": input.DeploymentID},
 		})
@@ -350,7 +350,7 @@ SELECT enabled, updated_at FROM services WHERE id = ? AND project_id = ?`, input
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.redeploy", ServiceID: input.ID,
+			ProjectID: input.ProjectID, Action: "service.redeploy", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 		})
 	})

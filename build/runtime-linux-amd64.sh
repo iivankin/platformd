@@ -113,6 +113,13 @@ netavark_source="$work_dir/src/netavark-$netavark_revision"
 	install -m 0755 target/release/netavark "$output_dir/netavark"
 )
 
+(
+	cd "$repository_root/internal/objectstore/sidecar"
+	export RUSTFLAGS="--remap-path-prefix=$repository_root=."
+	cargo build --locked --release -j "$jobs"
+	install -m 0755 target/release/platformd-objectstore "$output_dir/platformd-objectstore"
+)
+
 catatonit_source="$work_dir/src/catatonit-$catatonit_revision"
 (
 	cd "$catatonit_source"
@@ -128,5 +135,5 @@ for configuration in containers.conf mounts.conf policy.json registries.conf sec
 done
 
 "$repository_root/build/verify-elf.sh" "$output_dir/crun" "$output_dir/conmon" \
-	"$output_dir/netavark" "$output_dir/catatonit"
+	"$output_dir/netavark" "$output_dir/catatonit" "$output_dir/platformd-objectstore"
 sha256sum "$output_dir"/*

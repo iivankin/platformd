@@ -18,19 +18,22 @@ const knownResource = (state: MockState, kind: string, resourceID: string) => {
 
 const entriesBelow = (files: Record<string, string>, root: string) => {
   const directoryPaths = new Set<string>();
+  const immediateFiles: [string, string][] = [];
   const prefix = root === "/" ? "/" : `${root}/`;
-  for (const filePath of Object.keys(files)) {
+  for (const [filePath, content] of Object.entries(files)) {
     if (!filePath.startsWith(prefix)) {
       continue;
     }
     const parts = filePath.slice(prefix.length).split("/");
-    for (let index = 1; index < parts.length; index += 1) {
-      directoryPaths.add(
-        root === "/"
-          ? `/${parts.slice(0, index).join("/")}`
-          : `${root}/${parts.slice(0, index).join("/")}`
-      );
+    const [name] = parts;
+    if (!name) {
+      continue;
     }
+    if (parts.length > 1) {
+      directoryPaths.add(root === "/" ? `/${name}` : `${root}/${name}`);
+      continue;
+    }
+    immediateFiles.push([filePath, content]);
   }
   const modifiedAt = new Date(1_752_499_200_000).toISOString();
   return [
@@ -41,15 +44,13 @@ const entriesBelow = (files: Record<string, string>, root: string) => {
       path,
       sizeBytes: 0,
     })),
-    ...Object.entries(files)
-      .filter(([path]) => path.startsWith(prefix))
-      .map(([path, content]) => ({
-        directory: false,
-        mode: 0o640,
-        modifiedAt,
-        path,
-        sizeBytes: new TextEncoder().encode(content).byteLength,
-      })),
+    ...immediateFiles.map(([path, content]) => ({
+      directory: false,
+      mode: 0o640,
+      modifiedAt,
+      path,
+      sizeBytes: new TextEncoder().encode(content).byteLength,
+    })),
   ].toSorted((left, right) => left.path.localeCompare(right.path));
 };
 

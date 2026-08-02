@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"net/http/httptest"
 	"strings"
@@ -35,7 +34,7 @@ func TestMCPServerExecIsVisibleAndCallableOnlyByUnboundAdmin(t *testing.T) {
 	runner := &mcpServerExecRunner{}
 	audit := &mcpServerExecAudit{}
 	application, err := automation.NewServerExecApplication(
-		runner, audit, bytes.NewReader(make([]byte, 64)),
+		runner, audit,
 		func() time.Time { return time.UnixMilli(10) },
 	)
 	if err != nil {

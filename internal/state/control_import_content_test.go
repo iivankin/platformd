@@ -35,24 +35,6 @@ INSERT INTO object_stores(
 INSERT INTO s3_credentials(
   id, object_store_id, name, permission, secret_encrypted, created_at
 ) VALUES ('s3-credential', 'store', 'robot', 'read_write', x'01', 1);
-INSERT INTO object_payloads(
-  id, object_store_id, plaintext_size, chunk_count, plaintext_sha256, created_at
-) VALUES (
-  'payload', 'store', 1, 1,
-  'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb', 1
-);
-INSERT INTO objects(
-  object_store_id, object_key, payload_id, etag, size, created_at, updated_at
-) VALUES ('store', 'key', 'payload', 'etag', 1, 1, 1);
-INSERT INTO multipart_uploads(
-  id, object_store_id, object_key, created_at, expires_at
-) VALUES ('multipart', 'store', 'pending', 1, 2);
-INSERT INTO multipart_parts(
-  upload_id, part_number, plaintext_size, checksum_sha256, chunk_count
-) VALUES (
-  'multipart', 1, 1,
-  'ca978112ca1bbdcafac231b39a23dc4da786eff8147c4e72b9807785afee48bb', 1
-);
 INSERT INTO registry_repositories(
   id, name, public_pull, created_at, updated_at
 ) VALUES ('repository', 'acme/app', 1, 1, 1);
@@ -101,7 +83,6 @@ INSERT INTO registry_uploads(
 	}
 	for _, table := range []string{
 		"registry_uploads", "registry_tags", "registry_manifests",
-		"multipart_parts", "multipart_uploads", "objects", "object_payloads",
 		"volume_initializations",
 	} {
 		var count int

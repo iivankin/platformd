@@ -1,4 +1,5 @@
 import { json, mockError, noContent } from "./http";
+import { handlePostgresQuery } from "./postgres-query";
 import type { MockState } from "./state";
 import { mockNow, nextMockID } from "./state";
 
@@ -217,34 +218,6 @@ const handleRedisData = (
   return undefined;
 };
 
-const handlePostgresQuery = (
-  request: Request,
-  collection: string,
-  rest: string[]
-): Response | undefined => {
-  const [resource, ...tail] = rest;
-  if (
-    request.method !== "POST" ||
-    collection !== "postgres" ||
-    resource !== "query" ||
-    tail.length > 0
-  ) {
-    return undefined;
-  }
-  return json({
-    auditRecorded: true,
-    statements: [
-      {
-        columns: [{ name: "status", typeOid: 25 }],
-        commandTag: "SELECT 1",
-        rows: [[{ text: "mock backend ready" }]],
-        truncated: false,
-      },
-    ],
-    truncated: false,
-  });
-};
-
 const handlePostgresExtensions = (
   request: Request,
   state: MockState,
@@ -402,12 +375,12 @@ const handleManagedImageTags = (
   });
 };
 
-export const handleManagedResourcesAPI = (
+export const handleManagedResourcesAPI = async (
   request: Request,
   state: MockState,
   segments: string[],
   url: URL
-): Response | undefined => {
+): Promise<Response | undefined> => {
   const imageTagsResponse = handleManagedImageTags(request, segments);
   if (imageTagsResponse) {
     return imageTagsResponse;
@@ -422,7 +395,7 @@ export const handleManagedResourcesAPI = (
     handleManagedLogs(request, state, collection, resourceID, rest) ??
     handleRedisData(request, collection, rest) ??
     handlePostgresExtensions(request, state, collection, resourceID, rest) ??
-    handlePostgresQuery(request, collection, rest) ??
+    (await handlePostgresQuery(request, collection, rest)) ??
     (collection === "object-stores"
       ? handleObjects(request, state, resourceID, rest, url)
       : undefined)

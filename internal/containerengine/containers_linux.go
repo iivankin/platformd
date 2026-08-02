@@ -49,10 +49,14 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	spec.SdNotifyMode = define.SdNotifyModeIgnore
 	spec.CgroupParent = input.CgroupParent
 	spec.CgroupsMode = "enabled"
-	spec.LogConfiguration = &specgen.LogConfig{
-		Driver: define.KubernetesLogging,
-		Path:   input.LogPath,
-		Size:   input.LogSizeBytes,
+	if input.LogDriver == ContainerLogJournald {
+		spec.LogConfiguration = &specgen.LogConfig{Driver: define.JournaldLogging}
+	} else {
+		spec.LogConfiguration = &specgen.LogConfig{
+			Driver: define.KubernetesLogging,
+			Path:   input.LogPath,
+			Size:   input.LogSizeBytes,
+		}
 	}
 	if input.SecurityProfile == ContainerSecurityCloudflareMesh {
 		// The Cloudflare client creates and configures its own TUN interface.
@@ -100,7 +104,9 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	if err != nil {
 		return Container{}, fmt.Errorf("generate OCI container: %w", err)
 	}
-	options = append(options, libpod.WithLogRotation(input.LogMaxFiles))
+	if input.LogDriver == ContainerLogFile {
+		options = append(options, libpod.WithLogRotation(input.LogMaxFiles))
+	}
 	created, err := generate.ExecuteCreate(ctx, e.runtime, runtimeSpec, completed, false, options...)
 	if err != nil {
 		return Container{}, fmt.Errorf("create container: %w", err)
@@ -109,7 +115,9 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	if err != nil {
 		return Container{}, err
 	}
-	e.logs.set(result.ID, input.LogPath)
+	if input.LogDriver == ContainerLogFile {
+		e.logs.set(result.ID, input.LogPath)
+	}
 	return result, nil
 }
 
@@ -350,14 +358,23 @@ func (e *Engine) validateContainerSpec(spec ContainerSpec) error {
 	if spec.ImageID == "" || spec.Name == "" {
 		return fmt.Errorf("container image ID and name are required")
 	}
-	if err := validateAbsolutePath("container log", spec.LogPath); err != nil {
-		return err
+	if spec.LogDriver != ContainerLogFile && spec.LogDriver != ContainerLogJournald {
+		return fmt.Errorf("unknown container log driver %q", spec.LogDriver)
 	}
-	if !pathWithin(spec.LogPath, e.config.LogRoot) {
-		return fmt.Errorf("container log path %s is outside %s", spec.LogPath, e.config.LogRoot)
-	}
-	if spec.LogSizeBytes <= 0 || spec.LogMaxFiles == 0 {
-		return fmt.Errorf("container log size and retained file count must be positive")
+	if spec.LogDriver == ContainerLogJournald {
+		if spec.LogPath != "" || spec.LogSizeBytes != 0 || spec.LogMaxFiles != 0 {
+			return fmt.Errorf("journald container logs cannot use file rotation settings")
+		}
+	} else {
+		if err := validateAbsolutePath("container log", spec.LogPath); err != nil {
+			return err
+		}
+		if !pathWithin(spec.LogPath, e.config.LogRoot) {
+			return fmt.Errorf("container log path %s is outside %s", spec.LogPath, e.config.LogRoot)
+		}
+		if spec.LogSizeBytes <= 0 || spec.LogMaxFiles == 0 {
+			return fmt.Errorf("container log size and retained file count must be positive")
+		}
 	}
 	if spec.CPUMillicores < 0 || spec.MemoryMaxBytes < 0 {
 		return fmt.Errorf("container resource limits cannot be negative")

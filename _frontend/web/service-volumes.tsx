@@ -4,6 +4,7 @@ import { useState } from "react";
 import type { Service, Volume } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
+import { newID } from "@/id";
 import type { ServiceVolumeDraft } from "@/service-settings-model";
 import { ServiceVolumeCreateForm } from "@/service-volume-create-form";
 import { ServiceVolumeRow } from "@/service-volume-row";
@@ -62,7 +63,7 @@ export const ServiceVolumes = ({
               {
                 ...created,
                 createdAt: Date.now(),
-                id: `pending-volume:${crypto.randomUUID()}`,
+                id: `pending-volume:${newID()}`,
                 pendingCreation: true,
                 projectId: projectID,
                 serviceId: serviceID,

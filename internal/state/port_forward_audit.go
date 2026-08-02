@@ -42,10 +42,10 @@ func (store *Store) RecordPortForwardTicket(ctx context.Context, input RecordPor
 	return store.Write(ctx, func(transaction *sql.Tx) error {
 		_, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   result, metadata_json, created_at
-) VALUES (?, 'token', ?, 'port_forward.ticket.create', 'port_forward_ticket', ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorTokenID, input.TicketID, string(metadata), input.CreatedAtMillis,
+) VALUES (?, ?, 'token', ?, 'port_forward.ticket.create', 'port_forward_ticket', ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorTokenID, input.TicketID, string(metadata), input.CreatedAtMillis,
 		)
 		if err != nil {
 			return fmt.Errorf("audit port forward ticket: %w", err)

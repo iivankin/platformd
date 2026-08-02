@@ -109,7 +109,7 @@ export const ResourceBackupPanel = ({
     return (
       <SectionCard className="px-5 py-4 text-[10px] text-muted-foreground">
         Connect a storage location in{" "}
-        <Link className="underline" to="/backups/storage">
+        <Link className="underline" to="/settings/backups/storage">
           Backups
         </Link>{" "}
         before creating backups.

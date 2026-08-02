@@ -10,19 +10,26 @@ func (stack *runtimeStack) QuiesceWorkloads(ctx context.Context) (func(context.C
 	services := stack.deployments
 	redis := stack.managedRedis
 	postgres := stack.managedPostgres
+	objectStores := stack.objectStoreDataPlane
 	closed := stack.closed
 	stack.mu.Unlock()
 	if closed {
 		return nil, errors.New("container runtime is closed")
 	}
 
-	resumes := make([]func(context.Context) error, 0, 3)
+	resumes := make([]func(context.Context) error, 0, 4)
 	quiesce := func(run func(context.Context) (func(context.Context) error, error)) error {
 		resume, err := run(ctx)
 		if resume != nil {
 			resumes = append(resumes, resume)
 		}
 		return err
+	}
+	if objectStores != nil {
+		if err := objectStores.BeginDataPlaneQuiesce(ctx); err != nil {
+			return nil, err
+		}
+		resumes = append(resumes, objectStores.EndDataPlaneQuiesce)
 	}
 	if services != nil {
 		if err := quiesce(services.QuiesceAll); err != nil {

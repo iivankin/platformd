@@ -84,7 +84,7 @@ func (store *Store) CreateAPIToken(ctx context.Context, input CreateAPIToken) (A
 	if token.Role != "read" && token.Role != "admin" {
 		return APIToken{}, errors.New("API token role must be read or admin")
 	}
-	metadata := map[string]string{"actorEmail": input.ActorEmail, "role": token.Role}
+	metadata := map[string]string{"actorEmail": input.ActorEmail, "name": token.Name, "role": token.Role}
 	if token.ProjectID != nil {
 		if *token.ProjectID == "" {
 			return APIToken{}, errors.New("API token project ID is empty")
@@ -110,7 +110,7 @@ INSERT INTO api_tokens(id, name, role, project_id, secret_hmac, created_at)
 VALUES (?, ?, ?, ?, ?, ?)`, token.ID, token.Name, token.Role, token.ProjectID, token.SecretHMAC, token.CreatedAtMillis); err != nil {
 			return fmt.Errorf("create API token: %w", err)
 		}
-		return insertAPITokenAudit(ctx, transaction, input.AuditEventID, input.ActorID, "api_token.create", token.ID, input.RequestCorrelationID, encoded, token.CreatedAtMillis)
+		return insertAPITokenAudit(ctx, transaction, token.ProjectID, input.AuditEventID, input.ActorID, "api_token.create", token.ID, input.RequestCorrelationID, encoded, token.CreatedAtMillis)
 	})
 	if err != nil {
 		return APIToken{}, err
@@ -123,11 +123,18 @@ func (store *Store) RevokeAPIToken(ctx context.Context, input RevokeAPIToken) er
 	if input.ID == "" || input.AuditEventID == "" || input.ActorID == "" || input.ActorEmail == "" || input.RevokedAtMillis <= 0 {
 		return errors.New("revoke API token input is incomplete")
 	}
-	encoded, err := json.Marshal(map[string]string{"actorEmail": input.ActorEmail})
-	if err != nil {
-		return err
-	}
 	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var projectID sql.NullString
+		var name string
+		if err := transaction.QueryRowContext(ctx, "SELECT name, project_id FROM api_tokens WHERE id = ? AND revoked_at IS NULL", input.ID).Scan(&name, &projectID); errors.Is(err, sql.ErrNoRows) {
+			return ErrAPITokenNotFound
+		} else if err != nil {
+			return fmt.Errorf("load API token before revoke: %w", err)
+		}
+		encoded, err := json.Marshal(map[string]string{"actorEmail": input.ActorEmail, "name": name})
+		if err != nil {
+			return err
+		}
 		result, err := transaction.ExecContext(ctx, `
 UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, input.RevokedAtMillis, input.ID)
 		if err != nil {
@@ -140,7 +147,11 @@ UPDATE api_tokens SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, input
 		if changed != 1 {
 			return ErrAPITokenNotFound
 		}
-		return insertAPITokenAudit(ctx, transaction, input.AuditEventID, input.ActorID, "api_token.revoke", input.ID, input.RequestCorrelationID, encoded, input.RevokedAtMillis)
+		var scopedProjectID *string
+		if projectID.Valid {
+			scopedProjectID = &projectID.String
+		}
+		return insertAPITokenAudit(ctx, transaction, scopedProjectID, input.AuditEventID, input.ActorID, "api_token.revoke", input.ID, input.RequestCorrelationID, encoded, input.RevokedAtMillis)
 	})
 }
 
@@ -168,17 +179,17 @@ func scanAPIToken(scanner interface{ Scan(...any) error }, includeSecret bool) (
 	return token, nil
 }
 
-func insertAPITokenAudit(ctx context.Context, transaction *sql.Tx, id, actorID, action, targetID, correlationID string, metadata []byte, timestamp int64) error {
+func insertAPITokenAudit(ctx context.Context, transaction *sql.Tx, projectID *string, id, actorID, action, targetID, correlationID string, metadata []byte, timestamp int64) error {
 	var requestID any
 	if correlationID != "" {
 		requestID = correlationID
 	}
 	_, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, ?, 'api_token', ?, ?, 'succeeded', ?, ?)`,
-		id, actorID, action, targetID, requestID, string(metadata), timestamp,
+) VALUES (?, ?, 'access', ?, ?, 'api_token', ?, ?, 'succeeded', ?, ?)`,
+		id, projectID, actorID, action, targetID, requestID, string(metadata), timestamp,
 	)
 	if err != nil {
 		return fmt.Errorf("audit %s: %w", action, err)

@@ -361,7 +361,7 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dnsServer.Close() })
-	credentials, err := GenerateCredentials("018bcfe5-687b-7fff-bfff-ffffffffffff", nil)
+	credentials, err := GenerateCredentials("abcdefghijklmnopqrstuvwx", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

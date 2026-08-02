@@ -26,7 +26,7 @@ export const SettingsGitHubPage = () => {
   const [appID, setAppID] = useState("");
   const [privateKey, setPrivateKey] = useState("");
   const [webhookSecret, setWebhookSecret] = useState("");
-  const [automationHostname, setAutomationHostname] = useState("");
+  const [adminHostname, setAdminHostname] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
@@ -40,7 +40,7 @@ export const SettingsGitHubPage = () => {
           fetchInstallationSettings(controller.signal),
         ]);
         setSettings(loaded);
-        setAutomationHostname(installation.automationHostname);
+        setAdminHostname(installation.adminHostname);
         if (!loaded.configured) {
           setWebhookSecret((current) => current || createGitHubWebhookSecret());
         }
@@ -91,8 +91,8 @@ export const SettingsGitHubPage = () => {
   };
 
   const homepageURL = globalThis.location.origin;
-  const webhookURL = automationHostname
-    ? `https://${automationHostname}${settings?.webhookPath ?? "/api/v1/integrations/github/webhook"}`
+  const webhookURL = adminHostname
+    ? `https://${adminHostname}${settings?.webhookPath ?? "/public/api/v1/integrations/github/webhook"}`
     : undefined;
 
   return (

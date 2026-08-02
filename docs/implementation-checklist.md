@@ -7,7 +7,7 @@ This checklist maps the implementation to the normative specification. A checked
 - [ ] Self-contained amd64 release embeds UI and verified runtime bundle. Evidence: release manifest test and clean Debian install.
 - [ ] `platformd init` is the only public command and is interruption-safe. Evidence: bootstrap integration matrix.
 - [ ] Master key lifecycle, one-time recovery prompt, passphrase verifier, Origin certificates, and Access configuration match the spec. Evidence: bootstrap and secret-at-rest tests.
-- [ ] SQLite schema, migrations, writer serialization, audit, observational operations, and startup interrupted-state repair are complete. Evidence: database and crash tests.
+- [ ] SQLite schema initialization, writer serialization, audit, observational operations, and startup interrupted-state repair are complete. Evidence: database and crash tests.
 - [ ] Filesystem ownership, atomic payload publication, orphan cleanup, and single-filesystem checks are complete. Evidence: fault-injection tests.
 
 ## Runtime and networking
@@ -27,7 +27,7 @@ This checklist maps the implementation to the normative specification. A checked
 ## Managed data services
 
 - [ ] OCI Registry protocol subset, Basic auth, browsing/deletion, cleanup, backup, retention, and restore are complete. Evidence: Distribution client/conformance tests.
-- [ ] Private S3 subset, SigV4/presign, encrypted chunks/multipart, browser, cleanup, backup, retention, and restore are complete. Evidence: AWS SDK compatibility suite.
+- [ ] RustFS-backed private S3 subset, SigV4/presign/aws-chunked, native multipart, browser, cleanup, streamed encrypted remote backup, retention, and downtime restore are complete. Evidence: LanceDB, Bun.S3, boto3, and MinIO client conformance plus disaster-recovery tests.
 - [ ] Managed PostgreSQL official-image profile, non-superuser owner, SQL/data browser, backup/restore, and version transfer are complete. Evidence: multi-version engine suite.
 - [ ] Managed Redis official-image profile, RDB persistence, browser, stable-FD backup/restore, and version transfer are complete. Evidence: multi-version engine suite.
 - [ ] Remote backup target probing, independent UTC schedules, encrypted generations, control snapshot, and full restore are complete. Evidence: backup and fresh-VPS recovery suites.

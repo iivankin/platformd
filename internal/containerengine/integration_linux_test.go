@@ -22,6 +22,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/sirupsen/logrus"
+	"go.podman.io/storage"
 )
 
 const (
@@ -281,7 +282,7 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 	// use `oven/bun` or `node`, and Buildah must receive platformd's private
 	// registries.conf rather than consulting an absent host configuration.
 	shortBase := strings.TrimPrefix(integrationAlpineImage, "docker.io/library/")
-	contents := "FROM " + shortBase + "\nRUN printf yes > /platformd-built\n"
+	contents := "FROM " + shortBase + "\nARG PLATFORMD_DEPLOYMENT_ID\nRUN test \"$CI\" = 1 && test \"$PLATFORMD_DEPLOYMENT_ID\" = deployment-integration && printf yes > /platformd-built\n"
 	if err := os.WriteFile(dockerfile, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -290,6 +291,8 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 		ContextDirectory: contextRoot,
 		Dockerfile:       dockerfile,
 		Reference:        "localhost/platformd/build-integration:latest",
+		Arguments:        map[string]string{"PLATFORMD_DEPLOYMENT_ID": "deployment-integration"},
+		Environment:      map[string]string{"CI": "1"},
 		Network:          buildNetwork.Name,
 		Timeout:          2 * time.Minute,
 		Log:              &buildOutput,
@@ -301,9 +304,26 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 	if image.ID == "" || image.Digest == "" || buildOutput.Len() == 0 {
 		t.Fatalf("built image = %+v, log bytes = %d", image, buildOutput.Len())
 	}
+	var cachedOutput bytes.Buffer
+	cachedImage, err := engine.Build(ctx, BuildRequest{
+		ContextDirectory: contextRoot,
+		Dockerfile:       dockerfile,
+		Reference:        "localhost/platformd/build-integration:latest",
+		Arguments:        map[string]string{"PLATFORMD_DEPLOYMENT_ID": "deployment-integration"},
+		Environment:      map[string]string{"CI": "1"},
+		Network:          buildNetwork.Name,
+		Timeout:          2 * time.Minute,
+		Log:              &cachedOutput,
+	})
+	if err != nil {
+		t.Fatalf("repeat cached image build: %v\n%s", err, cachedOutput.String())
+	}
+	if cachedImage.ID != image.ID || !bytes.Contains(cachedOutput.Bytes(), []byte("Using cache")) {
+		t.Fatalf("repeat build did not use cache: first=%s second=%s\n%s", image.ID, cachedImage.ID, cachedOutput.String())
+	}
 	container, err := engine.CreateContainer(ctx, ContainerSpec{
 		ImageID: image.ID, Name: "platformd-build-verification",
-		Command: []string{"/bin/sh", "-c", `test "$(cat /platformd-built)" = yes`},
+		Command: []string{"/bin/sh", "-c", `test "$(cat /platformd-built)" = yes && test "$CI" = 1`},
 		LogPath: filepath.Join(config.LogRoot, "build-verification.log"), LogSizeBytes: 1 << 20, LogMaxFiles: 2,
 	})
 	if err != nil {
@@ -315,6 +335,64 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 	}
 	if code, err := engine.WaitContainer(ctx, container.ID); err != nil || code != 0 {
 		t.Fatalf("built image verification exit = %d, %v", code, err)
+	}
+}
+
+func TestImageGarbageCollectionRemovesBuildCacheAndOrphanLayers(t *testing.T) {
+	if os.Getenv("PLATFORMD_RUNTIME_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_RUNTIME_INTEGRATION=1 on an isolated root host")
+	}
+	config := runtimeIntegrationConfig()
+	if err := os.MkdirAll(config.LogRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	engine, err := Open(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	base, err := engine.Pull(ctx, PullRequest{Reference: integrationAlpineImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseImage, err := engine.store.Image(base.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheLayer, err := engine.store.CreateLayer("", baseImage.TopLayer, nil, "", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cacheImage, err := engine.store.CreateImage("", nil, cacheLayer.ID, "", &storage.ImageOptions{
+		CreationDate: time.Now().Add(-2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphan, err := engine.store.CreateLayer("", "", nil, "", false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := engine.GarbageCollectImages(ctx, ImageGarbageCollectRequest{
+		FinalImageBefore:       time.Unix(1, 0),
+		BuildCacheBefore:       time.Now().Add(time.Second),
+		OrphanLayerMaximumAge:  0,
+		ProtectedDigests:       map[string]struct{}{base.Digest: {}},
+		KnownFinalImageDigests: map[string]struct{}{base.Digest: {}},
+	})
+	if err != nil {
+		t.Fatalf("garbage collect image fixtures: %v", err)
+	}
+	if result.BuildCacheImagesRemoved == 0 || result.OrphanLayersRemoved != 1 {
+		t.Fatalf("garbage collection result = %+v", result)
+	}
+	if _, err := engine.store.Layer(orphan.ID); !errors.Is(err, storage.ErrLayerUnknown) {
+		t.Fatalf("orphan layer lookup after GC = %v", err)
+	}
+	if _, err := engine.store.Image(cacheImage.ID); !errors.Is(err, storage.ErrImageUnknown) {
+		t.Fatalf("build cache image lookup after GC = %v", err)
 	}
 }
 

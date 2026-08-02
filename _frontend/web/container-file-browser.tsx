@@ -1,11 +1,6 @@
-import {
-  FileTree,
-  useFileTree,
-  useFileTreeSelection,
-} from "@pierre/trees/react";
 import { Download, FolderTree, RefreshCw, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, FormEvent } from "react";
+import type { FormEvent } from "react";
 
 import {
   containerFileContentURL,
@@ -16,6 +11,7 @@ import type { ContainerFileEntry, ContainerResourceKind } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ContainerFileTree } from "@/container-file-tree";
 
 interface ContainerFileBrowserProperties {
   projectID: string;
@@ -31,19 +27,6 @@ const formatBytes = (value: number) => {
     return `${(value / 1024).toFixed(1)} KiB`;
   }
   return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
-};
-
-const treePath = (root: string, entry: ContainerFileEntry) => {
-  const prefix = root === "/" ? "/" : `${root}/`;
-  const relative = entry.path.startsWith(prefix)
-    ? entry.path.slice(prefix.length)
-    : entry.path.replace(/^\/+/u, "");
-  return entry.directory ? `${relative}/` : relative;
-};
-
-const absolutePath = (root: string, relative: string) => {
-  const clean = relative.endsWith("/") ? relative.slice(0, -1) : relative;
-  return root === "/" ? `/${clean}` : `${root}/${clean}`;
 };
 
 const parentPath = (value: string) => {
@@ -69,43 +52,72 @@ export const ContainerFileBrowser = ({
   resourceID,
   resourceKind,
 }: ContainerFileBrowserProperties) => {
-  const [root, setRoot] = useState("/");
-  const [requestedRoot, setRequestedRoot] = useState("/");
-  const [entries, setEntries] = useState<ContainerFileEntry[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [rootInput, setRootInput] = useState("/");
+  const [currentRoot, setCurrentRoot] = useState("/");
+  const [entriesByDirectory, setEntriesByDirectory] = useState<
+    ReadonlyMap<string, readonly ContainerFileEntry[]>
+  >(() => new Map());
+  const [expandedPaths, setExpandedPaths] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const [loadingPaths, setLoadingPaths] = useState<ReadonlySet<string>>(
+    () => new Set()
+  );
+  const [selectedPath, setSelectedPath] = useState<string>();
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string>();
   const uploadRef = useRef<HTMLInputElement>(null);
-  const paths = useMemo(
-    () => entries.map((entry) => treePath(requestedRoot, entry)),
-    [entries, requestedRoot]
-  );
-  const { model } = useFileTree({
-    density: "compact",
-    flattenEmptyDirectories: false,
-    initialExpansion: 1,
-    paths: [],
-    search: true,
-  });
-  const selection = useFileTreeSelection(model);
+  const requestsRef = useRef(new Map<string, AbortController>());
+  const generationRef = useRef(0);
 
-  useEffect(() => {
-    model.resetPaths(paths);
-  }, [model, paths]);
+  const loadDirectory = useCallback(
+    async (path: string, replaceRoot = false) => {
+      if (!path.startsWith("/") || path.includes("\0")) {
+        setError("Path must be absolute");
+        return;
+      }
 
-  const load = useCallback(
-    async (path: string, signal?: AbortSignal) => {
-      setBusy(true);
+      let generation = generationRef.current;
+      if (replaceRoot) {
+        generation += 1;
+        generationRef.current = generation;
+        for (const controller of requestsRef.current.values()) {
+          controller.abort();
+        }
+        requestsRef.current.clear();
+      } else if (requestsRef.current.has(path)) {
+        return;
+      }
+
+      const controller = new AbortController();
+      requestsRef.current.set(path, controller);
+      setLoadingPaths((current) =>
+        replaceRoot ? new Set([path]) : new Set(current).add(path)
+      );
       try {
         const tree = await fetchContainerFiles(
           projectID,
           resourceKind,
           resourceID,
           path,
-          signal
+          controller.signal
         );
-        setEntries(tree.entries);
-        setRequestedRoot(tree.root);
-        setRoot(tree.root);
+        if (generation !== generationRef.current) {
+          return;
+        }
+        setEntriesByDirectory((current) => {
+          const next = replaceRoot ? new Map() : new Map(current);
+          next.set(tree.root, tree.entries);
+          return next;
+        });
+        if (replaceRoot) {
+          setCurrentRoot(tree.root);
+          setRootInput(tree.root);
+          setExpandedPaths(new Set());
+          setSelectedPath(undefined);
+        } else {
+          setExpandedPaths((current) => new Set(current).add(tree.root));
+        }
         setError(undefined);
       } catch (loadError) {
         if (
@@ -120,61 +132,67 @@ export const ContainerFileBrowser = ({
             : "Unable to load container files"
         );
       } finally {
-        setBusy(false);
+        if (requestsRef.current.get(path) === controller) {
+          requestsRef.current.delete(path);
+          setLoadingPaths((current) => {
+            const next = new Set(current);
+            next.delete(path);
+            return next;
+          });
+        }
       }
     },
     [projectID, resourceID, resourceKind]
   );
 
   useEffect(() => {
-    const controller = new AbortController();
-    const loadInitialTree = async () => {
-      try {
-        const tree = await fetchContainerFiles(
-          projectID,
-          resourceKind,
-          resourceID,
-          "/",
-          controller.signal
-        );
-        setEntries(tree.entries);
-        setRequestedRoot(tree.root);
-        setRoot(tree.root);
-        setError(undefined);
-      } catch (loadError) {
-        if (
-          loadError instanceof DOMException &&
-          loadError.name === "AbortError"
-        ) {
-          return;
-        }
-        setError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Unable to load container files"
-        );
-      } finally {
-        setBusy(false);
+    const requests = requestsRef.current;
+    const generation = generationRef;
+    const frame = requestAnimationFrame(() => void loadDirectory("/", true));
+    return () => {
+      cancelAnimationFrame(frame);
+      generation.current += 1;
+      for (const controller of requests.values()) {
+        controller.abort();
       }
+      requests.clear();
     };
-    void loadInitialTree();
-    return () => controller.abort();
-  }, [projectID, resourceID, resourceKind]);
+  }, [loadDirectory]);
 
-  const selectedRelative = selection.at(-1);
-  const selected = selectedRelative
-    ? entries.find(
-        (entry) => entry.path === absolutePath(requestedRoot, selectedRelative)
-      )
-    : undefined;
+  const entriesByPath = useMemo(() => {
+    const result = new Map<string, ContainerFileEntry>();
+    for (const entries of entriesByDirectory.values()) {
+      for (const entry of entries) {
+        result.set(entry.path, entry);
+      }
+    }
+    return result;
+  }, [entriesByDirectory]);
+  const selected = selectedPath ? entriesByPath.get(selectedPath) : undefined;
+  const busy = loadingPaths.size > 0 || uploading;
 
   const submitRoot = (event: FormEvent) => {
     event.preventDefault();
-    if (!root.startsWith("/") || root.includes("\0")) {
-      setError("Path must be absolute");
+    void loadDirectory(rootInput, true);
+  };
+
+  const toggleDirectory = (entry: ContainerFileEntry) => {
+    if (!entry.directory) {
       return;
     }
-    void load(root);
+    if (expandedPaths.has(entry.path)) {
+      setExpandedPaths((current) => {
+        const next = new Set(current);
+        next.delete(entry.path);
+        return next;
+      });
+      return;
+    }
+    if (entriesByDirectory.has(entry.path)) {
+      setExpandedPaths((current) => new Set(current).add(entry.path));
+      return;
+    }
+    void loadDirectory(entry.path);
   };
 
   const upload = async (file: File) => {
@@ -182,8 +200,8 @@ export const ContainerFileBrowser = ({
       setError("File name is invalid");
       return;
     }
-    const directory = uploadDirectory(selected, requestedRoot);
-    setBusy(true);
+    const directory = uploadDirectory(selected, currentRoot);
+    setUploading(true);
     try {
       await uploadContainerFile(
         projectID,
@@ -192,7 +210,8 @@ export const ContainerFileBrowser = ({
         joinPath(directory, file.name),
         file
       );
-      await load(requestedRoot);
+      await loadDirectory(directory);
+      setError(undefined);
     } catch (uploadError) {
       setError(
         uploadError instanceof Error
@@ -200,24 +219,9 @@ export const ContainerFileBrowser = ({
           : "Unable to upload file"
       );
     } finally {
-      setBusy(false);
+      setUploading(false);
     }
   };
-
-  const treeStyles = {
-    "--trees-bg-muted-override": "var(--muted)",
-    "--trees-bg-override": "var(--background)",
-    "--trees-border-color-override": "var(--border)",
-    "--trees-border-radius-override": "0px",
-    "--trees-fg-muted-override": "var(--muted-foreground)",
-    "--trees-fg-override": "var(--foreground)",
-    "--trees-font-family-override": "var(--font-sans)",
-    "--trees-font-size-override": "10px",
-    "--trees-input-bg-override": "var(--background)",
-    "--trees-search-bg-override": "var(--background)",
-    "--trees-selected-bg-override": "var(--muted)",
-    height: "100%",
-  } as CSSProperties;
 
   return (
     <SectionCard className="bg-background">
@@ -226,15 +230,15 @@ export const ContainerFileBrowser = ({
         <div>
           <h3 className="text-[10px] font-medium">Container files</h3>
           <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-            Live filesystem · Trees
+            Live filesystem · Lazy tree
           </p>
         </div>
         <form className="ml-4 flex min-w-64 flex-1 gap-2" onSubmit={submitRoot}>
           <Input
             aria-label="Container root path"
             className="h-8 font-mono text-[10px]"
-            onChange={(event) => setRoot(event.target.value)}
-            value={root}
+            onChange={(event) => setRootInput(event.target.value)}
+            value={rootInput}
           />
           <Button disabled={busy} size="sm" type="submit" variant="outline">
             <RefreshCw />
@@ -271,12 +275,22 @@ export const ContainerFileBrowser = ({
       ) : null}
 
       <div className="grid h-[24rem] grid-cols-[minmax(16rem,0.9fr)_minmax(15rem,1.1fr)]">
-        <div className="min-w-0 border-r border-border p-2">
-          <FileTree
-            aria-label={`Files below ${requestedRoot}`}
-            model={model}
-            style={treeStyles}
-          />
+        <div className="min-w-0 border-r border-border">
+          {entriesByDirectory.has(currentRoot) ? (
+            <ContainerFileTree
+              entriesByDirectory={entriesByDirectory}
+              expandedPaths={expandedPaths}
+              loadingPaths={loadingPaths}
+              onSelect={(entry) => setSelectedPath(entry.path)}
+              onToggle={toggleDirectory}
+              root={currentRoot}
+              selectedPath={selectedPath}
+            />
+          ) : (
+            <div className="grid h-full place-items-center text-[10px] text-muted-foreground">
+              Loading {currentRoot}…
+            </div>
+          )}
         </div>
         <div className="min-w-0 p-4">
           {selected ? (
@@ -297,11 +311,11 @@ export const ContainerFileBrowser = ({
                 {selected.directory ? (
                   <Button
                     disabled={busy}
-                    onClick={() => void load(selected.path)}
+                    onClick={() => void loadDirectory(selected.path, true)}
                     size="sm"
                     variant="outline"
                   >
-                    Open directory
+                    Open as root
                   </Button>
                 ) : (
                   <a
@@ -329,8 +343,8 @@ export const ContainerFileBrowser = ({
             </>
           ) : (
             <div className="grid h-full place-items-center px-8 text-center text-[10px] leading-5 text-muted-foreground">
-              Select a file to inspect or download it. Uploads go to the
-              selected directory.
+              Expand directories as needed. Select a file to inspect or download
+              it.
             </div>
           )}
         </div>

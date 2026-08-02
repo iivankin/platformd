@@ -11,7 +11,7 @@ import (
 )
 
 // prepareRuntimeHost is deliberately state-independent so every daemon start
-// destroys ephemeral runtime state before state.Open can commit a migration.
+// destroys ephemeral runtime state before state.Open reads durable state.
 func prepareRuntimeHost(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string) error {
 	if err := firewall.New().Clear(); err != nil {
 		return fmt.Errorf("clear previous platform firewall: %w", err)

@@ -14,7 +14,7 @@ import (
 
 const maximumGitHubWebhookBytes = 2 << 20
 
-const GitHubWebhookPath = "/api/v1/integrations/github/webhook"
+const GitHubWebhookPath = "/public/api/v1/integrations/github/webhook"
 
 type GitHubWebhookVerifier interface {
 	VerifyWebhook(context.Context, []byte, string) error
@@ -38,6 +38,30 @@ func registerGitHubAppRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("PUT /api/v1/settings/github", putGitHubAppSettings(config))
 	mux.HandleFunc("GET /api/v1/settings/github/repositories", getGitHubRepositories(config))
 	mux.HandleFunc("GET /api/v1/settings/github/repositories/{repositoryID}/paths", getGitHubRepositoryPaths(config))
+	mux.HandleFunc("GET /api/v1/settings/github/repositories/{repositoryID}/workflows", getGitHubWorkflows(config))
+}
+
+func getGitHubWorkflows(config handlerConfig) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		repositoryID, err := strconv.ParseInt(request.PathValue("repositoryID"), 10, 64)
+		if err != nil || repositoryID <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_repository_id", "GitHub repository ID is invalid")
+			return
+		}
+		workflows, err := config.githubApp.Workflows(request.Context(), repositoryID)
+		if errors.Is(err, state.ErrGitHubAppNotConfigured) {
+			writeAPIError(response, http.StatusConflict, "github_app_not_configured", "Configure the GitHub App first")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusBadGateway, "github_workflows_failed", err.Error())
+			return
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"workflows": workflows})
+	}
 }
 
 func getGitHubRepositoryPaths(config handlerConfig) http.HandlerFunc {
@@ -121,7 +145,7 @@ func putGitHubAppSettings(config handlerConfig) http.HandlerFunc {
 		defer clear(privateKey)
 		defer clear(webhookSecret)
 		timestamp := config.now()
-		_, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "github_app_configure_failed", "Unable to allocate request IDs")
 			return

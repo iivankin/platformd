@@ -72,10 +72,10 @@ func (store *Store) AppendTerminalAudit(ctx context.Context, input TerminalAudit
 	return store.Write(ctx, func(transaction *sql.Tx) error {
 		_, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   result, metadata_json, created_at
-) VALUES (?, 'access', ?, ?, ?, ?, ?, ?, ?)`,
-			input.ID, input.ActorID, input.Action, input.TargetKind, input.TargetID,
+) VALUES (?, ?, 'access', ?, ?, ?, ?, ?, ?, ?)`,
+			input.ID, nullableString(input.ProjectID), input.ActorID, input.Action, input.TargetKind, input.TargetID,
 			input.Result, string(encoded), input.CreatedAtMillis,
 		)
 		if err != nil {

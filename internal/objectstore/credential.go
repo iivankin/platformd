@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/id"
 )
 
 const (
@@ -23,24 +24,21 @@ type InitialCredentials struct {
 }
 
 func AccessKeyID(credentialID string) (string, error) {
-	compact := strings.ReplaceAll(credentialID, "-", "")
-	if len(compact) != 32 {
-		return "", errors.New("S3 credential ID must be a UUID")
+	if !id.Valid(credentialID) {
+		return "", errors.New("S3 credential ID must be a CUID2")
 	}
-	return "ps3_" + compact, nil
+	return "ps3_" + credentialID, nil
 }
 
 func CredentialID(accessKeyID string) (string, error) {
-	if len(accessKeyID) != 36 || !strings.HasPrefix(accessKeyID, "ps3_") {
+	if !strings.HasPrefix(accessKeyID, "ps3_") {
 		return "", errors.New("S3 access key ID is invalid")
 	}
-	value := accessKeyID[4:]
-	for _, character := range value {
-		if !((character >= '0' && character <= '9') || (character >= 'a' && character <= 'f')) {
-			return "", errors.New("S3 access key ID is invalid")
-		}
+	credentialID := strings.TrimPrefix(accessKeyID, "ps3_")
+	if !id.Valid(credentialID) {
+		return "", errors.New("S3 access key ID is invalid")
 	}
-	return value[0:8] + "-" + value[8:12] + "-" + value[12:16] + "-" + value[16:20] + "-" + value[20:], nil
+	return credentialID, nil
 }
 
 func GenerateSecret(random io.Reader) (string, error) {

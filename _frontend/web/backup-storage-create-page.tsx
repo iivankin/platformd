@@ -35,7 +35,7 @@ export const BackupStorageCreatePage = () => {
     setError(undefined);
     try {
       await createBackupTarget(normalizeBackupTargetInput(input));
-      navigate("/backups/storage");
+      navigate("/settings/backups/storage");
     } catch (saveError) {
       setError(errorText(saveError));
       setBusy(false);
@@ -47,7 +47,7 @@ export const BackupStorageCreatePage = () => {
       <SectionCard className="flex min-h-16 items-center gap-4 px-5 py-3">
         <Button
           aria-label="Back to backup storage"
-          onClick={() => navigate("/backups/storage")}
+          onClick={() => navigate("/settings/backups/storage")}
           size="icon"
           variant="outline"
         >
@@ -69,7 +69,7 @@ export const BackupStorageCreatePage = () => {
         canSubmit={completeBackupTargetInput(input)}
         configured={false}
         input={input}
-        onCancel={() => navigate("/backups/storage")}
+        onCancel={() => navigate("/settings/backups/storage")}
         onSubmit={submit}
         onUpdate={(field, value) =>
           setInput((current) => ({ ...current, [field]: value }))

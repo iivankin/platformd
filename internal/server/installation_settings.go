@@ -14,12 +14,11 @@ import (
 const maximumInstallationSettingsBytes = 1 << 20
 
 type installationSettingsResponse struct {
-	InstallationID     string                            `json:"installationId"`
-	AdminHostname      string                            `json:"adminHostname"`
-	AutomationHostname string                            `json:"automationHostname"`
-	AccessTeamDomain   string                            `json:"accessTeamDomain"`
-	AccessAudience     string                            `json:"accessAudience"`
-	Certificates       []installationCertificateResponse `json:"certificates"`
+	InstallationID   string                            `json:"installationId"`
+	AdminHostname    string                            `json:"adminHostname"`
+	AccessTeamDomain string                            `json:"accessTeamDomain"`
+	AccessAudience   string                            `json:"accessAudience"`
+	Certificates     []installationCertificateResponse `json:"certificates"`
 }
 
 type installationCertificateResponse struct {
@@ -30,26 +29,14 @@ type installationCertificateResponse struct {
 
 func registerInstallationSettingsRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/settings", getInstallationSettings(config))
-	mux.HandleFunc("PUT /api/v1/settings/automation-hostname", setAutomationHostname(config))
+	mux.HandleFunc("PUT /api/v1/settings/admin-hostname", setAdminHostname(config))
+	mux.HandleFunc("PUT /api/v1/settings/cloudflare-access", setCloudflareAccess(config))
 	mux.HandleFunc("POST /api/v1/settings/origin-certificates", addOriginCertificate(config))
 	mux.HandleFunc("PUT /api/v1/settings/origin-certificates/{certificateID}", replaceOriginCertificate(config))
 	mux.HandleFunc("DELETE /api/v1/settings/origin-certificates/{certificateID}", deleteOriginCertificate(config))
 }
 
-func getInstallationSettings(config handlerConfig) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		if _, ok := requireAccessIdentity(response, request); !ok {
-			return
-		}
-		settings, err := config.installationSettings.Settings(request.Context())
-		if writeInstallationSettingsError(response, err) {
-			return
-		}
-		writeJSON(response, http.StatusOK, publicInstallationSettings(settings))
-	}
-}
-
-func setAutomationHostname(config handlerConfig) http.HandlerFunc {
+func setAdminHostname(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
 		Hostname string `json:"hostname"`
 	}
@@ -63,17 +50,80 @@ func setAutomationHostname(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeInstallationSettingsError(response, err)
 			return
 		}
-		settings, err := config.installationSettings.SetAutomationHostname(request.Context(), body.Hostname,
+		settings, changed, err := config.installationSettings.SetAdminHostname(request.Context(), body.Hostname,
 			settingsMutation(identity.Subject, identity.Email, auditID, requestID, timestamp))
 		if writeInstallationSettingsError(response, err) {
 			return
 		}
 		response.Header().Set("X-Request-ID", requestID)
+		writeJSON(response, http.StatusOK, publicInstallationSettings(settings))
+		if !changed {
+			return
+		}
+		if flusher, ok := response.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if config.afterInstallationChange != nil {
+			config.afterInstallationChange()
+		}
+	}
+}
+
+func setCloudflareAccess(config handlerConfig) http.HandlerFunc {
+	type requestBody struct {
+		TeamDomain string `json:"teamDomain"`
+		Audience   string `json:"audience"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		var body requestBody
+		if !decodeInstallationSettingsJSON(response, request, &body) {
+			return
+		}
+		timestamp := config.now()
+		_, auditID, requestID, err := createRequestIDs()
+		if err != nil {
+			writeInstallationSettingsError(response, err)
+			return
+		}
+		settings, changed, err := config.installationSettings.SetAccessConfiguration(
+			request.Context(), body.TeamDomain, body.Audience,
+			settingsMutation(identity.Subject, identity.Email, auditID, requestID, timestamp),
+		)
+		if writeInstallationSettingsError(response, err) {
+			return
+		}
+		response.Header().Set("X-Request-ID", requestID)
+		writeJSON(response, http.StatusOK, publicInstallationSettings(settings))
+		if !changed {
+			return
+		}
+		if flusher, ok := response.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		if config.afterInstallationChange != nil {
+			config.afterInstallationChange()
+		}
+	}
+}
+
+func getInstallationSettings(config handlerConfig) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		settings, err := config.installationSettings.Settings(request.Context())
+		if writeInstallationSettingsError(response, err) {
+			return
+		}
 		writeJSON(response, http.StatusOK, publicInstallationSettings(settings))
 	}
 }
@@ -90,7 +140,7 @@ func addOriginCertificate(config handlerConfig) http.HandlerFunc {
 		}
 		defer clear(privateKey)
 		timestamp := config.now()
-		resourceID, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		resourceID, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeInstallationSettingsError(response, err)
 			return
@@ -120,7 +170,7 @@ func replaceOriginCertificate(config handlerConfig) http.HandlerFunc {
 		}
 		defer clear(privateKey)
 		timestamp := config.now()
-		_, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeInstallationSettingsError(response, err)
 			return
@@ -145,7 +195,7 @@ func deleteOriginCertificate(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeInstallationSettingsError(response, err)
 			return
@@ -210,8 +260,8 @@ func publicInstallationSettings(settings installationsettings.Settings) installa
 	}
 	return installationSettingsResponse{
 		InstallationID: settings.InstallationID, AdminHostname: settings.AdminHostname,
-		AutomationHostname: settings.AutomationHostname, AccessTeamDomain: settings.AccessTeamDomain,
-		AccessAudience: settings.AccessAudience, Certificates: certificates,
+		AccessTeamDomain: settings.AccessTeamDomain, AccessAudience: settings.AccessAudience,
+		Certificates: certificates,
 	}
 }
 

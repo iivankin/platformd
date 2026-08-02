@@ -68,6 +68,54 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	}
 }
 
+func TestCompileRulesetAddsPerServicePublicTrafficCounters(t *testing.T) {
+	project := Project{
+		ID: "shop", Bridge: "pd-shop", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1"),
+		PublicTrafficEndpoints: []PublicTrafficEndpoint{{ServiceID: "api", Address: netip.MustParseAddr("10.80.1.8")}},
+	}
+	compiled := compileRuleset(TableName, []Project{project})
+	if len(compiled.objects) != 2 {
+		t.Fatalf("public counter objects = %d, want 2", len(compiled.objects))
+	}
+	want := map[string]bool{
+		publicCounterName("ingress", "api"): false,
+		publicCounterName("egress", "api"):  false,
+	}
+	for _, currentRule := range compiled.rules {
+		for _, expression := range currentRule.Exprs {
+			if reference, ok := expression.(*expr.Objref); ok {
+				want[reference.Name] = true
+			}
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Fatalf("counter %q is not referenced by a forward rule", name)
+		}
+	}
+}
+
+func TestSeedPublicTrafficCountersCarriesBytesAcrossRulesetReplacement(t *testing.T) {
+	project := Project{
+		ID: "shop", Bridge: "pd-shop", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1"),
+		PublicTrafficEndpoints: []PublicTrafficEndpoint{{ServiceID: "api", Address: netip.MustParseAddr("10.80.1.8")}},
+	}
+	compiled := compileRuleset(TableName, []Project{project})
+	seedPublicTrafficCounters(compiled.objects, map[string]PublicTrafficCounters{
+		"api": {IngressBytes: 12_345, EgressBytes: 67_890},
+	})
+	values := make(map[string]uint64)
+	for _, object := range compiled.objects {
+		if counter, ok := object.(*nftables.CounterObj); ok {
+			values[counter.Name] = counter.Bytes
+		}
+	}
+	if values[publicCounterName("ingress", "api")] != 12_345 ||
+		values[publicCounterName("egress", "api")] != 67_890 {
+		t.Fatalf("seeded counters = %+v", values)
+	}
+}
+
 func TestEnableIPv4ForwardingAt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "ip_forward")
 	if err := os.WriteFile(path, []byte("0\n"), 0o600); err != nil {

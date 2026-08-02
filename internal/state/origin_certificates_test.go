@@ -29,10 +29,10 @@ func TestOriginCertificateMutationsPreservePublicHostnameCoverage(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SetAutomationHostname(ctx, state.SetAutomationHostnameInput{
+	if err := store.SetAdminHostname(ctx, state.SetAdminHostnameInput{
 		Hostname: "api.example.com", AuditEventID: "audit-uncovered", ActorID: "subject-a", UpdatedAtMillis: 2,
 	}); !errors.Is(err, state.ErrCertificateCoverage) {
-		t.Fatalf("uncovered automation hostname error = %v", err)
+		t.Fatalf("uncovered admin hostname error = %v", err)
 	}
 	combinedCertificate := stateTestCertificate(t, []string{"admin.example.com", "api.example.com"})
 	if err := store.AddOriginCertificate(ctx, state.PutOriginCertificateInput{
@@ -44,7 +44,7 @@ func TestOriginCertificateMutationsPreservePublicHostnameCoverage(t *testing.T) 
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.SetAutomationHostname(ctx, state.SetAutomationHostnameInput{
+	if err := store.SetAdminHostname(ctx, state.SetAdminHostnameInput{
 		Hostname: "api.example.com", AuditEventID: "audit-hostname", ActorID: "subject-a", UpdatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)

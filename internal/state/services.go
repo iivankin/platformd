@@ -20,18 +20,19 @@ var (
 )
 
 type ServiceDesired struct {
-	ID                 string
-	ProjectID          string
-	ProjectName        string
-	Name               string
-	Enabled            bool
-	ActiveDeploymentID string
-	ActiveImageDigest  string
-	ActiveConfigHash   string
-	CreatedAtMillis    int64
-	UpdatedAtMillis    int64
-	Snapshot           serviceconfig.Snapshot
-	ImageCredential    *ServiceImageCredential
+	ID                   string
+	ProjectID            string
+	ProjectName          string
+	Name                 string
+	Enabled              bool
+	ActiveDeploymentID   string
+	ActiveImageDigest    string
+	ActiveConfigHash     string
+	ActiveSourceRevision string
+	CreatedAtMillis      int64
+	UpdatedAtMillis      int64
+	Snapshot             serviceconfig.Snapshot
+	ImageCredential      *ServiceImageCredential
 }
 
 type CreateService struct {
@@ -59,6 +60,9 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	snapshot, _, _, err := serviceconfig.Canonical(input.Snapshot)
 	if err != nil {
 		return ServiceDesired{}, err
+	}
+	if snapshot.BeforeDeploy != nil && len(snapshot.BeforeDeploy.CloudflareHostnames) > 0 {
+		return ServiceDesired{}, fmt.Errorf("%w: before-deploy Cloudflare hostnames require an existing service domain", ErrDependencyMissing)
 	}
 	// Initial setup may stage a disabled preview service before attaching its
 	// domain. UpdateService validates the exact domain count before enabling it.
@@ -92,11 +96,19 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	if err != nil {
 		return ServiceDesired{}, fmt.Errorf("encode service environment: %w", err)
 	}
+	buildEnvironmentJSON, err := json.Marshal(snapshot.BuildEnvironment)
+	if err != nil {
+		return ServiceDesired{}, fmt.Errorf("encode service build environment: %w", err)
+	}
+	beforeDeployJSON, err := optionalJSON(snapshot.BeforeDeploy)
+	if err != nil {
+		return ServiceDesired{}, fmt.Errorf("encode service before-deploy settings: %w", err)
+	}
 	sourceJSON, err := json.Marshal(snapshot.Source)
 	if err != nil {
 		return ServiceDesired{}, fmt.Errorf("encode service source: %w", err)
 	}
-	metadata := make(map[string]string)
+	metadata := map[string]string{"name": input.Name}
 	if input.ActorEmail != "" {
 		metadata["actorEmail"] = input.ActorEmail
 	}
@@ -153,11 +165,11 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO services(
 	  id, project_id, name, source_json,
-	  command_json, args_json, environment_json, health_port, health_path,
+	  command_json, args_json, environment_json, build_environment_json, before_deploy_json, health_port, health_path,
 	  health_timeout_seconds, cpu_millis, memory_bytes, enabled, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			input.ID, input.ProjectID, input.Name, string(sourceJSON),
-			commandJSON, argsJSON, string(environmentJSON), healthPort, healthPath,
+			commandJSON, argsJSON, string(environmentJSON), string(buildEnvironmentJSON), beforeDeployJSON, healthPort, healthPath,
 			healthTimeout, cpuMillis, memoryBytes, enabled,
 			input.CreatedAtMillis, input.CreatedAtMillis,
 		); err != nil {
@@ -184,10 +196,10 @@ VALUES (?, ?, ?)`, input.ID, reference.EnvironmentName, reference.SecretID); err
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, 'service.create', 'service', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadataJSON), input.CreatedAtMillis,
+) VALUES (?, ?, ?, ?, 'service.create', 'service', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadataJSON), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit service creation: %w", err)
 		}
@@ -205,10 +217,13 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var activeDeploymentID sql.NullString
 	var activeImageDigest sql.NullString
 	var activeConfigHash sql.NullString
+	var activeSourceRevision sql.NullString
 	var sourceJSON string
 	var commandJSON sql.NullString
 	var argsJSON sql.NullString
 	var environmentJSON string
+	var buildEnvironmentJSON string
+	var beforeDeployJSON sql.NullString
 	var healthPort sql.NullInt64
 	var healthPath sql.NullString
 	var healthTimeout int
@@ -216,18 +231,18 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var memoryBytes sql.NullInt64
 	err := store.database.QueryRowContext(ctx, `
 SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
-       d.image_digest, d.service_config_hash,
+	   d.image_digest, d.service_config_hash, d.source_revision,
 	       s.source_json, s.command_json, s.args_json,
-	       s.environment_json, s.health_port, s.health_path, s.health_timeout_seconds,
+	       s.environment_json, s.build_environment_json, s.before_deploy_json, s.health_port, s.health_path, s.health_timeout_seconds,
        s.cpu_millis, s.memory_bytes, s.created_at, s.updated_at
 FROM services s
 JOIN projects p ON p.id = s.project_id
 LEFT JOIN deployments d ON d.id = s.active_deployment_id
 WHERE s.id = ?`, serviceID).Scan(
 		&service.ID, &service.ProjectID, &service.ProjectName, &service.Name, &enabled,
-		&activeDeploymentID, &activeImageDigest, &activeConfigHash,
+		&activeDeploymentID, &activeImageDigest, &activeConfigHash, &activeSourceRevision,
 		&sourceJSON, &commandJSON, &argsJSON,
-		&environmentJSON, &healthPort, &healthPath, &healthTimeout,
+		&environmentJSON, &buildEnvironmentJSON, &beforeDeployJSON, &healthPort, &healthPath, &healthTimeout,
 		&cpuMillis, &memoryBytes, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -240,6 +255,7 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveDeploymentID = activeDeploymentID.String
 	service.ActiveImageDigest = activeImageDigest.String
 	service.ActiveConfigHash = activeConfigHash.String
+	service.ActiveSourceRevision = activeSourceRevision.String
 	if err := json.Unmarshal([]byte(sourceJSON), &service.Snapshot.Source); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service source: %w", err)
 	}
@@ -262,6 +278,14 @@ WHERE s.id = ?`, serviceID).Scan(
 	}
 	if err := json.Unmarshal([]byte(environmentJSON), &service.Snapshot.Environment); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service environment: %w", err)
+	}
+	if err := json.Unmarshal([]byte(buildEnvironmentJSON), &service.Snapshot.BuildEnvironment); err != nil {
+		return ServiceDesired{}, fmt.Errorf("decode service build environment: %w", err)
+	}
+	if beforeDeployJSON.Valid {
+		if err := json.Unmarshal([]byte(beforeDeployJSON.String), &service.Snapshot.BeforeDeploy); err != nil {
+			return ServiceDesired{}, fmt.Errorf("decode service before-deploy settings: %w", err)
+		}
 	}
 	secretRows, err := store.database.QueryContext(ctx, `
 SELECT environment_name, secret_id FROM service_secret_refs
@@ -362,6 +386,17 @@ func optionalStringSliceJSON(values []string) (any, error) {
 	encoded, err := json.Marshal(values)
 	if err != nil {
 		return nil, fmt.Errorf("encode string list: %w", err)
+	}
+	return string(encoded), nil
+}
+
+func optionalJSON(value any) (any, error) {
+	if value == nil {
+		return nil, nil
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
 	}
 	return string(encoded), nil
 }

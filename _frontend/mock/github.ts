@@ -62,6 +62,26 @@ const handleGitHubRepositoryReads = (
       paths,
     });
   }
+  if (
+    segments.length === 5 &&
+    segments[0] === "settings" &&
+    segments[1] === "github" &&
+    segments[2] === "repositories" &&
+    segments[4] === "workflows"
+  ) {
+    return json({
+      workflows: [
+        {
+          name: "Run database migrations",
+          path: ".github/workflows/migrate.yml",
+        },
+        {
+          name: "Warm application cache",
+          path: ".github/workflows/warm-cache.yml",
+        },
+      ],
+    });
+  }
   return undefined;
 };
 
@@ -95,7 +115,7 @@ export const handleGitHubAPI = async (
       appSlug: state.githubAppSettings.appSlug || "platformd-mock",
       configured: true,
       updatedAt: mockNow(),
-      webhookPath: "/api/v1/integrations/github/webhook",
+      webhookPath: "/public/api/v1/integrations/github/webhook",
     };
     return json(state.githubAppSettings);
   }

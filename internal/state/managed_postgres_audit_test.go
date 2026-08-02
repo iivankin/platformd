@@ -39,7 +39,7 @@ func TestManagedPostgresQueryAuditOmitsSQLAndRows(t *testing.T) {
 	if err := store.QueryRowContext(ctx, "SELECT metadata_json FROM audit_events WHERE id = 'query-audit'").Scan(&metadata); err != nil {
 		t.Fatal(err)
 	}
-	if metadata != `{"actorEmail":"admin@example.com","durationMillis":"18","rowCount":"2"}` || strings.Contains(metadata, "SELECT") {
+	if metadata != `{"actorEmail":"admin@example.com","durationMillis":"18","name":"database","rowCount":"2"}` || strings.Contains(metadata, "SELECT") {
 		t.Fatalf("query audit metadata = %s", metadata)
 	}
 }
@@ -80,7 +80,7 @@ func TestManagedPostgresExtensionAuditRecordsExactOperation(t *testing.T) {
 		t.Fatal(err)
 	}
 	if action != "postgres.extension.install" ||
-		metadata != `{"actorEmail":"admin@example.com","durationMillis":"12","extension":"uuid-ossp"}` {
+		metadata != `{"actorEmail":"admin@example.com","durationMillis":"12","extension":"uuid-ossp","name":"database"}` {
 		t.Fatalf("extension audit = %s/%s", action, metadata)
 	}
 }

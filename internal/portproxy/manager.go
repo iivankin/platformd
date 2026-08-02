@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type BackendResolver interface {
@@ -94,6 +95,7 @@ type Route struct {
 type Config struct {
 	Backends BackendResolver
 	OnError  func(string, error)
+	Traffic  *trafficmetrics.Registry
 }
 
 type endpoint interface {
@@ -112,6 +114,7 @@ type Manager struct {
 	mu        sync.Mutex
 	endpoints map[string]endpointEntry
 	owners    map[string]string
+	traffic   *trafficmetrics.Registry
 }
 
 func New(config Config) (*Manager, error) {
@@ -123,7 +126,7 @@ func New(config Config) (*Manager, error) {
 		onError = func(string, error) {}
 	}
 	return &Manager{
-		backends: config.Backends, onError: onError,
+		backends: config.Backends, onError: onError, traffic: config.Traffic,
 		endpoints: make(map[string]endpointEntry), owners: make(map[string]string),
 	}, nil
 }
@@ -207,6 +210,22 @@ func (manager *Manager) Close() error {
 	return errors.Join(failures...)
 }
 
+// SampleTCP updates byte counters for connections that are still open. The
+// final io.Copy counts reconcile any bytes not yet visible through TCP_INFO.
+func (manager *Manager) SampleTCP() {
+	manager.mu.Lock()
+	endpoints := make([]*tcpEndpoint, 0, len(manager.endpoints))
+	for _, item := range manager.endpoints {
+		if tcp, ok := item.endpoint.(*tcpEndpoint); ok {
+			endpoints = append(endpoints, tcp)
+		}
+	}
+	manager.mu.Unlock()
+	for _, endpoint := range endpoints {
+		endpoint.sampleTraffic()
+	}
+}
+
 func (manager *Manager) listen(route Route) (endpoint, error) {
 	listenAddress := net.JoinHostPort(route.ListenAddress, strconv.Itoa(route.ListenPort))
 	switch route.Protocol {
@@ -215,14 +234,14 @@ func (manager *Manager) listen(route Route) (endpoint, error) {
 		if err != nil {
 			return nil, err
 		}
-		return newTCPEndpoint(listener, route, manager.backends, manager.onError), nil
+		return newTCPEndpoint(listener, route, manager.backends, manager.onError, manager.traffic), nil
 	case "udp":
 		address := &net.UDPAddr{IP: net.ParseIP(route.ListenAddress), Port: route.ListenPort}
 		listener, err := listenUDPInNamespace(route.ListenNamespacePID, address)
 		if err != nil {
 			return nil, err
 		}
-		return newUDPEndpoint(listener, route, manager.backends, manager.onError), nil
+		return newUDPEndpoint(listener, route, manager.backends, manager.onError, manager.traffic), nil
 	default:
 		return nil, errors.New("unsupported proxy protocol")
 	}
@@ -257,4 +276,15 @@ func routeKey(protocol, address string, port, namespacePID int) string {
 
 func backendAddress(backend Backend) string {
 	return net.JoinHostPort(backend.Address, strconv.Itoa(backend.Port))
+}
+
+func routeServiceID(route Route) string {
+	switch target := route.Target.(type) {
+	case ServiceTarget:
+		return target.ServiceID
+	case *ServiceTarget:
+		return target.ServiceID
+	default:
+		return ""
+	}
 }

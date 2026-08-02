@@ -167,7 +167,7 @@ export const GitHubAppSetupGuide = ({
         <div className="grid gap-2 lg:grid-cols-3">
           <CopyValue label="Homepage URL" value={homepageURL} />
           <CopyValue
-            emptyText="Configure an Automation hostname in General settings"
+            emptyText="Loading the public webhook address"
             label="Webhook URL"
             value={webhookURL}
           />
@@ -180,7 +180,7 @@ export const GitHubAppSetupGuide = ({
       </SetupStep>
 
       <SetupStep
-        description="These are the minimum permissions used for source archives, CI state, and GitHub deployment history."
+        description="These are the minimum permissions used for source archives, CI state, workflow dispatches, and GitHub deployment history."
         number="03"
         title="Choose access"
       >
@@ -193,6 +193,8 @@ export const GitHubAppSetupGuide = ({
             <dl className="mt-2 grid grid-cols-[1fr_auto] gap-x-5 gap-y-1 text-[9px]">
               <dt>Contents</dt>
               <dd className="text-muted-foreground">Read-only</dd>
+              <dt>Actions</dt>
+              <dd className="text-muted-foreground">Read and write</dd>
               <dt>Checks</dt>
               <dd className="text-muted-foreground">Read-only</dd>
               <dt>Commit statuses</dt>

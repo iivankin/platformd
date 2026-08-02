@@ -21,6 +21,7 @@ var (
 
 type AuditEvent struct {
 	ID                   string
+	ProjectID            string
 	ActorKind            string
 	ActorID              string
 	Action               string
@@ -33,6 +34,7 @@ type AuditEvent struct {
 }
 
 type AuditQuery struct {
+	ProjectID  string
 	ActorKind  string
 	Action     string
 	Result     string
@@ -52,7 +54,7 @@ func (store *Store) AuditEvents(ctx context.Context, query AuditQuery) (AuditPag
 		query.Limit = DefaultAuditPageSize
 	}
 	if query.Limit < 1 || query.Limit > MaximumAuditPageSize || !validAuditFilter("actor", query.ActorKind) ||
-		!validAuditFilter("result", query.Result) || len(query.Action) > 128 || len(query.TargetKind) > 128 || len(query.TargetID) > 128 {
+		!validAuditFilter("result", query.Result) || len(query.ProjectID) > 128 || len(query.Action) > 128 || len(query.TargetKind) > 128 || len(query.TargetID) > 128 {
 		return AuditPage{}, fmt.Errorf("%w: invalid filters or page size", ErrAuditPageInvalid)
 	}
 	var cursorCreated int64
@@ -66,10 +68,11 @@ func (store *Store) AuditEvents(ctx context.Context, query AuditQuery) (AuditPag
 		}
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, actor_kind, actor_id, action, target_kind, target_id,
+SELECT id, project_id, actor_kind, actor_id, action, target_kind, target_id,
        request_correlation_id, result, metadata_json, created_at
 FROM audit_events
-WHERE (? = '' OR actor_kind = ?)
+WHERE (? = '' OR project_id = ?)
+  AND (? = '' OR actor_kind = ?)
   AND (? = '' OR action = ?)
   AND (? = '' OR result = ?)
   AND (? = '' OR target_kind = ?)
@@ -77,7 +80,7 @@ WHERE (? = '' OR actor_kind = ?)
   AND (? = '' OR created_at < ? OR (created_at = ? AND id < ?))
 ORDER BY created_at DESC, id DESC
 LIMIT ?`,
-		query.ActorKind, query.ActorKind, query.Action, query.Action, query.Result, query.Result,
+		query.ProjectID, query.ProjectID, query.ActorKind, query.ActorKind, query.Action, query.Action, query.Result, query.Result,
 		query.TargetKind, query.TargetKind, query.TargetID, query.TargetID,
 		query.Cursor, cursorCreated, cursorCreated, query.Cursor, query.Limit+1,
 	)
@@ -144,14 +147,16 @@ type auditScanner interface {
 
 func scanAuditEvent(scanner auditScanner) (AuditEvent, error) {
 	var event AuditEvent
+	var projectID sql.NullString
 	var correlationID sql.NullString
 	var metadataJSON string
 	if err := scanner.Scan(
-		&event.ID, &event.ActorKind, &event.ActorID, &event.Action, &event.TargetKind, &event.TargetID,
+		&event.ID, &projectID, &event.ActorKind, &event.ActorID, &event.Action, &event.TargetKind, &event.TargetID,
 		&correlationID, &event.Result, &metadataJSON, &event.CreatedAtMillis,
 	); err != nil {
 		return AuditEvent{}, fmt.Errorf("scan audit event: %w", err)
 	}
+	event.ProjectID = projectID.String
 	event.RequestCorrelationID = correlationID.String
 	if err := json.Unmarshal([]byte(metadataJSON), &event.Metadata); err != nil {
 		return AuditEvent{}, fmt.Errorf("decode audit metadata: %w", err)

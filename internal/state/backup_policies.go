@@ -145,14 +145,33 @@ func (store *Store) SetBackupPolicy(ctx context.Context, input SetBackupPolicy) 
 	if input.Enabled && (cron == "" || input.TargetID == "") {
 		return BackupPolicy{}, errors.New("enabled backup policy requires a target and cron")
 	}
-	metadata, err := json.Marshal(map[string]any{
+	metadataFields := map[string]any{
 		"actorEmail": input.ActorEmail, "enabled": input.Enabled,
 		"cron": cron, "retentionCount": input.RetentionCount, "targetId": input.TargetID,
-	})
-	if err != nil {
-		return BackupPolicy{}, err
 	}
 	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var projectID any
+		var name string
+		if input.ResourceKind == "registry" {
+			if err := transaction.QueryRowContext(ctx, "SELECT name FROM "+table+" WHERE id = ?", input.ResourceID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
+				return ErrBackupResourceNotFound
+			} else if err != nil {
+				return fmt.Errorf("load backup policy audit target: %w", err)
+			}
+		} else {
+			var scopedProjectID string
+			if err := transaction.QueryRowContext(ctx, "SELECT project_id, name FROM "+table+" WHERE id = ?", input.ResourceID).Scan(&scopedProjectID, &name); errors.Is(err, sql.ErrNoRows) {
+				return ErrBackupResourceNotFound
+			} else if err != nil {
+				return fmt.Errorf("load backup policy audit scope: %w", err)
+			}
+			projectID = scopedProjectID
+		}
+		metadataFields["name"] = name
+		metadata, err := json.Marshal(metadataFields)
+		if err != nil {
+			return err
+		}
 		if input.TargetID != "" {
 			var exists int
 			if err := transaction.QueryRowContext(ctx, `
@@ -184,10 +203,10 @@ WHERE id = ?`, nullableString(input.TargetID), enabled, nullableString(cron), in
 		}
 		_, err = transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, 'backup.policy.set', ?, ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.ResourceKind, input.ResourceID,
+) VALUES (?, ?, ?, ?, 'backup.policy.set', ?, ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, projectID, input.ActorKind, input.ActorID, input.ResourceKind, input.ResourceID,
 			nullableString(input.RequestCorrelationID), string(metadata), input.UpdatedAtMillis)
 		return err
 	})

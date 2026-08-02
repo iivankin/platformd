@@ -3,19 +3,28 @@ package githubapp
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	pathpkg "path"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
 	maximumArchiveBytes              = 512 << 20
 	maximumRepositoryPathSuggestions = 200
+	maximumWorkflowBytes             = 1 << 20
+	maximumWorkflowSuggestions       = 100
+	workflowPollInterval             = 2 * time.Second
 )
 
 type RepositoryInfo struct {
@@ -51,6 +60,19 @@ const (
 	ChecksPassed  CheckState = "passed"
 	ChecksFailed  CheckState = "failed"
 )
+
+type Workflow struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
+}
+
+type WorkflowRun struct {
+	ID         int64
+	Name       string
+	Status     string
+	Conclusion string
+	HTMLURL    string
+}
 
 type Deployment struct {
 	ID int64
@@ -95,6 +117,10 @@ type credentials struct {
 }
 
 func (application *Application) request(ctx context.Context, method, path, token string, body any, destination any) error {
+	return application.requestVersion(ctx, method, path, token, "2022-11-28", body, destination)
+}
+
+func (application *Application) requestVersion(ctx context.Context, method, path, token, version string, body any, destination any) error {
 	var reader io.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -109,7 +135,7 @@ func (application *Application) request(ctx context.Context, method, path, token
 	}
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("User-Agent", "platformd")
-	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	request.Header.Set("X-GitHub-Api-Version", version)
 	if body != nil {
 		request.Header.Set("Content-Type", "application/json")
 	}
@@ -288,6 +314,202 @@ func (application *Application) RepositoryPaths(
 		}
 	}
 	return result, nil
+}
+
+func (application *Application) Workflows(ctx context.Context, repositoryID int64) ([]Workflow, error) {
+	repository, token, err := application.repositoryToken(ctx, repositoryID)
+	if err != nil {
+		return nil, err
+	}
+	var tree struct {
+		Truncated bool `json:"truncated"`
+		Tree      []struct {
+			Path string `json:"path"`
+			SHA  string `json:"sha"`
+			Type string `json:"type"`
+		} `json:"tree"`
+	}
+	treePath := "/repos/" + repository.FullName + "/git/trees/" + url.PathEscape(repository.DefaultBranch) + "?recursive=1"
+	if err := application.request(ctx, http.MethodGet, treePath, token, nil, &tree); err != nil {
+		return nil, err
+	}
+	if tree.Truncated {
+		return nil, errors.New("GitHub repository tree is too large to enumerate workflows")
+	}
+	candidates := make([]struct{ Path, SHA string }, 0)
+	for _, item := range tree.Tree {
+		if item.Type != "blob" || !workflowFilePath(item.Path) || item.SHA == "" {
+			continue
+		}
+		candidates = append(candidates, struct{ Path, SHA string }{Path: item.Path, SHA: item.SHA})
+	}
+	sort.Slice(candidates, func(left, right int) bool { return candidates[left].Path < candidates[right].Path })
+	if len(candidates) > maximumWorkflowSuggestions {
+		candidates = candidates[:maximumWorkflowSuggestions]
+	}
+	result := make([]Workflow, 0, len(candidates))
+	for _, candidate := range candidates {
+		var blob struct {
+			Content  string `json:"content"`
+			Encoding string `json:"encoding"`
+			Size     int    `json:"size"`
+		}
+		blobPath := "/repos/" + repository.FullName + "/git/blobs/" + url.PathEscape(candidate.SHA)
+		if err := application.request(ctx, http.MethodGet, blobPath, token, nil, &blob); err != nil {
+			return nil, err
+		}
+		if blob.Encoding != "base64" || blob.Size < 0 || blob.Size > maximumWorkflowBytes {
+			return nil, fmt.Errorf("GitHub workflow %s has unsupported content", candidate.Path)
+		}
+		content, err := base64.StdEncoding.DecodeString(strings.Map(func(character rune) rune {
+			if character == '\n' || character == '\r' {
+				return -1
+			}
+			return character
+		}, blob.Content))
+		if err != nil || len(content) > maximumWorkflowBytes {
+			return nil, fmt.Errorf("decode GitHub workflow %s", candidate.Path)
+		}
+		name, dispatch, err := workflowMetadata(content)
+		if err != nil {
+			return nil, fmt.Errorf("parse GitHub workflow %s: %w", candidate.Path, err)
+		}
+		if !dispatch {
+			continue
+		}
+		if name == "" {
+			name = strings.TrimSuffix(pathpkg.Base(candidate.Path), pathpkg.Ext(candidate.Path))
+		}
+		result = append(result, Workflow{Name: name, Path: candidate.Path})
+	}
+	return result, nil
+}
+
+func workflowFilePath(value string) bool {
+	if !strings.HasPrefix(value, ".github/workflows/") || pathpkg.Clean(value) != value {
+		return false
+	}
+	name := strings.TrimPrefix(value, ".github/workflows/")
+	extension := strings.ToLower(pathpkg.Ext(name))
+	return name != "" && !strings.Contains(name, "/") && (extension == ".yml" || extension == ".yaml")
+}
+
+func workflowMetadata(content []byte) (string, bool, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(content, &document); err != nil {
+		return "", false, err
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return "", false, errors.New("workflow root must be a mapping")
+	}
+	root := document.Content[0]
+	name := scalarMappingValue(root, "name")
+	on := mappingNodeValue(root, "on")
+	if on == nil {
+		return name, false, nil
+	}
+	switch on.Kind {
+	case yaml.ScalarNode:
+		return name, on.Value == "workflow_dispatch", nil
+	case yaml.SequenceNode:
+		for _, event := range on.Content {
+			if event.Kind == yaml.ScalarNode && event.Value == "workflow_dispatch" {
+				return name, true, nil
+			}
+		}
+	case yaml.MappingNode:
+		return name, mappingNodeValue(on, "workflow_dispatch") != nil, nil
+	}
+	return name, false, nil
+}
+
+func mappingNodeValue(mapping *yaml.Node, key string) *yaml.Node {
+	for index := 0; index+1 < len(mapping.Content); index += 2 {
+		if mapping.Content[index].Value == key {
+			return mapping.Content[index+1]
+		}
+	}
+	return nil
+}
+
+func scalarMappingValue(mapping *yaml.Node, key string) string {
+	value := mappingNodeValue(mapping, key)
+	if value == nil || value.Kind != yaml.ScalarNode {
+		return ""
+	}
+	return strings.TrimSpace(value.Value)
+}
+
+func (application *Application) DispatchWorkflowAndWait(
+	ctx context.Context,
+	repositoryID int64,
+	workflowPath string,
+	ref string,
+	inputs map[string]any,
+) (WorkflowRun, error) {
+	if repositoryID <= 0 || !workflowFilePath(workflowPath) || strings.TrimSpace(ref) == "" || len(inputs) > 25 {
+		return WorkflowRun{}, errors.New("GitHub workflow dispatch input is invalid")
+	}
+	repository, token, err := application.repositoryToken(ctx, repositoryID)
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+	request := struct {
+		Ref    string         `json:"ref"`
+		Inputs map[string]any `json:"inputs,omitempty"`
+	}{Ref: strings.TrimSpace(ref), Inputs: inputs}
+	var dispatched struct {
+		WorkflowRunID int64  `json:"workflow_run_id"`
+		HTMLURL       string `json:"html_url"`
+	}
+	dispatchPath := "/repos/" + repository.FullName + "/actions/workflows/" + url.PathEscape(pathpkg.Base(workflowPath)) + "/dispatches"
+	if err := application.requestVersion(ctx, http.MethodPost, dispatchPath, token, "2026-03-10", request, &dispatched); err != nil {
+		return WorkflowRun{}, err
+	}
+	if dispatched.WorkflowRunID <= 0 {
+		return WorkflowRun{}, errors.New("GitHub workflow dispatch response has no run ID")
+	}
+	for {
+		run, err := application.workflowRun(ctx, repository.FullName, token, dispatched.WorkflowRunID)
+		if err != nil {
+			return WorkflowRun{}, err
+		}
+		if run.Status == "completed" {
+			if run.Conclusion != "success" {
+				return run, fmt.Errorf("GitHub workflow %s concluded with %s", run.Name, run.Conclusion)
+			}
+			return run, nil
+		}
+		timer := time.NewTimer(workflowPollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return run, fmt.Errorf("wait for GitHub workflow %s: %w", run.Name, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (application *Application) workflowRun(ctx context.Context, repository, token string, runID int64) (WorkflowRun, error) {
+	var response struct {
+		ID         int64   `json:"id"`
+		Name       string  `json:"name"`
+		Status     string  `json:"status"`
+		Conclusion *string `json:"conclusion"`
+		HTMLURL    string  `json:"html_url"`
+	}
+	runPath := "/repos/" + repository + "/actions/runs/" + strconv.FormatInt(runID, 10)
+	if err := application.requestVersion(ctx, http.MethodGet, runPath, token, "2026-03-10", nil, &response); err != nil {
+		return WorkflowRun{}, err
+	}
+	if response.ID != runID || response.Status == "" {
+		return WorkflowRun{}, errors.New("GitHub workflow run response is incomplete")
+	}
+	run := WorkflowRun{ID: response.ID, Name: response.Name, Status: response.Status, HTMLURL: response.HTMLURL}
+	if response.Conclusion != nil {
+		run.Conclusion = *response.Conclusion
+	}
+	return run, nil
 }
 
 func (application *Application) Commit(ctx context.Context, repositoryID int64, revision string) (Commit, error) {

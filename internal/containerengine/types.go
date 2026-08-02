@@ -16,6 +16,8 @@ type BuildRequest struct {
 	ContextDirectory string
 	Dockerfile       string
 	Reference        string
+	Arguments        map[string]string
+	Environment      map[string]string
 	Network          string
 	Timeout          time.Duration
 	Log              io.Writer
@@ -36,14 +38,19 @@ type Image struct {
 }
 
 type ImageGarbageCollectRequest struct {
-	Before           time.Time
-	ProtectedDigests map[string]struct{}
+	FinalImageBefore       time.Time
+	BuildCacheBefore       time.Time
+	OrphanLayerMaximumAge  time.Duration
+	ProtectedDigests       map[string]struct{}
+	KnownFinalImageDigests map[string]struct{}
 }
 
 type ImageGarbageCollectResult struct {
-	Removed      int
-	RemovedBytes int64
-	Skipped      int
+	FinalImagesRemoved      int   `json:"finalImagesRemoved"`
+	BuildCacheImagesRemoved int   `json:"buildCacheImagesRemoved"`
+	OrphanLayersRemoved     int   `json:"orphanLayersRemoved"`
+	RemovedBytes            int64 `json:"removedBytes"`
+	Skipped                 int   `json:"skipped"`
 }
 
 type DerivedImageRequest struct {
@@ -95,6 +102,13 @@ const (
 	ContainerSecurityCloudflareMesh ContainerSecurityProfile = "cloudflare_mesh"
 )
 
+type ContainerLogDriver string
+
+const (
+	ContainerLogFile     ContainerLogDriver = ""
+	ContainerLogJournald ContainerLogDriver = "journald"
+)
+
 type ContainerSpec struct {
 	ImageID         string
 	Name            string
@@ -107,6 +121,7 @@ type ContainerSpec struct {
 	DNSSearch       []string
 	Mounts          []Mount
 	ManagedVolumes  []ManagedVolumeMount
+	LogDriver       ContainerLogDriver
 	LogPath         string
 	LogSizeBytes    int64
 	LogMaxFiles     uint

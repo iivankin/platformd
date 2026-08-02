@@ -9,13 +9,9 @@ import {
 } from "react-router";
 
 import type { Meta } from "@/api";
-import { APITokensPage } from "@/api-tokens-page";
 import { useAppData } from "@/app-data";
-import { AuditPage } from "@/audit-page";
-import { BackupsPage } from "@/backups-page";
 import { Button } from "@/components/ui/button";
 import { InfrastructurePage } from "@/infrastructure-page";
-import { cn } from "@/lib/utils";
 import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectChangesProvider } from "@/project-changes";
 import { ProjectCreatePage } from "@/project-create-page";
@@ -28,12 +24,9 @@ import type { NavigationItem } from "@/sidebar";
 import { useLastProject } from "@/use-last-project";
 
 const pageDescriptions: Record<string, string> = {
-  "/audit": "Administrative history retained for seven days.",
-  "/backups": "Backup schedules, restore points, and storage.",
-  "/infrastructure": "Server health, maintenance, and platform activity.",
+  "/monitoring": "Server health, maintenance, and platform activity.",
   "/registry": "Private images used by your services.",
   "/settings": "Installation access and secure hostnames.",
-  "/tokens": "Scoped REST and MCP automation credentials.",
 };
 
 const controlPlaneStatusLabel = (
@@ -168,11 +161,15 @@ export const App = () => {
   }, [data.meta?.status, data.projects, location.pathname]);
 
   const recovering = data.meta?.status === "recovery";
+  const projectCanvasVisible =
+    location.pathname.startsWith("/projects/") &&
+    location.pathname !== "/projects/new";
   const controlPlaneReady = data.meta?.status === "ready";
   const controlPlaneStatus = controlPlaneStatusLabel(
     data.meta?.status,
     Boolean(data.metaError)
   );
+  const isDemo = data.meta?.version.endsWith("-mock") ?? false;
 
   return (
     <ProjectChangesProvider>
@@ -181,6 +178,7 @@ export const App = () => {
           collapsed={collapsed}
           identity={data.identity}
           identityError={data.identityError}
+          identityLoading={data.identityLoading}
           onCollapsedChange={setCollapsed}
           projects={data.projects}
           recovery={recovering}
@@ -188,20 +186,19 @@ export const App = () => {
         />
 
         <main className="relative flex min-w-0 flex-1 flex-col">
-          <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
-            <h1 className="truncate text-xs font-semibold tracking-[0.15em] uppercase">
-              {activeLabel}
-            </h1>
-            <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
-              <span
-                className={cn(
-                  "size-1.5 bg-emerald-500",
-                  !controlPlaneReady && "bg-amber-500"
-                )}
-              />
-              {controlPlaneStatus}
-            </div>
-          </header>
+          {projectCanvasVisible ? null : (
+            <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
+              <h1 className="truncate text-xs font-semibold tracking-[0.15em] uppercase">
+                {activeLabel}
+              </h1>
+              {controlPlaneReady ? null : (
+                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                  <span className="size-1.5 bg-amber-500" />
+                  {controlPlaneStatus}
+                </div>
+              )}
+            </header>
+          )}
 
           <div className="min-h-0 flex-1 overflow-auto">
             {recovering ? (
@@ -240,6 +237,7 @@ export const App = () => {
                 <Route
                   element={
                     <ProjectCanvasPage
+                      isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
                     />
                   }
@@ -248,6 +246,7 @@ export const App = () => {
                 <Route
                   element={
                     <ProjectCanvasPage
+                      isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
                     />
                   }
@@ -256,31 +255,26 @@ export const App = () => {
                 <Route
                   element={
                     <ProjectCanvasPage
+                      isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
                     />
                   }
                   path="/projects/:projectID"
                 />
                 <Route
-                  element={<APITokensPage projects={data.projects} />}
-                  path="/tokens"
-                />
-                <Route
                   element={<InfrastructurePage update={data.update} />}
-                  path="/infrastructure/*"
+                  path="/monitoring/*"
                 />
-                <Route element={<AuditPage />} path="/audit" />
-                <Route element={<BackupsPage />} path="/backups/*" />
                 <Route element={<RegistryPage />} path="/registry/*" />
-                <Route element={<SettingsPage />} path="/settings/*" />
+                <Route
+                  element={<SettingsPage projects={data.projects} />}
+                  path="/settings/*"
+                />
                 {globalNavigation
                   .filter(
                     (item) =>
-                      item.path !== "/tokens" &&
-                      item.path !== "/audit" &&
-                      item.path !== "/backups" &&
                       item.path !== "/registry" &&
-                      item.path !== "/infrastructure" &&
+                      item.path !== "/monitoring" &&
                       item.path !== "/settings"
                   )
                   .map((item) => (

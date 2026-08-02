@@ -11,25 +11,26 @@ import (
 var ErrUnsupported = errors.New("container runtime is supported only on Linux/amd64 with cgo")
 
 type Config struct {
-	TransientRoot      string
-	RunRoot            string
-	GraphRoot          string
-	LogRoot            string
-	StaticDir          string
-	VolumePath         string
-	NetworkConfigDir   string
-	HooksDir           string
-	CDISpecDir         string
-	ContainersConf     string
-	StorageConf        string
-	RegistriesConf     string
-	SignaturePolicy    string
-	SeccompProfile     string
-	DefaultMountsFile  string
-	OCIRuntime         string
-	Conmon             string
-	CgroupWorkloadRoot string
-	AllowedMountRoots  []string
+	TransientRoot       string
+	RunRoot             string
+	GraphRoot           string
+	LogRoot             string
+	StaticDir           string
+	VolumePath          string
+	NetworkConfigDir    string
+	HooksDir            string
+	CDISpecDir          string
+	ContainersConf      string
+	StorageConf         string
+	RegistriesConf      string
+	SignaturePolicy     string
+	SeccompProfile      string
+	DefaultMountsFile   string
+	OCIRuntime          string
+	Conmon              string
+	CgroupWorkloadRoot  string
+	AllowedMountRoots   []string
+	ImageStorageChanged func()
 }
 
 func (c Config) Validate() error {

@@ -35,7 +35,7 @@ func TestReaderReturnsHostCapacityAndRunningResourceCounters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !sample.Running || sample.CPUUsageMicros != 123_456 || sample.MemoryBytes != 987_654 ||
+	if !sample.Running || sample.CPUUsageMicros != 123_456 || sample.MemoryBytes != 987_654 || sample.MemoryPeakBytes != 987_654 ||
 		sample.HostCPUCores != 8 || sample.HostMemoryBytes != 16<<30 || sample.ObservedAtMillis != 1_700_000_000_000 {
 		t.Fatalf("sample = %+v", sample)
 	}

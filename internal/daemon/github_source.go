@@ -9,12 +9,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/githubapp"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -28,6 +30,7 @@ type githubBuildEngine interface {
 type githubSourceResolver struct {
 	github        *githubapp.Application
 	engine        githubBuildEngine
+	variables     resourceVariableResolver
 	generatedRoot string
 	buildNetwork  string
 }
@@ -35,7 +38,7 @@ type githubSourceResolver struct {
 func (resolver githubSourceResolver) Resolve(
 	ctx context.Context,
 	desired state.ServiceDesired,
-	deploymentID string,
+	environmentContext deployment.EnvironmentContext,
 	revisionOverride string,
 	log io.Writer,
 	force bool,
@@ -61,6 +64,10 @@ func (resolver githubSourceResolver) Resolve(
 	}
 	result := deployment.SourceResolution{Revision: commit.SHA, CommitMessage: commit.Message}
 	_, _ = fmt.Fprintf(log, "Resolved %s at %s\n", github.Repository, commit.SHA)
+	buildEnvironment, err := resolver.variables.ResolveBuild(ctx, desired, environmentContext)
+	if err != nil {
+		return result, fmt.Errorf("resolve GitHub build variables: %w", err)
+	}
 	if github.WaitForCI && !force {
 		checks, err := resolver.github.Checks(ctx, github.RepositoryID, commit.SHA)
 		if err != nil {
@@ -73,6 +80,10 @@ func (resolver githubSourceResolver) Resolve(
 		case githubapp.ChecksFailed:
 			return result, &deployment.SourceSkippedError{Reason: "GitHub CI checks did not pass"}
 		}
+	}
+	publicURLs, err := resolver.variables.publicURLs(ctx, desired, environmentContext)
+	if err != nil {
+		return result, fmt.Errorf("resolve GitHub build public URLs: %w", err)
 	}
 	result.ImageReference = "localhost/platformd-build/" + desired.ID + ":" + commit.SHA
 	if onBuildStarted != nil {
@@ -124,6 +135,8 @@ func (resolver githubSourceResolver) Resolve(
 		ContextDirectory: contextPath,
 		Dockerfile:       dockerfilePath,
 		Reference:        result.ImageReference,
+		Arguments:        githubBuildArguments(*github, commit, environmentContext, publicURLs),
+		Environment:      buildEnvironment,
 		Network:          resolver.buildNetwork,
 		Timeout:          githubBuildTimeout,
 		Log:              log,
@@ -134,6 +147,28 @@ func (resolver githubSourceResolver) Resolve(
 	}
 	_, _ = fmt.Fprintf(log, "Built image %s\n", image.Digest)
 	return result, nil
+}
+
+func githubBuildArguments(
+	source servicesource.GitHub,
+	commit githubapp.Commit,
+	environmentContext deployment.EnvironmentContext,
+	publicURLs string,
+) map[string]string {
+	result := map[string]string{
+		"PLATFORMD_DEPLOYMENT_ID":  environmentContext.DeploymentID,
+		"PLATFORMD_GIT_REPOSITORY": source.Repository,
+		"PLATFORMD_GIT_COMMIT_SHA": commit.SHA,
+		"PLATFORMD_PUBLIC_URLS":    publicURLs,
+	}
+	if commit.Message != "" {
+		result["PLATFORMD_GIT_COMMIT_MESSAGE"] = commit.Message
+	}
+	if environmentContext.Kind == deployment.EnvironmentPreview {
+		result["PLATFORMD_PREVIEW_URL"] = environmentContext.PreviewURL
+		result["PLATFORMD_GIT_PULL_REQUEST_NUMBER"] = strconv.Itoa(environmentContext.PullRequestNumber)
+	}
+	return result
 }
 
 func extractGitHubArchive(source io.Reader, destination string) error {

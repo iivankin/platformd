@@ -64,21 +64,22 @@ jobs:
             ninja-build \
             pkg-config \
             protobuf-compiler \
-            python3
+            python3 \
+            python3-venv
           mkdir -p "$RUNNER_TEMP/platformd-toolchain"
           ln -s /usr/bin/gcc-13 "$RUNNER_TEMP/platformd-toolchain/gcc"
           echo "$RUNNER_TEMP/platformd-toolchain" >> "$GITHUB_PATH"
 
       - name: Install the locked Rust toolchain
         run: |
-          rustup toolchain install 1.86.0 --profile minimal --no-self-update
-          rustup override set 1.86.0
+          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup override set 1.97.1
 
       - name: Verify locked toolchain versions
         run: |
           test "$(go version | awk '{print $3}')" = "go1.26.3"
           test "$(bun --version)" = "1.3.14"
-          test "$(rustc --version | awk '{print $2}')" = "1.86.0"
+          test "$(rustc --version | awk '{print $2}')" = "1.97.1"
           test "$(protoc --version | awk '{print $2}')" = "3.21.12"
           test "gcc-$(gcc -dumpfullversion)" = "gcc-13.3.0"
 
@@ -112,8 +113,6 @@ jobs:
       - name: Fuzz public protocol boundaries
         run: |
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/registry -run '^$' -fuzz '^FuzzRegistryInputs$' -fuzztime 10s
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/objectstore -run '^$' -fuzz '^FuzzS3Inputs$' -fuzztime 10s
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/objectstore -run '^$' -fuzz '^FuzzSigV4Inputs$' -fuzztime 10s
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/internaldns -run '^$' -fuzz '^FuzzDNSInputs$' -fuzztime 10s
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/ingress -run '^$' -fuzz '^FuzzProxyInputs$' -fuzztime 10s
 
@@ -121,6 +120,27 @@ jobs:
         env:
           PLATFORMD_STRICT_TOOLCHAIN: "1"
         run: build/runtime-linux-amd64.sh
+
+      - name: Verify Rust S3 and SDK conformance
+        run: |
+          cargo test --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
+          cargo clippy --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
+          python3 -m venv "$RUNNER_TEMP/platformd-s3-python"
+          "$RUNNER_TEMP/platformd-s3-python/bin/pip" \
+            --disable-pip-version-check \
+            install \
+            boto3==1.40.18 \
+            lancedb==0.34.0
+          PATH="$RUNNER_TEMP/platformd-s3-python/bin:$PATH" \
+            PLATFORMD_S3_SDK_INTEGRATION=1 \
+            PLATFORMD_LANCEDB_SDK_INTEGRATION=1 \
+            PLATFORMD_OBJECTSTORE_SIDECAR_BINARY="$PWD/dist/runtime/platformd-objectstore" \
+            go test \
+              -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" \
+              ./internal/objectstore \
+              -run 'Test(Boto3S3Contract|LanceDBS3Contract|MinIOStreamingS3Contract|BunS3Contract|RustFSRestoreReplacesObjectsAndMultipartUploads|PublicStoreHeaderCannotReachSiblingBucket|RustFSBucketReconciliationRemovesOrphans)' \
+              -count=1 \
+              -v
 
       - name: Verify private runtime lifecycle and isolation
         run: |
@@ -261,7 +281,8 @@ jobs:
             dist/runtime/crun \
             dist/runtime/conmon \
             dist/runtime/netavark \
-            dist/runtime/catatonit
+            dist/runtime/catatonit \
+            dist/runtime/platformd-objectstore
           go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
           python3 -m zipfile -t dist/platformd-linux-amd64
 
@@ -284,7 +305,8 @@ jobs:
             dist/debian-13-smoke/runtime/catatonit \
             dist/debian-13-smoke/runtime/conmon \
             dist/debian-13-smoke/runtime/crun \
-            dist/debian-13-smoke/runtime/netavark
+            dist/debian-13-smoke/runtime/netavark \
+            dist/debian-13-smoke/runtime/platformd-objectstore
           docker run --rm --platform linux/amd64 \
             --volume "$PWD/dist:/release:ro" \
             debian:13-slim@sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1 \
@@ -298,7 +320,7 @@ jobs:
                 libseccomp2
               ! command -v nft
               ! command -v iptables
-              for helper in catatonit conmon crun netavark; do
+              for helper in catatonit conmon crun netavark platformd-objectstore; do
                 env -i LC_ALL=C LANG=C "/release/debian-13-smoke/runtime/$helper" --version >/dev/null
               done
               status=0

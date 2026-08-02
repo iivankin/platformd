@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"context"
-	"log"
 	"time"
 
 	"github.com/iivankin/platformd/internal/cloudflaremesh"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -36,6 +36,8 @@ func superviseCloudflareMesh(
 	gateways *liveNetworkGatewayRepository,
 ) {
 	delay := cloudflareMeshHealthInterval
+	systemevent.Info("cloudflare_mesh_supervisor_started")
+	defer systemevent.Info("cloudflare_mesh_supervisor_stopped")
 	for {
 		timer := time.NewTimer(delay)
 		select {
@@ -49,16 +51,23 @@ func superviseCloudflareMesh(
 
 		repaired, err := mesh.RepairConnection(ctx)
 		if err != nil {
-			log.Printf("repair managed Cloudflare Mesh sidecar: %v", err)
 			delay = min(delay*2, cloudflareMeshMaximumBackoff)
+			systemevent.Failure(
+				"cloudflare_mesh_repair_failed",
+				err,
+				systemevent.Int64("retry_ms", delay.Milliseconds()),
+			)
 			continue
 		}
 		delay = cloudflareMeshHealthInterval
 		if !repaired {
 			continue
 		}
+		systemevent.Info("cloudflare_mesh_repaired")
 		if err := gateways.ReconcileMeshNetworkGateways(ctx); err != nil {
-			log.Printf("rebind Cloudflare Mesh gateways: %v", err)
+			systemevent.Failure("cloudflare_mesh_gateway_rebind_failed", err)
+		} else {
+			systemevent.Info("cloudflare_mesh_gateways_rebound")
 		}
 	}
 }

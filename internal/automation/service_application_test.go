@@ -1,7 +1,6 @@
 package automation
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -38,7 +37,7 @@ func (*mutationRepository) RedeployService(context.Context, state.RedeployServic
 
 func TestServiceApplicationAuthorizesBeforeRepositoryAndCreatesTokenAuditInput(t *testing.T) {
 	repository := &mutationRepository{}
-	application, err := NewServiceApplication(repository, bytes.NewReader(make([]byte, 96)), func() time.Time {
+	application, err := NewServiceApplication(repository, func() time.Time {
 		return time.UnixMilli(1700000000000)
 	})
 	if err != nil {
@@ -47,7 +46,7 @@ func TestServiceApplicationAuthorizesBeforeRepositoryAndCreatesTokenAuditInput(t
 	projectID := "project"
 	input := CreateServiceInput{
 		ProjectID: projectID, Name: "api", Enabled: true,
-		Configuration: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22"),},
+		Configuration: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22")},
 	}
 	if _, err := application.Create(context.Background(), Identity{TokenID: "read", Role: "read"}, input); !errors.Is(err, ErrAdminRequired) {
 		t.Fatalf("read token error = %v", err)
@@ -74,13 +73,13 @@ func TestServiceApplicationAuthorizesBeforeRepositoryAndCreatesTokenAuditInput(t
 
 func TestServiceApplicationRejectsInvalidUpdateBeforeRepository(t *testing.T) {
 	repository := &mutationRepository{}
-	application, err := NewServiceApplication(repository, bytes.NewReader(make([]byte, 64)), time.Now)
+	application, err := NewServiceApplication(repository, time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = application.Update(context.Background(), Identity{TokenID: "admin", Role: "admin"}, UpdateServiceInput{
 		ProjectID: "project", ServiceID: "service", ExpectedUpdatedAt: 0,
-		Configuration: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),},
+		Configuration: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")},
 	})
 	if !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("update error = %v", err)

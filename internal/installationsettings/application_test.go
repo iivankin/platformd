@@ -21,6 +21,8 @@ import (
 type repositoryStub struct {
 	installation state.Installation
 	hostnames    []string
+	adminSet     bool
+	accessSet    bool
 	replaced     bool
 }
 
@@ -32,13 +34,17 @@ func (repository *repositoryStub) PublicHostnames(context.Context) ([]string, er
 	return append([]string(nil), repository.hostnames...), nil
 }
 
-func (repository *repositoryStub) SetAutomationHostname(_ context.Context, input state.SetAutomationHostnameInput) (*string, error) {
-	if input.Hostname == "" {
-		repository.installation.AutomationHostname = nil
-		return nil, nil
-	}
-	repository.installation.AutomationHostname = &input.Hostname
-	return &input.Hostname, nil
+func (repository *repositoryStub) SetAdminHostname(_ context.Context, input state.SetAdminHostnameInput) error {
+	repository.installation.AdminHostname = input.Hostname
+	repository.adminSet = true
+	return nil
+}
+
+func (repository *repositoryStub) SetAccessConfiguration(_ context.Context, input state.SetAccessConfigurationInput) error {
+	repository.installation.AccessTeamDomain = input.TeamDomain
+	repository.installation.AccessAudience = input.Audience
+	repository.accessSet = true
+	return nil
 }
 
 func (repository *repositoryStub) AddOriginCertificate(_ context.Context, input state.PutOriginCertificateInput) error {
@@ -70,36 +76,67 @@ func (repository *repositoryStub) DeleteOriginCertificate(_ context.Context, inp
 	return state.ErrOriginCertificateNotFound
 }
 
-type automationRouteStub struct {
-	prepared  string
-	published string
-}
-
-func (route *automationRouteStub) Prepare(hostname string) (func() error, error) {
-	route.prepared = hostname
-	return func() error { route.published = hostname; return nil }, nil
-}
-
-func TestSetAutomationHostnamePublishesPreparedHandlerAfterCommit(t *testing.T) {
+func TestSetAdminHostnameCommitsCoveredHostnameAndReportsChange(t *testing.T) {
 	master := testMasterKey(t)
-	certificatePEM, privateKey := testCertificate(t, []string{"admin.example.com", "api.example.com"})
+	certificatePEM, privateKey := testCertificate(t, []string{"admin.example.com", "control.example.com"})
 	certificate := encryptTestCertificate(t, master, "certificate-a", certificatePEM, privateKey)
 	selector, err := origin.Load(master, []state.OriginCertificate{certificate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	repository := &repositoryStub{installation: testInstallation(certificate), hostnames: []string{"admin.example.com"}}
-	route := &automationRouteStub{}
-	application, err := New(repository, master, selector, route, &sync.Mutex{})
+	application, err := New(repository, master, selector, &sync.Mutex{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings, err := application.SetAutomationHostname(context.Background(), "API.Example.com", testMutation())
+	settings, changed, err := application.SetAdminHostname(context.Background(), "CONTROL.Example.com", testMutation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.AutomationHostname != "api.example.com" || route.prepared != "api.example.com" || route.published != "api.example.com" {
-		t.Fatalf("settings/route = %+v, %q/%q", settings, route.prepared, route.published)
+	if !changed || !repository.adminSet || settings.AdminHostname != "control.example.com" {
+		t.Fatalf("admin hostname settings = %+v, changed=%t, committed=%t", settings, changed, repository.adminSet)
+	}
+	repository.adminSet = false
+	_, changed, err = application.SetAdminHostname(context.Background(), "control.example.com", testMutation())
+	if err != nil || changed || repository.adminSet {
+		t.Fatalf("idempotent admin hostname update = changed=%t, committed=%t, err=%v", changed, repository.adminSet, err)
+	}
+}
+
+func TestSetAccessConfigurationNormalizesValuesAndReportsChange(t *testing.T) {
+	master := testMasterKey(t)
+	certificatePEM, privateKey := testCertificate(t, []string{"admin.example.com"})
+	certificate := encryptTestCertificate(t, master, "certificate-a", certificatePEM, privateKey)
+	selector, err := origin.Load(master, []state.OriginCertificate{certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &repositoryStub{installation: testInstallation(certificate)}
+	application, err := New(repository, master, selector, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, changed, err := application.SetAccessConfiguration(
+		context.Background(), " NEW-TEAM.CloudflareAccess.com ", " new-audience ", testMutation(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || !repository.accessSet || settings.AccessTeamDomain != "new-team.cloudflareaccess.com" || settings.AccessAudience != "new-audience" {
+		t.Fatalf("Access settings = %+v, changed=%t, committed=%t", settings, changed, repository.accessSet)
+	}
+	repository.accessSet = false
+	_, changed, err = application.SetAccessConfiguration(
+		context.Background(), "new-team.cloudflareaccess.com", "new-audience", testMutation(),
+	)
+	if err != nil || changed || repository.accessSet {
+		t.Fatalf("idempotent Access update = changed=%t, committed=%t, err=%v", changed, repository.accessSet, err)
+	}
+	_, _, err = application.SetAccessConfiguration(
+		context.Background(), "not-cloudflare.example.com", "audience", testMutation(),
+	)
+	if err == nil || repository.accessSet {
+		t.Fatalf("invalid Access update = committed=%t, err=%v", repository.accessSet, err)
 	}
 }
 
@@ -112,7 +149,7 @@ func TestReplaceCertificateRejectsUncoveredHostWithoutPublishing(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := &repositoryStub{installation: testInstallation(old), hostnames: []string{"admin.example.com"}}
-	application, err := New(repository, master, selector, &automationRouteStub{}, &sync.Mutex{})
+	application, err := New(repository, master, selector, &sync.Mutex{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,7 +175,7 @@ func TestDeleteOnlyCertificateReportsDependentHostnames(t *testing.T) {
 		t.Fatal(err)
 	}
 	repository := &repositoryStub{installation: testInstallation(certificate), hostnames: []string{"admin.example.com"}}
-	application, err := New(repository, master, selector, &automationRouteStub{}, &sync.Mutex{})
+	application, err := New(repository, master, selector, &sync.Mutex{})
 	if err != nil {
 		t.Fatal(err)
 	}

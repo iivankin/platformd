@@ -2,10 +2,8 @@ package automation
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/id"
@@ -20,7 +18,6 @@ type DomainRepository interface {
 
 type DomainApplication struct {
 	repository DomainRepository
-	random     io.Reader
 	now        func() time.Time
 }
 
@@ -43,17 +40,14 @@ type DomainMutationResult struct {
 	RequestID string
 }
 
-func NewDomainApplication(repository DomainRepository, random io.Reader, now func() time.Time) (*DomainApplication, error) {
+func NewDomainApplication(repository DomainRepository, now func() time.Time) (*DomainApplication, error) {
 	if repository == nil {
 		return nil, errors.New("domain automation repository is required")
-	}
-	if random == nil {
-		random = rand.Reader
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &DomainApplication{repository: repository, random: random, now: now}, nil
+	return &DomainApplication{repository: repository, now: now}, nil
 }
 
 func (application *DomainApplication) List(ctx context.Context, identity Identity, projectID, serviceID string) ([]state.ServiceDomain, error) {
@@ -106,11 +100,11 @@ func (application *DomainApplication) Detach(ctx context.Context, identity Ident
 
 func (application *DomainApplication) identifiers() (string, string, int64, error) {
 	timestamp := application.now()
-	auditID, err := id.NewWith(timestamp, application.random)
+	auditID, err := id.New()
 	if err != nil {
 		return "", "", 0, fmt.Errorf("allocate domain audit ID: %w", err)
 	}
-	requestID, err := id.NewWith(timestamp, application.random)
+	requestID, err := id.New()
 	if err != nil {
 		return "", "", 0, fmt.Errorf("allocate domain request ID: %w", err)
 	}

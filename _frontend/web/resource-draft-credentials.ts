@@ -3,6 +3,7 @@ import type {
   ManagedRedisInitialCredentials,
   ObjectStoreInitialCredentials,
 } from "@/api";
+import { newID } from "@/id";
 
 const credentialBytes = 32;
 
@@ -18,11 +19,9 @@ const randomBase64URL = () => {
     .replace(/=+$/u, "");
 };
 
-const randomCompactUUID = () => crypto.randomUUID().replaceAll("-", "");
-
 export const createPostgresDraftCredentials =
   (): ManagedPostgresInitialCredentials => {
-    const identifier = randomCompactUUID().slice(0, 24);
+    const identifier = newID();
     return {
       databaseName: `app_${identifier}`,
       ownerPassword: randomBase64URL(),
@@ -35,6 +34,6 @@ export const createRedisDraftCredentials =
 
 export const createObjectStoreDraftCredentials =
   (): ObjectStoreInitialCredentials => ({
-    accessKey: `ps3_${randomCompactUUID()}`,
+    accessKey: `ps3_${newID()}`,
     secret: randomBase64URL(),
   });

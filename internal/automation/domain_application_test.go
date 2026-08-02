@@ -1,7 +1,6 @@
 package automation
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -33,7 +32,7 @@ func (repository *domainRepositoryStub) DetachServiceDomain(_ context.Context, i
 
 func TestDomainApplicationEnforcesBoundaryAndCreatesTokenAuditInputs(t *testing.T) {
 	repository := &domainRepositoryStub{}
-	application, err := NewDomainApplication(repository, bytes.NewReader(make([]byte, 128)), func() time.Time {
+	application, err := NewDomainApplication(repository, func() time.Time {
 		return time.UnixMilli(1_700_000_000_000)
 	})
 	if err != nil {

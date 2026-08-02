@@ -8,7 +8,6 @@ import (
 	"io"
 	"mime"
 	"net/http"
-	"time"
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/id"
@@ -113,7 +112,7 @@ func deleteProject(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate project deletion identifiers")
 			return
@@ -247,7 +246,7 @@ func createProject(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		projectID, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		projectID, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate project identifiers")
 			return
@@ -271,10 +270,10 @@ func createProject(config handlerConfig) http.HandlerFunc {
 	}
 }
 
-func createRequestIDs(timestamp time.Time, random io.Reader) (string, string, string, error) {
+func createRequestIDs() (string, string, string, error) {
 	values := make([]string, 3)
 	for index := range values {
-		value, err := id.NewWith(timestamp, random)
+		value, err := id.New()
 		if err != nil {
 			return "", "", "", fmt.Errorf("generate request ID: %w", err)
 		}
@@ -301,7 +300,12 @@ func publicProject(project state.ProjectSummary) projectResponse {
 	}
 }
 
-func writeAPIError(response http.ResponseWriter, status int, code, message string) {
+func writeAPIError(response http.ResponseWriter, status int, code, message string, causes ...error) {
+	if observer, ok := response.(interface {
+		recordAPIError(string, string, error)
+	}); ok {
+		observer.recordAPIError(code, message, errors.Join(causes...))
+	}
 	writeJSON(response, status, map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 

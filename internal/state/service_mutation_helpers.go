@@ -64,6 +64,18 @@ SELECT count(*) FROM service_domains WHERE service_id = ?`, serviceID).Scan(&dom
 			return fmt.Errorf("%w: credential is for %s, image uses %s", ErrImageCredentialHostMismatch, credentialHost, imageHost)
 		}
 	}
+	if snapshot.BeforeDeploy != nil && len(snapshot.BeforeDeploy.CloudflareHostnames) > 0 {
+		for _, hostname := range snapshot.BeforeDeploy.CloudflareHostnames {
+			var exists int
+			if err := transaction.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM service_domains WHERE service_id = ? AND hostname = ?)`, serviceID, hostname).Scan(&exists); err != nil {
+				return fmt.Errorf("validate before-deploy Cloudflare hostname: %w", err)
+			}
+			if exists != 1 {
+				return fmt.Errorf("%w: before-deploy Cloudflare hostname %s", ErrDependencyMissing, hostname)
+			}
+		}
+	}
 	for _, reference := range snapshot.SecretReferences {
 		var dependencyProjectID string
 		err := transaction.QueryRowContext(ctx, "SELECT project_id FROM secrets WHERE id = ?", reference.SecretID).Scan(&dependencyProjectID)
@@ -108,6 +120,14 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	if err != nil {
 		return fmt.Errorf("encode service environment: %w", err)
 	}
+	buildEnvironmentJSON, err := json.Marshal(snapshot.BuildEnvironment)
+	if err != nil {
+		return fmt.Errorf("encode service build environment: %w", err)
+	}
+	beforeDeployJSON, err := optionalJSON(snapshot.BeforeDeploy)
+	if err != nil {
+		return fmt.Errorf("encode service before-deploy settings: %w", err)
+	}
 	sourceJSON, err := json.Marshal(snapshot.Source)
 	if err != nil {
 		return fmt.Errorf("encode service source: %w", err)
@@ -123,13 +143,13 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	result, err := transaction.ExecContext(ctx, `
 	UPDATE services SET
 	  source_json = ?, command_json = ?, args_json = ?,
-	  environment_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
+	  environment_json = ?, build_environment_json = ?, before_deploy_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
   cpu_millis = ?, memory_bytes = ?, enabled = ?,
   active_deployment_id = CASE WHEN ? = 0 THEN NULL ELSE active_deployment_id END,
   updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
 		string(sourceJSON), commandJSON, argsJSON,
-		string(environmentJSON), healthPort, healthPath, healthTimeout,
+		string(environmentJSON), string(buildEnvironmentJSON), beforeDeployJSON, healthPort, healthPath, healthTimeout,
 		nullablePositive(snapshot.CPUMillicores), nullablePositive(snapshot.MemoryMaxBytes), boolInteger(enabled),
 		boolInteger(enabled), updatedAt, serviceID, projectID, expectedUpdated,
 	)
@@ -170,6 +190,7 @@ INSERT INTO service_volume_mounts(service_id, volume_id, container_path) VALUES 
 
 type serviceAudit struct {
 	ID              string
+	ProjectID       string
 	ActorKind       string
 	ActorID         string
 	ActorEmail      string
@@ -181,6 +202,9 @@ type serviceAudit struct {
 }
 
 func insertServiceAudit(ctx context.Context, transaction *sql.Tx, audit serviceAudit) error {
+	if audit.ProjectID == "" {
+		return errors.New("service audit project ID is empty")
+	}
 	if err := validateMutationActor(audit.ActorKind, audit.ActorID, audit.ActorEmail); err != nil {
 		return err
 	}
@@ -190,6 +214,16 @@ func insertServiceAudit(ctx context.Context, transaction *sql.Tx, audit serviceA
 	}
 	for key, value := range audit.Metadata {
 		metadata[key] = value
+	}
+	if metadata["name"] == "" {
+		var name string
+		if err := transaction.QueryRowContext(ctx, `
+SELECT name FROM services WHERE id = ? AND project_id = ?`, audit.ServiceID, audit.ProjectID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
+			return ErrServiceNotFound
+		} else if err != nil {
+			return fmt.Errorf("load service audit target: %w", err)
+		}
+		metadata["name"] = name
 	}
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
@@ -201,10 +235,10 @@ func insertServiceAudit(ctx context.Context, transaction *sql.Tx, audit serviceA
 	}
 	if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, ?, 'service', ?, ?, 'succeeded', ?, ?)`,
-		audit.ID, audit.ActorKind, audit.ActorID, audit.Action, audit.ServiceID, correlationID, string(encoded), audit.CreatedAtMillis,
+) VALUES (?, ?, ?, ?, ?, 'service', ?, ?, 'succeeded', ?, ?)`,
+		audit.ID, audit.ProjectID, audit.ActorKind, audit.ActorID, audit.Action, audit.ServiceID, correlationID, string(encoded), audit.CreatedAtMillis,
 	); err != nil {
 		return fmt.Errorf("audit %s: %w", audit.Action, err)
 	}

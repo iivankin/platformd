@@ -1,16 +1,14 @@
 import { Menu } from "@base-ui/react/menu";
 import {
+  Activity,
   ArchiveRestore,
   Box,
   ChevronRight,
-  FileClock,
   FolderKanban,
-  KeyRound,
-  Network,
+  LogOut,
   PackageOpen,
   Plus,
   Settings,
-  ShieldCheck,
 } from "lucide-react";
 import { useState } from "react";
 import type { ComponentType } from "react";
@@ -28,11 +26,8 @@ export interface NavigationItem {
 }
 
 export const globalNavigation: NavigationItem[] = [
-  { icon: FileClock, label: "Backups", path: "/backups" },
   { icon: PackageOpen, label: "Registry", path: "/registry" },
-  { icon: KeyRound, label: "API Tokens", path: "/tokens" },
-  { icon: Network, label: "Infrastructure", path: "/infrastructure" },
-  { icon: ShieldCheck, label: "Audit", path: "/audit" },
+  { icon: Activity, label: "Monitoring", path: "/monitoring" },
   { icon: Settings, label: "Settings", path: "/settings" },
 ];
 
@@ -40,6 +35,7 @@ interface SidebarProperties {
   collapsed: boolean;
   identity: Identity | null;
   identityError: string | null;
+  identityLoading: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   projects: Project[];
   recovery?: boolean;
@@ -74,17 +70,27 @@ const identityInitials = (identity: Identity | null) => {
     .toUpperCase();
 };
 
+const identityTitle = (
+  identity: Identity | null,
+  identityError: string | null
+) => {
+  if (identityError && !identity) {
+    return "Identity unavailable";
+  }
+  return identity?.name ?? identity?.email ?? "Access user";
+};
+
 const identitySubtitle = (
   identity: Identity | null,
   identityError: string | null
 ) => {
-  if (identityError) {
-    return "Identity unavailable";
+  if (identityError && !identity) {
+    return null;
   }
   if (identity?.name) {
-    return identity.email ?? "Cloudflare Access";
+    return identity.email ?? null;
   }
-  return "Cloudflare Access";
+  return null;
 };
 
 const IdentityAvatar = ({ identity }: { identity: Identity | null }) => {
@@ -116,27 +122,35 @@ const IdentityDetails = ({
   identity: Identity | null;
   identityError: string | null;
 }) => {
-  const title = identity?.name ?? identity?.email ?? "Access user";
+  const title = identityTitle(identity, identityError);
   const subtitle = identitySubtitle(identity, identityError);
   return (
     <div className={cn("min-w-0", className)}>
       <div className="truncate text-[10px] font-medium">{title}</div>
-      <div className="mt-0.5 truncate text-[9px] text-muted-foreground">
-        {subtitle}
-      </div>
+      {subtitle ? (
+        <div className="mt-0.5 truncate text-[9px] text-muted-foreground">
+          {subtitle}
+        </div>
+      ) : null}
     </div>
   );
+};
+
+const accessLogout = () => {
+  window.location.assign("/cdn-cgi/access/logout");
 };
 
 const SidebarFooter = ({
   collapsed,
   identity,
   identityError,
+  identityLoading,
   onCollapsedChange,
 }: {
   collapsed: boolean;
   identity: Identity | null;
   identityError: string | null;
+  identityLoading: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
 }) => (
   <div
@@ -145,39 +159,54 @@ const SidebarFooter = ({
       collapsed ? "grid place-items-center gap-1" : "flex items-center"
     )}
   >
-    <Menu.Root>
-      <Menu.Trigger
-        aria-label="Open user menu"
-        className={cn(
-          "group flex items-center overflow-hidden text-xs transition-all duration-150 outline-none hover:bg-secondary/50 focus-visible:ring-1 focus-visible:ring-sidebar-ring",
-          collapsed ? "size-9 p-1" : "min-w-0 flex-1 px-2.5 py-2"
-        )}
-      >
-        <IdentityAvatar identity={identity} key={identity?.avatarUrl} />
-        <IdentityDetails
-          className={sidebarLabelClassName(collapsed)}
-          identity={identity}
-          identityError={identityError}
-        />
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner
-          align="start"
-          className="z-50"
-          side="top"
-          sideOffset={4}
+    {identityLoading ? (
+      <div
+        aria-hidden="true"
+        className={collapsed ? "size-9" : "h-11 min-w-0 flex-1"}
+      />
+    ) : (
+      <Menu.Root>
+        <Menu.Trigger
+          aria-label="Open user menu"
+          className={cn(
+            "group flex items-center overflow-hidden text-xs transition-all duration-150 outline-none hover:bg-secondary/50 focus-visible:ring-1 focus-visible:ring-sidebar-ring",
+            collapsed ? "size-9 p-1" : "min-w-0 flex-1 px-2.5 py-2"
+          )}
         >
-          <Menu.Popup className="w-52 border border-border bg-popover p-1 text-popover-foreground shadow-lg">
-            <IdentityDetails
-              className="border-b border-border px-2.5 py-2"
-              identity={identity}
-              identityError={identityError}
-            />
-            <ThemeMenuItems />
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
+          <IdentityAvatar identity={identity} key={identity?.avatarUrl} />
+          <IdentityDetails
+            className={sidebarLabelClassName(collapsed)}
+            identity={identity}
+            identityError={identityError}
+          />
+        </Menu.Trigger>
+        <Menu.Portal>
+          <Menu.Positioner
+            align="start"
+            className="z-50"
+            side="top"
+            sideOffset={4}
+          >
+            <Menu.Popup className="w-52 border border-border bg-popover p-1 text-popover-foreground shadow-lg">
+              <IdentityDetails
+                className="border-b border-border px-2.5 py-2"
+                identity={identity}
+                identityError={identityError}
+              />
+              <ThemeMenuItems />
+              <Menu.Separator className="my-1 h-px bg-border" />
+              <Menu.Item
+                className="flex cursor-default items-center gap-2 px-2.5 py-2 text-[10px] text-muted-foreground outline-none data-[highlighted]:bg-muted data-[highlighted]:text-foreground"
+                onClick={accessLogout}
+              >
+                <LogOut className="size-3.5" />
+                Log out
+              </Menu.Item>
+            </Menu.Popup>
+          </Menu.Positioner>
+        </Menu.Portal>
+      </Menu.Root>
+    )}
 
     <button
       aria-label={collapsed ? "Expand navigation" : "Collapse navigation"}
@@ -201,6 +230,7 @@ export const Sidebar = ({
   collapsed,
   identity,
   identityError,
+  identityLoading,
   onCollapsedChange,
   projects,
   recovery = false,
@@ -301,8 +331,7 @@ export const Sidebar = ({
             <div className="my-1.5 border-t border-border" />
             {globalNavigation.map((item) => {
               const Icon = item.icon;
-              const showUpdate =
-                item.path === "/infrastructure" && updateAvailable;
+              const showUpdate = item.path === "/monitoring" && updateAvailable;
               return (
                 <NavLink
                   aria-label={
@@ -345,6 +374,7 @@ export const Sidebar = ({
         collapsed={collapsed}
         identity={identity}
         identityError={identityError}
+        identityLoading={identityLoading}
         onCollapsedChange={onCollapsedChange}
       />
     </aside>

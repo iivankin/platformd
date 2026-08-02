@@ -30,27 +30,28 @@ func (store *Store) RecordManagedRedisDataMutation(ctx context.Context, input Re
 	if err := validateMutationActor("access", input.ActorID, input.ActorEmail); err != nil {
 		return err
 	}
-	metadata, err := json.Marshal(map[string]string{
+	metadataFields := map[string]string{
 		"actorEmail": input.ActorEmail, "operation": input.Operation,
-	})
-	if err != nil {
-		return err
 	}
 	return store.Write(ctx, func(transaction *sql.Tx) error {
-		var exists int
+		var name string
 		if err := transaction.QueryRowContext(ctx, `
-SELECT EXISTS(SELECT 1 FROM managed_redis WHERE id = ? AND project_id = ?)`, input.ResourceID, input.ProjectID).Scan(&exists); err != nil {
+SELECT name FROM managed_redis WHERE id = ? AND project_id = ?`, input.ResourceID, input.ProjectID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
+			return ErrManagedRedisNotFound
+		} else if err != nil {
 			return fmt.Errorf("check managed Redis audit target: %w", err)
 		}
-		if exists == 0 {
-			return ErrManagedRedisNotFound
+		metadataFields["name"] = name
+		metadata, err := json.Marshal(metadataFields)
+		if err != nil {
+			return err
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, 'access', ?, 'redis.data.mutate', 'redis', ?, ?, ?, ?, ?)`,
-			input.AuditEventID, input.ActorID, input.ResourceID,
+) VALUES (?, ?, 'access', ?, 'redis.data.mutate', 'redis', ?, ?, ?, ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorID, input.ResourceID,
 			nullableString(input.RequestCorrelationID), input.Result, string(metadata), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit managed Redis data mutation: %w", err)

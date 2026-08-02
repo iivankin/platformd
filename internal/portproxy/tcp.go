@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 const maximumTCPConnections = 1024
@@ -20,13 +22,26 @@ type tcpEndpoint struct {
 	mu        sync.Mutex
 	closed    bool
 	active    map[net.Conn]struct{}
+	flows     map[*tcpFlow]struct{}
 	waitGroup sync.WaitGroup
+	traffic   *trafficmetrics.Registry
 }
 
-func newTCPEndpoint(listener net.Listener, route Route, backends BackendResolver, onError func(string, error)) *tcpEndpoint {
+type tcpFlow struct {
+	mu        sync.Mutex
+	inbound   net.Conn
+	serviceID string
+	traffic   *trafficmetrics.Registry
+	ingress   uint64
+	egress    uint64
+	finished  bool
+}
+
+func newTCPEndpoint(listener net.Listener, route Route, backends BackendResolver, onError func(string, error), traffic *trafficmetrics.Registry) *tcpEndpoint {
 	endpoint := &tcpEndpoint{
-		listener: listener, backends: backends, onError: onError,
+		listener: listener, backends: backends, onError: onError, traffic: traffic,
 		capacity: make(chan struct{}, maximumTCPConnections), active: make(map[net.Conn]struct{}),
+		flows: make(map[*tcpFlow]struct{}),
 	}
 	endpoint.route.Store(&route)
 	endpoint.waitGroup.Add(1)
@@ -46,17 +61,20 @@ func (endpoint *tcpEndpoint) accept() {
 		}
 		select {
 		case endpoint.capacity <- struct{}{}:
+			serviceID := routeServiceID(*endpoint.route.Load())
+			endpoint.traffic.StartTCP(serviceID)
 			endpoint.track(connection, true)
 			endpoint.waitGroup.Add(1)
-			go endpoint.proxy(connection)
+			go endpoint.proxy(connection, serviceID)
 		default:
 			_ = connection.Close()
 		}
 	}
 }
 
-func (endpoint *tcpEndpoint) proxy(inbound net.Conn) {
+func (endpoint *tcpEndpoint) proxy(inbound net.Conn, serviceID string) {
 	defer endpoint.waitGroup.Done()
+	defer endpoint.traffic.FinishTCP(serviceID)
 	defer func() {
 		endpoint.track(inbound, false)
 		<-endpoint.capacity
@@ -86,18 +104,40 @@ func (endpoint *tcpEndpoint) proxy(inbound net.Conn) {
 		_ = outbound.Close()
 	}()
 
-	copyDone := make(chan struct{}, 2)
-	copyStream := func(destination, source net.Conn) {
-		_, _ = io.Copy(destination, source)
+	var flow *tcpFlow
+	if endpoint.traffic != nil && serviceID != "" {
+		flow = &tcpFlow{inbound: inbound, serviceID: serviceID, traffic: endpoint.traffic}
+		endpoint.trackFlow(flow, true)
+		defer endpoint.trackFlow(flow, false)
+	}
+
+	type copyResult struct {
+		ingress bool
+		bytes   uint64
+	}
+	copyDone := make(chan copyResult, 2)
+	copyStream := func(destination, source net.Conn, ingress bool) {
+		count, _ := io.Copy(destination, source)
 		if writable, ok := destination.(interface{ CloseWrite() error }); ok {
 			_ = writable.CloseWrite()
 		}
-		copyDone <- struct{}{}
+		copyDone <- copyResult{ingress: ingress, bytes: uint64(count)}
 	}
-	go copyStream(outbound, inbound)
-	go copyStream(inbound, outbound)
-	<-copyDone
-	<-copyDone
+	go copyStream(outbound, inbound, true)
+	go copyStream(inbound, outbound, false)
+	first := <-copyDone
+	second := <-copyDone
+	var ingressBytes, egressBytes uint64
+	for _, result := range [...]copyResult{first, second} {
+		if result.ingress {
+			ingressBytes = result.bytes
+		} else {
+			egressBytes = result.bytes
+		}
+	}
+	if flow != nil {
+		flow.finish(ingressBytes, egressBytes)
+	}
 }
 
 func (endpoint *tcpEndpoint) Update(route Route) {
@@ -116,6 +156,73 @@ func (endpoint *tcpEndpoint) track(connection net.Conn, add bool) {
 		return
 	}
 	delete(endpoint.active, connection)
+}
+
+func (endpoint *tcpEndpoint) trackFlow(flow *tcpFlow, add bool) {
+	endpoint.mu.Lock()
+	defer endpoint.mu.Unlock()
+	if add {
+		endpoint.flows[flow] = struct{}{}
+		return
+	}
+	delete(endpoint.flows, flow)
+}
+
+func (endpoint *tcpEndpoint) sampleTraffic() {
+	endpoint.mu.Lock()
+	flows := make([]*tcpFlow, 0, len(endpoint.flows))
+	for flow := range endpoint.flows {
+		flows = append(flows, flow)
+	}
+	endpoint.mu.Unlock()
+	for _, flow := range flows {
+		flow.sample()
+	}
+}
+
+func (flow *tcpFlow) sample() {
+	ingress, egress, ok := readTCPSocketCounters(flow.inbound)
+	if ok {
+		flow.record(ingress, egress)
+	}
+}
+
+func (flow *tcpFlow) record(ingress, egress uint64) {
+	flow.mu.Lock()
+	if flow.finished {
+		flow.mu.Unlock()
+		return
+	}
+	ingressDelta := positiveDelta(ingress, flow.ingress)
+	egressDelta := positiveDelta(egress, flow.egress)
+	flow.ingress += ingressDelta
+	flow.egress += egressDelta
+	flow.mu.Unlock()
+	flow.traffic.AddIngress(flow.serviceID, ingressDelta)
+	flow.traffic.AddEgress(flow.serviceID, egressDelta)
+}
+
+func (flow *tcpFlow) finish(ingress, egress uint64) {
+	flow.mu.Lock()
+	if flow.finished {
+		flow.mu.Unlock()
+		return
+	}
+	ingressDelta := positiveDelta(ingress, flow.ingress)
+	egressDelta := positiveDelta(egress, flow.egress)
+	flow.ingress += ingressDelta
+	flow.egress += egressDelta
+	flow.finished = true
+	flow.mu.Unlock()
+	flow.traffic.AddIngress(flow.serviceID, ingressDelta)
+	flow.traffic.AddEgress(flow.serviceID, egressDelta)
+}
+
+func positiveDelta(current, previous uint64) uint64 {
+	if current <= previous {
+		return 0
+	}
+	return current - previous
 }
 
 func (endpoint *tcpEndpoint) Close() error {

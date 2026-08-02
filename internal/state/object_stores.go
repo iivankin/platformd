@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/iivankin/platformd/internal/bucketname"
 	"github.com/iivankin/platformd/internal/corsorigin"
@@ -17,7 +16,6 @@ import (
 var (
 	ErrObjectStoreNotFound  = errors.New("object store not found")
 	ErrS3CredentialNotFound = errors.New("S3 credential not found")
-	ErrObjectNotFound       = errors.New("object not found")
 )
 
 type ObjectStore struct {
@@ -101,7 +99,7 @@ func (store *Store) CreateObjectStore(ctx context.Context, input CreateObjectSto
 	if err != nil {
 		return ObjectStore{}, S3Credential{}, err
 	}
-	metadata := make(map[string]string)
+	metadata := map[string]string{"name": input.Name}
 	if input.ActorEmail != "" {
 		metadata["actorEmail"] = input.ActorEmail
 	}
@@ -154,10 +152,10 @@ VALUES (?, ?, ?, ?, ?, ?)`, input.CredentialID, input.ID, input.CredentialName,
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, 'object_store.create', 'object_store', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.ID,
+) VALUES (?, ?, ?, ?, 'object_store.create', 'object_store', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorKind, input.ActorID, input.ID,
 			nullableString(input.RequestCorrelationID), string(metadataJSON), input.CreatedAtMillis); err != nil {
 			return fmt.Errorf("audit object store creation: %w", err)
 		}
@@ -178,18 +176,23 @@ func (store *Store) ObjectStore(ctx context.Context, storeID string) (ObjectStor
 	return store.objectStore(ctx, storeID, "")
 }
 
+const objectStoreSelect = `
+SELECT o.id, o.project_id, p.name, o.name, o.bucket_name, o.public_hostname,
+       o.cors_origins_json, o.backup_enabled, o.backup_cron,
+       o.backup_retention_count, o.created_at, o.updated_at
+FROM object_stores o JOIN projects p ON p.id = o.project_id`
+
 func (store *Store) ObjectStoreByHostname(ctx context.Context, hostname string) (ObjectStore, error) {
-	var storeID string
-	err := store.database.QueryRowContext(ctx, `
-SELECT o.id FROM object_stores o JOIN projects p ON p.id = o.project_id
-WHERE o.public_hostname = ? OR (o.name || '.' || p.name || '.internal') = ?`, hostname, hostname).Scan(&storeID)
+	result, err := scanObjectStore(store.database.QueryRowContext(
+		ctx, objectStoreSelect+" WHERE o.public_hostname = ?", hostname,
+	))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ObjectStore{}, ErrObjectStoreNotFound
 	}
 	if err != nil {
 		return ObjectStore{}, fmt.Errorf("load object store by hostname: %w", err)
 	}
-	return store.ObjectStore(ctx, storeID)
+	return result, nil
 }
 
 func (store *Store) ObjectStoreInProject(ctx context.Context, projectID, storeID string) (ObjectStore, error) {
@@ -200,30 +203,38 @@ func (store *Store) ObjectStoreInProject(ctx context.Context, projectID, storeID
 }
 
 func (store *Store) objectStore(ctx context.Context, storeID, projectID string) (ObjectStore, error) {
-	var result ObjectStore
-	var publicHostname, backupCron sql.NullString
-	var corsJSON string
-	var backupEnabled int
-	query := `
-SELECT o.id, o.project_id, p.name, o.name, o.bucket_name, o.public_hostname,
-       o.cors_origins_json, o.backup_enabled, o.backup_cron,
-       o.backup_retention_count, o.created_at, o.updated_at
-FROM object_stores o JOIN projects p ON p.id = o.project_id WHERE o.id = ?`
+	query := objectStoreSelect + " WHERE o.id = ?"
 	arguments := []any{storeID}
 	if projectID != "" {
 		query += " AND o.project_id = ?"
 		arguments = append(arguments, projectID)
 	}
-	err := store.database.QueryRowContext(ctx, query, arguments...).Scan(
-		&result.ID, &result.ProjectID, &result.ProjectName, &result.Name, &result.BucketName,
-		&publicHostname, &corsJSON, &backupEnabled, &backupCron,
-		&result.BackupRetentionCount, &result.CreatedAtMillis, &result.UpdatedAtMillis,
-	)
+	result, err := scanObjectStore(store.database.QueryRowContext(ctx, query, arguments...))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ObjectStore{}, ErrObjectStoreNotFound
 	}
 	if err != nil {
 		return ObjectStore{}, fmt.Errorf("load object store: %w", err)
+	}
+	return result, nil
+}
+
+type objectStoreScanner interface {
+	Scan(...any) error
+}
+
+func scanObjectStore(scanner objectStoreScanner) (ObjectStore, error) {
+	var result ObjectStore
+	var publicHostname, backupCron sql.NullString
+	var corsJSON string
+	var backupEnabled int
+	err := scanner.Scan(
+		&result.ID, &result.ProjectID, &result.ProjectName, &result.Name, &result.BucketName,
+		&publicHostname, &corsJSON, &backupEnabled, &backupCron,
+		&result.BackupRetentionCount, &result.CreatedAtMillis, &result.UpdatedAtMillis,
+	)
+	if err != nil {
+		return ObjectStore{}, err
 	}
 	if err := json.Unmarshal([]byte(corsJSON), &result.CORSOrigins); err != nil {
 		return ObjectStore{}, err
@@ -242,18 +253,16 @@ func (store *Store) ObjectStoresByProject(ctx context.Context, projectID string)
 	if exists == 0 {
 		return nil, ErrProjectNotFound
 	}
-	rows, err := store.database.QueryContext(ctx, "SELECT id FROM object_stores WHERE project_id = ? ORDER BY name, id", projectID)
+	rows, err := store.database.QueryContext(
+		ctx, objectStoreSelect+" WHERE o.project_id = ? ORDER BY o.name, o.id", projectID,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := make([]ObjectStore, 0)
 	for rows.Next() {
-		var storeID string
-		if err := rows.Scan(&storeID); err != nil {
-			return nil, err
-		}
-		entry, err := store.ObjectStore(ctx, storeID)
+		entry, err := scanObjectStore(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -263,18 +272,14 @@ func (store *Store) ObjectStoresByProject(ctx context.Context, projectID string)
 }
 
 func (store *Store) ObjectStores(ctx context.Context) ([]ObjectStore, error) {
-	rows, err := store.database.QueryContext(ctx, "SELECT id FROM object_stores ORDER BY id")
+	rows, err := store.database.QueryContext(ctx, objectStoreSelect+" ORDER BY o.id")
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	result := make([]ObjectStore, 0)
 	for rows.Next() {
-		var storeID string
-		if err := rows.Scan(&storeID); err != nil {
-			return nil, err
-		}
-		entry, err := store.ObjectStore(ctx, storeID)
+		entry, err := scanObjectStore(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -322,159 +327,4 @@ SELECT id FROM s3_credentials WHERE object_store_id = ? ORDER BY created_at, id`
 		credentials = append(credentials, credential)
 	}
 	return credentials, rows.Err()
-}
-
-type ObjectMetadata struct {
-	ObjectStoreID   string
-	ObjectKey       string
-	PayloadID       string
-	ContentType     string
-	ETag            string
-	Size            int64
-	CreatedAtMillis int64
-	UpdatedAtMillis int64
-}
-
-type ObjectPayload struct {
-	ID              string
-	ObjectStoreID   string
-	PlaintextSize   int64
-	ChunkCount      int
-	PlaintextSHA256 string
-	CreatedAtMillis int64
-}
-
-type CommitObject struct {
-	ObjectStoreID     string
-	ObjectKey         string
-	Payload           ObjectPayload
-	ContentType       string
-	ETag              string
-	CommittedAtMillis int64
-}
-
-func (store *Store) CommitObject(ctx context.Context, input CommitObject) (ObjectMetadata, error) {
-	if input.ObjectStoreID == "" || input.ObjectKey == "" || input.Payload.ID == "" || input.Payload.ObjectStoreID != input.ObjectStoreID || input.Payload.PlaintextSize < 0 || input.Payload.ChunkCount < 0 || input.Payload.PlaintextSHA256 == "" || input.ETag == "" || input.CommittedAtMillis <= 0 {
-		return ObjectMetadata{}, errors.New("commit object input is invalid")
-	}
-	err := store.Write(ctx, func(transaction *sql.Tx) error {
-		var exists int
-		if err := transaction.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM object_stores WHERE id = ?)", input.ObjectStoreID).Scan(&exists); err != nil {
-			return err
-		}
-		if exists == 0 {
-			return ErrObjectStoreNotFound
-		}
-		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO object_payloads(id, object_store_id, plaintext_size, chunk_count, plaintext_sha256, created_at)
-VALUES (?, ?, ?, ?, ?, ?)`, input.Payload.ID, input.ObjectStoreID, input.Payload.PlaintextSize,
-			input.Payload.ChunkCount, input.Payload.PlaintextSHA256, input.CommittedAtMillis); err != nil {
-			return fmt.Errorf("create object payload metadata: %w", err)
-		}
-		if _, err := transaction.ExecContext(ctx, `
-INSERT INTO objects(object_store_id, object_key, payload_id, content_type, etag, size, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(object_store_id, object_key) DO UPDATE SET
-  payload_id = excluded.payload_id, content_type = excluded.content_type,
-  etag = excluded.etag, size = excluded.size, updated_at = excluded.updated_at`,
-			input.ObjectStoreID, input.ObjectKey, input.Payload.ID, nullableString(input.ContentType),
-			input.ETag, input.Payload.PlaintextSize, input.CommittedAtMillis, input.CommittedAtMillis); err != nil {
-			return fmt.Errorf("publish object metadata: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return ObjectMetadata{}, err
-	}
-	return store.Object(ctx, input.ObjectStoreID, input.ObjectKey)
-}
-
-func (store *Store) Object(ctx context.Context, storeID, objectKey string) (ObjectMetadata, error) {
-	var result ObjectMetadata
-	var contentType sql.NullString
-	err := store.database.QueryRowContext(ctx, `
-SELECT object_store_id, object_key, payload_id, content_type, etag, size, created_at, updated_at
-FROM objects WHERE object_store_id = ? AND object_key = ?`, storeID, objectKey).Scan(
-		&result.ObjectStoreID, &result.ObjectKey, &result.PayloadID, &contentType,
-		&result.ETag, &result.Size, &result.CreatedAtMillis, &result.UpdatedAtMillis,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ObjectMetadata{}, ErrObjectNotFound
-	}
-	if err != nil {
-		return ObjectMetadata{}, fmt.Errorf("load object: %w", err)
-	}
-	result.ContentType = contentType.String
-	return result, nil
-}
-
-func (store *Store) ObjectPayload(ctx context.Context, storeID, payloadID string) (ObjectPayload, error) {
-	var result ObjectPayload
-	err := store.database.QueryRowContext(ctx, `
-SELECT id, object_store_id, plaintext_size, chunk_count, plaintext_sha256, created_at
-FROM object_payloads WHERE id = ? AND object_store_id = ?`, payloadID, storeID).Scan(
-		&result.ID, &result.ObjectStoreID, &result.PlaintextSize, &result.ChunkCount,
-		&result.PlaintextSHA256, &result.CreatedAtMillis,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return ObjectPayload{}, ErrObjectNotFound
-	}
-	return result, err
-}
-
-func (store *Store) ListObjects(ctx context.Context, storeID, prefix, after string, limit int) ([]ObjectMetadata, bool, error) {
-	if limit < 1 || limit > 1000 {
-		return nil, false, errors.New("object list limit must be 1..1000")
-	}
-	rows, err := store.database.QueryContext(ctx, `
-SELECT object_key, payload_id, content_type, etag, size, created_at, updated_at
-FROM objects
-WHERE object_store_id = ? AND object_key LIKE ? ESCAPE '\' AND object_key > ?
-ORDER BY object_key LIMIT ?`, storeID, escapeLike(prefix)+"%", after, limit+1)
-	if err != nil {
-		return nil, false, err
-	}
-	defer rows.Close()
-	result := make([]ObjectMetadata, 0, limit)
-	for rows.Next() {
-		var item ObjectMetadata
-		var contentType sql.NullString
-		if err := rows.Scan(&item.ObjectKey, &item.PayloadID, &contentType, &item.ETag, &item.Size, &item.CreatedAtMillis, &item.UpdatedAtMillis); err != nil {
-			return nil, false, err
-		}
-		item.ObjectStoreID = storeID
-		item.ContentType = contentType.String
-		result = append(result, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	more := len(result) > limit
-	if more {
-		result = result[:limit]
-	}
-	return result, more, nil
-}
-
-func (store *Store) DeleteObject(ctx context.Context, storeID, objectKey string) error {
-	return store.Write(ctx, func(transaction *sql.Tx) error {
-		result, err := transaction.ExecContext(ctx, "DELETE FROM objects WHERE object_store_id = ? AND object_key = ?", storeID, objectKey)
-		if err != nil {
-			return err
-		}
-		count, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if count == 0 {
-			return ErrObjectNotFound
-		}
-		return nil
-	})
-}
-
-func escapeLike(value string) string {
-	value = strings.ReplaceAll(value, `\`, `\\`)
-	value = strings.ReplaceAll(value, `%`, `\%`)
-	return strings.ReplaceAll(value, `_`, `\_`)
 }

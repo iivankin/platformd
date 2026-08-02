@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
+	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/journallogs"
@@ -19,6 +20,10 @@ type DiskPressure interface {
 	Snapshot() (diskpressure.Snapshot, bool)
 }
 
+type ImageGarbageCollector interface {
+	ForceGarbageCollect(context.Context) (containerengine.ImageGarbageCollectResult, error)
+}
+
 type diskComponents interface {
 	Components(context.Context) (diskusage.Snapshot, error)
 }
@@ -26,6 +31,11 @@ type diskComponents interface {
 type ResourceUsage interface {
 	Read(cgroupstats.Kind, string) (resourcemetrics.Current, error)
 	History(context.Context, cgroupstats.Kind, string, time.Duration) (resourcemetrics.History, error)
+	ReadProject(string) (resourcemetrics.Current, error)
+	ProjectHistory(context.Context, string, time.Duration) (resourcemetrics.History, error)
+	ReadInstallation() (resourcemetrics.Current, error)
+	InstallationHistory(context.Context, time.Duration) (resourcemetrics.History, error)
+	HostHistory(context.Context, time.Duration) (resourcemetrics.History, error)
 }
 
 type InfrastructureLogs interface {
@@ -52,24 +62,91 @@ type diskComponentResponse struct {
 }
 
 type resourceUsageResponse struct {
-	ObservedAt       int64  `json:"observedAt"`
-	CPUUsageMicros   uint64 `json:"cpuUsageMicros"`
-	MemoryBytes      uint64 `json:"memoryBytes"`
-	HostCPUCores     int    `json:"hostCpuCores"`
-	HostMemoryBytes  uint64 `json:"hostMemoryBytes"`
-	NetworkRXBytes   uint64 `json:"networkRxBytes"`
-	NetworkTXBytes   uint64 `json:"networkTxBytes"`
-	NetworkAvailable bool   `json:"networkAvailable"`
-	Running          bool   `json:"running"`
+	ObservedAt                       int64               `json:"observedAt"`
+	MemoryBytes                      uint64              `json:"memoryBytes"`
+	HostCPUCores                     int                 `json:"hostCpuCores"`
+	HostMemoryBytes                  uint64              `json:"hostMemoryBytes"`
+	NetworkAvailable                 bool                `json:"networkAvailable"`
+	Running                          bool                `json:"running"`
+	CPUMillicores                    *int64              `json:"cpuMillicores,omitempty"`
+	CPUPeakMillicores                *int64              `json:"cpuPeakMillicores,omitempty"`
+	MemoryPeakBytes                  uint64              `json:"memoryPeakBytes"`
+	NetworkIngressBytesPerSecond     *int64              `json:"networkIngressBytesPerSecond,omitempty"`
+	NetworkIngressPeakBytesPerSecond *int64              `json:"networkIngressPeakBytesPerSecond,omitempty"`
+	NetworkEgressBytesPerSecond      *int64              `json:"networkEgressBytesPerSecond,omitempty"`
+	NetworkEgressPeakBytesPerSecond  *int64              `json:"networkEgressPeakBytesPerSecond,omitempty"`
+	RunningResources                 int                 `json:"runningResources"`
+	TotalResources                   int                 `json:"totalResources"`
+	Proxy                            *proxyUsageResponse `json:"proxy,omitempty"`
+	Host                             *hostUsageResponse  `json:"host,omitempty"`
+}
+
+type proxyUsageResponse struct {
+	HTTP httpProxyUsageResponse `json:"http"`
+	TCP  tcpProxyUsageResponse  `json:"tcp"`
+	UDP  udpProxyUsageResponse  `json:"udp"`
+}
+
+type httpProxyUsageResponse struct {
+	RequestsPerSecond     *float64 `json:"requestsPerSecond,omitempty"`
+	RequestsPeakPerSecond *float64 `json:"requestsPeakPerSecond,omitempty"`
+	RequestsTotal         uint64   `json:"requestsTotal"`
+	ActiveRequests        int64    `json:"activeRequests"`
+	ActiveRequestsPeak    int64    `json:"activeRequestsPeak"`
+	Responses2xxPerSecond *float64 `json:"responses2xxPerSecond,omitempty"`
+	Responses3xxPerSecond *float64 `json:"responses3xxPerSecond,omitempty"`
+	Responses4xxPerSecond *float64 `json:"responses4xxPerSecond,omitempty"`
+	Responses5xxPerSecond *float64 `json:"responses5xxPerSecond,omitempty"`
+	LatencyP50Millis      *float64 `json:"latencyP50Millis,omitempty"`
+	LatencyP95Millis      *float64 `json:"latencyP95Millis,omitempty"`
+	LatencyP99Millis      *float64 `json:"latencyP99Millis,omitempty"`
+}
+
+type tcpProxyUsageResponse struct {
+	ConnectionsPerSecond     *float64 `json:"connectionsPerSecond,omitempty"`
+	ConnectionsPeakPerSecond *float64 `json:"connectionsPeakPerSecond,omitempty"`
+	ConnectionsTotal         uint64   `json:"connectionsTotal"`
+	ActiveConnections        int64    `json:"activeConnections"`
+	ActiveConnectionsPeak    int64    `json:"activeConnectionsPeak"`
+}
+
+type udpProxyUsageResponse struct {
+	IngressPacketsPerSecond     *float64 `json:"ingressPacketsPerSecond,omitempty"`
+	IngressPacketsPeakPerSecond *float64 `json:"ingressPacketsPeakPerSecond,omitempty"`
+	EgressPacketsPerSecond      *float64 `json:"egressPacketsPerSecond,omitempty"`
+	EgressPacketsPeakPerSecond  *float64 `json:"egressPacketsPeakPerSecond,omitempty"`
+	IngressPacketsTotal         uint64   `json:"ingressPacketsTotal"`
+	EgressPacketsTotal          uint64   `json:"egressPacketsTotal"`
+}
+
+type hostUsageResponse struct {
+	ObservedAt                       int64  `json:"observedAt"`
+	CPUMillicores                    *int64 `json:"cpuMillicores,omitempty"`
+	CPUPeakMillicores                *int64 `json:"cpuPeakMillicores,omitempty"`
+	CPUCores                         int    `json:"cpuCores"`
+	MemoryUsedBytes                  uint64 `json:"memoryUsedBytes"`
+	MemoryPeakBytes                  uint64 `json:"memoryPeakBytes"`
+	MemoryTotalBytes                 uint64 `json:"memoryTotalBytes"`
+	NetworkIngressBytesPerSecond     *int64 `json:"networkIngressBytesPerSecond,omitempty"`
+	NetworkIngressPeakBytesPerSecond *int64 `json:"networkIngressPeakBytesPerSecond,omitempty"`
+	NetworkEgressBytesPerSecond      *int64 `json:"networkEgressBytesPerSecond,omitempty"`
+	NetworkEgressPeakBytesPerSecond  *int64 `json:"networkEgressPeakBytesPerSecond,omitempty"`
+	NetworkInterface                 string `json:"networkInterface"`
 }
 
 type resourceUsageHistoryPointResponse struct {
-	ObservedAt                   int64  `json:"observedAt"`
-	CPUMillicores                *int64 `json:"cpuMillicores,omitempty"`
-	MemoryBytes                  uint64 `json:"memoryBytes"`
-	NetworkIngressBytesPerSecond *int64 `json:"networkIngressBytesPerSecond,omitempty"`
-	NetworkEgressBytesPerSecond  *int64 `json:"networkEgressBytesPerSecond,omitempty"`
-	Running                      bool   `json:"running"`
+	ObservedAt                       int64               `json:"observedAt"`
+	DurationMillis                   int64               `json:"durationMillis"`
+	CPUMillicores                    *int64              `json:"cpuMillicores,omitempty"`
+	CPUPeakMillicores                *int64              `json:"cpuPeakMillicores,omitempty"`
+	MemoryBytes                      uint64              `json:"memoryBytes"`
+	MemoryPeakBytes                  uint64              `json:"memoryPeakBytes"`
+	NetworkIngressBytesPerSecond     *int64              `json:"networkIngressBytesPerSecond,omitempty"`
+	NetworkIngressPeakBytesPerSecond *int64              `json:"networkIngressPeakBytesPerSecond,omitempty"`
+	NetworkEgressBytesPerSecond      *int64              `json:"networkEgressBytesPerSecond,omitempty"`
+	NetworkEgressPeakBytesPerSecond  *int64              `json:"networkEgressPeakBytesPerSecond,omitempty"`
+	Running                          bool                `json:"running"`
+	Proxy                            *proxyUsageResponse `json:"proxy,omitempty"`
 }
 
 type resourceUsageHistoryResponse struct {
@@ -79,7 +156,13 @@ type resourceUsageHistoryResponse struct {
 	Points     []resourceUsageHistoryPointResponse `json:"points"`
 }
 
-func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usage ResourceUsage, logs InfrastructureLogs) {
+func registerInfrastructureRoutes(
+	mux *http.ServeMux,
+	pressure DiskPressure,
+	imageGarbageCollector ImageGarbageCollector,
+	usage ResourceUsage,
+	logs InfrastructureLogs,
+) {
 	if pressure != nil {
 		mux.HandleFunc("GET /api/v1/infrastructure/disk-pressure", func(response http.ResponseWriter, request *http.Request) {
 			if _, ok := access.IdentityFromContext(request.Context()); !ok {
@@ -103,7 +186,9 @@ func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usa
 				for _, component := range usage.Components {
 					components = append(components, diskComponentResponse{ID: component.ID, Bytes: component.Bytes})
 				}
-				componentsCheckedAt = usage.CheckedAt.UnixMilli()
+				if !usage.CheckedAt.IsZero() {
+					componentsCheckedAt = usage.CheckedAt.UnixMilli()
+				}
 			}
 			writeJSON(response, http.StatusOK, diskPressureResponse{
 				Level:           snapshot.Level,
@@ -115,9 +200,28 @@ func registerInfrastructureRoutes(mux *http.ServeMux, pressure DiskPressure, usa
 			})
 		})
 	}
+	if imageGarbageCollector != nil {
+		mux.HandleFunc("POST /api/v1/infrastructure/container-images/gc", func(response http.ResponseWriter, request *http.Request) {
+			if _, ok := requireAccessIdentity(response, request); !ok {
+				return
+			}
+			result, err := imageGarbageCollector.ForceGarbageCollect(request.Context())
+			if err != nil {
+				writeAPIError(response, http.StatusInternalServerError, "container_image_gc_failed", "Container image garbage collection failed")
+				return
+			}
+			response.Header().Set("Cache-Control", "no-store")
+			writeJSON(response, http.StatusOK, result)
+		})
+	}
 	if usage != nil {
 		mux.HandleFunc("GET /api/v1/infrastructure/resources/{kind}/{resourceID}/usage", resourceUsageHandler(usage))
 		mux.HandleFunc("GET /api/v1/infrastructure/resources/{kind}/{resourceID}/usage/history", resourceUsageHistoryHandler(usage))
+		mux.HandleFunc("GET /api/v1/infrastructure/projects/{projectID}/usage", projectUsageHandler(usage))
+		mux.HandleFunc("GET /api/v1/infrastructure/projects/{projectID}/usage/history", projectUsageHistoryHandler(usage))
+		mux.HandleFunc("GET /api/v1/infrastructure/usage", installationUsageHandler(usage))
+		mux.HandleFunc("GET /api/v1/infrastructure/usage/history", installationUsageHistoryHandler(usage))
+		mux.HandleFunc("GET /api/v1/infrastructure/host/usage/history", hostUsageHistoryHandler(usage))
 	}
 	if logs != nil {
 		mux.HandleFunc("GET /api/v1/infrastructure/logs", infrastructureLogsHandler(logs))
@@ -135,17 +239,112 @@ func resourceUsageHandler(usage ResourceUsage) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_resource_usage", err.Error())
 			return
 		}
+		if errors.Is(err, resourcemetrics.ErrNotReady) {
+			writeAPIError(response, http.StatusServiceUnavailable, "resource_usage_warming_up", "Resource usage is warming up")
+			return
+		}
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "resource_usage_unavailable", "Resource usage is unavailable")
 			return
 		}
-		writeJSON(response, http.StatusOK, resourceUsageResponse{
-			ObservedAt: sample.ObservedAtMillis, CPUUsageMicros: sample.CPUUsageMicros,
-			MemoryBytes: sample.MemoryBytes, HostCPUCores: sample.HostCPUCores,
-			HostMemoryBytes: sample.HostMemoryBytes, NetworkRXBytes: sample.NetworkRXBytes,
-			NetworkTXBytes: sample.NetworkTXBytes, NetworkAvailable: sample.NetworkAvailable,
-			Running: sample.Running,
-		})
+		writeJSON(response, http.StatusOK, resourceUsageResponseFor(sample))
+	}
+}
+
+func projectUsageHandler(usage ResourceUsage) http.HandlerFunc {
+	return currentUsageHandler(func(request *http.Request) (resourcemetrics.Current, error) {
+		return usage.ReadProject(request.PathValue("projectID"))
+	})
+}
+
+func installationUsageHandler(usage ResourceUsage) http.HandlerFunc {
+	return currentUsageHandler(func(*http.Request) (resourcemetrics.Current, error) {
+		return usage.ReadInstallation()
+	})
+}
+
+func currentUsageHandler(read func(*http.Request) (resourcemetrics.Current, error)) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		current, err := read(request)
+		if errors.Is(err, cgroupstats.ErrInvalidResource) {
+			writeAPIError(response, http.StatusBadRequest, "invalid_resource_usage", err.Error())
+			return
+		}
+		if errors.Is(err, resourcemetrics.ErrNotReady) {
+			writeAPIError(response, http.StatusServiceUnavailable, "resource_usage_warming_up", "Resource usage is warming up")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "resource_usage_unavailable", "Resource usage is unavailable")
+			return
+		}
+		writeJSON(response, http.StatusOK, resourceUsageResponseFor(current))
+	}
+}
+
+func resourceUsageResponseFor(sample resourcemetrics.Current) resourceUsageResponse {
+	return resourceUsageResponse{
+		ObservedAt:  sample.ObservedAtMillis,
+		MemoryBytes: sample.MemoryBytes, HostCPUCores: sample.HostCPUCores,
+		HostMemoryBytes: sample.HostMemoryBytes, NetworkAvailable: sample.NetworkAvailable,
+		Running: sample.Running, CPUMillicores: sample.CPUMillicores, CPUPeakMillicores: sample.CPUPeakMillicores,
+		MemoryPeakBytes:                  sample.MemoryPeakBytes,
+		NetworkIngressBytesPerSecond:     sample.NetworkIngressBytesPerSecond,
+		NetworkIngressPeakBytesPerSecond: sample.NetworkIngressPeakBytesPerSecond,
+		NetworkEgressBytesPerSecond:      sample.NetworkEgressBytesPerSecond,
+		NetworkEgressPeakBytesPerSecond:  sample.NetworkEgressPeakBytesPerSecond,
+		RunningResources:                 sample.RunningResources, TotalResources: sample.TotalResources,
+		Proxy: proxyUsageResponseFor(sample.Proxy), Host: hostUsageResponseFor(sample.Host),
+	}
+}
+
+func proxyUsageResponseFor(metrics *resourcemetrics.ProxyMetrics) *proxyUsageResponse {
+	if metrics == nil {
+		return nil
+	}
+	return &proxyUsageResponse{
+		HTTP: httpProxyUsageResponse{
+			RequestsPerSecond: metrics.HTTP.RequestsPerSecond, RequestsPeakPerSecond: metrics.HTTP.RequestsPeakPerSecond,
+			RequestsTotal: metrics.HTTP.RequestsTotal, ActiveRequests: metrics.HTTP.ActiveRequests,
+			ActiveRequestsPeak:    metrics.HTTP.ActiveRequestsPeak,
+			Responses2xxPerSecond: metrics.HTTP.Responses2xxPerSecond,
+			Responses3xxPerSecond: metrics.HTTP.Responses3xxPerSecond, Responses4xxPerSecond: metrics.HTTP.Responses4xxPerSecond,
+			Responses5xxPerSecond: metrics.HTTP.Responses5xxPerSecond, LatencyP50Millis: metrics.HTTP.LatencyP50Millis,
+			LatencyP95Millis: metrics.HTTP.LatencyP95Millis, LatencyP99Millis: metrics.HTTP.LatencyP99Millis,
+		},
+		TCP: tcpProxyUsageResponse{
+			ConnectionsPerSecond:     metrics.TCP.ConnectionsPerSecond,
+			ConnectionsPeakPerSecond: metrics.TCP.ConnectionsPeakPerSecond,
+			ConnectionsTotal:         metrics.TCP.ConnectionsTotal, ActiveConnections: metrics.TCP.ActiveConnections,
+			ActiveConnectionsPeak: metrics.TCP.ActiveConnectionsPeak,
+		},
+		UDP: udpProxyUsageResponse{
+			IngressPacketsPerSecond:     metrics.UDP.IngressPacketsPerSecond,
+			IngressPacketsPeakPerSecond: metrics.UDP.IngressPacketsPeakPerSecond,
+			EgressPacketsPerSecond:      metrics.UDP.EgressPacketsPerSecond,
+			EgressPacketsPeakPerSecond:  metrics.UDP.EgressPacketsPeakPerSecond,
+			IngressPacketsTotal:         metrics.UDP.IngressPacketsTotal, EgressPacketsTotal: metrics.UDP.EgressPacketsTotal,
+		},
+	}
+}
+
+func hostUsageResponseFor(host *resourcemetrics.HostCurrent) *hostUsageResponse {
+	if host == nil {
+		return nil
+	}
+	return &hostUsageResponse{
+		ObservedAt: host.ObservedAt, CPUMillicores: host.CPUMillicores, CPUPeakMillicores: host.CPUPeakMillicores,
+		CPUCores: host.CPUCores, MemoryUsedBytes: host.MemoryUsedBytes, MemoryPeakBytes: host.MemoryPeakBytes,
+		MemoryTotalBytes:                 host.MemoryTotalBytes,
+		NetworkIngressBytesPerSecond:     host.NetworkIngressBytesPerSecond,
+		NetworkIngressPeakBytesPerSecond: host.NetworkIngressPeakBytesPerSecond,
+		NetworkEgressBytesPerSecond:      host.NetworkEgressBytesPerSecond,
+		NetworkEgressPeakBytesPerSecond:  host.NetworkEgressPeakBytesPerSecond,
+		NetworkInterface:                 host.NetworkInterface,
 	}
 }
 
@@ -174,17 +373,83 @@ func resourceUsageHistoryHandler(usage ResourceUsage) http.HandlerFunc {
 		points := make([]resourceUsageHistoryPointResponse, 0, len(history.Points))
 		for _, point := range history.Points {
 			points = append(points, resourceUsageHistoryPointResponse{
-				ObservedAt: point.ObservedAt, CPUMillicores: point.CPUMillicores,
-				MemoryBytes:                  point.MemoryBytes,
-				NetworkIngressBytesPerSecond: point.NetworkIngressBytesPerSecond,
-				NetworkEgressBytesPerSecond:  point.NetworkEgressBytesPerSecond,
-				Running:                      point.Running,
+				ObservedAt: point.ObservedAt, DurationMillis: point.DurationMillis,
+				CPUMillicores: point.CPUMillicores, CPUPeakMillicores: point.CPUPeakMillicores,
+				MemoryBytes: point.MemoryBytes, MemoryPeakBytes: point.MemoryPeakBytes,
+				NetworkIngressBytesPerSecond:     point.NetworkIngressBytesPerSecond,
+				NetworkIngressPeakBytesPerSecond: point.NetworkIngressPeakBytesPerSecond,
+				NetworkEgressBytesPerSecond:      point.NetworkEgressBytesPerSecond,
+				NetworkEgressPeakBytesPerSecond:  point.NetworkEgressPeakBytesPerSecond,
+				Running:                          point.Running,
+				Proxy:                            proxyUsageResponseFor(point.Proxy),
 			})
 		}
 		writeJSON(response, http.StatusOK, resourceUsageHistoryResponse{
 			From: history.From, To: history.To, StepMillis: history.StepMillis, Points: points,
 		})
 	}
+}
+
+func projectUsageHistoryHandler(usage ResourceUsage) http.HandlerFunc {
+	return usageHistoryHandler(func(request *http.Request, window time.Duration) (resourcemetrics.History, error) {
+		return usage.ProjectHistory(request.Context(), request.PathValue("projectID"), window)
+	})
+}
+
+func installationUsageHistoryHandler(usage ResourceUsage) http.HandlerFunc {
+	return usageHistoryHandler(func(request *http.Request, window time.Duration) (resourcemetrics.History, error) {
+		return usage.InstallationHistory(request.Context(), window)
+	})
+}
+
+func hostUsageHistoryHandler(usage ResourceUsage) http.HandlerFunc {
+	return usageHistoryHandler(func(request *http.Request, window time.Duration) (resourcemetrics.History, error) {
+		return usage.HostHistory(request.Context(), window)
+	})
+}
+
+func usageHistoryHandler(read func(*http.Request, time.Duration) (resourcemetrics.History, error)) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		window, ok := resourceMetricWindows[request.URL.Query().Get("range")]
+		if !ok {
+			writeAPIError(response, http.StatusBadRequest, "invalid_resource_usage_range", "range must be one of 1h, 6h, 1d, 7d, or 30d")
+			return
+		}
+		history, err := read(request, window)
+		if errors.Is(err, cgroupstats.ErrInvalidResource) || errors.Is(err, resourcemetrics.ErrInvalidRange) {
+			writeAPIError(response, http.StatusBadRequest, "invalid_resource_usage", err.Error())
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "resource_usage_unavailable", "Resource usage is unavailable")
+			return
+		}
+		writeResourceUsageHistory(response, history)
+	}
+}
+
+func writeResourceUsageHistory(response http.ResponseWriter, history resourcemetrics.History) {
+	points := make([]resourceUsageHistoryPointResponse, 0, len(history.Points))
+	for _, point := range history.Points {
+		points = append(points, resourceUsageHistoryPointResponse{
+			ObservedAt: point.ObservedAt, DurationMillis: point.DurationMillis,
+			CPUMillicores: point.CPUMillicores, CPUPeakMillicores: point.CPUPeakMillicores,
+			MemoryBytes: point.MemoryBytes, MemoryPeakBytes: point.MemoryPeakBytes,
+			NetworkIngressBytesPerSecond:     point.NetworkIngressBytesPerSecond,
+			NetworkIngressPeakBytesPerSecond: point.NetworkIngressPeakBytesPerSecond,
+			NetworkEgressBytesPerSecond:      point.NetworkEgressBytesPerSecond,
+			NetworkEgressPeakBytesPerSecond:  point.NetworkEgressPeakBytesPerSecond,
+			Running:                          point.Running,
+			Proxy:                            proxyUsageResponseFor(point.Proxy),
+		})
+	}
+	writeJSON(response, http.StatusOK, resourceUsageHistoryResponse{
+		From: history.From, To: history.To, StepMillis: history.StepMillis, Points: points,
+	})
 }
 
 var resourceMetricWindows = map[string]time.Duration{
@@ -210,14 +475,16 @@ func infrastructureLogsHandler(logs InfrastructureLogs) http.HandlerFunc {
 			}
 			limit = parsed
 		}
-		window, err := logs.Read(request.Context(), journallogs.Query{Limit: limit})
+		window, err := logs.Read(request.Context(), journallogs.Query{
+			Limit: limit, BeforeCursor: request.URL.Query().Get("beforeCursor"),
+		})
 		switch {
 		case err == nil:
 			writeJSON(response, http.StatusOK, window)
 		case errors.Is(err, journallogs.ErrInvalidQuery):
 			writeAPIError(response, http.StatusBadRequest, "invalid_journal_query", err.Error())
 		default:
-			writeAPIError(response, http.StatusServiceUnavailable, "journal_unavailable", "Unable to read platform journal")
+			writeAPIError(response, http.StatusServiceUnavailable, "journal_unavailable", "Unable to read system journal", err)
 		}
 	}
 }

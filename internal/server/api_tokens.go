@@ -86,7 +86,7 @@ func createAPIToken(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		tokenID, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		tokenID, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate API token identifiers")
 			return
@@ -126,7 +126,7 @@ func revokeAPIToken(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate API token revoke identifiers")
 			return

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -208,6 +210,12 @@ func (manager *Manager) PermitGrowth(ctx context.Context) error {
 		return err
 	}
 	if snapshot.Level == Critical || snapshot.Level == Emergency {
+		systemevent.Warning(
+			"disk_growth_denied",
+			systemevent.String("level", string(snapshot.Level)),
+			systemevent.Uint64("available_bytes", snapshot.Usage.AvailableBytes),
+			systemevent.Uint64("available_inodes", snapshot.Usage.AvailableInodes),
+		)
 		return fmt.Errorf("%w: level %s", ErrGrowthDenied, snapshot.Level)
 	}
 	return nil

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type resolverStub struct {
@@ -34,7 +35,8 @@ func TestManagerForwardsTCPAndUpdatesTargetWithoutRebinding(t *testing.T) {
 	backend := tcpEchoServer(t)
 	host, port := splitAddress(t, backend.Addr().String())
 	resolver := &resolverStub{backend: deployment.Backend{DeploymentID: "deployment", Address: host, Port: port}}
-	manager, err := New(Config{Backends: resolver})
+	traffic := trafficmetrics.NewRegistry()
+	manager, err := New(Config{Backends: resolver, Traffic: traffic})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,13 +54,27 @@ func TestManagerForwardsTCPAndUpdatesTargetWithoutRebinding(t *testing.T) {
 	if len(ports) != 2 || ports[0] != 8080 || ports[1] != 9090 {
 		t.Fatalf("resolved target ports = %v", ports)
 	}
+	counters := traffic.Snapshot()["service"]
+	deadline := time.Now().Add(time.Second)
+	for counters.TCPActiveConnections != 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		counters = traffic.Snapshot()["service"]
+	}
+	wantBytes := uint64(len("first") + len("second"))
+	if counters.IngressBytes != wantBytes || counters.EgressBytes != wantBytes {
+		t.Fatalf("public TCP counters = %+v, want %d bytes each way", counters, wantBytes)
+	}
+	if counters.TCPConnectionsTotal != 2 || counters.TCPActiveConnections != 0 {
+		t.Fatalf("public TCP connection metrics = %+v", counters)
+	}
 }
 
 func TestManagerForwardsUDPAndRejectsUnavailableOrReservedTCPPorts(t *testing.T) {
 	backend := udpEchoServer(t)
 	host, port := splitAddress(t, backend.LocalAddr().String())
 	resolver := &resolverStub{backend: deployment.Backend{DeploymentID: "deployment", Address: host, Port: port}}
-	manager, err := New(Config{Backends: resolver})
+	traffic := trafficmetrics.NewRegistry()
+	manager, err := New(Config{Backends: resolver, Traffic: traffic})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,6 +98,18 @@ func TestManagerForwardsUDPAndRejectsUnavailableOrReservedTCPPorts(t *testing.T)
 	count, err := client.Read(buffer)
 	if err != nil || string(buffer[:count]) != "datagram" {
 		t.Fatalf("UDP echo = %q, %v", buffer[:count], err)
+	}
+	counters := traffic.Snapshot()["service"]
+	deadline := time.Now().Add(time.Second)
+	for (counters.EgressBytes != uint64(len("datagram")) || counters.UDPEgressPackets != 1) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+		counters = traffic.Snapshot()["service"]
+	}
+	if counters.IngressBytes != uint64(len("datagram")) || counters.EgressBytes != uint64(len("datagram")) {
+		t.Fatalf("public UDP counters = %+v", counters)
+	}
+	if counters.UDPIngressPackets != 1 || counters.UDPEgressPackets != 1 {
+		t.Fatalf("public UDP packet metrics = %+v", counters)
 	}
 
 	occupied, err := net.Listen("tcp4", "0.0.0.0:0")
@@ -158,6 +186,21 @@ func TestManagerRejectsNegativeNamespacePIDsAndSeparatesListenerOwnership(t *tes
 	}
 	if routeKey("tcp", "127.0.0.1", 9000, 101) == routeKey("tcp", "127.0.0.1", 9000, 202) {
 		t.Fatal("listener ownership collides across network namespaces")
+	}
+}
+
+func TestTCPFlowReconcilesSampledAndCopiedBytes(t *testing.T) {
+	traffic := trafficmetrics.NewRegistry()
+	flow := &tcpFlow{serviceID: "service", traffic: traffic}
+
+	flow.record(10, 20)
+	flow.record(8, 25)
+	flow.finish(15, 23)
+	flow.record(100, 100)
+
+	counters := traffic.Snapshot()["service"]
+	if counters.IngressBytes != 15 || counters.EgressBytes != 25 {
+		t.Fatalf("reconciled TCP counters = %+v", counters)
 	}
 }
 

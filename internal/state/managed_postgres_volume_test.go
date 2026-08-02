@@ -53,7 +53,7 @@ FROM audit_events WHERE id = 'restore-audit'`).Scan(&action, &requestID, &metada
 		t.Fatal(err)
 	}
 	if action != "postgres.restore" || requestID != "request" ||
-		metadata != `{"actorEmail":"user@example.com","previousVolumeId":"old-volume","volumeId":"new-volume"}` {
+		metadata != `{"actorEmail":"user@example.com","name":"database","previousVolumeId":"old-volume","volumeId":"new-volume"}` {
 		t.Fatalf("restore audit = %q %q %s", action, requestID, metadata)
 	}
 	if err := store.SwitchManagedPostgresVolume(ctx, state.SwitchManagedPostgresVolume{

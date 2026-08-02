@@ -18,9 +18,11 @@ const resourceCount = (project: Project) =>
 export const ProjectDeleteDialog = ({
   onDeleted,
   project,
+  trigger = "icon",
 }: {
   onDeleted: (projectID: string) => void;
   project: Project;
+  trigger?: "button" | "icon";
 }) => {
   const [open, setOpen] = useState(false);
   const [confirmation, setConfirmation] = useState("");
@@ -61,15 +63,25 @@ export const ProjectDeleteDialog = ({
 
   return (
     <>
-      <Button
-        aria-label="Delete project"
-        onClick={() => setOpen(true)}
-        size="icon"
-        title="Delete project"
-        variant="ghost"
-      >
-        <Trash2 />
-      </Button>
+      {trigger === "icon" ? (
+        <Button
+          aria-label="Delete project"
+          onClick={() => setOpen(true)}
+          size="icon"
+          title="Delete project"
+          variant="ghost"
+        >
+          <Trash2 />
+        </Button>
+      ) : (
+        <button
+          className="ml-4 shrink-0 border border-destructive/40 px-3 py-1.5 text-[10px] text-destructive transition-all duration-150 outline-none hover:border-destructive hover:bg-destructive/10 focus-visible:border-destructive focus-visible:ring-1 focus-visible:ring-destructive/20"
+          onClick={() => setOpen(true)}
+          type="button"
+        >
+          Delete project
+        </button>
+      )}
       <AlertDialog.Root
         onOpenChange={(nextOpen) => {
           if (deleting) {

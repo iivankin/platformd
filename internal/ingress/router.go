@@ -2,6 +2,8 @@ package ingress
 
 import (
 	"errors"
+	"io"
+	"mime"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/publichostname"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type BackendResolver interface {
@@ -34,20 +37,17 @@ type Route struct {
 type Config struct {
 	AdminHostname      string
 	AdminHandler       http.Handler
-	AutomationHostname string
-	AutomationHandler  http.Handler
 	RegistryHostname   string
 	RegistryHandler    http.Handler
 	ObjectStoreHandler http.Handler
 	Backends           BackendResolver
+	Traffic            *trafficmetrics.Registry
 }
 
 type routeSnapshot struct {
-	services           map[string]Route
-	objectStores       map[string]struct{}
-	registryHostname   string
-	automationHostname string
-	automationHandler  http.Handler
+	services         map[string]Route
+	objectStores     map[string]struct{}
+	registryHostname string
 }
 
 type Router struct {
@@ -59,9 +59,14 @@ type Router struct {
 	reloadMu           sync.Mutex
 	routes             atomic.Pointer[routeSnapshot]
 	transport          *http.Transport
+	bufferPool         *proxyBufferPool
+	traffic            *trafficmetrics.Registry
 }
 
-const maximumHeaderCount = 100
+const (
+	maximumHeaderCount = 100
+	proxyBufferBytes   = 32 << 10
+)
 
 func New(config Config) (*Router, error) {
 	adminHostname, err := publichostname.Normalize(config.AdminHostname)
@@ -70,19 +75,6 @@ func New(config Config) (*Router, error) {
 	}
 	if config.AdminHandler == nil || config.Backends == nil {
 		return nil, errors.New("ingress requires admin handler and backend resolver")
-	}
-	var automationHostname string
-	if config.AutomationHostname != "" || config.AutomationHandler != nil {
-		if config.AutomationHostname == "" || config.AutomationHandler == nil {
-			return nil, errors.New("automation hostname and handler must be configured together")
-		}
-		automationHostname, err = publichostname.Normalize(config.AutomationHostname)
-		if err != nil {
-			return nil, err
-		}
-		if automationHostname == adminHostname {
-			return nil, errors.New("admin and automation hostnames must differ")
-		}
 	}
 	var registryHostname string
 	if config.RegistryHostname != "" {
@@ -93,8 +85,8 @@ func New(config Config) (*Router, error) {
 		if err != nil {
 			return nil, err
 		}
-		if registryHostname == adminHostname || registryHostname == automationHostname {
-			return nil, errors.New("registry hostname must differ from admin and automation hostnames")
+		if registryHostname == adminHostname {
+			return nil, errors.New("registry hostname must differ from admin hostname")
 		}
 	}
 	router := &Router{
@@ -103,6 +95,8 @@ func New(config Config) (*Router, error) {
 		registryHandler:    config.RegistryHandler,
 		objectStoreHandler: config.ObjectStoreHandler,
 		backends:           config.Backends,
+		bufferPool:         newProxyBufferPool(),
+		traffic:            config.Traffic,
 		transport: &http.Transport{
 			Proxy:                 nil,
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -115,7 +109,6 @@ func New(config Config) (*Router, error) {
 	}
 	router.routes.Store(&routeSnapshot{
 		services: map[string]Route{}, objectStores: map[string]struct{}{}, registryHostname: registryHostname,
-		automationHostname: automationHostname, automationHandler: config.AutomationHandler,
 	})
 	return router, nil
 }
@@ -132,7 +125,6 @@ func (router *Router) Reload(routes map[string]Route) {
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
 		services: cloned, objectStores: cloneSet(current.objectStores), registryHostname: current.registryHostname,
-		automationHostname: current.automationHostname, automationHandler: current.automationHandler,
 	})
 }
 
@@ -148,7 +140,6 @@ func (router *Router) ReloadObjectStores(hostnames []string) {
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
 		services: cloneMap(current.services), objectStores: cloned, registryHostname: current.registryHostname,
-		automationHostname: current.automationHostname, automationHandler: current.automationHandler,
 	})
 }
 
@@ -170,43 +161,8 @@ func (router *Router) ReloadRegistry(hostname string) error {
 	router.reloadMu.Lock()
 	defer router.reloadMu.Unlock()
 	current := router.routes.Load()
-	if normalized != "" && normalized == current.automationHostname {
-		return errors.New("registry hostname conflicts with a control-plane hostname")
-	}
 	router.routes.Store(&routeSnapshot{
 		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores), registryHostname: normalized,
-		automationHostname: current.automationHostname, automationHandler: current.automationHandler,
-	})
-	return nil
-}
-
-// ReloadAutomation atomically publishes the automation hostname and the
-// hostname-specific API/MCP handler, so a request can never observe a new
-// hostname with the old handler configuration.
-func (router *Router) ReloadAutomation(hostname string, handler http.Handler) error {
-	normalized := ""
-	if hostname != "" || handler != nil {
-		if hostname == "" || handler == nil {
-			return errors.New("automation hostname and handler must be configured together")
-		}
-		var err error
-		normalized, err = publichostname.Normalize(hostname)
-		if err != nil {
-			return err
-		}
-		if normalized == router.adminHostname {
-			return errors.New("admin and automation hostnames must differ")
-		}
-	}
-	router.reloadMu.Lock()
-	defer router.reloadMu.Unlock()
-	current := router.routes.Load()
-	if normalized != "" && normalized == current.registryHostname {
-		return errors.New("automation and registry hostnames must differ")
-	}
-	router.routes.Store(&routeSnapshot{
-		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores),
-		registryHostname: current.registryHostname, automationHostname: normalized, automationHandler: handler,
 	})
 	return nil
 }
@@ -232,10 +188,6 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	routes := router.routes.Load()
-	if hostname == routes.automationHostname {
-		routes.automationHandler.ServeHTTP(response, request)
-		return
-	}
 	if hostname == routes.registryHostname {
 		if router.registryHandler == nil {
 			unavailable(response)
@@ -257,6 +209,18 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		misdirected(response)
 		return
 	}
+	startedAt := time.Now()
+	streaming := false
+	observedResponse := &statusResponseWriter{ResponseWriter: response}
+	router.traffic.StartHTTP(serviceRoute.ServiceID)
+	defer func() {
+		if streaming {
+			router.traffic.FinishStreamingHTTP(serviceRoute.ServiceID)
+			return
+		}
+		router.traffic.FinishHTTP(serviceRoute.ServiceID, observedResponse.StatusCode(), time.Since(startedAt))
+	}()
+	response = observedResponse
 	var backend deployment.Backend
 	var available bool
 	if serviceRoute.PreviewID != "" {
@@ -273,7 +237,10 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		unavailable(response)
 		return
 	}
-	router.proxy(backend, hostname).ServeHTTP(response, request)
+	router.proxy(backend, hostname, serviceRoute.ServiceID, func(statusCode int) {
+		streaming = true
+		router.traffic.ObserveStreamingHTTP(serviceRoute.ServiceID, statusCode, time.Since(startedAt))
+	}).ServeHTTP(response, request)
 }
 
 func cloneMap(input map[string]Route) map[string]Route {
@@ -300,23 +267,144 @@ func countHeaders(header http.Header) int {
 	return count
 }
 
-func (router *Router) proxy(backend deployment.Backend, publicHost string) http.Handler {
+func (router *Router) proxy(backend deployment.Backend, publicHost, serviceID string, observeStreaming func(int)) http.Handler {
 	target := &url.URL{Scheme: "http", Host: net.JoinHostPort(backend.Address, strconv.Itoa(backend.Port))}
 	return &httputil.ReverseProxy{
-		Transport:     router.transport,
-		FlushInterval: -1,
+		Transport:  router.transport,
+		BufferPool: router.bufferPool,
 		Rewrite: func(proxyRequest *httputil.ProxyRequest) {
+			if proxyRequest.Out.Body != nil && router.traffic != nil {
+				proxyRequest.Out.Body = &countingReadCloser{
+					Reader: trafficmetrics.CountReader(proxyRequest.Out.Body, func(bytes uint64) {
+						router.traffic.AddIngress(serviceID, bytes)
+					}),
+					Closer: proxyRequest.Out.Body,
+				}
+			}
 			proxyRequest.SetURL(target)
 			proxyRequest.Out.Host = publicHost
 			proxyRequest.Out.Header.Set("X-Forwarded-For", clientAddress(proxyRequest.In))
 			proxyRequest.Out.Header.Set("X-Forwarded-Host", publicHost)
 			proxyRequest.Out.Header.Set("X-Forwarded-Proto", "https")
 		},
+		ModifyResponse: func(response *http.Response) error {
+			if response.Body != nil && router.traffic != nil {
+				addEgress := func(bytes uint64) { router.traffic.AddEgress(serviceID, bytes) }
+				if upgraded, ok := response.Body.(io.ReadWriteCloser); ok && response.StatusCode == http.StatusSwitchingProtocols {
+					response.Body = &countingReadWriteCloser{
+						ReadWriteCloser: upgraded,
+						addRead:         addEgress,
+						addWrite:        func(bytes uint64) { router.traffic.AddIngress(serviceID, bytes) },
+					}
+				} else {
+					response.Body = &countingReadCloser{
+						Reader: trafficmetrics.CountReader(response.Body, addEgress),
+						Closer: response.Body,
+					}
+				}
+			}
+			if observeStreaming != nil && isStreamingResponse(response) {
+				observeStreaming(response.StatusCode)
+			}
+			return nil
+		},
 		ErrorHandler: func(response http.ResponseWriter, _ *http.Request, _ error) {
 			response.Header().Set("Cache-Control", "no-store")
 			http.Error(response, http.StatusText(http.StatusBadGateway), http.StatusBadGateway)
 		},
 	}
+}
+
+type proxyBufferPool struct {
+	pool sync.Pool
+}
+
+func newProxyBufferPool() *proxyBufferPool {
+	buffers := &proxyBufferPool{}
+	buffers.pool.New = func() any {
+		return new([proxyBufferBytes]byte)
+	}
+	return buffers
+}
+
+func (buffers *proxyBufferPool) Get() []byte {
+	return buffers.pool.Get().(*[proxyBufferBytes]byte)[:]
+}
+
+func (buffers *proxyBufferPool) Put(buffer []byte) {
+	if cap(buffer) != proxyBufferBytes {
+		return
+	}
+	buffer = buffer[:proxyBufferBytes]
+	buffers.pool.Put((*[proxyBufferBytes]byte)(buffer))
+}
+
+type countingReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+type countingReadWriteCloser struct {
+	io.ReadWriteCloser
+	addRead  func(uint64)
+	addWrite func(uint64)
+}
+
+func (stream *countingReadWriteCloser) Read(buffer []byte) (int, error) {
+	count, err := stream.ReadWriteCloser.Read(buffer)
+	if count > 0 {
+		stream.addRead(uint64(count))
+	}
+	return count, err
+}
+
+func (stream *countingReadWriteCloser) Write(buffer []byte) (int, error) {
+	count, err := stream.ReadWriteCloser.Write(buffer)
+	if count > 0 {
+		stream.addWrite(uint64(count))
+	}
+	return count, err
+}
+
+func isStreamingResponse(response *http.Response) bool {
+	if response.StatusCode == http.StatusSwitchingProtocols {
+		return true
+	}
+	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	return err == nil && mediaType == "text/event-stream"
+}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (writer *statusResponseWriter) WriteHeader(statusCode int) {
+	if writer.statusCode != 0 {
+		return
+	}
+	writer.statusCode = statusCode
+	writer.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (writer *statusResponseWriter) Write(buffer []byte) (int, error) {
+	if writer.statusCode == 0 {
+		writer.statusCode = http.StatusOK
+	}
+	return writer.ResponseWriter.Write(buffer)
+}
+
+// Unwrap preserves optional interfaces used by ReverseProxy through
+// http.ResponseController, including streaming flushes and upgrades.
+func (writer *statusResponseWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
+}
+
+func (writer *statusResponseWriter) StatusCode() int {
+	if writer.statusCode == 0 {
+		return http.StatusOK
+	}
+	return writer.statusCode
 }
 
 func clientAddress(request *http.Request) string {

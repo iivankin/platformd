@@ -155,7 +155,7 @@ UPDATE service_domains SET target_port = ? WHERE hostname = ?`, input.TargetPort
 		route.CreatedAt = createdAt
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: action, ServiceID: input.ServiceID,
+			ProjectID: input.ProjectID, Action: action, ServiceID: input.ServiceID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: metadata,
 		})
@@ -192,7 +192,7 @@ DELETE FROM service_domains WHERE hostname = ? AND service_id = ?`, hostname, in
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.domain.detach", ServiceID: input.ServiceID,
+			ProjectID: input.ProjectID, Action: "service.domain.detach", ServiceID: input.ServiceID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: map[string]string{"hostname": hostname},
 		})
@@ -241,10 +241,10 @@ func publicHostnameRoleExists(ctx context.Context, transaction *sql.Tx, hostname
 	err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
   SELECT 1 FROM installation
-  WHERE admin_hostname = ? OR automation_hostname = ? OR registry_hostname = ?
+  WHERE admin_hostname = ? OR registry_hostname = ?
   UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
-)`, hostname, hostname, hostname, hostname, hostname).Scan(&exists)
+)`, hostname, hostname, hostname, hostname).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check public hostname roles: %w", err)
 	}

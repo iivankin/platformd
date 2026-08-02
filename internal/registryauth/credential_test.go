@@ -8,7 +8,7 @@ import (
 )
 
 func TestRegistryCredentialRoundTripAndVerifierScope(t *testing.T) {
-	credentialID := "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	credentialID := "abcdefghijklmnopqrstuvwx"
 	username, err := Username(credentialID)
 	if err != nil {
 		t.Fatal(err)
@@ -38,5 +38,8 @@ func TestRegistryCredentialRoundTripAndVerifierScope(t *testing.T) {
 	}
 	if _, err := OpenSecret(master, "other", credentialID, encrypted); err == nil {
 		t.Fatal("registry credential encryption was not scoped to its repository")
+	}
+	if _, err := Username("018bcfe5-687b-7fff-bfff-ffffffffffff"); err == nil {
+		t.Fatal("legacy UUID credential ID was accepted")
 	}
 }

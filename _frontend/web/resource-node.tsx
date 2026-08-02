@@ -27,12 +27,12 @@ const statusStyles: Record<ResourceFlowNode["data"]["status"], string> = {
 
 const nodeClassName = (selected: boolean, pending: boolean) => {
   if (pending) {
-    return "w-64 border border-sky-500 bg-background shadow-[0_2px_8px_oklch(0_0_0/10%)]";
+    return "flex w-64 flex-col border border-sky-500 bg-background shadow-[0_2px_8px_oklch(0_0_0/10%)]";
   }
   if (selected) {
-    return "w-64 border border-foreground bg-background shadow-[0_2px_8px_oklch(0_0_0/10%)]";
+    return "flex w-64 flex-col border border-foreground bg-background shadow-[0_2px_8px_oklch(0_0_0/10%)]";
   }
-  return "w-64 border border-border bg-background shadow-[0_1px_2px_oklch(0_0_0/6%)]";
+  return "flex w-64 flex-col border border-border bg-background shadow-[0_1px_2px_oklch(0_0_0/6%)]";
 };
 
 const gatewayDetail = (data: ResourceFlowNode["data"]) => {
@@ -45,12 +45,17 @@ const gatewayDetail = (data: ResourceFlowNode["data"]) => {
   return `${data.gatewayProtocol?.toUpperCase()} ${data.gatewaySourceAddress}:${data.gatewayListenPort}`;
 };
 
+const connectionHandleTop = (index: number, count: number): string =>
+  `${((index + 1) / (count + 1)) * 100}%`;
+
 const ResourceNodeComponent = ({
   data,
   selected,
 }: NodeProps<ResourceFlowNode>) => {
   const kind = resourceKinds[data.kind];
   const Icon = kind.icon;
+  const incomingHandleIDs = data.incomingHandleIDs ?? [];
+  const outgoingHandleIDs = data.outgoingHandleIDs ?? [];
   const detail =
     gatewayDetail(data) ??
     (data.source?.type === "github"
@@ -63,14 +68,19 @@ const ResourceNodeComponent = ({
   return (
     <article
       className={nodeClassName(selected, Boolean(data.pendingChangeCount))}
+      style={{ height: data.layoutHeight }}
     >
-      {data.hasIncomingConnection ? (
+      {incomingHandleIDs.map((handleID, index) => (
         <Handle
-          className="!size-2 !border-background !bg-muted-foreground"
+          className="!size-2.5 !border-background !bg-muted-foreground"
+          id={handleID}
+          isConnectable={false}
+          key={handleID}
           position={Position.Left}
+          style={{ top: connectionHandleTop(index, incomingHandleIDs.length) }}
           type="target"
         />
-      ) : null}
+      ))}
       <div className="flex h-9 items-center border-b border-border px-3">
         <Icon className="size-3.5 text-muted-foreground" />
         <span className="ml-2 min-w-0 flex-1 truncate text-xs font-medium">
@@ -86,7 +96,7 @@ const ResourceNodeComponent = ({
           title={data.statusMessage || data.status}
         />
       </div>
-      <div className="px-3 py-2.5">
+      <div className="min-h-0 flex-1 px-3 py-2.5">
         <p className="text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
           {kind.label}
         </p>
@@ -98,7 +108,7 @@ const ResourceNodeComponent = ({
         </p>
       </div>
       {data.pendingChangeCount ? (
-        <div className="flex items-center gap-2 border-t border-sky-500/30 bg-sky-500/5 px-3 py-2 text-[9px] text-sky-600 dark:text-sky-300">
+        <div className="flex h-[34px] shrink-0 items-center gap-2 border-t border-sky-500/30 bg-sky-500/5 px-3 text-[9px] text-sky-600 dark:text-sky-300">
           <span className="grid size-3.5 place-items-center border border-current">
             !
           </span>
@@ -116,7 +126,7 @@ const ResourceNodeComponent = ({
         <div className="border-t border-border bg-muted/20">
           {data.volumes.map((volume) => (
             <div
-              className="flex h-8 items-center gap-2 border-b border-border px-3 last:border-b-0"
+              className="flex h-[33px] items-center gap-2 border-b border-border px-3 last:border-b-0"
               key={volume.id}
             >
               <HardDrive className="size-3 text-muted-foreground" />
@@ -133,13 +143,17 @@ const ResourceNodeComponent = ({
           ))}
         </div>
       ) : null}
-      {data.hasOutgoingConnection ? (
+      {outgoingHandleIDs.map((handleID, index) => (
         <Handle
-          className="!size-2 !border-background !bg-muted-foreground"
+          className="!size-2.5 !border-background !bg-muted-foreground"
+          id={handleID}
+          isConnectable={false}
+          key={handleID}
           position={Position.Right}
+          style={{ top: connectionHandleTop(index, outgoingHandleIDs.length) }}
           type="source"
         />
-      ) : null}
+      ))}
     </article>
   );
 };

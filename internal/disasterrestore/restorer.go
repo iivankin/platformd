@@ -3,7 +3,6 @@ package disasterrestore
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -44,7 +43,6 @@ type Restorer struct {
 	AcquireLock   func(string, int) (io.Closer, error)
 	Services      bootstrap.ServiceManager
 	Now           func() time.Time
-	Random        io.Reader
 	OS            string
 	Architecture  string
 }
@@ -68,7 +66,7 @@ func ProductionRestorer(provider func() (ValidatedInput, error)) (Restorer, erro
 		AcquireLock: func(path string, expectedUID int) (io.Closer, error) {
 			return singletonlock.Acquire(path, expectedUID)
 		},
-		Services: bootstrap.SystemdManager{}, Now: time.Now, Random: rand.Reader,
+		Services: bootstrap.SystemdManager{}, Now: time.Now,
 		OS: runtime.GOOS, Architecture: runtime.GOARCH,
 	}, nil
 }
@@ -150,7 +148,7 @@ func (restorer Restorer) Restore(ctx context.Context) error {
 	}
 	importedAt := restorer.Now().UnixMilli()
 	payload, err := NewImportPayload(
-		fetched.DatabasePath, fetched.Manifest, input, importedAt, restorer.ExpectedUID, restorer.Random,
+		fetched.DatabasePath, fetched.Manifest, input, importedAt, restorer.ExpectedUID,
 	)
 	if err != nil {
 		return err
@@ -196,7 +194,7 @@ func (restorer Restorer) validate() error {
 		restorer.Paths.MasterKey == "" || restorer.Paths.BackupWorkRoot == "" || restorer.ExpectedUID < 0 ||
 		len(restorer.PublicKey) != ed25519.PublicKeySize || restorer.ProvideInput == nil || restorer.ValidateHost == nil ||
 		restorer.RemoteFactory == nil || restorer.ImportExact == nil || restorer.AcquireLock == nil ||
-		restorer.Services == nil || restorer.Now == nil || restorer.Random == nil || restorer.OS == "" || restorer.Architecture == "" {
+		restorer.Services == nil || restorer.Now == nil || restorer.OS == "" || restorer.Architecture == "" {
 		return errors.New("disaster restorer configuration is incomplete")
 	}
 	if !restoreSubpath(restorer.Paths.DataRoot, restorer.Paths.StateDatabase) ||

@@ -1,3 +1,4 @@
+import { ContextMenu } from "@base-ui/react/context-menu";
 import {
   Background,
   BackgroundVariant,
@@ -19,11 +20,15 @@ import {
   mergePendingCanvasResources,
 } from "@/pending-resource-creation";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
+import { applyProjectOperations } from "@/project-apply";
+import type { ProjectApplyOperation } from "@/project-apply";
+import { projectCanvasForDemoPreset } from "@/project-canvas-demo";
+import type { DemoCanvasPreset } from "@/project-canvas-demo";
+import { ProjectCanvasDemoSwitcher } from "@/project-canvas-demo-switcher";
 import { ProjectChangeBar } from "@/project-change-bar";
 import { useProjectChanges } from "@/project-changes";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
 import type { CreateKind } from "@/project-create-overlays";
-import { ProjectDeleteDialog } from "@/project-delete-dialog";
 import { ProjectDeploymentPage } from "@/project-deployment-page";
 import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
 import type {
@@ -33,6 +38,9 @@ import type {
 } from "@/project-flow";
 import { ProjectResourcePage } from "@/project-resource-page";
 import { resourcePath } from "@/project-resource-path";
+import { ProjectSettingsDialog } from "@/project-settings-dialog";
+import { ResourceConnectionEdge } from "@/resource-connection-edge";
+import { resourceCreateOptions } from "@/resource-create-panel";
 import { ResourceDraftPage } from "@/resource-draft-page";
 import { ResourceNode } from "@/resource-node";
 import { ServiceDraftPage } from "@/service-draft-page";
@@ -42,9 +50,14 @@ import type { PendingServiceSettings } from "@/service-settings-model";
 import { forgetLastProject } from "@/use-last-project";
 
 const nodeTypes = { resource: ResourceNode };
+const edgeTypes = { resourceConnection: ResourceConnectionEdge };
 const emptyNodes: ResourceFlowNode[] = [];
 const emptyEdges: ResourceFlowEdge[] = [];
 const statusRefreshMilliseconds = 5000;
+
+interface CanvasApplyOperation extends ProjectApplyOperation {
+  type: "resource" | "service";
+}
 
 const resourceOverlays = (
   changes: Record<string, PendingServiceSettings>
@@ -70,6 +83,26 @@ const resourceOverlays = (
       ];
     })
   );
+
+const canvasLayoutSignature = (
+  canvas: ProjectCanvas,
+  overlays: ReadonlyMap<string, ResourceNodeOverlay>
+): string =>
+  JSON.stringify({
+    connections: canvas.connections.map(({ sourceId, targetId }) => [
+      sourceId,
+      targetId,
+    ]),
+    resources: canvas.resources.map((resource) => {
+      const overlay = overlays.get(resource.id);
+      return [
+        resource.id,
+        overlay?.pendingChangeCount ??
+          (resource.id.startsWith("draft:") ? 1 : 0),
+        (overlay?.volumes ?? resource.volumes).map((volume) => volume.id),
+      ];
+    }),
+  });
 
 const EmptyCanvas = ({ visible }: { visible: boolean }) => {
   if (!visible) {
@@ -152,8 +185,10 @@ const ProjectRouteOverlay = ({
 };
 
 export const ProjectCanvasPage = ({
+  isDemo,
   onProjectDeleted,
 }: {
+  isDemo: boolean;
   onProjectDeleted: (projectID: string) => void;
 }) => {
   const navigate = useNavigate();
@@ -171,11 +206,12 @@ export const ProjectCanvasPage = ({
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [applyingChanges, setApplyingChanges] = useState(false);
   const [applyError, setApplyError] = useState<string>();
+  const [demoCanvasPreset, setDemoCanvasPreset] =
+    useState<DemoCanvasPreset>("default");
+  const [layoutRevision, setLayoutRevision] = useState(0);
+  const layoutSignatureRef = useRef("");
   const { resourceDrafts, serviceChanges, setResourceDraft, setServiceChange } =
     useProjectChanges(projectID);
-  const serviceChangesRef = useRef(serviceChanges);
-  const resourceDraftsRef = useRef(resourceDrafts);
-  const applyingResourceDraftIDsRef = useRef<ReadonlySet<string>>(new Set());
   const [applyingResourceDraftIDs, setApplyingResourceDraftIDs] = useState<
     ReadonlySet<string>
   >(new Set());
@@ -204,8 +240,22 @@ export const ProjectCanvasPage = ({
       ),
     };
   }, [applyingResourceDraftIDs, canvas, pendingResources]);
-  const isCanvasEmpty = canvasWithDrafts?.resources.length === 0;
-  const error = canvasError ?? metadataError;
+  const displayedCanvas = useMemo(
+    () =>
+      canvasWithDrafts
+        ? projectCanvasForDemoPreset(
+            canvasWithDrafts,
+            isDemo ? demoCanvasPreset : "default"
+          )
+        : null,
+    [canvasWithDrafts, demoCanvasPreset, isDemo]
+  );
+  const overlays = useMemo(
+    () => resourceOverlays(serviceChanges),
+    [serviceChanges]
+  );
+  const isCanvasEmpty = displayedCanvas?.resources.length === 0;
+  const pageError = canvasError ?? metadataError;
   const pendingServices = useMemo(
     () =>
       Object.values(serviceChanges).toSorted((left, right) =>
@@ -221,22 +271,7 @@ export const ProjectCanvasPage = ({
     const load = async () => {
       try {
         const loaded = await fetchProjectCanvas(projectID, controller.signal);
-        const withDrafts = {
-          ...loaded,
-          resources: mergePendingCanvasResources(
-            loaded.resources,
-            Object.values(resourceDraftsRef.current),
-            loaded.project.name,
-            applyingResourceDraftIDsRef.current
-          ),
-        };
-        const flow = projectFlowElements(
-          withDrafts,
-          resourceOverlays(serviceChangesRef.current)
-        );
         setCanvas(loaded);
-        setNodes((current) => mergeResourceNodeData(current, flow.nodes));
-        setEdges(flow.edges);
         setCanvasError(null);
       } catch (loadError) {
         if (
@@ -294,17 +329,42 @@ export const ProjectCanvasPage = ({
   }, [projectID, refreshVersion]);
 
   useEffect(() => {
-    serviceChangesRef.current = serviceChanges;
-    resourceDraftsRef.current = resourceDrafts;
-    if (canvasWithDrafts) {
-      const flow = projectFlowElements(
-        canvasWithDrafts,
-        resourceOverlays(serviceChanges)
-      );
-      setNodes((current) => mergeResourceNodeData(current, flow.nodes));
-      setEdges(flow.edges);
+    if (!displayedCanvas) {
+      return;
     }
-  }, [canvasWithDrafts, resourceDrafts, serviceChanges, setEdges, setNodes]);
+    let cancelled = false;
+    const signature = canvasLayoutSignature(displayedCanvas, overlays);
+    const layout = async () => {
+      try {
+        const flow = await projectFlowElements(displayedCanvas, overlays);
+        if (cancelled) {
+          return;
+        }
+        setNodes((current) => mergeResourceNodeData(current, flow.nodes));
+        setEdges(flow.edges);
+        if (layoutSignatureRef.current !== signature) {
+          layoutSignatureRef.current = signature;
+          setLayoutRevision((revision) => revision + 1);
+        }
+      } catch (layoutError) {
+        if (!cancelled) {
+          setCanvasError(
+            layoutError instanceof Error
+              ? layoutError.message
+              : "Unable to lay out project canvas"
+          );
+        }
+      }
+    };
+    void layout();
+    return () => {
+      cancelled = true;
+    };
+  }, [displayedCanvas, overlays, setEdges, setNodes]);
+
+  const changeDemoCanvasPreset = (preset: DemoCanvasPreset) => {
+    setDemoCanvasPreset(preset);
+  };
 
   const applyChanges = async () => {
     if (
@@ -313,111 +373,145 @@ export const ProjectCanvasPage = ({
     ) {
       return;
     }
+    if (!canvas) {
+      setApplyError("Project resources are still loading");
+      return;
+    }
     setApplyingChanges(true);
     setApplyError(undefined);
     const resourceDraftIDs = new Set(pendingResources.map((draft) => draft.id));
-    applyingResourceDraftIDsRef.current = resourceDraftIDs;
     setApplyingResourceDraftIDs(resourceDraftIDs);
-    const operations = [
+    const operations: CanvasApplyOperation[] = [
       ...pendingServices.map((change) => ({
+        buildEnvironment: change.buildEnvironment,
+        environment: change.environment,
         id: change.serviceID,
         label: change.serviceName,
+        resourceName: change.serviceName,
         run: () => applyServiceSettings(projectID, change),
         type: "service" as const,
       })),
       ...pendingResources.map((draft) => ({
+        buildEnvironment:
+          draft.kind === "service" ? draft.input.buildEnvironment : undefined,
+        environment:
+          draft.kind === "service" ? draft.input.environment : undefined,
         id: draft.id,
         label: draft.input.name,
+        resourceName: draft.input.name,
         run: () => applyPendingResource(projectID, draft),
         type: "resource" as const,
       })),
     ];
-    const results = await Promise.allSettled(
-      operations.map((operation) => operation.run())
-    );
-    let firstError: string | undefined;
-    let applied = false;
-    for (const [index, result] of results.entries()) {
-      const operation = operations[index];
-      if (!operation) {
-        continue;
-      }
-      if (result.status === "fulfilled") {
-        applied = true;
-        if (operation.type === "service") {
-          setServiceChange(operation.id);
-        } else {
-          setResourceDraft(operation.id);
+    try {
+      const results = await applyProjectOperations(
+        operations,
+        new Set(canvas.resources.map((resource) => resource.name))
+      );
+      let firstError: string | undefined;
+      let blocked = 0;
+      let applied = false;
+      for (const result of results) {
+        const { operation } = result;
+        if (result.status === "fulfilled") {
+          applied = true;
+          if (operation.type === "service") {
+            setServiceChange(operation.id);
+          } else {
+            setResourceDraft(operation.id);
+          }
+          continue;
         }
-        continue;
+        if (result.status === "blocked") {
+          blocked += 1;
+        } else if (!firstError) {
+          const message =
+            result.reason instanceof Error
+              ? result.reason.message
+              : "Unable to apply project change";
+          firstError = `${operation.label}: ${message}`;
+        }
       }
-      if (!firstError) {
-        const message =
-          result.reason instanceof Error
-            ? result.reason.message
-            : "Unable to apply service settings";
-        firstError = `${operation.label}: ${message}`;
+      if (applied) {
+        setRefreshVersion((value) => value + 1);
       }
+      setApplyError(
+        firstError && blocked > 0
+          ? `${firstError} · ${blocked} dependent ${blocked === 1 ? "change was" : "changes were"} not applied`
+          : firstError
+      );
+    } catch (error) {
+      setApplyError(
+        error instanceof Error
+          ? error.message
+          : "Unable to plan project changes"
+      );
+    } finally {
+      setApplyingResourceDraftIDs(new Set());
+      setApplyingChanges(false);
     }
-    if (applied) {
-      setRefreshVersion((value) => value + 1);
+  };
+
+  const discardPendingChanges = () => {
+    for (const change of pendingServices) {
+      setServiceChange(change.serviceID);
     }
-    setApplyError(firstError);
-    applyingResourceDraftIDsRef.current = new Set();
-    setApplyingResourceDraftIDs(new Set());
-    setApplyingChanges(false);
+    for (const draft of pendingResources) {
+      setResourceDraft(draft.id);
+    }
+    setApplyError(undefined);
+  };
+
+  const handleProjectDeleted = (deletedProjectID: string) => {
+    discardPendingChanges();
+    forgetLastProject(deletedProjectID);
+    onProjectDeleted(deletedProjectID);
+    void navigate("/projects", { replace: true });
   };
 
   return (
     <div className="flex h-full min-h-0 animate-in flex-col duration-200 fade-in slide-in-from-bottom-1">
-      <section className="flex min-h-14 shrink-0 items-center justify-between gap-4 border-b border-border px-5 py-3">
-        <div className="min-w-0">
+      <section className="flex min-h-12 shrink-0 items-center gap-4 border-b border-border px-5 py-2.5">
+        <div className="flex min-w-0 items-center gap-2.5">
           <p className="truncate text-xs font-medium">
             {canvas?.project.name ?? "Project"}
           </p>
-          <p className="mt-1 truncate text-[10px] text-muted-foreground">
-            {canvas ? `${canvas.project.name}.internal` : "Loading namespace"}
-          </p>
-        </div>
-        <div className="flex items-center gap-1">
-          <Button onClick={() => setCreateKind("picker")} size="sm">
-            <Plus />
-            New resource
-          </Button>
           {canvas ? (
-            <ProjectDeleteDialog
-              onDeleted={(deletedProjectID) => {
-                forgetLastProject(deletedProjectID);
-                onProjectDeleted(deletedProjectID);
-                void navigate("/projects", { replace: true });
-              }}
+            <ProjectSettingsDialog
+              onDeleted={handleProjectDeleted}
               project={canvas.project}
             />
           ) : null}
         </div>
       </section>
 
-      {error ? (
+      {pageError ? (
         <section className="shrink-0 border-b border-destructive/30 bg-destructive/5 px-5 py-4 text-xs text-destructive">
-          {error}
+          {pageError}
         </section>
       ) : null}
 
       <section className="relative min-h-0 flex-1 bg-background">
+        {isDemo ? (
+          <ProjectCanvasDemoSwitcher
+            onChange={changeDemoCanvasPreset}
+            value={demoCanvasPreset}
+          />
+        ) : null}
+        <Button
+          className="absolute top-4 right-5 z-10 shadow-sm"
+          onClick={() => setCreateKind("picker")}
+          size="sm"
+        >
+          <Plus />
+          New resource
+        </Button>
         <ProjectChangeBar
           applying={applyingChanges}
           changes={pendingServices}
           error={applyError}
           onApply={() => void applyChanges()}
-          onDiscard={() => {
-            for (const change of pendingServices) {
-              setServiceChange(change.serviceID);
-            }
-            for (const draft of pendingResources) {
-              setResourceDraft(draft.id);
-            }
-            setApplyError(undefined);
-          }}
+          onDiscard={discardPendingChanges}
           resourceDrafts={pendingResources}
         />
         <ProjectCreateOverlays
@@ -437,56 +531,93 @@ export const ProjectCanvasPage = ({
           resources={canvas?.resources ?? []}
         />
         <EmptyCanvas visible={isCanvasEmpty === true} />
-        <ReactFlow<ResourceFlowNode, ResourceFlowEdge>
-          edges={edges}
-          edgesFocusable={false}
-          edgesReconnectable={false}
-          elementsSelectable
-          fitView
-          fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
-          key={projectID}
-          maxZoom={1.75}
-          minZoom={0.25}
-          nodeTypes={nodeTypes}
-          nodes={nodes}
-          nodesConnectable={false}
-          onEdgesChange={onEdgesChange}
-          onNodeClick={(_event, node) => {
-            const draft = resourceDrafts[node.id];
-            if (draft) {
-              const kind =
-                draft.kind === "storage" ? "object_store" : draft.kind;
-              void navigate(
-                resourcePath(projectID, draft.id, kind, "variables")
-              );
-              return;
-            }
-            void navigate(resourcePath(projectID, node.id, node.data.kind));
-          }}
-          onNodesChange={onNodesChange}
-          onlyRenderVisibleElements
-          panOnScroll
-          proOptions={{ hideAttribution: true }}
-          selectionOnDrag
-        >
-          <Background
-            color="var(--border)"
-            gap={16}
-            size={1}
-            variant={BackgroundVariant.Dots}
-          />
-          <Controls
-            aria-label="Canvas navigation"
-            fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
-            position="bottom-right"
-            showInteractive={false}
-          />
-        </ReactFlow>
+        <ContextMenu.Root>
+          <ContextMenu.Trigger className="absolute inset-0">
+            <ReactFlow<ResourceFlowNode, ResourceFlowEdge>
+              edgeTypes={edgeTypes}
+              edges={edges}
+              edgesFocusable={false}
+              edgesReconnectable={false}
+              fitView
+              fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
+              key={`${projectID}:${layoutRevision}`}
+              maxZoom={1.75}
+              minZoom={0.25}
+              nodeTypes={nodeTypes}
+              nodes={nodes}
+              nodesConnectable={false}
+              nodesDraggable
+              onEdgesChange={onEdgesChange}
+              onNodeClick={(_event, node) => {
+                if (isDemo && demoCanvasPreset !== "default") {
+                  return;
+                }
+                const draft = resourceDrafts[node.id];
+                if (draft) {
+                  const kind =
+                    draft.kind === "storage" ? "object_store" : draft.kind;
+                  void navigate(
+                    resourcePath(projectID, draft.id, kind, "variables")
+                  );
+                  return;
+                }
+                void navigate(resourcePath(projectID, node.id, node.data.kind));
+              }}
+              onNodeContextMenu={(event) => event.stopPropagation()}
+              onNodesChange={onNodesChange}
+              onlyRenderVisibleElements
+              panOnScroll
+              proOptions={{ hideAttribution: true }}
+              selectNodesOnDrag={false}
+            >
+              <Background
+                color="var(--border)"
+                gap={16}
+                size={1}
+                variant={BackgroundVariant.Dots}
+              />
+              <Controls
+                aria-label="Canvas navigation"
+                fitViewOptions={{ maxZoom: 1, padding: 0.24 }}
+                position="bottom-right"
+                showInteractive={false}
+              />
+            </ReactFlow>
+          </ContextMenu.Trigger>
+          <ContextMenu.Portal>
+            <ContextMenu.Positioner className="z-50">
+              <ContextMenu.Popup className="min-w-52 border border-border bg-popover p-1 text-[10px] text-popover-foreground shadow-lg">
+                <ContextMenu.Group>
+                  <ContextMenu.GroupLabel className="px-2.5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                    Create resource
+                  </ContextMenu.GroupLabel>
+                  <ContextMenu.Separator className="mb-1 h-px bg-border" />
+                  {resourceCreateOptions.map((option) => {
+                    const Icon = option.icon;
+                    return (
+                      <ContextMenu.Item
+                        className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
+                        key={option.kind}
+                        onClick={() => setCreateKind(option.kind)}
+                      >
+                        <Icon className="size-3.5 text-muted-foreground" />
+                        {option.label}
+                      </ContextMenu.Item>
+                    );
+                  })}
+                </ContextMenu.Group>
+              </ContextMenu.Popup>
+            </ContextMenu.Positioner>
+          </ContextMenu.Portal>
+        </ContextMenu.Root>
+        {/* Applying settings clears staged state. Remount the open overlay so it
+            fetches the committed service instead of rendering its stale baseline. */}
         <ProjectRouteOverlay
           canvas={canvas}
           canvasWithDrafts={canvasWithDrafts}
           deploymentID={deploymentID}
           embeddedRegistryHost={embeddedRegistryHost}
+          key={refreshVersion}
           onDraftChange={(draft) => setResourceDraft(draft.id, draft)}
           projectID={projectID}
           resourceID={resourceID}

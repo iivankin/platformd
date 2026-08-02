@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iivankin/platformd/internal/admission"
@@ -60,15 +60,16 @@ type runtimeStack struct {
 	embeddedRegistryHost       string
 	serviceRestarts            *servicerestart.Manager
 	serviceFailures            map[string]error
-	publishedServices          map[string]bool
+	publishedBackends          atomic.Pointer[serviceBackendSnapshot]
 	managedRedis               *managedredis.Controller
 	redisFailures              map[string]error
 	managedPostgres            *managedpostgres.Controller
 	postgresExtensions         *postgresextension.Builder
 	postgresExtensionDB        *state.Store
 	postgresFailures           map[string]error
-	objectStoreHandler         http.Handler
-	objectStoreServers         map[string]*objectStoreServer
+	objectStoreDetails         objectStoreDetails
+	objectStoreDataPlane       objectStoreDataPlane
+	objectStoreProjects        map[string]bool
 	objectStoreFailures        map[string]error
 	networkGatewayFailures     map[string]error
 	networkGatewayPublications map[string]networkGatewayPublication
@@ -79,7 +80,15 @@ type runtimeStack struct {
 	cloudflareMeshCancel       context.CancelFunc
 }
 
-func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot string, projects []state.RuntimeProject, growth deployment.GrowthGate, gate *admission.Gate) (*runtimeStack, error) {
+func startRuntime(
+	ctx context.Context,
+	paths layout.Paths,
+	cgroupWorkloadRoot string,
+	projects []state.RuntimeProject,
+	growth deployment.GrowthGate,
+	gate *admission.Gate,
+	imageStorageChanged func(),
+) (*runtimeStack, error) {
 	if growth == nil || gate == nil {
 		return nil, errors.New("runtime growth and mutation admission gates are required")
 	}
@@ -137,6 +146,7 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 	}
 
 	config := containerengine.ProductionConfig(paths, cgroupWorkloadRoot)
+	config.ImageStorageChanged = imageStorageChanged
 	engine, err := containerengine.Open(ctx, config)
 	if err != nil {
 		return nil, errors.Join(err, manager.Clear())
@@ -163,15 +173,15 @@ func startRuntime(ctx context.Context, paths layout.Paths, cgroupWorkloadRoot st
 		growth:                     growth,
 		admission:                  gate,
 		serviceFailures:            make(map[string]error),
-		publishedServices:          make(map[string]bool),
 		redisFailures:              make(map[string]error),
 		postgresFailures:           make(map[string]error),
-		objectStoreServers:         make(map[string]*objectStoreServer),
+		objectStoreProjects:        make(map[string]bool),
 		objectStoreFailures:        make(map[string]error),
 		networkGatewayFailures:     make(map[string]error),
 		networkGatewayPublications: make(map[string]networkGatewayPublication),
 		cloudflareMeshNetworkError: cloudflareMeshNetworkError,
 	}
+	stack.publishedBackends.Store(&serviceBackendSnapshot{services: map[string]publishedBackend{}})
 	objectStores := make(map[string]bool, len(projects))
 	for _, project := range projects {
 		objectStores[project.ID] = project.ObjectStoreEnabled
@@ -293,14 +303,11 @@ func (stack *runtimeStack) Close() error {
 		return nil
 	}
 	stack.closed = true
+	stack.publishedBackends.Store(&serviceBackendSnapshot{services: map[string]publishedBackend{}})
 	serviceWatcher := stack.serviceWatcher
 	serviceRestarts := stack.serviceRestarts
 	redis := stack.managedRedis
 	postgres := stack.managedPostgres
-	objectStoreServers := make([]*objectStoreServer, 0, len(stack.objectStoreServers))
-	for _, objectStoreServer := range stack.objectStoreServers {
-		objectStoreServers = append(objectStoreServers, objectStoreServer)
-	}
 	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
 	networks := append([]string(nil), stack.networks...)
 	cloudflareMeshRuntime := stack.cloudflareMeshRuntime
@@ -332,11 +339,6 @@ func (stack *runtimeStack) Close() error {
 	if cloudflareMeshRuntime != nil {
 		failures = append(failures, cloudflareMeshRuntime.Close())
 	}
-	for _, objectStoreServer := range objectStoreServers {
-		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		failures = append(failures, objectStoreServer.server.Shutdown(stopContext))
-		cancel()
-	}
 	for index := len(dnsServers) - 1; index >= 0; index-- {
 		failures = append(failures, dnsServers[index].Close())
 	}
@@ -357,12 +359,9 @@ func (stack *runtimeStack) ReleaseForUpdate() error {
 		return nil
 	}
 	stack.closed = true
+	stack.publishedBackends.Store(&serviceBackendSnapshot{services: map[string]publishedBackend{}})
 	serviceWatcher := stack.serviceWatcher
 	serviceRestarts := stack.serviceRestarts
-	objectStoreServers := make([]*objectStoreServer, 0, len(stack.objectStoreServers))
-	for _, objectStoreServer := range stack.objectStoreServers {
-		objectStoreServers = append(objectStoreServers, objectStoreServer)
-	}
 	dnsServers := append([]*internaldns.Server(nil), stack.dnsServers...)
 	cloudflareMeshRuntime := stack.cloudflareMeshRuntime
 	cloudflareMeshCancel := stack.cloudflareMeshCancel
@@ -384,11 +383,6 @@ func (stack *runtimeStack) ReleaseForUpdate() error {
 		// deployment controllers' quiesce set. Remove it before handing the
 		// ephemeral libpod state to the replacement daemon.
 		failures = append(failures, cloudflareMeshRuntime.Close())
-	}
-	for _, objectStoreServer := range objectStoreServers {
-		stopContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		failures = append(failures, objectStoreServer.server.Shutdown(stopContext))
-		cancel()
 	}
 	for index := len(dnsServers) - 1; index >= 0; index-- {
 		failures = append(failures, dnsServers[index].Close())
@@ -514,9 +508,24 @@ func (stack *runtimeStack) RemoveProject(projectID string) error {
 		stack.mu.Unlock()
 		return errors.New("container runtime is closed")
 	}
+	dataPlane := stack.objectStoreDataPlane
+	stack.mu.Unlock()
+	if dataPlane != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		err := dataPlane.RemoveDataPlaneProject(ctx, projectID)
+		cancel()
+		if err != nil {
+			return fmt.Errorf("remove project S3 endpoint: %w", err)
+		}
+	}
+
+	stack.mu.Lock()
+	if stack.closed {
+		stack.mu.Unlock()
+		return errors.New("container runtime is closed")
+	}
 	network, exists := stack.projectNetworks[projectID]
 	dnsServer := stack.projectDNSServers[projectID]
-	objectServer := stack.objectStoreServers[projectID]
 	candidate := make([]firewall.Project, 0, len(stack.firewallProjects))
 	for currentID, current := range stack.firewallProjects {
 		if currentID != projectID {
@@ -531,18 +540,13 @@ func (stack *runtimeStack) RemoveProject(projectID string) error {
 	delete(stack.projectNetworks, projectID)
 	delete(stack.dnsZones, projectID)
 	delete(stack.projectDNSServers, projectID)
-	delete(stack.objectStoreServers, projectID)
+	delete(stack.objectStoreProjects, projectID)
 	delete(stack.objectStoreFailures, projectID)
 	stack.networks = slices.DeleteFunc(stack.networks, func(name string) bool { return exists && name == network.Name })
 	stack.dnsServers = slices.DeleteFunc(stack.dnsServers, func(server *internaldns.Server) bool { return server == dnsServer })
 	stack.mu.Unlock()
 
 	var failures []error
-	if objectServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		failures = append(failures, objectServer.server.Shutdown(ctx))
-		cancel()
-	}
 	if dnsServer != nil {
 		failures = append(failures, dnsServer.Close())
 	}

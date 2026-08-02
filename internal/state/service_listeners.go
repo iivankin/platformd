@@ -148,7 +148,7 @@ VALUES (?, ?, ?, ?, ?)`, protocol, input.PublicPort, input.ServiceID, input.Targ
 		listener.CreatedAt = createdAt
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: action, ServiceID: input.ServiceID,
+			ProjectID: input.ProjectID, Action: action, ServiceID: input.ServiceID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: map[string]string{
 				"protocol": protocol, "publicPort": fmt.Sprintf("%d", input.PublicPort),
@@ -189,7 +189,7 @@ WHERE protocol = ? AND public_port = ? AND service_id = ?`, protocol, input.Publ
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
-			Action: "service.listener.detach", ServiceID: input.ServiceID,
+			ProjectID: input.ProjectID, Action: "service.listener.detach", ServiceID: input.ServiceID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.CreatedAtMillis,
 			Metadata: map[string]string{"protocol": protocol, "publicPort": fmt.Sprintf("%d", input.PublicPort)},
 		})

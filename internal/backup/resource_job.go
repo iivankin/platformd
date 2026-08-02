@@ -124,11 +124,11 @@ func (job *ResourceJob) runResource(
 		return state.BackupRecord{}, err
 	}
 	startedAt := job.config.Now()
-	backupID, err := id.NewWith(startedAt, job.config.Random)
+	backupID, err := id.New()
 	if err != nil {
 		return state.BackupRecord{}, err
 	}
-	generationID, err := id.NewWith(startedAt, job.config.Random)
+	generationID, err := id.New()
 	if err != nil {
 		return state.BackupRecord{}, err
 	}

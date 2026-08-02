@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"path/filepath"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 )
@@ -56,9 +55,9 @@ func sidecarContainerSpec(config ProductionRuntimeConfig, imageID string) contai
 			"io.platformd.owner": "system", "io.platformd.component": "cloudflare-mesh",
 		},
 		Network: config.Network.Name, DNSServers: []string{config.Network.Gateway},
-		Mounts:       []containerengine.Mount{{Source: config.StateRoot, Destination: cloudflareStatePath}},
-		LogPath:      filepath.Join(config.LogRoot, "infrastructure", "cloudflare-mesh.log"),
-		LogSizeBytes: 16 << 20, LogMaxFiles: 3, CgroupParent: config.CgroupParent,
+		Mounts:          []containerengine.Mount{{Source: config.StateRoot, Destination: cloudflareStatePath}},
+		LogDriver:       containerengine.ContainerLogJournald,
+		CgroupParent:    config.CgroupParent,
 		SecurityProfile: containerengine.ContainerSecurityCloudflareMesh,
 	}
 }

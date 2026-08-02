@@ -26,6 +26,7 @@ import type {
   PostgresExtension,
   Project,
   ProjectCanvas,
+  ProjectWebhook,
   PreviewDeployment,
   RegistryCredential,
   RegistryImage,
@@ -69,6 +70,7 @@ export interface MockState {
   operations: Record<string, Operation>;
   postgres: Record<string, ManagedPostgres>;
   postgresExtensions: Record<string, PostgresExtension[]>;
+  projectWebhooks: Record<string, ProjectWebhook[]>;
   projects: Project[];
   previews: Record<string, PreviewDeployment[]>;
   redis: Record<string, ManagedRedis>;
@@ -114,6 +116,7 @@ const service: Service = {
   activeConfigHash: "config-demo",
   activeDeploymentId: "deployment-demo",
   activeImageDigest: "sha256:service-demo",
+  buildEnvironment: {},
   cpuMillicores: 500,
   createdAt: project.createdAt,
   enabled: true,
@@ -362,7 +365,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     appSlug: "",
     configured: false,
     updatedAt: 0,
-    webhookPath: "/api/v1/integrations/github/webhook",
+    webhookPath: "/public/api/v1/integrations/github/webhook",
   },
   githubRepositories: [],
   identity: {
@@ -370,7 +373,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     name: "Mock Developer",
     subject: "mock-developer",
   },
-  infrastructureLogs: { records: [], truncated: false },
+  infrastructureLogs: { records: [] },
   listeners: {},
   logs: {},
   meta: {
@@ -386,6 +389,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   postgres: {},
   postgresExtensions: {},
   previews: {},
+  projectWebhooks: {},
   projects: [],
   redis: {},
   registryCredentials: {},
@@ -400,7 +404,6 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     accessAudience: "mock-audience",
     accessTeamDomain: "mock-team.cloudflareaccess.com",
     adminHostname: "admin.mock.local",
-    automationHostname: "",
     certificates: [],
     installationId: "installation-mock",
   },
@@ -438,7 +441,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
     appSlug: "platformd-mock",
     configured: true,
     updatedAt: now - 3_600_000,
-    webhookPath: "/api/v1/integrations/github/webhook",
+    webhookPath: "/public/api/v1/integrations/github/webhook",
   };
   state.githubRepositories = [
     {
@@ -516,6 +519,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
       serviceConfigHash: "config-demo",
       serviceId: service.id,
       snapshot: {
+        buildEnvironment: service.buildEnvironment,
         cpuMillicores: service.cpuMillicores,
         environment: service.environment,
         healthCheck: service.healthCheck,
@@ -536,6 +540,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
       serviceConfigHash: "config-failed",
       serviceId: service.id,
       snapshot: {
+        buildEnvironment: service.buildEnvironment,
         cpuMillicores: service.cpuMillicores,
         environment: service.environment,
         healthCheck: service.healthCheck,
@@ -558,6 +563,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
       serviceConfigHash: "config-previous",
       serviceId: service.id,
       snapshot: {
+        buildEnvironment: service.buildEnvironment,
         cpuMillicores: 400,
         environment: { LOG_LEVEL: "warn" },
         healthCheck: service.healthCheck,
@@ -802,7 +808,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
       role: "admin",
     },
   ];
-  state.settings.automationHostname = "api.mock.local";
   state.settings.certificates = [
     {
       createdAt: now - 30 * 86_400_000,
@@ -829,7 +834,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
         timestamp: iso(-3),
       },
     ],
-    truncated: false,
   };
   state.auditEvents = [
     {
@@ -839,6 +843,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
       createdAt: now - 90_000,
       id: "audit-service-update",
       metadata: { enabled: true },
+      projectId: service.projectId,
       requestCorrelationId: "request-demo-1",
       result: "succeeded",
       targetId: service.id,
@@ -851,6 +856,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
       createdAt: now - 86_400_000,
       id: "audit-backup-run",
       metadata: {},
+      projectId: postgres.projectId,
       result: "succeeded",
       targetId: postgres.id,
       targetKind: "postgres",

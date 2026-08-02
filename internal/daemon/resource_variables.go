@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/domainvariables"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
@@ -34,7 +35,129 @@ type environmentResolution struct {
 	resolving map[string]bool
 }
 
-func (resolver resourceVariableResolver) Resolve(ctx context.Context, desired state.ServiceDesired, deploymentID string) (map[string]string, error) {
+func (resolver resourceVariableResolver) Resolve(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+) (map[string]string, error) {
+	resolution, err := resolver.resolution(ctx, desired)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(desired.Snapshot.Environment)+8)
+	for name := range desired.Snapshot.Environment {
+		value, resolveErr := resolution.serviceVariable(ctx, desired, name)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("%s: %w", name, resolveErr)
+		}
+		result[name] = value
+	}
+	if err := resolver.addRuntimeEnvironment(ctx, desired, environmentContext, result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func addEnvironmentIdentity(
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+	result map[string]string,
+) {
+	result["PLATFORMD_ENVIRONMENT"] = string(environmentContext.Kind)
+	result["PLATFORMD_PROJECT_ID"] = desired.ProjectID
+	result["PLATFORMD_PROJECT_NAME"] = desired.ProjectName
+	result["PLATFORMD_SERVICE_ID"] = desired.ID
+	result["PLATFORMD_SERVICE_NAME"] = desired.Name
+	result["PLATFORMD_PRIVATE_DOMAIN"] = desired.Name + "." + desired.ProjectName + ".internal"
+	if environmentContext.Kind == deployment.EnvironmentPreview {
+		result["PLATFORMD_PREVIEW"] = "true"
+	}
+}
+
+func (resolver resourceVariableResolver) publicURLs(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+) (string, error) {
+	if environmentContext.Kind == deployment.EnvironmentPreview {
+		return environmentContext.PreviewURL, nil
+	}
+	domains, err := resolver.store.ServiceDomains(ctx, desired.ProjectID, desired.ID)
+	if err != nil {
+		return "", err
+	}
+	publicURLs := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		publicURLs = append(publicURLs, "https://"+domain.Hostname)
+	}
+	sort.Strings(publicURLs)
+	return strings.Join(publicURLs, ","), nil
+}
+
+func (resolver resourceVariableResolver) addRuntimeEnvironment(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+	result map[string]string,
+) error {
+	// NODE_ENV is a conventional default, not a reserved platform variable, so
+	// services can explicitly override it in either environment section.
+	if _, configured := result["NODE_ENV"]; !configured {
+		result["NODE_ENV"] = "production"
+	}
+	addEnvironmentIdentity(desired, environmentContext, result)
+	publicURLs, err := resolver.publicURLs(ctx, desired, environmentContext)
+	if err != nil {
+		return err
+	}
+	result["PLATFORMD_DEPLOYMENT_ID"] = environmentContext.DeploymentID
+	result["PLATFORMD_PUBLIC_URLS"] = publicURLs
+	if github := desired.Snapshot.Source.GitHub; github != nil {
+		result["PLATFORMD_GIT_REPOSITORY"] = github.Repository
+	}
+	if environmentContext.SourceRevision != "" {
+		result["PLATFORMD_GIT_COMMIT_SHA"] = environmentContext.SourceRevision
+	}
+	if environmentContext.CommitMessage != "" {
+		result["PLATFORMD_GIT_COMMIT_MESSAGE"] = environmentContext.CommitMessage
+	}
+	if environmentContext.Kind == deployment.EnvironmentPreview {
+		result["PLATFORMD_PREVIEW_URL"] = environmentContext.PreviewURL
+		result["PLATFORMD_GIT_PULL_REQUEST_NUMBER"] = strconv.Itoa(environmentContext.PullRequestNumber)
+	}
+	return nil
+}
+
+func (resolver resourceVariableResolver) ResolveBuild(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+) (map[string]string, error) {
+	resolution, err := resolver.resolution(ctx, desired)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string, len(desired.Snapshot.BuildEnvironment)+8)
+	for name, raw := range desired.Snapshot.BuildEnvironment {
+		value, resolveErr := variableexpression.Expand(raw, func(reference variableexpression.Reference) (string, error) {
+			return resolution.reference(ctx, reference)
+		})
+		if resolveErr != nil {
+			return nil, fmt.Errorf("%s: %w", name, resolveErr)
+		}
+		result[name] = value
+	}
+	if _, configured := result["CI"]; !configured {
+		result["CI"] = "1"
+	}
+	if _, configured := result["NODE_ENV"]; !configured {
+		result["NODE_ENV"] = "production"
+	}
+	addEnvironmentIdentity(desired, environmentContext, result)
+	return result, nil
+}
+
+func (resolver resourceVariableResolver) resolution(ctx context.Context, desired state.ServiceDesired) (*environmentResolution, error) {
 	resources, err := resolver.store.ProjectResources(ctx, desired.ProjectID)
 	if err != nil {
 		return nil, err
@@ -43,36 +166,11 @@ func (resolver resourceVariableResolver) Resolve(ctx context.Context, desired st
 	for _, resource := range resources {
 		byName[resource.Name] = resource
 	}
-	resolution := environmentResolution{
+	return &environmentResolution{
 		resolver: resolver, projectID: desired.ProjectID, resources: byName,
 		services: map[string]state.ServiceDesired{desired.ID: desired},
 		cache:    make(map[string]string), resolving: make(map[string]bool),
-	}
-	result := make(map[string]string, len(desired.Snapshot.Environment))
-	for name := range desired.Snapshot.Environment {
-		value, resolveErr := resolution.serviceVariable(ctx, desired, name)
-		if resolveErr != nil {
-			return nil, fmt.Errorf("%s: %w", name, resolveErr)
-		}
-		result[name] = value
-	}
-	domains, err := resolver.store.ServiceDomains(ctx, desired.ProjectID, desired.ID)
-	if err != nil {
-		return nil, err
-	}
-	publicURLs := make([]string, 0, len(domains))
-	for _, domain := range domains {
-		publicURLs = append(publicURLs, "https://"+domain.Hostname)
-	}
-	sort.Strings(publicURLs)
-	result["PLATFORMD_PROJECT_ID"] = desired.ProjectID
-	result["PLATFORMD_PROJECT_NAME"] = desired.ProjectName
-	result["PLATFORMD_SERVICE_ID"] = desired.ID
-	result["PLATFORMD_SERVICE_NAME"] = desired.Name
-	result["PLATFORMD_DEPLOYMENT_ID"] = deploymentID
-	result["PLATFORMD_PRIVATE_DOMAIN"] = desired.Name + "." + desired.ProjectName + ".internal"
-	result["PLATFORMD_PUBLIC_URLS"] = strings.Join(publicURLs, ",")
-	return result, nil
+	}, nil
 }
 
 func (resolution *environmentResolution) serviceVariable(ctx context.Context, service state.ServiceDesired, name string) (string, error) {

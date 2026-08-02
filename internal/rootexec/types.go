@@ -2,7 +2,6 @@ package rootexec
 
 import (
 	"context"
-	"io"
 	"time"
 )
 
@@ -14,7 +13,6 @@ type Leaf interface {
 
 type Config struct {
 	CreateLeaf      func(string) (Leaf, error)
-	Random          io.Reader
 	Now             func() time.Time
 	CommandBytes    int
 	OutputBytes     int

@@ -5,23 +5,28 @@ import (
 	"time"
 )
 
-func TestImageGarbageCollectionOnlySelectsOldUnreferencedWritableImages(t *testing.T) {
+func TestImageGarbageCollectionUsesSeparateFinalAndBuildCacheRetention(t *testing.T) {
 	t.Parallel()
-	before := time.Unix(100, 0)
+	finalBefore := time.Unix(100, 0)
+	buildCacheBefore := time.Unix(200, 0)
 	images := []imageGarbageCollectCandidate{
-		{id: "old", digests: []string{"sha256:old"}, cachedAt: before.Add(-time.Hour)},
-		{id: "used-id", digests: []string{"sha256:used-id"}, cachedAt: before.Add(-time.Hour)},
-		{id: "used-digest", digests: []string{"sha256:used-digest"}, cachedAt: before.Add(-time.Hour)},
-		{id: "new", digests: []string{"sha256:new"}, cachedAt: before},
-		{id: "readonly", digests: []string{"sha256:readonly"}, cachedAt: before.Add(-time.Hour), readOnly: true},
+		{id: "old-final", digests: []string{"sha256:old-final"}, cachedAt: finalBefore.Add(-time.Hour), final: true},
+		{id: "young-final", digests: []string{"sha256:young-final"}, cachedAt: finalBefore, final: true},
+		{id: "old-cache", digests: []string{"sha256:old-cache"}, cachedAt: buildCacheBefore.Add(-time.Hour)},
+		{id: "young-cache", digests: []string{"sha256:young-cache"}, cachedAt: buildCacheBefore},
+		{id: "used-id", digests: []string{"sha256:used-id"}, cachedAt: finalBefore.Add(-time.Hour), final: true},
+		{id: "used-digest", digests: []string{"sha256:used-digest"}, cachedAt: finalBefore.Add(-time.Hour), final: true},
+		{id: "readonly", digests: []string{"sha256:readonly"}, cachedAt: finalBefore.Add(-time.Hour), readOnly: true},
 		{id: "unknown-age", digests: []string{"sha256:unknown"}},
 	}
 	selected := selectImageGarbageCollectCandidates(
-		images, before,
+		images, finalBefore, buildCacheBefore,
 		map[string]struct{}{"used-id": {}},
 		map[string]struct{}{"sha256:used-digest": {}},
 	)
-	if len(selected) != 1 || selected[0].id != "old" {
+	if len(selected) != 2 ||
+		selected[0].id != "old-cache" || selected[0].kind != imageGarbageCollectBuildCache ||
+		selected[1].id != "old-final" || selected[1].kind != imageGarbageCollectFinal {
 		t.Fatalf("selected images = %+v", selected)
 	}
 }

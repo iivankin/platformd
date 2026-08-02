@@ -63,7 +63,13 @@ func TestAPITokenCreateListAndRevokeKeepsSecretVerifierPrivate(t *testing.T) {
 	}
 	var auditCount int
 	if err := store.QueryRowContext(context.Background(), `
-SELECT count(*) FROM audit_events WHERE target_id = 'token' AND action IN ('api_token.create', 'api_token.revoke')`).Scan(&auditCount); err != nil || auditCount != 2 {
+SELECT count(*) FROM audit_events WHERE project_id = 'project' AND target_id = 'token' AND action IN ('api_token.create', 'api_token.revoke')`).Scan(&auditCount); err != nil || auditCount != 2 {
 		t.Fatalf("token audit count = %d, %v", auditCount, err)
+	}
+	var namedAuditCount int
+	if err := store.QueryRowContext(context.Background(), `
+SELECT count(*) FROM audit_events
+WHERE target_id = 'token' AND json_extract(metadata_json, '$.name') = 'automation'`).Scan(&namedAuditCount); err != nil || namedAuditCount != 2 {
+		t.Fatalf("named token audit count = %d, %v", namedAuditCount, err)
 	}
 }

@@ -14,11 +14,9 @@ func TestCreateAndLoadInstallationAtomically(t *testing.T) {
 	store := openStore(t)
 	defer store.Close()
 	ctx := context.Background()
-	automationHostname := "admin-api.example.com"
 	input := state.InitialInstallation{
 		ID:                   "installation-id",
 		AdminHostname:        "admin.example.com",
-		AutomationHostname:   &automationHostname,
 		AccessTeamDomain:     "team.cloudflareaccess.com",
 		AccessAudience:       "audience",
 		ConsolePassphrasePHC: "$argon2id$verifier",
@@ -37,9 +35,6 @@ func TestCreateAndLoadInstallationAtomically(t *testing.T) {
 	}
 	if installation.ID != input.ID || installation.AdminHostname != input.AdminHostname {
 		t.Fatalf("installation = %+v", installation)
-	}
-	if installation.AutomationHostname == nil || *installation.AutomationHostname != automationHostname {
-		t.Fatalf("automation hostname = %v", installation.AutomationHostname)
 	}
 	if len(installation.OriginCertificates) != 1 || string(installation.OriginCertificates[0].PrivateKeyEncrypted) != "encrypted-key" {
 		t.Fatalf("Origin certificates = %+v", installation.OriginCertificates)

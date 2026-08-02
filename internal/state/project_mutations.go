@@ -113,7 +113,7 @@ func (store *Store) createProject(ctx context.Context, input createProjectMutati
 	if err := resourcename.Validate(input.Name); err != nil {
 		return ProjectSummary{}, err
 	}
-	metadataValues := map[string]string{}
+	metadataValues := map[string]string{"name": input.Name}
 	if input.ActorEmail != "" {
 		metadataValues["actorEmail"] = input.ActorEmail
 	}
@@ -141,10 +141,10 @@ VALUES (?, ?, ?, ?)`, input.ID, input.Name, input.CreatedAtMillis, input.Created
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, 'project.create', 'project', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadata), input.CreatedAtMillis,
+) VALUES (?, ?, ?, ?, 'project.create', 'project', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadata), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit project creation: %w", err)
 		}

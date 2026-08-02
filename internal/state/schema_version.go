@@ -14,7 +14,7 @@ type DatabaseInspection struct {
 }
 
 func SupportedSchemaVersion() int {
-	return currentSchemaVersion
+	return schemaVersion
 }
 
 func ReadSchemaVersion(ctx context.Context, path string, expectedUID int) (int, error) {
@@ -23,7 +23,7 @@ func ReadSchemaVersion(ctx context.Context, path string, expectedUID int) (int, 
 }
 
 // InspectDatabase opens an existing image read-only. It deliberately does not
-// call Open: bootstrap restore must validate the saved schema without migrating
+// call Open: bootstrap restore must validate the saved schema without mutating
 // it under a different platformd release.
 func InspectDatabase(ctx context.Context, path string, expectedUID int, checkIntegrity bool) (DatabaseInspection, error) {
 	if _, err := os.Lstat(path); err != nil {

@@ -22,7 +22,7 @@ func (controller *Controller) prepareRuntimeDeployment(ctx context.Context, reso
 	if err != nil && !errors.Is(err, state.ErrRuntimeDeploymentNotFound) {
 		return "", false, err
 	}
-	deploymentID, err := controller.newID(controller.now())
+	deploymentID, err := controller.newID()
 	if err != nil {
 		return "", false, fmt.Errorf("allocate managed Redis deployment ID: %w", err)
 	}

@@ -211,7 +211,7 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 		GeneratedRoot: generatedRoot, VolumeRoot: filepath.Join(root, "volumes"),
 		LogRoot: filepath.Join(root, "logs"), LogSizeBytes: 1 << 20, LogMaxFiles: 3,
 		ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
-		NewID: func(time.Time) (string, error) { return "attempt-id", nil },
+		NewID: func() (string, error) { return "attempt-id", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -294,7 +294,7 @@ func TestControllerDoesNotPublishAndRemovesFailedReadinessCandidate(t *testing.T
 		Dial:          func(context.Context, string, string) (RedisConnection, error) { return nil, errors.New("AUTH failed") },
 		GeneratedRoot: generatedRoot, VolumeRoot: filepath.Join(root, "volumes"), LogRoot: filepath.Join(root, "logs"),
 		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: 3 * time.Millisecond, ProbePeriod: time.Millisecond,
-		NewID: func(time.Time) (string, error) { return "attempt-id", nil },
+		NewID: func() (string, error) { return "attempt-id", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +352,7 @@ func TestOpenBackupRDBReturnsNewStableInode(t *testing.T) {
 		},
 		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
 		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ProbePeriod: time.Millisecond,
-		NewID: func(time.Time) (string, error) { return "attempt-id", nil },
+		NewID: func() (string, error) { return "attempt-id", nil },
 	})
 	if err != nil {
 		t.Fatal(err)

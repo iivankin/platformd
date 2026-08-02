@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
-	"github.com/iivankin/platformd/internal/githubapp"
+	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -37,7 +37,11 @@ type previewEnvironmentResolver struct {
 	values map[string]string
 }
 
-func (environment previewEnvironmentResolver) Resolve(context.Context, state.ServiceDesired, string) (map[string]string, error) {
+func (environment previewEnvironmentResolver) Resolve(
+	context.Context,
+	state.ServiceDesired,
+	deployment.EnvironmentContext,
+) (map[string]string, error) {
 	values := make(map[string]string, len(environment.values))
 	for name, value := range environment.values {
 		values[name] = value
@@ -58,7 +62,7 @@ func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 		},
 		logRoot: filepath.Join(t.TempDir(), "logs"), logSizeBytes: 1 << 20, logMaxFiles: 2,
 		now:   func() time.Time { return time.Unix(100, 0) },
-		newID: func(time.Time) (string, error) { return "attempt", nil },
+		newID: func() (string, error) { return "attempt", nil },
 	}
 	desired := state.ServiceDesired{
 		ID: "service", ProjectID: "project",
@@ -70,11 +74,14 @@ func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 			}},
 		},
 	}
-	event := githubapp.PullRequestEvent{Number: 42}
-
 	if _, _, err := application.createContainer(
-		context.Background(), desired, "preview", event,
-		"preview-abcdef.example.com", "image",
+		context.Background(),
+		desired,
+		deployment.EnvironmentContext{
+			DeploymentID: "preview", Kind: deployment.EnvironmentPreview,
+			PreviewURL: "https://preview-abcdef.example.com", PullRequestNumber: 42,
+		},
+		"image",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +90,6 @@ func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 	}
 	if engine.spec.Network != "platformd-project" || len(engine.spec.DNSSearch) != 1 || engine.spec.DNSSearch[0] != "storefront.internal" {
 		t.Fatalf("preview project network placement = %#v", engine.spec)
-	}
-	if engine.spec.Environment["PLATFORMD_PREVIEW"] != "true" ||
-		engine.spec.Environment["PLATFORMD_PREVIEW_URL"] != "https://preview-abcdef.example.com" ||
-		engine.spec.Environment["PLATFORMD_PULL_REQUEST_NUMBER"] != "42" {
-		t.Fatalf("preview environment = %#v", engine.spec.Environment)
 	}
 	if engine.spec.Labels["io.platformd.owner"] != "preview" || engine.spec.Labels["io.platformd.preview-id"] != "preview" {
 		t.Fatalf("preview labels = %#v", engine.spec.Labels)

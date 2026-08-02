@@ -160,7 +160,7 @@ func (store *Store) CreateNetworkGateway(ctx context.Context, input CreateNetwor
 		}
 		return insertNetworkGatewayAudit(ctx, transaction, networkGatewayAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID,
-			ActorEmail: input.ActorEmail, Action: "network_gateway.create", GatewayID: input.ID,
+			ProjectID: input.ProjectID, ActorEmail: input.ActorEmail, Action: "network_gateway.create", GatewayID: input.ID,
 			CorrelationID: input.RequestCorrelationID, Timestamp: input.CreatedAtMillis,
 			Configuration: configuration,
 		})
@@ -224,7 +224,7 @@ WHERE id = ? AND project_id = ?`, configuration.Name, configuration.Mode, config
 		}
 		return insertNetworkGatewayAudit(ctx, transaction, networkGatewayAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID,
-			ActorEmail: input.ActorEmail, Action: "network_gateway.update", GatewayID: input.ID,
+			ProjectID: input.ProjectID, ActorEmail: input.ActorEmail, Action: "network_gateway.update", GatewayID: input.ID,
 			CorrelationID: input.RequestCorrelationID, Timestamp: input.UpdatedAtMillis,
 			Configuration: configuration,
 		})
@@ -252,7 +252,7 @@ func (store *Store) DeleteNetworkGateway(ctx context.Context, input DeleteNetwor
 		}
 		return insertNetworkGatewayAudit(ctx, transaction, networkGatewayAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID,
-			ActorEmail: input.ActorEmail, Action: "network_gateway.delete", GatewayID: input.ID,
+			ProjectID: input.ProjectID, ActorEmail: input.ActorEmail, Action: "network_gateway.delete", GatewayID: input.ID,
 			CorrelationID: input.RequestCorrelationID, Timestamp: input.DeletedAtMillis,
 			Configuration: configurationFromNetworkGateway(current),
 		})
@@ -394,6 +394,7 @@ INSERT INTO network_gateways(
 
 type networkGatewayAudit struct {
 	ID            string
+	ProjectID     string
 	ActorKind     string
 	ActorID       string
 	ActorEmail    string
@@ -406,6 +407,7 @@ type networkGatewayAudit struct {
 
 func insertNetworkGatewayAudit(ctx context.Context, transaction *sql.Tx, audit networkGatewayAudit) error {
 	metadata := map[string]any{
+		"name": audit.Configuration.Name,
 		"mode": audit.Configuration.Mode, "transport": audit.Configuration.Transport,
 		"protocol": audit.Configuration.Protocol, "listenPort": audit.Configuration.ListenPort,
 	}
@@ -418,9 +420,9 @@ func insertNetworkGatewayAudit(ctx context.Context, transaction *sql.Tx, audit n
 	}
 	if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, ?, 'network_gateway', ?, ?, 'succeeded', ?, ?)`, audit.ID, audit.ActorKind,
+) VALUES (?, ?, ?, ?, ?, 'network_gateway', ?, ?, 'succeeded', ?, ?)`, audit.ID, audit.ProjectID, audit.ActorKind,
 		audit.ActorID, audit.Action, audit.GatewayID, nullableString(audit.CorrelationID), string(encoded), audit.Timestamp); err != nil {
 		return fmt.Errorf("audit network gateway mutation: %w", err)
 	}

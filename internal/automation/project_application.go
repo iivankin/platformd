@@ -2,10 +2,8 @@ package automation
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/id"
@@ -19,7 +17,6 @@ type ProjectCreator interface {
 
 type ProjectApplication struct {
 	creator ProjectCreator
-	random  io.Reader
 	now     func() time.Time
 }
 
@@ -28,17 +25,14 @@ type ProjectMutationResult struct {
 	RequestID string
 }
 
-func NewProjectApplication(creator ProjectCreator, random io.Reader, now func() time.Time) (*ProjectApplication, error) {
+func NewProjectApplication(creator ProjectCreator, now func() time.Time) (*ProjectApplication, error) {
 	if creator == nil {
 		return nil, errors.New("project automation creator is required")
-	}
-	if random == nil {
-		random = rand.Reader
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &ProjectApplication{creator: creator, random: random, now: now}, nil
+	return &ProjectApplication{creator: creator, now: now}, nil
 }
 
 func (application *ProjectApplication) Create(ctx context.Context, identity Identity, name string) (ProjectMutationResult, error) {
@@ -54,7 +48,7 @@ func (application *ProjectApplication) Create(ctx context.Context, identity Iden
 	timestamp := application.now()
 	identifiers := make([]string, 3)
 	for index := range identifiers {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return ProjectMutationResult{}, fmt.Errorf("allocate project mutation identifiers: %w", err)
 		}

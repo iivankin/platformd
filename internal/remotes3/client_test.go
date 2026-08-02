@@ -28,24 +28,16 @@ const (
 func TestCapabilityProbeUsesSignedPutHeadGetListAndDelete(t *testing.T) {
 	t.Parallel()
 	timestamp := time.Date(2026, 7, 13, 12, 0, 0, 0, time.UTC)
-	verifier, err := objectstore.NewSigV4Verifier(objectstore.SigV4Config{
-		Now: func() time.Time { return timestamp },
-		Resolve: func(_ context.Context, accessKey string) (objectstore.Credential, error) {
-			if accessKey != remoteTestAccessKey {
-				return objectstore.Credential{}, objectstore.ErrInvalidSignature
-			}
-			return objectstore.Credential{Secret: remoteTestSecret, Permission: "read_write"}, nil
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var mutex sync.Mutex
 	objects := make(map[string][]byte)
 	methods := make(map[string]int)
 	handler := http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if _, err := verifier.Verify(request.Context(), request); err != nil {
-			http.Error(response, err.Error(), http.StatusForbidden)
+		authorization := request.Header.Get("Authorization")
+		credential := "Credential=" + remoteTestAccessKey + "/20260713/" + objectstore.Region + "/s3/aws4_request"
+		if request.Header.Get("X-Amz-Date") != "20260713T120000Z" ||
+			!strings.HasPrefix(authorization, "AWS4-HMAC-SHA256 ") || !strings.Contains(authorization, credential) ||
+			!strings.Contains(authorization, "SignedHeaders=") || !strings.Contains(authorization, "Signature=") {
+			http.Error(response, "request is not signed with the expected SigV4 scope", http.StatusForbidden)
 			return
 		}
 		mutex.Lock()

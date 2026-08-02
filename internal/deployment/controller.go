@@ -2,7 +2,6 @@ package deployment
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/iivankin/platformd/internal/admission"
@@ -20,9 +20,11 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/id"
+	"github.com/iivankin/platformd/internal/projectwebhook"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -30,6 +32,7 @@ const (
 	probeInterval       = 250 * time.Millisecond
 	probeTimeout        = 2 * time.Second
 	reportTimeout       = 10 * time.Second
+	deploymentSlowAfter = 30 * time.Second
 	stopTimeoutSeconds  = 10
 )
 
@@ -47,6 +50,7 @@ func (err *SourceSkippedError) Error() string {
 type Store interface {
 	DesiredService(context.Context, string) (state.ServiceDesired, error)
 	BeginDeployment(context.Context, state.BeginDeployment) error
+	DiscardDeployment(context.Context, string) error
 	UpdateDeploymentSource(context.Context, string, string, string, string, string) error
 	FinishDeployment(context.Context, string, string, string, string, int64) error
 	ActivateDeployment(context.Context, string, string, string, int64) error
@@ -113,7 +117,7 @@ type CredentialResolver interface {
 }
 
 type EnvironmentResolver interface {
-	Resolve(context.Context, state.ServiceDesired, string) (map[string]string, error)
+	Resolve(context.Context, state.ServiceDesired, EnvironmentContext) (map[string]string, error)
 }
 
 type ImageSourceResolver interface {
@@ -130,7 +134,7 @@ type SourceResolution struct {
 type SourceBuildStarted func(SourceResolution) error
 
 type SourceResolver interface {
-	Resolve(context.Context, state.ServiceDesired, string, string, io.Writer, bool, SourceBuildStarted) (SourceResolution, error)
+	Resolve(context.Context, state.ServiceDesired, EnvironmentContext, string, io.Writer, bool, SourceBuildStarted) (SourceResolution, error)
 }
 
 type ReportStatus string
@@ -148,8 +152,23 @@ type Reporter interface {
 	Finish(context.Context, state.ServiceDesired, string, string, ReportStatus) error
 }
 
+type BeforeDeployRequest struct {
+	Desired            state.ServiceDesired
+	EnvironmentContext EnvironmentContext
+	ImageID            string
+	BuildLogPath       string
+}
+
+type BeforeDeployExecutor interface {
+	Execute(context.Context, BeforeDeployRequest) error
+}
+
 type GrowthGate interface {
 	PermitGrowth(context.Context) error
+}
+
+type WebhookDispatcher interface {
+	Dispatch(projectwebhook.Event)
 }
 
 type Config struct {
@@ -161,7 +180,9 @@ type Config struct {
 	ImageSources ImageSourceResolver
 	Sources      SourceResolver
 	Reporter     Reporter
+	BeforeDeploy BeforeDeployExecutor
 	Growth       GrowthGate
+	Webhooks     WebhookDispatcher
 	Admission    *admission.Gate
 	Placement    func(state.ServiceDesired) (Placement, error)
 	LogRoot      string
@@ -169,7 +190,7 @@ type Config struct {
 	LogSizeBytes int64
 	LogMaxFiles  uint
 	Now          func() time.Time
-	NewID        func(time.Time) (string, error)
+	NewID        func() (string, error)
 	HTTPClient   *http.Client
 }
 
@@ -188,7 +209,9 @@ type Controller struct {
 	imageSources ImageSourceResolver
 	sources      SourceResolver
 	reporter     Reporter
+	beforeDeploy BeforeDeployExecutor
 	growth       GrowthGate
+	webhooks     WebhookDispatcher
 	admission    *admission.Gate
 	placement    func(state.ServiceDesired) (Placement, error)
 	logRoot      string
@@ -196,7 +219,7 @@ type Controller struct {
 	logSizeBytes int64
 	logMaxFiles  uint
 	now          func() time.Time
-	newID        func(time.Time) (string, error)
+	newID        func() (string, error)
 	httpClient   *http.Client
 
 	mu     sync.Mutex
@@ -220,9 +243,7 @@ func New(config Config) (*Controller, error) {
 	}
 	newID := config.NewID
 	if newID == nil {
-		newID = func(timestamp time.Time) (string, error) {
-			return id.NewWith(timestamp, rand.Reader)
-		}
+		newID = id.New
 	}
 	httpClient := config.HTTPClient
 	if httpClient == nil {
@@ -244,7 +265,9 @@ func New(config Config) (*Controller, error) {
 		imageSources: config.ImageSources,
 		sources:      config.Sources,
 		reporter:     config.Reporter,
+		beforeDeploy: config.BeforeDeploy,
 		growth:       config.Growth,
+		webhooks:     config.Webhooks,
 		admission:    config.Admission,
 		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
 		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
@@ -267,15 +290,35 @@ func (controller *Controller) DeployRevision(ctx context.Context, serviceID, rev
 }
 
 func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevisionOverride string, force bool) error {
+	var phase atomic.Value
+	phase.Store("admission")
+	slowDone := make(chan struct{})
+	defer close(slowDone)
+	go func() {
+		timer := time.NewTimer(deploymentSlowAfter)
+		defer timer.Stop()
+		select {
+		case <-slowDone:
+		case <-timer.C:
+			systemevent.Warning(
+				"deployment_operation_slow",
+				systemevent.String("service_id", serviceID),
+				systemevent.String("phase", phase.Load().(string)),
+				systemevent.Int64("elapsed_ms", deploymentSlowAfter.Milliseconds()),
+			)
+		}
+	}()
 	lease, err := controller.admission.Begin("service_deploy", serviceID)
 	if err != nil {
 		return err
 	}
 	defer lease.Release()
+	phase.Store("service_lock")
 	lock := controller.serviceLock(serviceID)
 	lock.Lock()
 	defer lock.Unlock()
 
+	phase.Store("load_state")
 	desired, err := controller.store.DesiredService(ctx, serviceID)
 	if err != nil {
 		return err
@@ -289,11 +332,12 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 	}
 	desired.Snapshot = normalized
 	startedAt := controller.now()
-	deploymentID, err := controller.newID(startedAt)
+	deploymentID, err := controller.newID()
 	if err != nil {
 		return fmt.Errorf("allocate deployment ID: %w", err)
 	}
 	buildLogPath := controller.buildLogPath(serviceID, deploymentID)
+	phase.Store("disk_growth_check")
 	if err := controller.growth.PermitGrowth(ctx); err != nil {
 		active, activeExists := controller.activeContainer(serviceID)
 		if !force && errors.Is(err, diskpressure.ErrGrowthDenied) && activeExists &&
@@ -323,6 +367,13 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return err
 		}
 		deploymentStarted = true
+		systemevent.Info(
+			"deployment_started",
+			systemevent.String("service_id", serviceID),
+			systemevent.String("deployment_id", deploymentID),
+			systemevent.String("source_type", string(normalized.Source.Type)),
+		)
+		controller.dispatchDeployment(desired, deploymentID, "running", "", "", projectwebhook.EventDeploymentStarted)
 		reportID = controller.startReport(ctx, desired, deploymentID, sourceRevision, buildLogPath)
 		return nil
 	}
@@ -337,7 +388,18 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 		finishErr := controller.store.FinishDeployment(
 			ctx, deploymentID, "failed", code, failure.Error(), controller.now().UnixMilli(),
 		)
+		if finishErr == nil {
+			controller.dispatchDeployment(desired, deploymentID, "failed", code, failure.Error(), projectwebhook.EventDeploymentFailed)
+		}
 		controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
+		systemevent.Failure(
+			"deployment_failed",
+			failure,
+			systemevent.String("service_id", serviceID),
+			systemevent.String("deployment_id", deploymentID),
+			systemevent.String("error_code", code),
+			systemevent.Int64("duration_ms", controller.now().Sub(startedAt).Milliseconds()),
+		)
 		return errors.Join(failure, finishErr)
 	}
 	finishAttempt := func(status, code, message string) error {
@@ -345,14 +407,30 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return nil
 		}
 		finishErr := controller.store.FinishDeployment(ctx, deploymentID, status, code, message, controller.now().UnixMilli())
+		if finishErr == nil {
+			eventType := projectwebhook.EventDeploymentSkipped
+			if status == "interrupted" {
+				eventType = projectwebhook.EventDeploymentInterrupted
+			}
+			controller.dispatchDeployment(desired, deploymentID, status, code, message, eventType)
+		}
 		reportStatus := ReportSucceeded
 		if status == "interrupted" {
 			reportStatus = ReportFailed
 		}
 		controller.finishReport(desired, deploymentID, reportID, reportStatus, buildLogPath)
+		systemevent.Info(
+			"deployment_finished",
+			systemevent.String("service_id", serviceID),
+			systemevent.String("deployment_id", deploymentID),
+			systemevent.String("status", status),
+			systemevent.String("error_code", code),
+			systemevent.Int64("duration_ms", controller.now().Sub(startedAt).Milliseconds()),
+		)
 		return finishErr
 	}
 	if normalized.Source.Type == servicesource.GitHubImage {
+		phase.Store("source_resolution")
 		if controller.sources == nil {
 			return errors.New("GitHub source resolution is not configured")
 		}
@@ -361,7 +439,13 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return openErr
 		}
 		resolution, resolveErr := controller.sources.Resolve(
-			ctx, desired, deploymentID, sourceRevisionOverride, logFile, force, beginDeployment,
+			ctx,
+			desired,
+			EnvironmentContext{DeploymentID: deploymentID, Kind: EnvironmentProduction},
+			sourceRevisionOverride,
+			logFile,
+			force,
+			beginDeployment,
 		)
 		closeErr := logFile.Close()
 		if closeErr != nil && resolveErr == nil {
@@ -397,17 +481,9 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return failDeployment("source_resolution_failed", resolveErr)
 		}
 		image = resolution.Image
-		if !deploymentStarted {
-			if err := beginDeployment(resolution); err != nil {
-				return err
-			}
-		}
 	} else {
 		if imageReference == "" {
 			return errors.New("image source reference is empty")
-		}
-		if err := beginDeployment(SourceResolution{ImageReference: imageReference}); err != nil {
-			return err
 		}
 	}
 	credential := ImageCredential{}
@@ -422,6 +498,7 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 	}
 
 	if normalized.Source.Type != servicesource.GitHubImage {
+		phase.Store("source_resolution")
 		if err := appendBuildLog(buildLogPath, "Resolving "+imageReference); err != nil {
 			return failDeployment("build_log_failed", err)
 		}
@@ -439,20 +516,14 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return failDeployment("build_log_failed", err)
 		}
 	}
-	if image.ID == "" || image.Digest == "" {
-		return failDeployment("source_resolution_failed", errors.New("pulled image has no ID or digest"))
+	if image.Digest == "" {
+		return failDeployment("source_resolution_failed", errors.New("resolved image has no digest"))
 	}
 	if servicesource.IsImage(normalized.Source) {
 		if _, err := serviceconfig.PinnedReference(imageReference, image.Digest); err != nil {
 			return failDeployment("source_resolution_failed", err)
 		}
 	}
-	if err := controller.store.UpdateDeploymentSource(
-		ctx, deploymentID, image.Digest, imageReference, sourceRevision, commitMessage,
-	); err != nil {
-		return failDeployment("state_update_failed", err)
-	}
-
 	current, err := controller.store.DesiredService(ctx, serviceID)
 	if err != nil {
 		return failDeployment("state_load_failed", err)
@@ -461,7 +532,23 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 	if err != nil {
 		return failDeployment("state_load_failed", err)
 	}
+	recordResolvedDeployment := func() error {
+		if err := beginDeployment(SourceResolution{
+			Image: image, ImageReference: imageReference, Revision: sourceRevision, CommitMessage: commitMessage,
+		}); err != nil {
+			return err
+		}
+		if err := controller.store.UpdateDeploymentSource(
+			ctx, deploymentID, image.Digest, imageReference, sourceRevision, commitMessage,
+		); err != nil {
+			return failDeployment("state_update_failed", err)
+		}
+		return nil
+	}
 	if !current.Enabled || currentHash != configHash {
+		if err := recordResolvedDeployment(); err != nil {
+			return err
+		}
 		_ = finishAttempt("interrupted", "service_changed", state.ErrServiceChanged.Error())
 		return state.ErrServiceChanged
 	}
@@ -472,10 +559,53 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 		if !ok || active.deploymentID != desired.ActiveDeploymentID {
 			return failDeployment("runtime_state_missing", errors.New("active deployment has no matching runtime container"))
 		}
-		if err := finishAttempt("skipped", "no_changes", "The resolved source and service configuration are already active"); err != nil {
-			return err
+		if !deploymentStarted {
+			// Image auto-update polls resolve into a temporary log directory before
+			// the digest is known. No deployment owns that directory on a no-op.
+			_ = os.RemoveAll(filepath.Dir(buildLogPath))
+		} else {
+			controller.finishReport(desired, deploymentID, reportID, ReportSucceeded, buildLogPath)
+			if err := controller.store.DiscardDeployment(ctx, deploymentID); err != nil {
+				return err
+			}
+			controller.dispatchDeployment(desired, deploymentID, "skipped", "unchanged", "Resolved image and service configuration are already active", projectwebhook.EventDeploymentSkipped)
+			systemevent.Info(
+				"deployment_finished",
+				systemevent.String("service_id", serviceID),
+				systemevent.String("deployment_id", deploymentID),
+				systemevent.String("status", "skipped"),
+				systemevent.String("error_code", "unchanged"),
+				systemevent.Int64("duration_ms", controller.now().Sub(startedAt).Milliseconds()),
+			)
+			_ = os.RemoveAll(filepath.Dir(buildLogPath))
 		}
 		return controller.publisher.Publish(desired, active.container)
+	}
+	// A non-forced reconcile with an unchanged active configuration is the
+	// remote-image watcher path. Initial deploys and configuration changes have
+	// a different active hash, while explicit redeploys are forced.
+	if !force && desired.Snapshot.Source.AutoUpdate && servicesource.IsRemoteImage(desired.Snapshot.Source) &&
+		desired.ActiveDeploymentID != "" && desired.ActiveConfigHash == configHash &&
+		desired.ActiveImageDigest != image.Digest && minimumReleaseAgePending(
+		image.Created, controller.now(), desired.Snapshot.Source.MinimumReleaseAgeDays,
+	) {
+		// Polls do not own deployment history or logs until a candidate becomes
+		// eligible, so leave the active deployment untouched and retry normally.
+		_ = os.RemoveAll(filepath.Dir(buildLogPath))
+		return nil
+	}
+	if image.ID == "" {
+		resolved, inspectErr := controller.engine.InspectImage(ctx, image.Digest)
+		if inspectErr != nil {
+			return failDeployment("source_resolution_failed", fmt.Errorf("inspect resolved image: %w", inspectErr))
+		}
+		image = resolved
+		if image.ID == "" || image.Digest == "" {
+			return failDeployment("source_resolution_failed", errors.New("resolved image has no ID or digest"))
+		}
+	}
+	if err := recordResolvedDeployment(); err != nil {
+		return err
 	}
 	if !force {
 		blocked, err := controller.store.LatestFailedDeployment(ctx, serviceID, configHash, image.Digest)
@@ -487,16 +617,56 @@ func (controller *Controller) deploy(ctx context.Context, serviceID, sourceRevis
 			return ErrBlockedPair
 		}
 	}
-	if err := appendBuildLog(buildLogPath, "Image ready; starting deployment"); err != nil {
+	environmentContext := EnvironmentContext{
+		DeploymentID: deploymentID, Kind: EnvironmentProduction,
+		SourceRevision: sourceRevision, CommitMessage: commitMessage,
+	}
+	if desired.Snapshot.BeforeDeploy != nil {
+		phase.Store("before_deploy")
+		if controller.beforeDeploy == nil {
+			return failDeployment("before_deploy_failed", errors.New("before-deploy executor is not configured"))
+		}
+		if err := appendBuildLog(buildLogPath, "Image ready; running before-deploy actions"); err != nil {
+			return failDeployment("build_log_failed", err)
+		}
+		if err := controller.beforeDeploy.Execute(ctx, BeforeDeployRequest{
+			Desired: desired, EnvironmentContext: environmentContext,
+			ImageID: image.ID, BuildLogPath: buildLogPath,
+		}); err != nil {
+			return failDeployment("before_deploy_failed", err)
+		}
+		if err := appendBuildLog(buildLogPath, "Before-deploy actions completed; starting deployment"); err != nil {
+			return failDeployment("build_log_failed", err)
+		}
+	} else if err := appendBuildLog(buildLogPath, "Image ready; starting deployment"); err != nil {
 		return failDeployment("build_log_failed", err)
 	}
-	deployErr := controller.runDeployment(ctx, desired, deploymentID, image.ID)
+	phase.Store("runtime_start")
+	deployErr := controller.runDeployment(ctx, desired, environmentContext, image.ID)
 	if deployErr != nil {
 		controller.finishReport(desired, deploymentID, reportID, ReportFailed, buildLogPath)
 		return deployErr
 	}
 	controller.finishReport(desired, deploymentID, reportID, ReportSucceeded, buildLogPath)
+	systemevent.Info(
+		"deployment_finished",
+		systemevent.String("service_id", serviceID),
+		systemevent.String("deployment_id", deploymentID),
+		systemevent.String("status", "succeeded"),
+		systemevent.Int64("duration_ms", controller.now().Sub(startedAt).Milliseconds()),
+	)
 	return nil
+}
+
+func minimumReleaseAgePending(created, now time.Time, minimumDays int) bool {
+	if minimumDays <= 0 {
+		return false
+	}
+	if created.IsZero() {
+		return true
+	}
+	minimumAge := time.Duration(minimumDays) * 24 * time.Hour
+	return created.After(now.Add(-minimumAge))
 }
 
 func openBuildLog(logPath string) (io.WriteCloser, error) {
@@ -794,7 +964,10 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 	if image.Digest != activeDeployment.ImageDigest {
 		return false, fmt.Errorf("active image digest = %s, want %s", image.Digest, activeDeployment.ImageDigest)
 	}
-	container, placement, err := controller.createRuntimeContainer(ctx, desired, activeDeployment.ID, image.ID)
+	container, placement, err := controller.createRuntimeContainer(ctx, desired, EnvironmentContext{
+		DeploymentID: activeDeployment.ID, Kind: EnvironmentProduction,
+		SourceRevision: activeDeployment.SourceRevision, CommitMessage: activeDeployment.CommitMessage,
+	}, image.ID)
 	if err != nil {
 		return false, err
 	}
@@ -843,7 +1016,16 @@ func (controller *Controller) rebuildGitHubDeployment(
 	}
 	_, _ = io.WriteString(logFile, "\nRebuilding the active GitHub revision because its local image is missing\n")
 	resolution, resolveErr := controller.sources.Resolve(
-		ctx, desired, active.ID, active.SourceRevision, logFile, true, nil,
+		ctx,
+		desired,
+		EnvironmentContext{
+			DeploymentID: active.ID, Kind: EnvironmentProduction,
+			SourceRevision: active.SourceRevision, CommitMessage: active.CommitMessage,
+		},
+		active.SourceRevision,
+		logFile,
+		true,
+		nil,
 	)
 	closeErr := logFile.Close()
 	if err := errors.Join(resolveErr, closeErr); err != nil {
@@ -1010,8 +1192,14 @@ func (controller *Controller) ProbeTerminalShell(ctx context.Context, serviceID,
 	return err == nil && exitCode == 0
 }
 
-func (controller *Controller) runDeployment(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) error {
-	candidate, placement, err := controller.createRuntimeContainer(ctx, desired, deploymentID, imageID)
+func (controller *Controller) runDeployment(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext EnvironmentContext,
+	imageID string,
+) error {
+	deploymentID := environmentContext.DeploymentID
+	candidate, placement, err := controller.createRuntimeContainer(ctx, desired, environmentContext, imageID)
 	if err != nil {
 		return controller.fail(deploymentID, "candidate_create_failed", err)
 	}
@@ -1053,6 +1241,7 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 		controller.restoreOld(desired, old, hasOld)
 		return controller.fail(deploymentID, "publication_commit_failed", err)
 	}
+	controller.dispatchDeployment(desired, deploymentID, "succeeded", "", "", projectwebhook.EventDeploymentSucceeded)
 	desired.ActiveDeploymentID = deploymentID
 	controller.setActive(desired.ID, activeContainer{
 		deploymentID: deploymentID, container: ready,
@@ -1068,12 +1257,18 @@ func (controller *Controller) runDeployment(ctx context.Context, desired state.S
 	return nil
 }
 
-func (controller *Controller) createRuntimeContainer(ctx context.Context, desired state.ServiceDesired, deploymentID, imageID string) (containerengine.Container, Placement, error) {
+func (controller *Controller) createRuntimeContainer(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext EnvironmentContext,
+	imageID string,
+) (containerengine.Container, Placement, error) {
+	deploymentID := environmentContext.DeploymentID
 	placement, err := controller.placement(desired)
 	if err != nil {
 		return containerengine.Container{}, Placement{}, fmt.Errorf("place service runtime: %w", err)
 	}
-	attemptID, err := controller.newID(controller.now())
+	attemptID, err := controller.newID()
 	if err != nil {
 		return containerengine.Container{}, Placement{}, fmt.Errorf("allocate runtime attempt ID: %w", err)
 	}
@@ -1097,7 +1292,7 @@ func (controller *Controller) createRuntimeContainer(ctx context.Context, desire
 	}
 	environment := desired.Snapshot.Environment
 	if controller.environment != nil {
-		resolved, resolveErr := controller.environment.Resolve(ctx, desired, deploymentID)
+		resolved, resolveErr := controller.environment.Resolve(ctx, desired, environmentContext)
 		if resolveErr != nil {
 			return containerengine.Container{}, Placement{}, fmt.Errorf("resolve service variables: %w", resolveErr)
 		}
@@ -1199,7 +1394,35 @@ func (controller *Controller) fail(deploymentID, code string, cause error) error
 	if err := controller.store.FailDeployment(context.Background(), deploymentID, code, message, controller.now().UnixMilli()); err != nil {
 		return errors.Join(cause, err)
 	}
+	deployment, err := controller.store.Deployment(context.Background(), deploymentID)
+	if err == nil {
+		desired, desiredErr := controller.store.DesiredService(context.Background(), deployment.ServiceID)
+		if desiredErr == nil {
+			controller.dispatchDeployment(desired, deploymentID, "failed", code, message, projectwebhook.EventDeploymentFailed)
+		}
+		systemevent.Failure(
+			"deployment_failed",
+			cause,
+			systemevent.String("service_id", deployment.ServiceID),
+			systemevent.String("deployment_id", deploymentID),
+			systemevent.String("error_code", code),
+		)
+	}
 	return cause
+}
+
+func (controller *Controller) dispatchDeployment(desired state.ServiceDesired, deploymentID, status, code, message, eventType string) {
+	if controller.webhooks == nil {
+		return
+	}
+	controller.webhooks.Dispatch(projectwebhook.Event{
+		Project:  projectwebhook.EventProject{ID: desired.ProjectID, Name: desired.ProjectName},
+		Resource: &projectwebhook.EventResource{ID: desired.ID, Kind: "service", Name: desired.Name},
+		Deployment: &projectwebhook.EventDeployment{
+			ID: deploymentID, Status: status, ErrorCode: code, ErrorMessage: message,
+		},
+		Type: eventType,
+	})
 }
 
 func (controller *Controller) stopDisabled(ctx context.Context, desired state.ServiceDesired) error {

@@ -14,7 +14,6 @@ import {
   redeployService,
   removeServiceDeployment,
   restartServiceDeployment,
-  updateService,
 } from "@/api";
 import type {
   Deployment,
@@ -22,7 +21,6 @@ import type {
   Service,
   ServiceDomain,
   ServiceListener,
-  UpdateServiceInput,
   Volume,
 } from "@/api";
 import { DeploymentHistory } from "@/deployment-history";
@@ -32,6 +30,10 @@ import { deploymentPath } from "@/project-resource-path";
 import { ResourceConsole } from "@/resource-console";
 import { ResourceUsage } from "@/resource-usage";
 import { ServiceSettings } from "@/service-settings";
+import {
+  createPendingServiceSettings,
+  createServiceSettingsDraft,
+} from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
 import { ServiceVariables } from "@/service-variables";
 import { WorkspaceView } from "@/workspace-view";
@@ -52,24 +54,6 @@ interface ServiceDetailPanelProperties {
   serviceID: string;
   view: ServiceWorkspaceView;
 }
-
-const serviceUpdate = (
-  service: Service,
-  enabled: boolean,
-  volumeMounts: Service["volumeMounts"] = service.volumeMounts
-): UpdateServiceInput => ({
-  args: service.args,
-  command: service.command,
-  cpuMillicores: service.cpuMillicores,
-  enabled,
-  environment: service.environment,
-  expectedUpdatedAt: service.updatedAt,
-  healthCheck: service.healthCheck,
-  memoryMaxBytes: service.memoryMaxBytes,
-  secretReferences: service.secretReferences,
-  source: service.source,
-  volumeMounts,
-});
 
 const ServicePanelError = ({
   error,
@@ -306,16 +290,32 @@ export const ServiceDetailPanel = ({
     }
   };
 
-  const saveVariables = (environment: Record<string, string>) => {
+  const saveVariables = ({
+    buildEnvironment,
+    environment,
+  }: {
+    buildEnvironment?: Record<string, string>;
+    environment?: Record<string, string>;
+  }) => {
     if (!service) {
       return Promise.resolve(false);
     }
-    return apply("save variables", () =>
-      updateService(projectID, serviceID, {
-        ...serviceUpdate(service, service.enabled),
+    onPendingSettingsChange(
+      createPendingServiceSettings({
+        buildEnvironment,
+        current: pendingSettings,
+        domains,
+        draft:
+          pendingSettings?.draft ??
+          createServiceSettingsDraft(service, domains, listeners, volumes),
         environment,
+        listeners,
+        service,
+        volumes,
       })
     );
+    setError(null);
+    return Promise.resolve(true);
   };
 
   return (
@@ -428,10 +428,19 @@ export const ServiceDetailPanel = ({
           variables: service ? (
             <ServiceVariables
               busy={Boolean(busy)}
-              key={service.updatedAt}
+              key={`${service.updatedAt}:${pendingSettings ? "pending" : "saved"}`}
               onSave={saveVariables}
               projectID={projectID}
-              service={service}
+              resolvedRaw={!pendingSettings}
+              service={{
+                buildEnvironment:
+                  pendingSettings?.buildEnvironment ?? service.buildEnvironment,
+                environment:
+                  pendingSettings?.environment ?? service.environment,
+                id: service.id,
+                source:
+                  pendingSettings?.draft.configuration.source ?? service.source,
+              }}
             />
           ) : null,
         }}

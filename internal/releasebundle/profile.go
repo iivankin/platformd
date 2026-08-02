@@ -18,6 +18,7 @@ var runtimeProfile = []struct {
 	{path: "runtime/crun", mode: 0o755},
 	{path: "runtime/mounts.conf", mode: 0o644},
 	{path: "runtime/netavark", mode: 0o755},
+	{path: "runtime/platformd-objectstore", mode: 0o755},
 	{path: "runtime/policy.json", mode: 0o644},
 	{path: "runtime/registries.conf", mode: 0o644},
 	{path: "runtime/seccomp.json", mode: 0o644},

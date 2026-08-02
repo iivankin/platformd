@@ -12,6 +12,7 @@ import { stringRecord } from "./project-helpers";
 import {
   mockDomainOutputs,
   referencedResourceNames,
+  resolveMockBuildEnvironment,
   resolveMockEnvironment,
 } from "./service-variables";
 import type { MockState } from "./state";
@@ -45,6 +46,16 @@ const updateServiceRegistryCredential = (
   if (service.source.type !== "private_image") {
     service.registryCredential = undefined;
   }
+};
+
+const updateServiceBeforeDeploy = (
+  service: Service,
+  input: Record<string, unknown>
+) => {
+  service.beforeDeploy =
+    typeof input.beforeDeploy === "object" && input.beforeDeploy !== null
+      ? (input.beforeDeploy as Service["beforeDeploy"])
+      : undefined;
 };
 
 const handleService = async (
@@ -91,10 +102,12 @@ const handleService = async (
   }
   const input = await readObject(request);
   service.enabled = booleanField(input, "enabled", service.enabled);
+  updateServiceBeforeDeploy(service, input);
   if (typeof input.source === "object" && input.source !== null) {
     service.source = input.source as Service["source"];
   }
   updateServiceRegistryCredential(service, input);
+  service.buildEnvironment = stringRecord(input.buildEnvironment);
   service.environment = stringRecord(input.environment);
   service.healthCheck =
     typeof input.healthCheck === "object" && input.healthCheck !== null
@@ -125,18 +138,21 @@ const handleService = async (
       );
     }
     const references = new Map<string, string[]>();
-    for (const [environmentName, value] of Object.entries(
-      service.environment
-    )) {
-      for (const resourceName of referencedResourceNames(value)) {
-        const resource = canvas.resources.find(
-          (candidate) => candidate.name === resourceName
-        );
-        if (resource) {
-          references.set(resource.id, [
-            ...(references.get(resource.id) ?? []),
-            environmentName,
-          ]);
+    for (const [environment, prefix] of [
+      [service.environment, ""],
+      [service.buildEnvironment, "build:"],
+    ] as const) {
+      for (const [environmentName, value] of Object.entries(environment)) {
+        for (const resourceName of referencedResourceNames(value)) {
+          const resource = canvas.resources.find(
+            (candidate) => candidate.name === resourceName
+          );
+          if (resource) {
+            references.set(resource.id, [
+              ...(references.get(resource.id) ?? []),
+              prefix + environmentName,
+            ]);
+          }
         }
       }
     }
@@ -244,14 +260,19 @@ const handleServiceDeploymentAction = (
 
 const resolvedVariablesResponse = (
   state: MockState,
-  serviceID: string
+  serviceID: string,
+  build = false
 ): Response => {
   const service = state.services[serviceID];
   if (!service) {
     return mockError("not_found", "Service not found", 404);
   }
   try {
-    return json({ environment: resolveMockEnvironment(state, serviceID) });
+    return json({
+      environment: build
+        ? resolveMockBuildEnvironment(state, serviceID)
+        : resolveMockEnvironment(state, serviceID),
+    });
   } catch (error) {
     return mockError(
       "variable_resolution_failed",
@@ -297,6 +318,9 @@ const handleServiceReadModels = (
   }
   if (resource === "variables" && detail === "resolved") {
     return resolvedVariablesResponse(state, serviceID);
+  }
+  if (resource === "build-variables" && detail === "resolved") {
+    return resolvedVariablesResponse(state, serviceID, true);
   }
   if (resource === "logs" && !detail) {
     const window = state.logs[serviceID] ?? { records: [], truncated: false };
@@ -380,12 +404,26 @@ const handleDomains = async (
   serviceID: string,
   rest: string[]
 ): Promise<Response | undefined> => {
-  const [resource, hostname, ...tail] = rest;
+  const [resource, hostname, detail, ...tail] = rest;
   if (resource !== "domains" || tail.length > 0) {
     return undefined;
   }
   if (request.method === "GET" && !hostname) {
     return json({ domains: state.domains[serviceID] ?? [] });
+  }
+  if (request.method === "GET" && hostname && detail === "dns") {
+    const exists = (state.domains[serviceID] ?? []).some(
+      (domain) => domain.hostname === hostname
+    );
+    if (!exists) {
+      return mockError("domain_not_found", "Domain not found", 404);
+    }
+    return json({
+      status: state.cloudflareDNSSettings.configured ? "ready" : "unmanaged",
+    });
+  }
+  if (detail) {
+    return undefined;
   }
   if (request.method === "DELETE" && hostname) {
     state.domains[serviceID] = (state.domains[serviceID] ?? []).filter(

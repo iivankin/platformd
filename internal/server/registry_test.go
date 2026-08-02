@@ -112,7 +112,7 @@ func TestRegistryAdminCreateListConfigureAndDelete(t *testing.T) {
 	if err := store.Write(ctx, func(transaction *sql.Tx) error {
 		_, insertErr := transaction.ExecContext(ctx, `
 INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, created_at)
-VALUES (?, ?, 'legacy', 'pull', ?, ?)`, "018bcfe5-687b-7fff-bfff-ffffffffffff", repositoryID, make([]byte, 32), 1)
+VALUES (?, ?, 'legacy', 'pull', ?, ?)`, "abcdefghijklmnopqrstuvwx", repositoryID, make([]byte, 32), 1)
 		return insertErr
 	}); err != nil {
 		t.Fatal(err)

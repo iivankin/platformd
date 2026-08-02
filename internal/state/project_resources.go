@@ -3,8 +3,11 @@ package state
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 )
+
+var ErrProjectResourceNotFound = errors.New("project resource not found")
 
 type ProjectResource struct {
 	ID   string
@@ -59,8 +62,8 @@ SELECT id, kind, name FROM (
 ) WHERE name = ?`, projectID, projectID, projectID, projectID, projectID, name).Scan(
 		&resource.ID, &resource.Kind, &resource.Name,
 	)
-	if err == sql.ErrNoRows {
-		return ProjectResource{}, sql.ErrNoRows
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectResource{}, ErrProjectResourceNotFound
 	}
 	if err != nil {
 		return ProjectResource{}, fmt.Errorf("load project resource %q: %w", name, err)

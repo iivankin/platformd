@@ -109,6 +109,7 @@ export const ServerTerminalOverlay = ({
           key={session}
           socketProtocols={socketProtocols}
           socketURL={socketURL}
+          title="root · host PTY"
         />
       ) : (
         <div className="grid min-h-0 flex-1 place-items-center bg-[#191816] px-6 py-12">

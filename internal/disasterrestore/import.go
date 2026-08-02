@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/bootstrap"
@@ -178,8 +177,8 @@ func ImportSnapshot(ctx context.Context, payload ImportPayload) (ImportResult, e
 	return ImportResult{AdminHostname: installation.AdminHostname, OriginCertificatePEM: certificate}, nil
 }
 
-func NewImportPayload(databasePath string, manifest backup.ControlManifest, input ValidatedInput, importedAtMillis int64, expectedUID int, random io.Reader) (ImportPayload, error) {
-	auditID, err := id.NewWith(time.UnixMilli(importedAtMillis), random)
+func NewImportPayload(databasePath string, manifest backup.ControlManifest, input ValidatedInput, importedAtMillis int64, expectedUID int) (ImportPayload, error) {
+	auditID, err := id.New()
 	if err != nil {
 		return ImportPayload{}, err
 	}

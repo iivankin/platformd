@@ -6,11 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"time"
 
 	"github.com/containers/buildah"
 	buildahDefine "github.com/containers/buildah/define"
 	"github.com/containers/podman/v5/libpod"
+	"github.com/iivankin/platformd/internal/systemevent"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.podman.io/common/libimage"
 	commonconfig "go.podman.io/common/pkg/config"
@@ -24,12 +25,18 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		request.Network == "" || request.Timeout <= 0 || request.Log == nil {
 		return Image{}, errors.New("image build request is incomplete")
 	}
+	defer e.notifyImageStorageChanged()
+	unlockImages := e.acquireImageReadLock("build", request.Reference)
+	startedAt := time.Now()
 	buildContext, cancel := context.WithTimeout(ctx, request.Timeout)
-	defer cancel()
-	log := io.MultiWriter(request.Log)
+	log := newBuildActivityWriter(request.Log, startedAt)
+	activityDone := make(chan struct{})
+	go log.watch(activityDone, request.Reference, startedAt)
+	buildEnvironment := buildEnvironmentOptions(request.Environment)
 	id, _, err := e.runtime.Build(buildContext, buildahDefine.BuildOptions{
 		ContextDirectory:    request.ContextDirectory,
 		PullPolicy:          buildahDefine.PullIfMissing,
+		OutputFormat:        buildahDefine.OCIv1ImageManifest,
 		SignaturePolicyPath: e.config.SignaturePolicy,
 		SystemContext:       &imagetypes.SystemContext{SystemRegistriesConfPath: e.config.RegistriesConf},
 		NamespaceOptions: []buildahDefine.NamespaceOption{{
@@ -38,6 +45,8 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		ConfigureNetwork:        buildahDefine.NetworkEnabled,
 		NetworkInterface:        e.runtime.Network(),
 		Output:                  request.Reference,
+		Args:                    request.Arguments,
+		Envs:                    buildEnvironment,
 		Out:                     log,
 		Err:                     log,
 		ReportWriter:            log,
@@ -46,19 +55,55 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		RemoveIntermediateCtrs:  true,
 		ForceRmIntermediateCtrs: true,
 	}, request.Dockerfile)
+	close(activityDone)
+	cancel()
 	if err != nil {
+		unlockImages()
+		_, cleanupErr := e.garbageCollectOrphanLayers(0)
+		buildErr := fmt.Errorf("build image %s: %w", request.Reference, err)
 		if errors.Is(buildContext.Err(), context.DeadlineExceeded) {
-			return Image{}, fmt.Errorf("build image %s exceeded %s: %w", request.Reference, request.Timeout, buildContext.Err())
+			buildErr = errors.Join(
+				fmt.Errorf("build image %s exceeded %s: %w", request.Reference, request.Timeout, buildContext.Err()),
+				cleanupErr,
+			)
+		} else {
+			buildErr = errors.Join(buildErr, cleanupErr)
 		}
-		return Image{}, fmt.Errorf("build image %s: %w", request.Reference, err)
+		systemevent.Failure(
+			"image_build_failed",
+			buildErr,
+			systemevent.String("reference", request.Reference),
+			systemevent.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+		return Image{}, buildErr
 	}
-	return e.inspectImage(ctx, id)
+	image, inspectErr := e.inspectImage(ctx, id)
+	unlockImages()
+	duration := time.Since(startedAt)
+	if inspectErr != nil {
+		systemevent.Failure(
+			"image_build_inspection_failed",
+			inspectErr,
+			systemevent.String("reference", request.Reference),
+			systemevent.Int64("duration_ms", duration.Milliseconds()),
+		)
+	} else if duration >= buildStallWarningAfter {
+		systemevent.Info(
+			"image_build_finished",
+			systemevent.String("reference", request.Reference),
+			systemevent.Int64("duration_ms", duration.Milliseconds()),
+		)
+	}
+	return image, inspectErr
 }
 
 func (e *Engine) Pull(ctx context.Context, request PullRequest) (Image, error) {
 	if request.Reference == "" {
 		return Image{}, fmt.Errorf("image reference is empty")
 	}
+	defer e.notifyImageStorageChanged()
+	unlockImages := e.acquireImageReadLock("pull", request.Reference)
+	defer unlockImages()
 	policy := commonconfig.PullPolicyMissing
 	if request.Refresh {
 		policy = commonconfig.PullPolicyAlways
@@ -117,6 +162,9 @@ func (e *Engine) CommitDerivedImage(ctx context.Context, request DerivedImageReq
 	if request.ContainerID == "" || request.BaseImageID == "" || request.Reference == "" {
 		return Image{}, errors.New("derived image request is incomplete")
 	}
+	defer e.notifyImageStorageChanged()
+	unlockImages := e.acquireImageReadLock("commit", request.Reference)
+	defer unlockImages()
 	base, _, err := e.runtime.LibimageRuntime().LookupImage(request.BaseImageID, nil)
 	if err != nil {
 		return Image{}, fmt.Errorf("lookup derived image base %s: %w", request.BaseImageID, err)
@@ -203,10 +251,17 @@ func (e *Engine) RemoveImage(ctx context.Context, id string) error {
 	if id == "" {
 		return errors.New("image ID is empty")
 	}
+	defer e.notifyImageStorageChanged()
 	_, failures := e.runtime.LibimageRuntime().RemoveImages(ctx, []string{id}, &libimage.RemoveImagesOptions{
 		Force:   false,
 		Ignore:  true,
 		NoPrune: true,
 	})
 	return errors.Join(failures...)
+}
+
+func (e *Engine) notifyImageStorageChanged() {
+	if e.config.ImageStorageChanged != nil {
+		e.config.ImageStorageChanged()
+	}
 }

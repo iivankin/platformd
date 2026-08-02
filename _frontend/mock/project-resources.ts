@@ -74,6 +74,11 @@ const createService: ResourceCreator = (state, projectID, input) => {
       })
     : [];
   const service: Service = {
+    beforeDeploy:
+      typeof input.beforeDeploy === "object" && input.beforeDeploy !== null
+        ? (input.beforeDeploy as Service["beforeDeploy"])
+        : undefined,
+    buildEnvironment: stringRecord(input.buildEnvironment),
     cpuMillicores: 500,
     createdAt,
     enabled: booleanField(input, "enabled", true),

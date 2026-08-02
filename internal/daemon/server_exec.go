@@ -33,5 +33,5 @@ func newServerExecApplication(cgroups *cgrouptree.Tree, store *state.Store) (*au
 	if err != nil {
 		return nil, err
 	}
-	return automation.NewServerExecApplication(runner, store, nil, nil)
+	return automation.NewServerExecApplication(runner, store, nil)
 }

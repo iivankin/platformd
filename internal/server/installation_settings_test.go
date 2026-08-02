@@ -26,22 +26,14 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-type settingsAutomationRoute struct {
-	published string
-}
-
-func (route *settingsAutomationRoute) Prepare(hostname string) (func() error, error) {
-	return func() error { route.published = hostname; return nil }, nil
-}
-
-func TestInstallationSettingsAPIKeepsKeysWriteOnlyAndPublishesAutomationRoute(t *testing.T) {
+func TestInstallationSettingsAPIKeepsKeysWriteOnlyAndChangesRestartedSettings(t *testing.T) {
 	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
 	master := cryptobox.MasterKey{1, 2, 3}
-	certificatePEM, privateKey := serverSettingsCertificate(t, []string{"admin.example.com", "api.example.com"})
+	certificatePEM, privateKey := serverSettingsCertificate(t, []string{"admin.example.com", "api.example.com", "control.example.com"})
 	certificate, _, err := origin.EncryptCertificate(master, "certificate-a", certificatePEM, privateKey, rand.Reader, 1)
 	clear(privateKey)
 	if err != nil {
@@ -60,12 +52,12 @@ func TestInstallationSettingsAPIKeepsKeysWriteOnlyAndPublishesAutomationRoute(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	route := &settingsAutomationRoute{}
-	application, err := installationsettings.New(store, master, selector, route, &sync.Mutex{})
+	application, err := installationsettings.New(store, master, selector, &sync.Mutex{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw := server.Handler(server.DefaultMeta("ready"), server.WithInstallationSettings(application))
+	restarts := 0
+	raw := server.Handler(server.DefaultMeta("ready"), server.WithInstallationSettings(application, func() { restarts++ }))
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, raw)
 
 	getResponse := httptest.NewRecorder()
@@ -74,15 +66,41 @@ func TestInstallationSettingsAPIKeepsKeysWriteOnlyAndPublishesAutomationRoute(t 
 		t.Fatalf("settings response = %d/%s", getResponse.Code, getResponse.Body)
 	}
 
-	setRequest := projectRequest(http.MethodPut, "/api/v1/settings/automation-hostname", `{"hostname":"API.Example.com"}`)
-	setRequest.Header.Set("Origin", "https://admin.example.com")
-	setResponse := httptest.NewRecorder()
-	handler.ServeHTTP(setResponse, setRequest)
-	if setResponse.Code != http.StatusOK || route.published != "api.example.com" || setResponse.Header().Get("X-Request-ID") == "" {
-		t.Fatalf("automation settings response = %d/%s, route=%q", setResponse.Code, setResponse.Body, route.published)
+	adminRequest := projectRequest(http.MethodPut, "/api/v1/settings/admin-hostname", `{"hostname":"CONTROL.Example.com"}`)
+	adminRequest.Header.Set("Origin", "https://admin.example.com")
+	adminResponse := httptest.NewRecorder()
+	handler.ServeHTTP(adminResponse, adminRequest)
+	if adminResponse.Code != http.StatusOK || restarts != 1 || adminResponse.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("admin settings response = %d/%s, restarts=%d", adminResponse.Code, adminResponse.Body, restarts)
 	}
-	if !strings.Contains(setResponse.Body.String(), `"automationHostname":"api.example.com"`) {
-		t.Fatalf("automation hostname response = %s", setResponse.Body)
+	if !strings.Contains(adminResponse.Body.String(), `"adminHostname":"control.example.com"`) {
+		t.Fatalf("admin hostname response = %s", adminResponse.Body)
+	}
+	idempotentRequest := projectRequest(http.MethodPut, "/api/v1/settings/admin-hostname", `{"hostname":"control.example.com"}`)
+	idempotentRequest.Header.Set("Origin", "https://admin.example.com")
+	idempotentResponse := httptest.NewRecorder()
+	handler.ServeHTTP(idempotentResponse, idempotentRequest)
+	if idempotentResponse.Code != http.StatusOK || restarts != 1 {
+		t.Fatalf("idempotent admin settings response = %d/%s, restarts=%d", idempotentResponse.Code, idempotentResponse.Body, restarts)
+	}
+
+	accessRequest := projectRequest(http.MethodPut, "/api/v1/settings/cloudflare-access", `{
+  "teamDomain":"NEW-TEAM.CloudflareAccess.com",
+  "audience":"new-audience"
+}`)
+	accessRequest.Header.Set("Origin", "https://admin.example.com")
+	accessResponse := httptest.NewRecorder()
+	handler.ServeHTTP(accessResponse, accessRequest)
+	if accessResponse.Code != http.StatusOK || restarts != 2 || accessResponse.Header().Get("X-Request-ID") == "" {
+		t.Fatalf("Access settings response = %d/%s, restarts=%d", accessResponse.Code, accessResponse.Body, restarts)
+	}
+	if !strings.Contains(accessResponse.Body.String(), `"accessTeamDomain":"new-team.cloudflareaccess.com"`) ||
+		!strings.Contains(accessResponse.Body.String(), `"accessAudience":"new-audience"`) {
+		t.Fatalf("Access settings response = %s", accessResponse.Body)
+	}
+	installation, err := store.Installation(context.Background())
+	if err != nil || installation.AccessTeamDomain != "new-team.cloudflareaccess.com" || installation.AccessAudience != "new-audience" {
+		t.Fatalf("stored Access settings = %+v, %v", installation, err)
 	}
 
 	secondCertificate, secondKey := serverSettingsCertificate(t, []string{"admin.example.com", "api.example.com"})

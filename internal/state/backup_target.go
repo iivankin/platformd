@@ -159,6 +159,13 @@ func (store *Store) SetControlBackupTarget(ctx context.Context, input SetControl
 		return err
 	}
 	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var installationID string
+		if err := transaction.QueryRowContext(ctx, `
+SELECT id FROM installation WHERE singleton = 1`).Scan(&installationID); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotInitialized
+		} else if err != nil {
+			return err
+		}
 		if input.TargetID != "" {
 			var exists int
 			if err := transaction.QueryRowContext(ctx, `
@@ -189,8 +196,8 @@ UPDATE installation SET backup_control_target_id = ?, updated_at = ? WHERE singl
 INSERT INTO audit_events(
   id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, 'backup.control_target.set', 'backup_target', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.TargetID,
+) VALUES (?, ?, ?, 'backup.control_target.set', 'installation', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ActorKind, input.ActorID, installationID,
 			nullableString(input.RequestCorrelationID), string(metadata), input.UpdatedAtMillis)
 		return err
 	})

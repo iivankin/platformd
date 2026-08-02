@@ -6,12 +6,12 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
-	"encoding/hex"
 	"errors"
 	"io"
 	"strings"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/id"
 )
 
 const usernamePrefix = "prg_"
@@ -19,25 +19,21 @@ const verifierDomain = "platformd/registry/credential/v1"
 const secretEncryptionDomain = "platformd/sqlite/registry-credential-secret/v1"
 
 func Username(credentialID string) (string, error) {
-	compact := strings.ReplaceAll(credentialID, "-", "")
-	if len(compact) != 32 {
-		return "", errors.New("registry credential ID must be a UUID")
+	if !id.Valid(credentialID) {
+		return "", errors.New("registry credential ID must be a CUID2")
 	}
-	if _, err := hex.DecodeString(compact); err != nil {
-		return "", errors.New("registry credential ID must be a UUID")
-	}
-	return usernamePrefix + compact, nil
+	return usernamePrefix + credentialID, nil
 }
 
 func CredentialID(username string) (string, error) {
-	compact := strings.TrimPrefix(username, usernamePrefix)
-	if len(compact) != 32 || username == compact {
+	if !strings.HasPrefix(username, usernamePrefix) {
 		return "", errors.New("registry username is invalid")
 	}
-	if _, err := hex.DecodeString(compact); err != nil {
+	credentialID := strings.TrimPrefix(username, usernamePrefix)
+	if !id.Valid(credentialID) {
 		return "", errors.New("registry username is invalid")
 	}
-	return compact[:8] + "-" + compact[8:12] + "-" + compact[12:16] + "-" + compact[16:20] + "-" + compact[20:], nil
+	return credentialID, nil
 }
 
 func GenerateSecret(random io.Reader) (string, error) {

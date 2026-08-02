@@ -12,8 +12,9 @@ func adminTools() []Tool {
 	source := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"type":       map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
-			"autoUpdate": map[string]any{"type": "boolean"},
+			"type":                  map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
+			"autoUpdate":            map[string]any{"type": "boolean"},
+			"minimumReleaseAgeDays": map[string]any{"type": "integer", "minimum": 1, "maximum": 36_500},
 			"image": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{
@@ -41,7 +42,24 @@ func adminTools() []Tool {
 	configuration := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"source":           source,
+			"source": source,
+			"beforeDeploy": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"command": map[string]any{"type": "string", "maxLength": 262_144},
+					"cloudflareHostnames": map[string]any{
+						"type": "array", "maxItems": 30, "items": map[string]string{"type": "string"},
+					},
+					"githubWorkflow": map[string]any{
+						"type": "object", "additionalProperties": false,
+						"required": []string{"path", "name"},
+						"properties": map[string]any{
+							"path": map[string]string{"type": "string"}, "name": map[string]string{"type": "string"},
+							"inputs": map[string]any{"type": "object", "maxProperties": 25},
+						},
+					},
+				},
+			},
 			"command":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"args":             map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"environment":      map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},

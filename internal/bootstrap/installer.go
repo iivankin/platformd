@@ -132,15 +132,15 @@ func (installer Installer) Init(ctx context.Context) error {
 
 func (installer Installer) prepareInstallation(master cryptobox.MasterKey, input ValidatedInput) (state.InitialInstallation, error) {
 	timestamp := installer.Now()
-	installationID, err := id.NewWith(timestamp, installer.Random)
+	installationID, err := id.New()
 	if err != nil {
 		return state.InitialInstallation{}, err
 	}
-	certificateID, err := id.NewWith(timestamp, installer.Random)
+	certificateID, err := id.New()
 	if err != nil {
 		return state.InitialInstallation{}, err
 	}
-	auditID, err := id.NewWith(timestamp, installer.Random)
+	auditID, err := id.New()
 	if err != nil {
 		return state.InitialInstallation{}, err
 	}

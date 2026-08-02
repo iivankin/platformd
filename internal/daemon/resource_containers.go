@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -116,4 +117,20 @@ func (repository liveContainerResourceRepository) Resource(ctx context.Context, 
 	default:
 		return errors.New("resource kind has no container")
 	}
+}
+
+func (repository liveContainerResourceRepository) ResolveProject(ctx context.Context, name string) (portforward.ResolvedProject, error) {
+	project, err := repository.store.ProjectByName(ctx, name)
+	if err != nil {
+		return portforward.ResolvedProject{}, err
+	}
+	return portforward.ResolvedProject{ID: project.ID, Name: project.Name}, nil
+}
+
+func (repository liveContainerResourceRepository) ResolveResource(ctx context.Context, projectID, name string) (portforward.ResolvedResource, error) {
+	resource, err := repository.store.ProjectResourceByName(ctx, projectID, name)
+	if err != nil {
+		return portforward.ResolvedResource{}, err
+	}
+	return portforward.ResolvedResource{ID: resource.ID, Kind: resource.Kind, Name: resource.Name}, nil
 }

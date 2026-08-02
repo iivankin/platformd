@@ -213,7 +213,6 @@ func publicHostnames(ctx context.Context, transaction *sql.Tx) ([]string, error)
 func queryPublicHostnames(ctx context.Context, querier hostnameQuerier) ([]string, error) {
 	rows, err := querier.QueryContext(ctx, `
 SELECT admin_hostname FROM installation
-UNION SELECT automation_hostname FROM installation WHERE automation_hostname IS NOT NULL
 UNION SELECT registry_hostname FROM installation WHERE registry_hostname IS NOT NULL
 UNION SELECT hostname FROM service_domains
 UNION SELECT public_hostname FROM object_stores WHERE public_hostname IS NOT NULL`)

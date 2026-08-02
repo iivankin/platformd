@@ -18,6 +18,7 @@ const identitySchema = z.object({
 
 const accessIdentityProfileSchema = z.object({
   avatar_url: z.string().nullish(),
+  custom: z.record(z.string(), z.unknown()).nullish(),
   idp: z.record(z.string(), z.unknown()).nullish(),
   name: z.string().nullish(),
   oidc_fields: z.record(z.string(), z.unknown()).nullish(),
@@ -26,20 +27,31 @@ const accessIdentityProfileSchema = z.object({
 
 export type Identity = z.infer<typeof identitySchema>;
 
-const githubAvatarURL = (
+const profileString = (value: unknown): string | undefined =>
+  typeof value === "string" ? value : undefined;
+
+const identityDisplayName = (
   profile: z.infer<typeof accessIdentityProfileSchema>
 ) => {
-  const oidcPicture = profile.oidc_fields?.picture;
-  const oidcAvatar = profile.oidc_fields?.avatar_url;
-  const idpPicture = profile.idp?.picture;
-  const idpAvatar = profile.idp?.avatar_url;
+  const name =
+    profile.name?.trim() ||
+    profileString(profile.custom?.name)?.trim() ||
+    profileString(profile.oidc_fields?.name)?.trim();
+  return name || undefined;
+};
+
+const identityAvatarURL = (
+  profile: z.infer<typeof accessIdentityProfileSchema>
+) => {
   const candidates = [
     profile.avatar_url,
     profile.picture,
-    typeof idpAvatar === "string" ? idpAvatar : undefined,
-    typeof idpPicture === "string" ? idpPicture : undefined,
-    typeof oidcAvatar === "string" ? oidcAvatar : undefined,
-    typeof oidcPicture === "string" ? oidcPicture : undefined,
+    profileString(profile.custom?.avatar_url),
+    profileString(profile.custom?.picture),
+    profileString(profile.oidc_fields?.avatar_url),
+    profileString(profile.oidc_fields?.picture),
+    profileString(profile.idp?.avatar_url),
+    profileString(profile.idp?.picture),
   ];
   for (const candidate of candidates) {
     if (!candidate) {
@@ -47,10 +59,7 @@ const githubAvatarURL = (
     }
     try {
       const url = new URL(candidate);
-      if (
-        url.protocol === "https:" &&
-        url.hostname === "avatars.githubusercontent.com"
-      ) {
+      if (url.protocol === "https:") {
         return url.toString();
       }
     } catch {
@@ -72,6 +81,25 @@ const projectSchema = z.object({
 });
 
 const projectsSchema = z.array(projectSchema);
+const projectWebhookEventTypeSchema = z.enum([
+  "deployment.started",
+  "deployment.succeeded",
+  "deployment.failed",
+  "deployment.interrupted",
+  "deployment.skipped",
+]);
+const projectWebhookSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  eventTypes: z.array(projectWebhookEventTypeSchema).min(1),
+  id: z.string().min(1),
+  projectId: z.string().min(1),
+  updatedAt: z.number().int().nonnegative(),
+  url: z.url(),
+});
+const projectWebhooksSchema = z.object({
+  eventTypes: z.array(projectWebhookEventTypeSchema),
+  webhooks: z.array(projectWebhookSchema),
+});
 const serviceDomainSchema = z.object({
   createdAt: z.number().int().positive(),
   hostname: z.string().min(1),
@@ -85,6 +113,9 @@ const serviceDomainSchema = z.object({
 });
 const serviceDomainsSchema = z.object({
   domains: z.array(serviceDomainSchema),
+});
+const serviceDomainDNSStatusSchema = z.object({
+  status: z.enum(["unmanaged", "pending", "ready"]),
 });
 const serviceListenerSchema = z.object({
   createdAt: z.number().int().positive(),
@@ -149,7 +180,14 @@ const apiErrorSchema = z.object({
 });
 
 export type Project = z.infer<typeof projectSchema>;
+export type ProjectWebhook = z.infer<typeof projectWebhookSchema>;
+export type ProjectWebhookEventType = z.infer<
+  typeof projectWebhookEventTypeSchema
+>;
 export type ServiceDomain = z.infer<typeof serviceDomainSchema>;
+export type ServiceDomainDNSStatus = z.infer<
+  typeof serviceDomainDNSStatusSchema
+>["status"];
 export type ServiceListener = z.infer<typeof serviceListenerSchema>;
 export type ContainerPort = z.infer<typeof containerPortSchema>;
 
@@ -175,11 +213,13 @@ const imageSourceSchema = z.discriminatedUnion("type", [
   z.object({
     autoUpdate: z.boolean().optional().default(false),
     image: z.object({ reference: z.string().min(1) }),
+    minimumReleaseAgeDays: z.number().int().positive().max(36_500).optional(),
     type: z.literal("public_image"),
   }),
   z.object({
     autoUpdate: z.boolean().optional().default(false),
     image: z.object({ reference: z.string().min(1) }),
+    minimumReleaseAgeDays: z.number().int().positive().max(36_500).optional(),
     type: z.literal("private_image"),
   }),
 ]);
@@ -273,11 +313,28 @@ const healthCheckSchema = z.object({
   timeoutSeconds: z.number().int().min(1).max(3600),
 });
 
+const githubWorkflowSchema = z.object({
+  inputs: z.record(z.string(), z.unknown()),
+  name: z.string().min(1),
+  path: z.string().min(1),
+});
+
+const beforeDeploySchema = z.object({
+  cloudflareHostnames: z.array(z.string().min(1)),
+  command: z.string().min(1).optional(),
+  githubWorkflow: githubWorkflowSchema.optional(),
+});
+
+export type GitHubWorkflow = z.infer<typeof githubWorkflowSchema>;
+export type BeforeDeploy = z.infer<typeof beforeDeploySchema>;
+
 const serviceSchema = z.object({
   activeConfigHash: z.string().min(1).optional(),
   activeDeploymentId: z.string().min(1).optional(),
   activeImageDigest: z.string().min(1).optional(),
   args: z.array(z.string()).optional(),
+  beforeDeploy: beforeDeploySchema.optional(),
+  buildEnvironment: z.record(z.string(), z.string()),
   command: z.array(z.string()).optional(),
   cpuMillicores: z.number().int().nonnegative().optional(),
   createdAt: z.number().int().positive(),
@@ -323,6 +380,8 @@ export interface CreateServiceVolumeInput extends CreateVolumeInput {
 }
 
 export interface CreateServiceInput {
+  beforeDeploy?: BeforeDeploy;
+  buildEnvironment: Record<string, string>;
   domains?: Pick<ServiceDomain, "hostname" | "targetPort">[];
   environment: Record<string, string>;
   healthCheck?: z.infer<typeof healthCheckSchema>;
@@ -335,6 +394,8 @@ export interface CreateServiceInput {
 
 export interface UpdateServiceInput {
   args?: string[];
+  beforeDeploy?: BeforeDeploy;
+  buildEnvironment: Record<string, string>;
   command?: string[];
   cpuMillicores?: number;
   enabled: boolean;
@@ -361,6 +422,8 @@ const deploymentSchema = z.object({
   serviceId: z.string().min(1),
   snapshot: serviceSchema.pick({
     args: true,
+    beforeDeploy: true,
+    buildEnvironment: true,
     command: true,
     cpuMillicores: true,
     environment: true,
@@ -501,6 +564,18 @@ const diskPressureSchema = z.object({
 
 export type DiskPressure = z.infer<typeof diskPressureSchema>;
 
+const imageGarbageCollectionResultSchema = z.object({
+  buildCacheImagesRemoved: z.number().int().nonnegative(),
+  finalImagesRemoved: z.number().int().nonnegative(),
+  orphanLayersRemoved: z.number().int().nonnegative(),
+  removedBytes: z.number().int().nonnegative(),
+  skipped: z.number().int().nonnegative(),
+});
+
+export type ImageGarbageCollectionResult = z.infer<
+  typeof imageGarbageCollectionResultSchema
+>;
+
 const infrastructureLogRecordSchema = z.object({
   cursor: z.string().min(1),
   identifier: z.string().optional(),
@@ -511,8 +586,9 @@ const infrastructureLogRecordSchema = z.object({
 });
 
 const infrastructureLogWindowSchema = z.object({
+  // Cursors are opaque journal positions and must only be passed back to the API.
+  nextCursor: z.string().min(1).optional(),
   records: z.array(infrastructureLogRecordSchema),
-  truncated: z.boolean(),
 });
 
 export type InfrastructureLogRecord = z.infer<
@@ -522,24 +598,92 @@ export type InfrastructureLogWindow = z.infer<
   typeof infrastructureLogWindowSchema
 >;
 
-const resourceUsageSchema = z.object({
-  cpuUsageMicros: z.number().int().nonnegative(),
-  hostCpuCores: z.number().int().positive(),
-  hostMemoryBytes: z.number().int().positive(),
-  memoryBytes: z.number().int().nonnegative(),
-  networkAvailable: z.boolean(),
-  networkRxBytes: z.number().int().nonnegative(),
-  networkTxBytes: z.number().int().nonnegative(),
+export interface InfrastructureLogsQuery {
+  beforeCursor?: string;
+  limit?: number;
+}
+
+const proxyUsageSchema = z.object({
+  http: z.object({
+    activeRequests: z.number().int().nonnegative(),
+    activeRequestsPeak: z.number().int().nonnegative(),
+    latencyP50Millis: z.number().nonnegative().optional(),
+    latencyP95Millis: z.number().nonnegative().optional(),
+    latencyP99Millis: z.number().nonnegative().optional(),
+    requestsPeakPerSecond: z.number().nonnegative().optional(),
+    requestsPerSecond: z.number().nonnegative().optional(),
+    requestsTotal: z.number().int().nonnegative(),
+    responses2xxPerSecond: z.number().nonnegative().optional(),
+    responses3xxPerSecond: z.number().nonnegative().optional(),
+    responses4xxPerSecond: z.number().nonnegative().optional(),
+    responses5xxPerSecond: z.number().nonnegative().optional(),
+  }),
+  tcp: z.object({
+    activeConnections: z.number().int().nonnegative(),
+    activeConnectionsPeak: z.number().int().nonnegative(),
+    connectionsPeakPerSecond: z.number().nonnegative().optional(),
+    connectionsPerSecond: z.number().nonnegative().optional(),
+    connectionsTotal: z.number().int().nonnegative(),
+  }),
+  udp: z.object({
+    egressPacketsPeakPerSecond: z.number().nonnegative().optional(),
+    egressPacketsPerSecond: z.number().nonnegative().optional(),
+    egressPacketsTotal: z.number().int().nonnegative(),
+    ingressPacketsPeakPerSecond: z.number().nonnegative().optional(),
+    ingressPacketsPerSecond: z.number().nonnegative().optional(),
+    ingressPacketsTotal: z.number().int().nonnegative(),
+  }),
+});
+
+const hostUsageSchema = z.object({
+  cpuCores: z.number().int().positive(),
+  cpuMillicores: z.number().int().nonnegative().optional(),
+  cpuPeakMillicores: z.number().int().nonnegative().optional(),
+  memoryPeakBytes: z.number().int().nonnegative(),
+  memoryTotalBytes: z.number().int().positive(),
+  memoryUsedBytes: z.number().int().nonnegative(),
+  networkEgressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkEgressPeakBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkIngressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkIngressPeakBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkInterface: z.string().min(1),
   observedAt: z.number().int().positive(),
+});
+
+const resourceUsageSchema = z.object({
+  // Rates are calculated continuously by the daemon and stay absent whenever
+  // the current two-second interval has no valid counter delta.
+  cpuMillicores: z.number().int().nonnegative().optional(),
+  cpuPeakMillicores: z.number().int().nonnegative().optional(),
+  host: hostUsageSchema.optional(),
+  hostCpuCores: z.number().int().nonnegative(),
+  hostMemoryBytes: z.number().int().nonnegative(),
+  memoryBytes: z.number().int().nonnegative(),
+  memoryPeakBytes: z.number().int().nonnegative(),
+  networkAvailable: z.boolean(),
+  networkEgressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkEgressPeakBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkIngressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkIngressPeakBytesPerSecond: z.number().int().nonnegative().optional(),
+  observedAt: z.number().int().positive(),
+  proxy: proxyUsageSchema.optional(),
   running: z.boolean(),
+  runningResources: z.number().int().nonnegative(),
+  totalResources: z.number().int().nonnegative(),
 });
 
 const resourceUsageHistoryPointSchema = z.object({
   cpuMillicores: z.number().int().nonnegative().optional(),
+  cpuPeakMillicores: z.number().int().nonnegative().optional(),
+  durationMillis: z.number().int().positive(),
   memoryBytes: z.number().int().nonnegative(),
+  memoryPeakBytes: z.number().int().nonnegative(),
   networkEgressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkEgressPeakBytesPerSecond: z.number().int().nonnegative().optional(),
   networkIngressBytesPerSecond: z.number().int().nonnegative().optional(),
+  networkIngressPeakBytesPerSecond: z.number().int().nonnegative().optional(),
   observedAt: z.number().int().positive(),
+  proxy: proxyUsageSchema.optional(),
   running: z.boolean(),
 });
 
@@ -577,6 +721,7 @@ const auditEventSchema = z.object({
   createdAt: z.number().int().positive(),
   id: z.string().min(1),
   metadata: z.record(z.string(), z.unknown()),
+  projectId: z.string().min(1).optional(),
   requestCorrelationId: z.string().min(1).optional(),
   result: z.enum(["succeeded", "failed"]),
   targetId: z.string().min(1),
@@ -1209,8 +1354,8 @@ export const fetchIdentity = async (
     if (!parsedProfile.success) {
       return identity;
     }
-    const name = parsedProfile.data.name?.trim();
-    const avatarUrl = githubAvatarURL(parsedProfile.data);
+    const name = identityDisplayName(parsedProfile.data);
+    const avatarUrl = identityAvatarURL(parsedProfile.data);
     return {
       ...identity,
       ...(name ? { name } : {}),
@@ -1282,6 +1427,110 @@ export const deleteProject = async (
     throw await apiError(
       response,
       `project deletion failed with ${response.status}`
+    );
+  }
+};
+
+const projectWebhooksPath = (projectID: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/webhooks`;
+
+export const fetchProjectWebhooks = async (
+  projectID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<{
+  eventTypes: ProjectWebhookEventType[];
+  webhooks: ProjectWebhook[];
+}> => {
+  const response = await fetcher(projectWebhooksPath(projectID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project webhooks request failed with ${response.status}`
+    );
+  }
+  return projectWebhooksSchema.parse(await response.json());
+};
+
+export const createProjectWebhook = async (
+  projectID: string,
+  input: { eventTypes: ProjectWebhookEventType[]; url: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ProjectWebhook> => {
+  const response = await fetcher(projectWebhooksPath(projectID), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project webhook creation failed with ${response.status}`
+    );
+  }
+  return projectWebhookSchema.parse(await response.json());
+};
+
+export const updateProjectWebhook = async (
+  projectID: string,
+  webhookID: string,
+  input: { eventTypes: ProjectWebhookEventType[]; url: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ProjectWebhook> => {
+  const response = await fetcher(
+    `${projectWebhooksPath(projectID)}/${encodeURIComponent(webhookID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project webhook update failed with ${response.status}`
+    );
+  }
+  return projectWebhookSchema.parse(await response.json());
+};
+
+export const deleteProjectWebhook = async (
+  projectID: string,
+  webhookID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${projectWebhooksPath(projectID)}/${encodeURIComponent(webhookID)}`,
+    { headers: { Accept: "application/json" }, method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project webhook deletion failed with ${response.status}`
+    );
+  }
+};
+
+export const testProjectWebhook = async (
+  projectID: string,
+  url: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(`${projectWebhooksPath(projectID)}/test`, {
+    body: JSON.stringify({ url }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project webhook test failed with ${response.status}`
     );
   }
 };
@@ -1452,6 +1701,25 @@ export const fetchResolvedServiceEnvironment = async (
     throw await apiError(
       response,
       `resolved variables request failed with ${response.status}`
+    );
+  }
+  return resolvedEnvironmentSchema.parse(await response.json()).environment;
+};
+
+export const fetchResolvedServiceBuildEnvironment = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Record<string, string>> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/build-variables/resolved`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `resolved build variables request failed with ${response.status}`
     );
   }
   return resolvedEnvironmentSchema.parse(await response.json()).environment;
@@ -2066,12 +2334,32 @@ export const fetchDiskPressure = async (
   return diskPressureSchema.parse(await response.json());
 };
 
+export const forceImageGarbageCollection = async (
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ImageGarbageCollectionResult> => {
+  const response = await fetcher("/api/v1/infrastructure/container-images/gc", {
+    headers: { Accept: "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `container image garbage collection failed with ${response.status}`
+    );
+  }
+  return imageGarbageCollectionResultSchema.parse(await response.json());
+};
+
 export const fetchInfrastructureLogs = async (
-  limit = 500,
+  query: InfrastructureLogsQuery = {},
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<InfrastructureLogWindow> => {
-  const response = await fetcher(`/api/v1/infrastructure/logs?limit=${limit}`, {
+  const parameters = new URLSearchParams({ limit: String(query.limit ?? 500) });
+  if (query.beforeCursor) {
+    parameters.set("beforeCursor", query.beforeCursor);
+  }
+  const response = await fetcher(`/api/v1/infrastructure/logs?${parameters}`, {
     headers: { Accept: "application/json" },
     signal,
   });
@@ -2123,6 +2411,92 @@ export const fetchResourceUsageHistory = async (
   return resourceUsageHistorySchema.parse(await response.json());
 };
 
+const fetchUsage = async (
+  path: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ResourceUsage> => {
+  const response = await fetcher(path, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `usage request failed with ${response.status}`
+    );
+  }
+  return resourceUsageSchema.parse(await response.json());
+};
+
+const fetchUsageHistory = async (
+  path: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ResourceUsageHistory> => {
+  const response = await fetcher(path, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `usage history request failed with ${response.status}`
+    );
+  }
+  return resourceUsageHistorySchema.parse(await response.json());
+};
+
+export const fetchProjectUsage = (
+  projectID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+) =>
+  fetchUsage(
+    `/api/v1/infrastructure/projects/${encodeURIComponent(projectID)}/usage`,
+    signal,
+    fetcher
+  );
+
+export const fetchProjectUsageHistory = (
+  projectID: string,
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+) =>
+  fetchUsageHistory(
+    `/api/v1/infrastructure/projects/${encodeURIComponent(projectID)}/usage/history?range=${range}`,
+    signal,
+    fetcher
+  );
+
+export const fetchInstallationUsage = (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+) => fetchUsage("/api/v1/infrastructure/usage", signal, fetcher);
+
+export const fetchInstallationUsageHistory = (
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+) =>
+  fetchUsageHistory(
+    `/api/v1/infrastructure/usage/history?range=${range}`,
+    signal,
+    fetcher
+  );
+
+export const fetchHostUsageHistory = (
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+) =>
+  fetchUsageHistory(
+    `/api/v1/infrastructure/host/usage/history?range=${range}`,
+    signal,
+    fetcher
+  );
+
 export const applySelfUpdate = async (
   fetcher: Fetcher = globalThis.fetch
 ): Promise<SelfUpdateResult> => {
@@ -2162,6 +2536,7 @@ export const fetchAuditEvents = async (
     actorKind?: AuditEvent["actorKind"];
     cursor?: string;
     limit?: number;
+    projectId?: string;
     result?: AuditEvent["result"];
   } = {},
   signal?: AbortSignal,
@@ -2176,6 +2551,9 @@ export const fetchAuditEvents = async (
   }
   if (filters.cursor) {
     query.set("cursor", filters.cursor);
+  }
+  if (filters.projectId) {
+    query.set("projectId", filters.projectId);
   }
   if (filters.result) {
     query.set("result", filters.result);
@@ -2436,6 +2814,7 @@ export const queryManagedPostgres = async (
   projectID: string,
   postgresID: string,
   sql: string,
+  signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<PostgresQueryResult> => {
   const response = await fetcher(
@@ -2447,6 +2826,7 @@ export const queryManagedPostgres = async (
         "Content-Type": "application/json",
       },
       method: "POST",
+      signal,
     }
   );
   if (!response.ok) {
@@ -3354,6 +3734,26 @@ export const fetchServiceDomains = async (
   return serviceDomainsSchema.parse(await response.json()).domains;
 };
 
+export const fetchServiceDomainDNSStatus = async (
+  projectID: string,
+  serviceID: string,
+  hostname: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceDomainDNSStatus> => {
+  const response = await fetcher(
+    `${serviceDomainsPath(projectID, serviceID)}/${encodeURIComponent(hostname)}/dns`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `domain DNS status request failed with ${response.status}`
+    );
+  }
+  return serviceDomainDNSStatusSchema.parse(await response.json()).status;
+};
+
 export const attachServiceDomain = async (
   projectID: string,
   serviceID: string,
@@ -3551,7 +3951,6 @@ const installationSettingsSchema = z.object({
   accessAudience: z.string().min(1),
   accessTeamDomain: z.string().min(1),
   adminHostname: z.string().min(1),
-  automationHostname: z.string(),
   certificates: z.array(originCertificateSettingsSchema),
   installationId: z.string().min(1),
 });
@@ -3577,11 +3976,11 @@ export const fetchInstallationSettings = async (
   return installationSettingsSchema.parse(await response.json());
 };
 
-export const setAutomationHostname = async (
+export const setAdminHostname = async (
   hostname: string,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<InstallationSettings> => {
-  const response = await fetcher(`${settingsPath}/automation-hostname`, {
+  const response = await fetcher(`${settingsPath}/admin-hostname`, {
     body: JSON.stringify({ hostname }),
     headers: { Accept: "application/json", "Content-Type": "application/json" },
     method: "PUT",
@@ -3589,7 +3988,25 @@ export const setAutomationHostname = async (
   if (!response.ok) {
     throw await apiError(
       response,
-      `Automation hostname update failed with ${response.status}`
+      `Admin hostname update failed with ${response.status}`
+    );
+  }
+  return installationSettingsSchema.parse(await response.json());
+};
+
+export const setCloudflareAccessConfiguration = async (
+  input: { audience: string; teamDomain: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<InstallationSettings> => {
+  const response = await fetcher(`${settingsPath}/cloudflare-access`, {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `Cloudflare Access update failed with ${response.status}`
     );
   }
   return installationSettingsSchema.parse(await response.json());
@@ -3768,6 +4185,29 @@ export const fetchGitHubRepositoryPaths = async (
   return z
     .object({ paths: z.array(githubRepositoryPathSchema) })
     .parse(await response.json()).paths;
+};
+
+export const fetchGitHubWorkflows = async (
+  repositoryID: number,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<GitHubWorkflow[]> => {
+  const response = await fetcher(
+    `/api/v1/settings/github/repositories/${repositoryID}/workflows`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "GitHub workflows request failed");
+  }
+  return z
+    .object({
+      workflows: z.array(githubWorkflowSchema.omit({ inputs: true })),
+    })
+    .parse(await response.json())
+    .workflows.map((workflow) => ({
+      ...workflow,
+      inputs: {},
+    }));
 };
 
 export const fetchCloudflareDNSSettings = async (

@@ -1,4 +1,9 @@
 import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
+import {
+  beforeDeployDraft,
+  comparableBeforeDeployDraft,
+} from "@/service-before-deploy-model";
+import type { BeforeDeployDraft } from "@/service-before-deploy-model";
 import { serviceConfigurationDraft } from "@/service-configuration";
 import type { ServiceConfigurationDraft } from "@/service-configuration";
 
@@ -10,6 +15,7 @@ export type ServiceListenerDraft = Pick<
 export type ServiceVolumeDraft = Volume & { pendingCreation?: boolean };
 
 export interface ServiceSettingsDraft {
+  beforeDeploy: BeforeDeployDraft;
   configuration: ServiceConfigurationDraft;
   domains: ServiceDomainDraft[];
   listeners: ServiceListenerDraft[];
@@ -24,7 +30,9 @@ export interface PendingServiceSettings {
     service: Service;
     volumes: Volume[];
   };
+  buildEnvironment: Record<string, string>;
   draft: ServiceSettingsDraft;
+  environment: Record<string, string>;
   serviceID: string;
   serviceName: string;
 }
@@ -73,12 +81,20 @@ const sortedVolumes = <Item extends Volume>(volumes: Item[]): Item[] =>
 const same = (left: unknown, right: unknown) =>
   JSON.stringify(left) === JSON.stringify(right);
 
+const sortedEnvironment = (environment: Record<string, string>) =>
+  Object.fromEntries(
+    Object.entries(environment).toSorted(([left], [right]) =>
+      left.localeCompare(right)
+    )
+  );
+
 export const createServiceSettingsDraft = (
   service: Service,
   domains: ServiceDomain[],
   listeners: ServiceListener[],
   volumes: Volume[]
 ): ServiceSettingsDraft => ({
+  beforeDeploy: beforeDeployDraft(service.beforeDeploy),
   configuration: serviceConfigurationDraft(service),
   domains: domainDrafts(domains),
   listeners: listenerDrafts(listeners),
@@ -143,6 +159,104 @@ const configurationChangeDetails = (
   }
 
   return details;
+};
+
+const beforeDeployChangeDetails = (
+  change: PendingServiceSettings
+): ServiceSettingsChangeDetail[] => {
+  const baseline = beforeDeployDraft(change.baseline.service.beforeDeploy);
+  const current = change.draft.beforeDeploy;
+  const details: ServiceSettingsChangeDetail[] = [];
+  if (
+    !same(
+      { command: baseline.command, enabled: baseline.commandEnabled },
+      { command: current.command, enabled: current.commandEnabled }
+    )
+  ) {
+    details.push({
+      detail: current.commandEnabled ? current.command.trim() : "Off",
+      id: "before-deploy-command",
+      label: "Before deploy · command",
+    });
+  }
+  if (
+    !same(
+      {
+        enabled: baseline.githubWorkflowEnabled,
+        inputs: comparableBeforeDeployDraft(baseline).githubInputs,
+        workflow: baseline.githubWorkflow,
+      },
+      {
+        enabled: current.githubWorkflowEnabled,
+        inputs: comparableBeforeDeployDraft(current).githubInputs,
+        workflow: current.githubWorkflow,
+      }
+    )
+  ) {
+    details.push({
+      detail: current.githubWorkflowEnabled
+        ? (current.githubWorkflow?.name ?? "Not selected")
+        : "Off",
+      id: "before-deploy-github",
+      label: "Before deploy · GitHub workflow",
+    });
+  }
+  if (
+    !same(
+      {
+        enabled: baseline.cloudflareEnabled,
+        hostnames: baseline.cloudflareHostnames.toSorted(),
+      },
+      {
+        enabled: current.cloudflareEnabled,
+        hostnames: current.cloudflareHostnames.toSorted(),
+      }
+    )
+  ) {
+    details.push({
+      detail: current.cloudflareEnabled
+        ? current.cloudflareHostnames.join(", ") || "Not selected"
+        : "Off",
+      id: "before-deploy-cloudflare",
+      label: "Before deploy · Cloudflare purge",
+    });
+  }
+  return details;
+};
+
+const variableChangeDetails = (
+  baseline: Readonly<Record<string, string>>,
+  current: Readonly<Record<string, string>>,
+  scope: "build" | "runtime"
+): ServiceSettingsChangeDetail[] => {
+  const details: ServiceSettingsChangeDetail[] = [];
+  const build = scope === "build";
+  for (const [name, value] of Object.entries(current)) {
+    if (baseline[name] !== value) {
+      const exists = Object.hasOwn(baseline, name);
+      let label = exists ? "Update variable" : "Add variable";
+      if (build) {
+        label = exists ? "Update build variable" : "Add build variable";
+      }
+      details.push({
+        detail: name,
+        id: `${build ? "build-variable" : "variable"}:${name}`,
+        label,
+      });
+    }
+  }
+  for (const name of Object.keys(baseline)) {
+    if (!Object.hasOwn(current, name)) {
+      details.push({
+        detail: name,
+        id: `${build ? "build-variable" : "variable"}:${name}`,
+        label: build ? "Remove build variable" : "Remove variable",
+      });
+    }
+  }
+  return details.toSorted((left, right) =>
+    left.detail.localeCompare(right.detail)
+  );
 };
 
 const domainChangeDetails = (
@@ -274,7 +388,18 @@ const volumeChangeDetails = (
 export const serviceSettingsChangeDetails = (
   change: PendingServiceSettings
 ): ServiceSettingsChangeDetail[] => [
+  ...variableChangeDetails(
+    change.baseline.service.environment,
+    change.environment,
+    "runtime"
+  ),
+  ...variableChangeDetails(
+    change.baseline.service.buildEnvironment,
+    change.buildEnvironment,
+    "build"
+  ),
   ...configurationChangeDetails(change),
+  ...beforeDeployChangeDetails(change),
   ...domainChangeDetails(change),
   ...listenerChangeDetails(change),
   ...volumeChangeDetails(change),
@@ -282,15 +407,19 @@ export const serviceSettingsChangeDetails = (
 
 export const createPendingServiceSettings = ({
   current,
+  buildEnvironment,
   domains,
   draft,
+  environment,
   listeners,
   service,
   volumes,
 }: {
   current?: PendingServiceSettings;
+  buildEnvironment?: Record<string, string>;
   domains: ServiceDomain[];
   draft: ServiceSettingsDraft;
+  environment?: Record<string, string>;
   listeners: ServiceListener[];
   service: Service;
   volumes: Volume[];
@@ -302,6 +431,13 @@ export const createPendingServiceSettings = ({
       service,
       volumes: sortedVolumes(volumes),
     },
+    buildEnvironment: sortedEnvironment(
+      draft.configuration.source.type === "github"
+        ? (buildEnvironment ??
+            current?.buildEnvironment ??
+            service.buildEnvironment)
+        : {}
+    ),
     draft: {
       ...draft,
       domains: draft.domains.toSorted((left, right) =>
@@ -315,6 +451,9 @@ export const createPendingServiceSettings = ({
       volumeMounts: sortedMounts(draft.volumeMounts),
       volumes: sortedVolumes(draft.volumes),
     },
+    environment: sortedEnvironment(
+      environment ?? current?.environment ?? service.environment
+    ),
     serviceID: service.id,
     serviceName: service.name,
   };

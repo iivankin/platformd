@@ -5,6 +5,7 @@ import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { ServiceBeforeDeploy } from "@/service-before-deploy";
 import { ServiceConfiguration } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
 import { ServiceListeners } from "@/service-listeners";
@@ -62,12 +63,39 @@ export const ServiceSettings = ({
   const containerPorts = useContainerPorts(projectID, "service", serviceID);
 
   const updateDraft = (next: ServiceSettingsDraft) => {
-    setDraft(next);
+    const domainHostnames = new Set(
+      next.domains.map(({ hostname }) => hostname)
+    );
+    const previousRepositoryID =
+      draft.configuration.source.type === "github"
+        ? draft.configuration.source.github.repositoryId
+        : undefined;
+    const nextRepositoryID =
+      next.configuration.source.type === "github"
+        ? next.configuration.source.github.repositoryId
+        : undefined;
+    const normalized = {
+      ...next,
+      beforeDeploy: {
+        ...next.beforeDeploy,
+        cloudflareHostnames: next.beforeDeploy.cloudflareHostnames.filter(
+          (hostname) => domainHostnames.has(hostname)
+        ),
+        githubWorkflow:
+          nextRepositoryID && nextRepositoryID === previousRepositoryID
+            ? next.beforeDeploy.githubWorkflow
+            : undefined,
+        githubWorkflowEnabled: nextRepositoryID
+          ? next.beforeDeploy.githubWorkflowEnabled
+          : false,
+      },
+    };
+    setDraft(normalized);
     onDraftChange(
       createPendingServiceSettings({
         current: pendingChange,
         domains,
-        draft: next,
+        draft: normalized,
         listeners,
         service,
         volumes,
@@ -84,6 +112,12 @@ export const ServiceSettings = ({
           updateDraft({ ...draft, configuration })
         }
         httpDomainCount={draft.domains.length}
+      />
+      <ServiceBeforeDeploy
+        domains={draft.domains}
+        draft={draft.beforeDeploy}
+        onChange={(beforeDeploy) => updateDraft({ ...draft, beforeDeploy })}
+        source={draft.configuration.source}
       />
       <ServiceVolumes
         mounts={draft.volumeMounts}
@@ -129,6 +163,9 @@ export const ServiceSettings = ({
         onChanged={(nextDomains) =>
           updateDraft({ ...draft, domains: nextDomains })
         }
+        persistedDomains={domains}
+        projectID={projectID}
+        serviceID={serviceID}
       />
       <ServiceListeners
         containerPorts={containerPorts.ports}

@@ -37,7 +37,11 @@ Tunnel is not required. Before running the installer:
    hostname. Add an `Allow` policy for the users or identity-provider groups
    that may administer the VPS. Cloudflare Access denies users who do not match
    an Allow policy. See [Create an Access application](https://developers.cloudflare.com/learning-paths/clientless-access/access-application/create-access-app/).
-4. Record the values required by `platformd init`:
+4. Configure a **Bypass** for `admin.example.com/public/*`. REST and MCP
+   requests under this path authenticate with platformd API tokens instead of
+   the interactive Cloudflare Access session. GitHub webhooks and port-forward
+   connections use their own scoped secrets and tickets.
+5. Record the values required by `platformd init`:
    - **Team domain** — `<team>.cloudflareaccess.com`, shown under Zero Trust
      settings. Do not include `https://`. See Cloudflare's
      [team domain explanation](https://developers.cloudflare.com/cloudflare-one/faq/getting-started-faq/#what-is-a-team-domainteam-name).
@@ -84,10 +88,9 @@ Open `https://admin.example.com` and authenticate through Cloudflare Access.
 Further certificates, public service domains, backup storage, GitHub, and
 Cloudflare API integration are configured in the admin UI.
 
-Keep the Access application scoped to the admin hostname. If GitHub webhooks or
-other machine callbacks are needed, configure a separate public API hostname in
-platformd Settings rather than putting those callbacks behind the interactive
-Access login.
+Keep interactive Access protection on the rest of the admin hostname. Only
+`/public/*` should bypass the Cloudflare login; platformd validates credentials
+for the public endpoints itself.
 
 ### 3. Install the optional port-forward helper
 

@@ -183,7 +183,7 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 				return disasterrestore.ImportSnapshot(ctx, payload)
 			},
 			AcquireLock: func(string, int) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
-			Services:    services, Now: func() time.Time { return time.Unix(20, 0) }, Random: rand.Reader,
+			Services:    services, Now: func() time.Time { return time.Unix(20, 0) },
 			OS: "linux", Architecture: architecture,
 		}
 	}
@@ -285,7 +285,7 @@ func restoreReleaseSlot(t *testing.T, root string) (layout.Paths, ed25519.Public
 
 func writeRestoreRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -54,7 +54,7 @@ func (*repositoryStub) List(context.Context, managedimages.Engine, int, int, str
 
 func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	t.Helper()
-	services, err := automation.NewServiceApplication(repository, nil, nil)
+	services, err := automation.NewServiceApplication(repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +73,7 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 		t.Fatal(err)
 	}
 	handler, err := New(Config{
-		Hostname: "api.example.com", Version: "1.2.3", Repository: repository,
+		Hostname: "admin.example.com", Version: "1.2.3", Repository: repository,
 		Services: services, Logs: logs, Images: repository, Volumes: volumes, Admission: admission.New(),
 	})
 	if err != nil {
@@ -156,7 +156,7 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 	handler := newTestHandler(t, &repositoryStub{})
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://api.example.com/mcp", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://admin.example.com/public/mcp", nil))
 	if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodPost {
 		t.Fatalf("GET response = %d/%s", response.Code, response.Header().Get("Allow"))
 	}
@@ -341,7 +341,7 @@ func TestMCPAdminToolVisibilityAndAuthorizationBeforeMutation(t *testing.T) {
 }
 
 func mcpRequest(body string) *http.Request {
-	request := httptest.NewRequest(http.MethodPost, "https://api.example.com/mcp", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "https://admin.example.com/public/mcp", strings.NewReader(body))
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	request.Header.Set("MCP-Protocol-Version", ProtocolVersion)

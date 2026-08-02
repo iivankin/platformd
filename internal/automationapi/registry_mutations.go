@@ -2,7 +2,6 @@ package automationapi
 
 import (
 	"context"
-	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -79,7 +78,7 @@ func createRegistryRepository(application registryApplication) http.HandlerFunc 
 		if writeRegistryError(response, err) {
 			return
 		}
-		response.Header().Set("Location", "/api/v1/registry/repositories/"+result.Repository.ID)
+		response.Header().Set("Location", "/public/api/v1/registry/repositories/"+result.Repository.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicRegistryRepository(result.Repository, result, nil))
 	}
@@ -186,11 +185,11 @@ func tokenRegistryActor(tokenID string) registry.Actor {
 }
 
 func registryRequestIDs(timestamp time.Time) (string, string, error) {
-	auditID, err := id.NewWith(timestamp, rand.Reader)
+	auditID, err := id.New()
 	if err != nil {
 		return "", "", fmt.Errorf("generate Registry audit ID: %w", err)
 	}
-	requestID, err := id.NewWith(timestamp, rand.Reader)
+	requestID, err := id.New()
 	if err != nil {
 		return "", "", fmt.Errorf("generate Registry request ID: %w", err)
 	}

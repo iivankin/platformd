@@ -71,6 +71,7 @@ func TestContainerConsoleOwnsExactExecSessionAndAuditsLifecycle(t *testing.T) {
 	runtime := &runtimeStub{input: make(chan string, 1), resized: make(chan containerengine.TerminalSize, 1)}
 	audit := &auditRepository{}
 	times := []time.Time{time.UnixMilli(1_000), time.UnixMilli(2_500)}
+	identifiers := []string{"start-audit-id", "completion-audit-id"}
 	var timeMu sync.Mutex
 	application, err := containerconsole.New(containerconsole.Config{
 		Resources: resourceRepository{}, Runtime: runtime, Audit: audit,
@@ -81,7 +82,11 @@ func TestContainerConsoleOwnsExactExecSessionAndAuditsLifecycle(t *testing.T) {
 			times = times[1:]
 			return result
 		},
-		NewID: func(timestamp time.Time) (string, error) { return timestamp.Format(time.RFC3339Nano), nil },
+		NewID: func() (string, error) {
+			value := identifiers[0]
+			identifiers = identifiers[1:]
+			return value, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)

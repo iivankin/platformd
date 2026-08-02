@@ -1,5 +1,13 @@
 import { MarkerType } from "@xyflow/react";
-import type { Edge, Node } from "@xyflow/react";
+import type { Edge, Node, XYPosition } from "@xyflow/react";
+import ELK from "elkjs/lib/elk-api.js";
+import type {
+  ElkEdgeSection,
+  ElkExtendedEdge,
+  ElkNode,
+  ElkPort,
+} from "elkjs/lib/elk-api.js";
+import elkWorkerURL from "elkjs/lib/elk-worker.min.js" with { type: "file" };
 
 import type { ProjectCanvas, ServiceSource } from "@/api";
 
@@ -21,9 +29,12 @@ export interface ResourceNodeData extends Record<string, unknown> {
   gatewayTransport?: "mesh" | "vpc";
   hasIncomingConnection?: boolean;
   hasOutgoingConnection?: boolean;
+  incomingHandleIDs?: string[];
+  outgoingHandleIDs?: string[];
   source?: ServiceSource;
   internalHostname: string;
   kind: ProjectCanvas["resources"][number]["kind"];
+  layoutHeight?: number;
   layoutX?: number;
   layoutY?: number;
   name: string;
@@ -33,20 +44,182 @@ export interface ResourceNodeData extends Record<string, unknown> {
   volumes: ProjectCanvas["resources"][number]["volumes"];
 }
 
+export interface ResourceConnectionData extends Record<string, unknown> {
+  points: XYPosition[];
+}
+
 export type ResourceFlowNode = Node<ResourceNodeData, "resource">;
-export type ResourceFlowEdge = Edge<Record<string, never>, "smoothstep">;
+export type ResourceFlowEdge = Edge<
+  ResourceConnectionData,
+  "resourceConnection"
+>;
+
 export interface ResourceNodeOverlay {
   pendingChangeCount: number;
   volumes: ResourceNodeData["volumes"];
 }
 
-const columnWidth = 320;
 const nodeBaseHeight = 116;
-const nodeGap = 36;
+const nodeWidth = 256;
 const pendingChangeRowHeight = 34;
 const volumeRowHeight = 33;
-const originX = 72;
-const originY = 56;
+
+const elk = new ELK({ workerUrl: elkWorkerURL });
+
+interface ResourceLayoutDetails {
+  draft: boolean;
+  height: number;
+  pendingChangeCount: number;
+  volumes: ResourceNodeData["volumes"];
+}
+
+const layoutOptions: Record<string, string> = {
+  "elk.algorithm": "layered",
+  "elk.direction": "RIGHT",
+  "elk.edgeRouting": "ORTHOGONAL",
+  "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+  "elk.layered.mergeEdges": "false",
+  "elk.layered.nodePlacement.strategy": "SIMPLE",
+  "elk.layered.spacing.edgeNodeBetweenLayers": "20",
+  "elk.layered.spacing.nodeNodeBetweenLayers": "144",
+  "elk.layered.unnecessaryBendpoints": "true",
+  "elk.padding": "[top=56,left=72,bottom=56,right=72]",
+  "elk.randomSeed": "1",
+  "elk.separateConnectedComponents": "true",
+  "elk.spacing.componentComponent": "96",
+  "elk.spacing.edgeEdge": "12",
+  "elk.spacing.nodeNode": "36",
+};
+
+const connectionID = (
+  connection: ProjectCanvas["connections"][number]
+): string => `${connection.sourceId}:${connection.targetId}`;
+
+const sourceHandleID = (
+  connection: ProjectCanvas["connections"][number]
+): string => `source:${connectionID(connection)}`;
+
+const targetHandleID = (
+  connection: ProjectCanvas["connections"][number]
+): string => `target:${connectionID(connection)}`;
+
+const resourceLayoutDetails = (
+  resources: ProjectCanvas["resources"],
+  overlays: ReadonlyMap<string, ResourceNodeOverlay>
+): Map<string, ResourceLayoutDetails> => {
+  const details = new Map<string, ResourceLayoutDetails>();
+  for (const resource of resources) {
+    const overlay = overlays.get(resource.id);
+    const draft = resource.id.startsWith("draft:");
+    const pendingChangeCount = overlay?.pendingChangeCount ?? (draft ? 1 : 0);
+    const volumes = overlay?.volumes ?? resource.volumes;
+    details.set(resource.id, {
+      draft,
+      height:
+        nodeBaseHeight +
+        volumes.length * volumeRowHeight +
+        (pendingChangeCount > 0 ? pendingChangeRowHeight : 0),
+      pendingChangeCount,
+      volumes,
+    });
+  }
+  return details;
+};
+
+const sortedConnectionsByResource = (
+  connections: ProjectCanvas["connections"],
+  resourceOrder: ReadonlyMap<string, number>,
+  endpoint: "source" | "target"
+): Map<string, ProjectCanvas["connections"]> => {
+  const result = new Map<string, ProjectCanvas["connections"]>();
+  for (const connection of connections) {
+    const resourceID =
+      endpoint === "source" ? connection.sourceId : connection.targetId;
+    const resourceConnections = result.get(resourceID) ?? [];
+    resourceConnections.push(connection);
+    result.set(resourceID, resourceConnections);
+  }
+  for (const [resourceID, resourceConnections] of result) {
+    result.set(
+      resourceID,
+      resourceConnections.toSorted((left, right) => {
+        const leftID = endpoint === "source" ? left.targetId : left.sourceId;
+        const rightID = endpoint === "source" ? right.targetId : right.sourceId;
+        return (
+          (resourceOrder.get(leftID) ?? 0) -
+            (resourceOrder.get(rightID) ?? 0) ||
+          connectionID(left).localeCompare(connectionID(right))
+        );
+      })
+    );
+  }
+  return result;
+};
+
+const resourcePorts = (
+  connections: ProjectCanvas["connections"],
+  height: number,
+  side: "EAST" | "WEST"
+): ElkPort[] =>
+  connections.map((connection, index) => ({
+    height: 0,
+    id:
+      side === "EAST" ? sourceHandleID(connection) : targetHandleID(connection),
+    layoutOptions: { "elk.port.side": side },
+    width: 0,
+    x: side === "EAST" ? nodeWidth : 0,
+    y: (height * (index + 1)) / (connections.length + 1),
+  }));
+
+const layoutGraph = (
+  canvas: ProjectCanvas,
+  connections: ProjectCanvas["connections"],
+  details: ReadonlyMap<string, ResourceLayoutDetails>,
+  incomingConnections: ReadonlyMap<string, ProjectCanvas["connections"]>,
+  outgoingConnections: ReadonlyMap<string, ProjectCanvas["connections"]>
+): ElkNode => ({
+  children: canvas.resources.map((resource) => {
+    const height = details.get(resource.id)?.height ?? nodeBaseHeight;
+    return {
+      height,
+      id: resource.id,
+      layoutOptions: { "elk.portConstraints": "FIXED_POS" },
+      ports: [
+        ...resourcePorts(
+          incomingConnections.get(resource.id) ?? [],
+          height,
+          "WEST"
+        ),
+        ...resourcePorts(
+          outgoingConnections.get(resource.id) ?? [],
+          height,
+          "EAST"
+        ),
+      ],
+      width: nodeWidth,
+    };
+  }),
+  edges: connections.map(
+    (connection): ElkExtendedEdge => ({
+      id: connectionID(connection),
+      sources: [sourceHandleID(connection)],
+      targets: [targetHandleID(connection)],
+    })
+  ),
+  id: "project-canvas",
+  layoutOptions,
+});
+
+const sectionPoints = (section: ElkEdgeSection | undefined): XYPosition[] => {
+  if (!section) {
+    return [];
+  }
+  return [
+    section.startPoint,
+    ...(section.bendPoints ?? []),
+    section.endPoint,
+  ].map(({ x, y }) => ({ x, y }));
+};
 
 export const mergeResourceNodeData = (
   current: ResourceFlowNode[],
@@ -74,15 +247,15 @@ export const mergeResourceNodeData = (
         existing.data.layoutY === existing.position.y
           ? node.position
           : existing.position,
-      selected: existing.selected,
+      selected: node.selectable === false ? false : existing.selected,
     };
   });
 };
 
-export const projectFlowElements = (
+export const projectFlowElements = async (
   canvas: ProjectCanvas,
   overlays: ReadonlyMap<string, ResourceNodeOverlay> = new Map()
-): { edges: ResourceFlowEdge[]; nodes: ResourceFlowNode[] } => {
+): Promise<{ edges: ResourceFlowEdge[]; nodes: ResourceFlowNode[] }> => {
   const resourceIDs = new Set(canvas.resources.map((resource) => resource.id));
   const validConnections = canvas.connections.filter(
     (connection) =>
@@ -95,62 +268,56 @@ export const projectFlowElements = (
   const outgoingResourceIDs = new Set(
     validConnections.map((connection) => connection.sourceId)
   );
-  const adjacency = new Map<string, string[]>();
-  const indegree = new Map<string, number>(
-    canvas.resources.map((resource) => [resource.id, 0] as const)
+  const resourceOrder = new Map(
+    canvas.resources.map((resource, index) => [resource.id, index])
   );
-  for (const connection of validConnections) {
-    const outgoing = adjacency.get(connection.sourceId) ?? [];
-    outgoing.push(connection.targetId);
-    adjacency.set(connection.sourceId, outgoing);
-    indegree.set(
-      connection.targetId,
-      (indegree.get(connection.targetId) ?? 0) + 1
-    );
-  }
-
-  const columns = new Map<string, number>(
-    canvas.resources.map((resource) => [resource.id, 0])
+  const details = resourceLayoutDetails(canvas.resources, overlays);
+  const incomingConnections = sortedConnectionsByResource(
+    validConnections,
+    resourceOrder,
+    "target"
   );
-  const queue = canvas.resources
-    .filter((resource) => indegree.get(resource.id) === 0)
-    .map((resource) => resource.id);
-  for (const sourceID of queue) {
-    for (const targetID of adjacency.get(sourceID) ?? []) {
-      columns.set(
-        targetID,
-        Math.max(columns.get(targetID) ?? 0, (columns.get(sourceID) ?? 0) + 1)
-      );
-      const remaining = (indegree.get(targetID) ?? 0) - 1;
-      indegree.set(targetID, remaining);
-      if (remaining === 0) {
-        queue.push(targetID);
-      }
-    }
-  }
+  const outgoingConnections = sortedConnectionsByResource(
+    validConnections,
+    resourceOrder,
+    "source"
+  );
+  const laidOutGraph = await elk.layout(
+    layoutGraph(
+      canvas,
+      validConnections,
+      details,
+      incomingConnections,
+      outgoingConnections
+    )
+  );
+  const laidOutNodes = new Map(
+    (laidOutGraph.children ?? []).map((node) => [node.id, node])
+  );
+  const laidOutEdges = new Map(
+    (laidOutGraph.edges ?? []).map((edge) => [edge.id, edge])
+  );
 
-  const nextYByColumn = new Map<number, number>();
   const nodes = canvas.resources.map((resource) => {
-    const column = columns.get(resource.id) ?? 0;
-    const y = nextYByColumn.get(column) ?? originY;
-    const overlay = overlays.get(resource.id);
-    const draft = resource.id.startsWith("draft:");
-    const pendingChangeCount = overlay?.pendingChangeCount ?? (draft ? 1 : 0);
-    const volumes = overlay?.volumes ?? resource.volumes;
-    nextYByColumn.set(
-      column,
-      y +
-        nodeBaseHeight +
-        volumes.length * volumeRowHeight +
-        (pendingChangeCount > 0 ? pendingChangeRowHeight : 0) +
-        nodeGap
+    const resourceDetails = details.get(resource.id) ?? {
+      draft: false,
+      height: nodeBaseHeight,
+      pendingChangeCount: 0,
+      volumes: resource.volumes,
+    };
+    const layoutNode = laidOutNodes.get(resource.id);
+    const position = { x: layoutNode?.x ?? 72, y: layoutNode?.y ?? 56 };
+    const incomingHandleIDs = (incomingConnections.get(resource.id) ?? []).map(
+      targetHandleID
     );
-    const x = originX + column * columnWidth;
+    const outgoingHandleIDs = (outgoingConnections.get(resource.id) ?? []).map(
+      sourceHandleID
+    );
     return {
       data: {
         activeDeploymentId: resource.activeDeploymentId,
         bucketName: resource.bucketName,
-        draft,
+        draft: resourceDetails.draft,
         enabled: resource.enabled,
         gatewayListenPort: resource.gatewayListenPort,
         gatewayMode: resource.gatewayMode,
@@ -165,33 +332,49 @@ export const projectFlowElements = (
         hasOutgoingConnection: outgoingResourceIDs.has(resource.id),
         imageDigest: resource.imageDigest,
         imageReference: resource.imageReference,
+        incomingHandleIDs,
         internalHostname: resource.internalHostname,
         kind: resource.kind,
-        layoutX: x,
-        layoutY: y,
+        layoutHeight: resourceDetails.height,
+        layoutX: position.x,
+        layoutY: position.y,
         name: resource.name,
-        pendingChangeCount,
+        outgoingHandleIDs,
+        pendingChangeCount: resourceDetails.pendingChangeCount,
         source: resource.source,
         status: resource.status,
         statusMessage: resource.statusMessage,
-        volumes,
+        volumes: resourceDetails.volumes,
       },
       id: resource.id,
-      position: {
-        x,
-        y,
-      },
+      position,
+      selectable: false,
       type: "resource" as const,
     };
   });
 
-  const edges = validConnections.map((connection) => ({
-    data: {},
-    id: `${connection.sourceId}:${connection.targetId}`,
-    markerEnd: { height: 14, type: MarkerType.ArrowClosed, width: 14 },
-    source: connection.sourceId,
-    target: connection.targetId,
-    type: "smoothstep" as const,
-  }));
+  const resourceNames = new Map(
+    canvas.resources.map((resource) => [resource.id, resource.name])
+  );
+  const edges = validConnections.map((connection) => {
+    const id = connectionID(connection);
+    const layoutEdge = laidOutEdges.get(id);
+    return {
+      ariaLabel: `${resourceNames.get(connection.sourceId) ?? connection.sourceId} connects to ${resourceNames.get(connection.targetId) ?? connection.targetId}`,
+      className: "resource-connection",
+      data: { points: sectionPoints(layoutEdge?.sections?.[0]) },
+      id,
+      markerEnd: {
+        height: 12,
+        type: MarkerType.ArrowClosed,
+        width: 12,
+      },
+      source: connection.sourceId,
+      sourceHandle: sourceHandleID(connection),
+      target: connection.targetId,
+      targetHandle: targetHandleID(connection),
+      type: "resourceConnection" as const,
+    };
+  });
   return { edges, nodes };
 };

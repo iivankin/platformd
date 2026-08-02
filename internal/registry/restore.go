@@ -85,7 +85,7 @@ func (application *Application) RestoreSnapshot(ctx context.Context, input Resto
 		}
 	}
 	now := application.now()
-	identifiers, err := application.identifiers(now, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return "", err
 	}

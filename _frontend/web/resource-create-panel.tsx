@@ -10,7 +10,7 @@ interface ResourceCreatePanelProperties {
   ) => void;
 }
 
-const options: {
+export const resourceCreateOptions: {
   description: string;
   enabled: boolean;
   icon: ComponentType<{ className?: string }>;
@@ -39,7 +39,7 @@ const options: {
     label: "PostgreSQL",
   },
   {
-    description: "Encrypted private S3-compatible object storage.",
+    description: "Private S3-compatible object storage backed by RustFS.",
     enabled: true,
     icon: HardDrive,
     kind: "storage",
@@ -78,7 +78,7 @@ export const ResourceCreatePanel = ({
         name.
       </p>
       <div className="border-t border-border">
-        {options.map((option) => {
+        {resourceCreateOptions.map((option) => {
           const Icon = option.icon;
           const availability = option.enabled ? "" : "Next";
           return (

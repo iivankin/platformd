@@ -140,7 +140,7 @@ func writeLogDownloadError(response http.ResponseWriter, err error) {
 	case errors.Is(err, containerlogs.ErrInvalidQuery):
 		writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
 	default:
-		writeAPIError(response, http.StatusInternalServerError, "log_download_failed", "Unable to download service logs")
+		writeAPIError(response, http.StatusInternalServerError, "log_download_failed", "Unable to download service logs", err)
 	}
 }
 
@@ -167,7 +167,7 @@ func getServiceLogs(repository LogRepository) http.HandlerFunc {
 		case errors.Is(err, containerlogs.ErrInvalidQuery):
 			writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
 		default:
-			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read service logs")
+			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read service logs", err)
 		}
 	}
 }

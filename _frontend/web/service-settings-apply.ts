@@ -4,15 +4,73 @@ import {
   createVolume,
   detachServiceDomain,
   detachServiceListener,
+  fetchService,
   fetchServiceDomains,
   fetchServiceListeners,
   fetchVolumes,
   updateService,
 } from "@/api";
-import type { Service } from "@/api";
+import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
+import { parseBeforeDeploy } from "@/service-before-deploy-model";
 import { parseServiceConfiguration } from "@/service-configuration";
 import { serviceListenerDraftKey } from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
+
+const comparableDomains = (
+  domains: readonly Pick<ServiceDomain, "hostname" | "targetPort">[]
+) =>
+  domains
+    .map(({ hostname, targetPort }) => ({ hostname, targetPort }))
+    .toSorted((left, right) => left.hostname.localeCompare(right.hostname));
+
+const comparableListeners = (
+  listeners: readonly Pick<
+    ServiceListener,
+    "protocol" | "publicPort" | "targetPort"
+  >[]
+) =>
+  listeners
+    .map(({ protocol, publicPort, targetPort }) => ({
+      protocol,
+      publicPort,
+      targetPort,
+    }))
+    .toSorted(
+      (left, right) =>
+        left.publicPort - right.publicPort ||
+        left.protocol.localeCompare(right.protocol)
+    );
+
+const same = (left: unknown, right: unknown) =>
+  JSON.stringify(left) === JSON.stringify(right);
+
+export const assertServiceSettingsBaseline = (
+  change: PendingServiceSettings,
+  currentService: Service,
+  currentDomains: ServiceDomain[],
+  currentListeners: ServiceListener[],
+  currentVolumes: Volume[]
+) => {
+  const { baseline } = change;
+  const settingsChanged =
+    currentService.updatedAt !== baseline.service.updatedAt ||
+    !same(comparableDomains(currentDomains), baseline.domains) ||
+    !same(comparableListeners(currentListeners), baseline.listeners);
+  const currentVolumesByID = new Map(
+    currentVolumes.map((volume) => [volume.id, volume])
+  );
+  // Extra volumes are safe: a previous attempt may have created one before a
+  // later mutation failed, and applyServiceSettings reuses it by name.
+  const baselineVolumesExist = baseline.volumes.every((volume) => {
+    const current = currentVolumesByID.get(volume.id);
+    return current?.name === volume.name;
+  });
+  if (settingsChanged || !baselineVolumesExist) {
+    throw new Error(
+      "Service settings changed after this draft was staged. Review the current configuration and stage the change again."
+    );
+  }
+};
 
 export const applyServiceSettings = async (
   projectID: string,
@@ -22,11 +80,25 @@ export const applyServiceSettings = async (
     change.draft.configuration,
     change.draft.domains.length
   );
-  const [currentDomains, currentListeners, currentVolumes] = await Promise.all([
-    fetchServiceDomains(projectID, change.serviceID),
-    fetchServiceListeners(projectID, change.serviceID),
-    fetchVolumes(projectID, change.serviceID),
-  ]);
+  const beforeDeploy = parseBeforeDeploy(
+    change.draft.beforeDeploy,
+    configuration.source,
+    change.draft.domains
+  );
+  const [currentService, currentDomains, currentListeners, currentVolumes] =
+    await Promise.all([
+      fetchService(projectID, change.serviceID),
+      fetchServiceDomains(projectID, change.serviceID),
+      fetchServiceListeners(projectID, change.serviceID),
+      fetchVolumes(projectID, change.serviceID),
+    ]);
+  assertServiceSettingsBaseline(
+    change,
+    currentService,
+    currentDomains,
+    currentListeners,
+    currentVolumes
+  );
   const baselineVolumeIDs = new Set(
     change.baseline.volumes.map((volume) => volume.id)
   );
@@ -117,10 +189,12 @@ export const applyServiceSettings = async (
   const { service } = change.baseline;
   return updateService(projectID, change.serviceID, {
     args: service.args,
+    beforeDeploy,
+    buildEnvironment: change.buildEnvironment,
     command: service.command,
     cpuMillicores: service.cpuMillicores,
     enabled: service.enabled,
-    environment: service.environment,
+    environment: change.environment,
     expectedUpdatedAt: service.updatedAt,
     healthCheck: configuration.healthCheck,
     memoryMaxBytes: service.memoryMaxBytes,

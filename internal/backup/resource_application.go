@@ -2,10 +2,8 @@ package backup
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/backupcron"
@@ -41,7 +39,6 @@ type ResourceApplication struct {
 	targetGate    *Gate
 	master        cryptobox.MasterKey
 	remoteFactory ControlRemoteFactory
-	random        io.Reader
 	now           func() time.Time
 }
 
@@ -53,7 +50,6 @@ type ResourceApplicationConfig struct {
 	TargetGate    *Gate
 	Master        cryptobox.MasterKey
 	RemoteFactory ControlRemoteFactory
-	Random        io.Reader
 	Now           func() time.Time
 }
 
@@ -94,16 +90,13 @@ func NewResourceApplication(config ResourceApplicationConfig) (*ResourceApplicat
 	if config.RemoteFactory == nil {
 		config.RemoteFactory = func(config remotes3.Config) (ControlRemote, error) { return remotes3.New(config) }
 	}
-	if config.Random == nil {
-		config.Random = rand.Reader
-	}
 	if config.Now == nil {
 		config.Now = time.Now
 	}
 	return &ResourceApplication{
 		store: config.Store, worker: config.Worker, restores: config.Restores,
 		target: config.Target, targetGate: config.TargetGate,
-		master: config.Master, remoteFactory: config.RemoteFactory, random: config.Random, now: config.Now,
+		master: config.Master, remoteFactory: config.RemoteFactory, now: config.Now,
 	}, nil
 }
 
@@ -236,11 +229,11 @@ func (application *ResourceApplication) SetPolicy(ctx context.Context, input Pol
 	if err != nil {
 		return PolicyResult{}, err
 	}
-	auditID, err := id.NewWith(timestamp, application.random)
+	auditID, err := id.New()
 	if err != nil {
 		return PolicyResult{}, err
 	}
-	requestID, err := id.NewWith(timestamp, application.random)
+	requestID, err := id.New()
 	if err != nil {
 		return PolicyResult{}, err
 	}

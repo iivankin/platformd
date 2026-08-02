@@ -449,7 +449,7 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
 		MaintenanceDrain: time.Nanosecond,
 		Now:              func() time.Time { return time.UnixMilli(10) },
-		NewID: func(time.Time) (string, error) {
+		NewID: func() (string, error) {
 			if len(ids) == 0 {
 				return "", errors.New("unexpected ID allocation")
 			}

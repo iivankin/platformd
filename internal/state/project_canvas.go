@@ -102,6 +102,31 @@ WHERE p.id = ?`, projectID).Scan(
 	return project, nil
 }
 
+func (store *Store) ProjectByName(ctx context.Context, name string) (ProjectSummary, error) {
+	var project ProjectSummary
+	err := store.database.QueryRowContext(ctx, `
+SELECT p.id, p.name,
+       (SELECT count(*) FROM services s WHERE s.project_id = p.id),
+       (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
+       (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
+       (SELECT count(*) FROM object_stores o WHERE o.project_id = p.id),
+	   (SELECT count(*) FROM network_gateways g WHERE g.project_id = p.id),
+       p.created_at, p.updated_at
+FROM projects p
+WHERE p.name = ?`, name).Scan(
+		&project.ID, &project.Name, &project.ServiceCount,
+		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
+		&project.CreatedAtMillis, &project.UpdatedAtMillis,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ProjectSummary{}, ErrProjectNotFound
+	}
+	if err != nil {
+		return ProjectSummary{}, fmt.Errorf("load project by name: %w", err)
+	}
+	return project, nil
+}
+
 func (store *Store) canvasResources(ctx context.Context, project ProjectSummary) ([]CanvasResource, error) {
 	rows, err := store.database.QueryContext(ctx, `
 	SELECT id, kind, name, source_json, bucket_name, enabled,
@@ -251,7 +276,7 @@ func (store *Store) canvasConnections(ctx context.Context, projectID string) ([]
 		resourceIDs[resource.Name] = resource.ID
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, environment_json FROM services
+SELECT id, environment_json, build_environment_json FROM services
 WHERE project_id = ? ORDER BY id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list project canvas connections: %w", err)
@@ -260,13 +285,20 @@ WHERE project_id = ? ORDER BY id`, projectID)
 	type connectionKey struct{ sourceID, targetID string }
 	connections := make(map[connectionKey]map[string]struct{})
 	for rows.Next() {
-		var sourceID, environmentJSON string
-		if err := rows.Scan(&sourceID, &environmentJSON); err != nil {
+		var sourceID, environmentJSON, buildEnvironmentJSON string
+		if err := rows.Scan(&sourceID, &environmentJSON, &buildEnvironmentJSON); err != nil {
 			return nil, fmt.Errorf("scan project canvas connection: %w", err)
 		}
 		var environment map[string]string
 		if err := json.Unmarshal([]byte(environmentJSON), &environment); err != nil {
 			return nil, fmt.Errorf("decode project service environment: %w", err)
+		}
+		var buildEnvironment map[string]string
+		if err := json.Unmarshal([]byte(buildEnvironmentJSON), &buildEnvironment); err != nil {
+			return nil, fmt.Errorf("decode project service build environment: %w", err)
+		}
+		for name, value := range buildEnvironment {
+			environment["build:"+name] = value
 		}
 		for environmentName, value := range environment {
 			references, parseErr := variableexpression.References(value)

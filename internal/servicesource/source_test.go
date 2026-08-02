@@ -4,9 +4,10 @@ import "testing"
 
 func TestNormalizeImageSourceKinds(t *testing.T) {
 	tests := []struct {
-		input Source
-		kind  Kind
-		want  string
+		input   Source
+		kind    Kind
+		want    string
+		wantAge int
 	}{
 		{
 			input: Source{Type: RegistryImage, AutoUpdate: true, Image: &Image{Reference: "registry.example.com/team/api:latest"}},
@@ -14,9 +15,10 @@ func TestNormalizeImageSourceKinds(t *testing.T) {
 			want:  "registry.example.com/team/api:latest",
 		},
 		{
-			input: Source{Type: PublicImage, AutoUpdate: true, Image: &Image{Reference: "alpine:3.22"}},
-			kind:  PublicImage,
-			want:  "docker.io/library/alpine:3.22",
+			input:   Source{Type: PublicImage, AutoUpdate: true, MinimumReleaseAgeDays: 7, Image: &Image{Reference: "alpine:3.22"}},
+			kind:    PublicImage,
+			want:    "docker.io/library/alpine:3.22",
+			wantAge: 7,
 		},
 		{
 			input: Source{Type: PrivateImage, Image: &Image{Reference: "ghcr.io/acme/api:latest"}},
@@ -29,8 +31,23 @@ func TestNormalizeImageSourceKinds(t *testing.T) {
 		if err != nil {
 			t.Fatalf("normalize %s: %v", test.kind, err)
 		}
-		if normalized.Type != test.kind || normalized.Image == nil || normalized.Image.Reference != test.want {
+		if normalized.Type != test.kind || normalized.Image == nil || normalized.Image.Reference != test.want ||
+			normalized.MinimumReleaseAgeDays != test.wantAge {
 			t.Fatalf("normalized %s source = %+v", test.kind, normalized)
+		}
+	}
+}
+
+func TestNormalizeMinimumReleaseAgeOnlyAllowsRemoteImages(t *testing.T) {
+	tests := []Source{
+		{Type: RegistryImage, MinimumReleaseAgeDays: 7, Image: &Image{Reference: "registry.example.com/team/api:latest"}},
+		{Type: PublicImage, MinimumReleaseAgeDays: -1, Image: &Image{Reference: "alpine:latest"}},
+		{Type: PrivateImage, MinimumReleaseAgeDays: MaximumReleaseAgeDays + 1, Image: &Image{Reference: "ghcr.io/acme/api:latest"}},
+		{Type: GitHubImage, MinimumReleaseAgeDays: 7, GitHub: &GitHub{RepositoryID: 1, Repository: "acme/api", Branch: "main"}},
+	}
+	for _, source := range tests {
+		if _, err := Normalize(source); err == nil {
+			t.Fatalf("normalized invalid source: %+v", source)
 		}
 	}
 }

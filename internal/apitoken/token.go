@@ -11,12 +11,13 @@ import (
 	"strings"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/id"
 )
 
 const (
 	prefix            = "ptk_"
 	secretSize        = 32
-	publicSize        = 36
+	publicSize        = id.Length
 	encodedSecretSize = 43
 	tokenSize         = len(prefix) + publicSize + 1 + encodedSecretSize
 )
@@ -39,7 +40,7 @@ func NewVerifier(master cryptobox.MasterKey) (Verifier, error) {
 }
 
 func Generate(publicID string, random io.Reader) (string, string, error) {
-	if len(publicID) != publicSize || strings.ContainsRune(publicID, '_') {
+	if !id.Valid(publicID) {
 		return "", "", errors.New("API token public ID is invalid")
 	}
 	secretBytes := make([]byte, secretSize)
@@ -56,7 +57,7 @@ func Parse(value string) (string, string, error) {
 		return "", "", errors.New("API token prefix is invalid")
 	}
 	parts := strings.SplitN(strings.TrimPrefix(value, prefix), "_", 2)
-	if len(parts) != 2 || len(parts[0]) != publicSize || len(parts[1]) != encodedSecretSize {
+	if len(parts) != 2 || !id.Valid(parts[0]) || len(parts[1]) != encodedSecretSize {
 		return "", "", errors.New("API token format is invalid")
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(parts[1])

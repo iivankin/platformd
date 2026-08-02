@@ -40,6 +40,7 @@ func TestApplicationAuditsHostTerminalMetadataWithoutContent(t *testing.T) {
 	memory := &auditMemory{}
 	startedAt := time.Unix(1_900_000_000, 0)
 	nowCalls := 0
+	identifiers := []string{"session-id", "completion-audit-id"}
 	application, err := New(Config{
 		Audit: memory, InstallationID: "installation",
 		CreateLeaf: func(string) (Leaf, error) { return unusedLeaf{}, nil },
@@ -47,13 +48,17 @@ func TestApplicationAuditsHostTerminalMetadataWithoutContent(t *testing.T) {
 			nowCalls++
 			return startedAt.Add(time.Duration(nowCalls-1) * time.Second)
 		},
-		NewID: func(timestamp time.Time) (string, error) { return timestamp.Format(time.RFC3339), nil },
+		NewID: func() (string, error) {
+			value := identifiers[0]
+			identifiers = identifiers[1:]
+			return value, nil
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	application.spawn = func(_ context.Context, config spawnConfig) (terminaltransport.Session, error) {
-		if config.leafID != "terminal-"+startedAt.Format(time.RFC3339) || config.size != (terminaltransport.Size{Cols: 120, Rows: 40}) {
+		if config.leafID != "terminal-session-id" || config.size != (terminaltransport.Size{Cols: 120, Rows: 40}) {
 			t.Fatalf("spawn config = %+v", config)
 		}
 		return &memorySession{finish: config.finish}, nil
@@ -84,7 +89,7 @@ func TestApplicationRecordsSpawnFailure(t *testing.T) {
 	application, err := New(Config{
 		Audit: memory, InstallationID: "installation",
 		CreateLeaf: func(string) (Leaf, error) { return unusedLeaf{}, nil },
-		NewID:      func(time.Time) (string, error) { return time.Now().String(), nil },
+		NewID:      func() (string, error) { return time.Now().String(), nil },
 	})
 	if err != nil {
 		t.Fatal(err)

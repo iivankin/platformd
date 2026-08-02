@@ -32,6 +32,7 @@ type Sample struct {
 	ObservedAtMillis int64
 	CPUUsageMicros   uint64
 	MemoryBytes      uint64
+	MemoryPeakBytes  uint64
 	HostCPUCores     int
 	HostMemoryBytes  uint64
 	Running          bool
@@ -50,12 +51,17 @@ type Reader struct {
 	root     string
 	capacity Capacity
 	now      func() time.Time
+	peaks    *memoryPeakReader
 }
 
 func NewProduction(workloadPath string) (*Reader, error) {
+	cpuCores, memoryBytes, err := hostCapacity()
+	if err != nil {
+		return nil, err
+	}
 	return New(Config{
 		MountRoot: defaultMountRoot, WorkloadPath: workloadPath,
-		Capacity: hostCapacity, Now: time.Now,
+		Capacity: func() (int, uint64, error) { return cpuCores, memoryBytes, nil }, Now: time.Now,
 	})
 }
 
@@ -69,7 +75,7 @@ func New(config Config) (*Reader, error) {
 		config.Now = time.Now
 	}
 	root := filepath.Join(config.MountRoot, filepath.FromSlash(strings.TrimPrefix(config.WorkloadPath, "/")))
-	return &Reader{root: root, capacity: config.Capacity, now: config.Now}, nil
+	return &Reader{root: root, capacity: config.Capacity, now: config.Now, peaks: newMemoryPeakReader()}, nil
 }
 
 func (reader *Reader) Read(kind Kind, resourceID string) (Sample, error) {
@@ -87,6 +93,7 @@ func (reader *Reader) Read(kind Kind, resourceID string) (Sample, error) {
 	resourceRoot := filepath.Join(reader.root, component)
 	populated, err := namedValue(filepath.Join(resourceRoot, "cgroup.events"), "populated")
 	if errors.Is(err, os.ErrNotExist) {
+		reader.peaks.forget(component)
 		return sample, nil
 	}
 	if err != nil {
@@ -94,6 +101,7 @@ func (reader *Reader) Read(kind Kind, resourceID string) (Sample, error) {
 	}
 	if populated != "1" {
 		if populated == "0" {
+			reader.peaks.forget(component)
 			return sample, nil
 		}
 		return Sample{}, errors.New("resource cgroup populated flag is invalid")
@@ -114,8 +122,16 @@ func (reader *Reader) Read(kind Kind, resourceID string) (Sample, error) {
 	if err != nil {
 		return Sample{}, errors.New("resource memory usage is invalid")
 	}
+	sample.MemoryPeakBytes = reader.peaks.read(resourceRoot, component, sample.MemoryBytes)
 	sample.Running = true
 	return sample, nil
+}
+
+func (reader *Reader) Close() error {
+	if reader == nil {
+		return nil
+	}
+	return reader.peaks.close()
 }
 
 func resourceComponent(kind Kind, resourceID string) (string, error) {

@@ -76,7 +76,7 @@ func attachServiceListener(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate listener identifiers")
 			return
@@ -108,7 +108,7 @@ func detachServiceListener(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate listener identifiers")
 			return

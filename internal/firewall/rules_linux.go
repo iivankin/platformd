@@ -14,9 +14,10 @@ import (
 const ipv4AddressLength = 4
 
 type compiledRuleset struct {
-	table  *nftables.Table
-	chains []*nftables.Chain
-	rules  []*nftables.Rule
+	table   *nftables.Table
+	chains  []*nftables.Chain
+	objects []nftables.Obj
+	rules   []*nftables.Rule
 }
 
 func compileRuleset(name string, projects []Project) compiledRuleset {
@@ -53,6 +54,27 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 		}
 	}
 
+	for _, project := range projects {
+		for _, endpoint := range project.PublicTrafficEndpoints {
+			ingressName := publicCounterName("ingress", endpoint.ServiceID)
+			egressName := publicCounterName("egress", endpoint.ServiceID)
+			compiled.objects = append(compiled.objects,
+				&nftables.CounterObj{Table: table, Name: ingressName},
+				&nftables.CounterObj{Table: table, Name: egressName},
+			)
+			ingress := append(matchOutputInterface(project.Bridge), matchIPv4Destination(endpoint.Address)...)
+			ingress = append(ingress, establishedRelatedMatch()...)
+			ingress = append(ingress, counterReference(ingressName))
+			compiled.rules = append(compiled.rules, rule(table, forward, ingress...))
+
+			egress := append(matchInputInterface(project.Bridge), matchIPv4Source(endpoint.Address)...)
+			for _, otherProject := range projects {
+				egress = append(egress, matchOutputInterfaceNotEqual(otherProject.Bridge)...)
+			}
+			egress = append(egress, counterReference(egressName))
+			compiled.rules = append(compiled.rules, rule(table, forward, egress...))
+		}
+	}
 	compiled.rules = append(compiled.rules, rule(table, forward, establishedRelated()...))
 	for _, project := range projects {
 		for _, endpoint := range project.BlockedDatabaseEndpoints {
@@ -110,6 +132,9 @@ func (compiled compiledRuleset) queue(connection *nftables.Conn) {
 	for _, chain := range compiled.chains {
 		connection.AddChain(chain)
 	}
+	for _, object := range compiled.objects {
+		connection.AddObj(object)
+	}
 	for _, currentRule := range compiled.rules {
 		connection.AddRule(currentRule)
 	}
@@ -120,6 +145,10 @@ func rule(table *nftables.Table, chain *nftables.Chain, expressions ...expr.Any)
 }
 
 func establishedRelated() []expr.Any {
+	return append(establishedRelatedMatch(), verdict(expr.VerdictAccept))
+}
+
+func establishedRelatedMatch() []expr.Any {
 	return []expr.Any{
 		&expr.Ct{Register: 1, Key: expr.CtKeySTATE},
 		&expr.Bitwise{
@@ -130,8 +159,11 @@ func establishedRelated() []expr.Any {
 			Xor:            binaryutil.NativeEndian.PutUint32(0),
 		},
 		&expr.Cmp{Op: expr.CmpOpNeq, Register: 1, Data: []byte{0, 0, 0, 0}},
-		verdict(expr.VerdictAccept),
 	}
+}
+
+func counterReference(name string) expr.Any {
+	return &expr.Objref{Type: int(nftables.ObjTypeCounter), Name: name}
 }
 
 func matchProjectListener(project Project, protocol byte, port uint16) []expr.Any {
@@ -169,6 +201,14 @@ func matchIPv4Destination(address netip.Addr) []expr.Any {
 	bytes := address.As4()
 	return append(matchIPv4Family(),
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: ipv4AddressLength},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: bytes[:]},
+	)
+}
+
+func matchIPv4Source(address netip.Addr) []expr.Any {
+	bytes := address.As4()
+	return append(matchIPv4Family(),
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: ipv4AddressLength},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: bytes[:]},
 	)
 }

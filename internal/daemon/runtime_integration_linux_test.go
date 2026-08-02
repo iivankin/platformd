@@ -5,6 +5,10 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -67,7 +71,7 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 	if err := prepareRuntimeHost(ctx, paths, tree.WorkloadRoot()); err != nil {
 		t.Fatal(err)
 	}
-	first, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{}, admission.New())
+	first, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{}, admission.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +124,7 @@ func TestRuntimeStartupRecreatesTransientStateAndKeepsImageCache(t *testing.T) {
 	if err := prepareRuntimeHost(ctx, paths, tree.WorkloadRoot()); err != nil {
 		t.Fatal(err)
 	}
-	second, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{}, admission.New())
+	second, err := startRuntime(ctx, paths, tree.WorkloadRoot(), projects, allowRuntimeGrowth{}, admission.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,11 +152,7 @@ func assertProjectObjectStore(t *testing.T, ctx context.Context, runtime *runtim
 		t.Fatal(err)
 	}
 	master := cryptobox.MasterKey{1, 2, 3}
-	payloads, err := objectstore.NewPayloadStore(paths.ObjectsRoot, master, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, err := objectstore.NewApplication(store, payloads, master, nil, nil)
+	application, err := objectstore.NewApplication(store, daemonObjectStorageStub{}, master, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,18 +163,68 @@ func assertProjectObjectStore(t *testing.T, ctx context.Context, runtime *runtim
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler, err := objectstore.NewHTTPHandler(objectstore.HTTPConfig{
-		Application: application, LookupHost: store.ObjectStoreByHostname, Admission: admission.New(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.ConfigureObjectStores(ctx, store, handler); err != nil {
+	dataPlane := &daemonObjectDataPlaneStub{}
+	t.Cleanup(dataPlane.close)
+	if err := runtime.ConfigureObjectStores(ctx, store, application, dataPlane); err != nil {
 		t.Fatal(err)
 	}
 	if status, message := runtime.ObjectStoreStatus("integration-a"); status != "running" {
 		t.Fatalf("object store status = %s: %s", status, message)
 	}
+}
+
+type daemonObjectStorageStub struct{}
+
+type daemonObjectDataPlaneStub struct {
+	server *http.Server
+}
+
+func (stub *daemonObjectDataPlaneStub) ConfigureDataPlaneProject(_ context.Context, _, listenAddress string, _ []objectstore.DataPlaneStore) error {
+	listener, err := net.Listen("tcp", listenAddress)
+	if err != nil {
+		return err
+	}
+	stub.server = &http.Server{Handler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusForbidden)
+	})}
+	go func() { _ = stub.server.Serve(listener) }()
+	return nil
+}
+
+func (*daemonObjectDataPlaneStub) RemoveDataPlaneProject(context.Context, string) error { return nil }
+func (*daemonObjectDataPlaneStub) BeginDataPlaneQuiesce(context.Context) error          { return nil }
+func (*daemonObjectDataPlaneStub) EndDataPlaneQuiesce(context.Context) error            { return nil }
+func (*daemonObjectDataPlaneStub) ReconcileBuckets(context.Context, []string) error     { return nil }
+
+func (stub *daemonObjectDataPlaneStub) close() {
+	if stub.server != nil {
+		_ = stub.server.Close()
+	}
+}
+
+func (daemonObjectStorageStub) EnsureBucket(context.Context, string) error { return nil }
+func (daemonObjectStorageStub) DeleteBucket(context.Context, string) error { return nil }
+func (daemonObjectStorageStub) ClearBucket(context.Context, string) error  { return nil }
+func (daemonObjectStorageStub) ReconcileBuckets(context.Context, []string) error {
+	return nil
+}
+
+var errDaemonObjectStorageUnused = errors.New("unused object storage integration operation")
+
+func (daemonObjectStorageStub) Put(context.Context, objectstore.PutInput) (objectstore.ObjectMetadata, error) {
+	return objectstore.ObjectMetadata{}, errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) Object(context.Context, string, string) (objectstore.ObjectMetadata, error) {
+	return objectstore.ObjectMetadata{}, errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) ReadRange(context.Context, string, string, int64, int64, io.Writer) error {
+	return errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) ListEntries(context.Context, string, string, string, string, int) ([]objectstore.ObjectListEntry, bool, error) {
+	return nil, false, errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) Delete(context.Context, string, string) error {
+	return errDaemonObjectStorageUnused
 }
 
 func assertProjectDNS(t *testing.T, ctx context.Context, runtime *runtimeStack, tree *cgrouptree.Tree, paths layout.Paths, imageID, projectID string) {

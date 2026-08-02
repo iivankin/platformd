@@ -3,8 +3,11 @@ package server_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -34,11 +37,7 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 		t.Fatal(err)
 	}
 	master := cryptobox.MasterKey{1, 2, 3}
-	payloads, err := objectstore.NewPayloadStore(filepath.Join(t.TempDir(), "objects"), master, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	application, err := objectstore.NewApplication(store, payloads, master, nil, nil)
+	application, err := objectstore.NewApplication(store, newServerObjectStorage(), master, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +55,7 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 
 	create := projectRequest(http.MethodPost, "/api/v1/projects/project/object-stores", `{
   "name":"assets","bucketName":"shop-assets","corsOrigins":[],
-  "credentials":{"accessKey":"ps3_018bcfe5687b7fffbfffffffffffffff","secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
+  "credentials":{"accessKey":"ps3_abcdefghijklmnopqrstuvwx","secret":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}
 }`)
 	create.Header.Set("Origin", "https://admin.example.com")
 	createResponse := httptest.NewRecorder()
@@ -121,6 +120,101 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 	if directResponse.Code != http.StatusForbidden {
 		t.Fatalf("workspace without Access = %d/%s", directResponse.Code, directResponse.Body)
 	}
+}
+
+type serverObjectStorage struct {
+	objects map[string]map[string]serverStoredObject
+}
+
+type serverStoredObject struct {
+	metadata objectstore.ObjectMetadata
+	body     []byte
+}
+
+func newServerObjectStorage() *serverObjectStorage {
+	return &serverObjectStorage{objects: make(map[string]map[string]serverStoredObject)}
+}
+
+func (storage *serverObjectStorage) ReconcileBuckets(_ context.Context, storeIDs []string) error {
+	desired := make(map[string]struct{}, len(storeIDs))
+	for _, storeID := range storeIDs {
+		desired[storeID] = struct{}{}
+		if storage.objects[storeID] == nil {
+			storage.objects[storeID] = make(map[string]serverStoredObject)
+		}
+	}
+	for storeID := range storage.objects {
+		if _, exists := desired[storeID]; !exists {
+			delete(storage.objects, storeID)
+		}
+	}
+	return nil
+}
+
+func (storage *serverObjectStorage) EnsureBucket(_ context.Context, storeID string) error {
+	storage.objects[storeID] = make(map[string]serverStoredObject)
+	return nil
+}
+
+func (storage *serverObjectStorage) DeleteBucket(_ context.Context, storeID string) error {
+	delete(storage.objects, storeID)
+	return nil
+}
+
+func (storage *serverObjectStorage) ClearBucket(_ context.Context, storeID string) error {
+	storage.objects[storeID] = make(map[string]serverStoredObject)
+	return nil
+}
+
+func (storage *serverObjectStorage) Put(_ context.Context, input objectstore.PutInput) (objectstore.ObjectMetadata, error) {
+	body, err := io.ReadAll(input.Body)
+	if err != nil {
+		return objectstore.ObjectMetadata{}, err
+	}
+	digest := sha256.Sum256(body)
+	metadata := objectstore.ObjectMetadata{
+		ObjectStoreID: input.StoreID, ObjectKey: input.ObjectKey, ContentType: input.ContentType,
+		ETag: `"` + hex.EncodeToString(digest[:]) + `"`, Size: int64(len(body)),
+		CreatedAtMillis: 1, UpdatedAtMillis: 1,
+	}
+	storage.objects[input.StoreID][input.ObjectKey] = serverStoredObject{metadata, body}
+	return metadata, nil
+}
+
+func (storage *serverObjectStorage) Object(_ context.Context, storeID, key string) (objectstore.ObjectMetadata, error) {
+	object, ok := storage.objects[storeID][key]
+	if !ok {
+		return objectstore.ObjectMetadata{}, objectstore.ErrObjectNotFound
+	}
+	return object.metadata, nil
+}
+
+func (storage *serverObjectStorage) ReadRange(_ context.Context, storeID, key string, offset, length int64, output io.Writer) error {
+	object, ok := storage.objects[storeID][key]
+	if !ok {
+		return objectstore.ErrObjectNotFound
+	}
+	_, err := output.Write(object.body[offset : offset+length])
+	return err
+}
+
+func (storage *serverObjectStorage) ListEntries(_ context.Context, storeID, prefix, _ string, after string, limit int) ([]objectstore.ObjectListEntry, bool, error) {
+	entries := make([]objectstore.ObjectListEntry, 0)
+	for key, object := range storage.objects[storeID] {
+		if strings.HasPrefix(key, prefix) && key > after {
+			metadata := object.metadata
+			entries = append(entries, objectstore.ObjectListEntry{Object: &metadata})
+		}
+	}
+	if len(entries) > limit {
+		return entries[:limit], true, nil
+	}
+	return entries, false, nil
+}
+
+func (storage *serverObjectStorage) Delete(_ context.Context, storeID, key string) error {
+	delete(storage.objects[storeID], key)
+	return nil
 }
 
 func adminObjectRequest(method, path string, body []byte, contentType string) *http.Request {

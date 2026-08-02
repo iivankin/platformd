@@ -131,6 +131,33 @@ WHERE id = ? AND status = 'running'`, finishedAtMillis, deploymentID); err != ni
 	})
 }
 
+// DiscardDeployment removes a resolved no-op from history. The active pointer
+// guard makes this safe even if deployment state changes concurrently.
+func (store *Store) DiscardDeployment(ctx context.Context, deploymentID string) error {
+	if deploymentID == "" {
+		return errors.New("deployment ID is required")
+	}
+	return store.Write(ctx, func(transaction *sql.Tx) error {
+		result, err := transaction.ExecContext(ctx, `
+DELETE FROM deployments
+WHERE id = ? AND status = 'running'
+  AND id NOT IN (
+    SELECT active_deployment_id FROM services WHERE active_deployment_id IS NOT NULL
+  )`, deploymentID)
+		if err != nil {
+			return fmt.Errorf("discard no-op deployment: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("count discarded no-op deployment: %w", err)
+		}
+		if changed != 1 {
+			return ErrServiceChanged
+		}
+		return nil
+	})
+}
+
 func (store *Store) FailDeployment(ctx context.Context, deploymentID, code, message string, finishedAtMillis int64) error {
 	return store.FinishDeployment(ctx, deploymentID, "failed", code, message, finishedAtMillis)
 }

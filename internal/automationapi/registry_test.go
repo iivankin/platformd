@@ -106,11 +106,11 @@ func (settings *registrySettingsStub) SetRegistryHostname(_ context.Context, inp
 func registryHandlerForTest(t *testing.T, application registryApplication, settings registrySettings) http.Handler {
 	t.Helper()
 	repository := &repositoryStub{}
-	projects, err := automation.NewProjectApplication(repository, nil, nil)
+	projects, err := automation.NewProjectApplication(repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	services, err := automation.NewServiceApplication(repository, nil, nil)
+	services, err := automation.NewServiceApplication(repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +119,7 @@ func registryHandlerForTest(t *testing.T, application registryApplication, setti
 		t.Fatal(err)
 	}
 	handler, err := Handler(Config{
-		Hostname: "api.example.com", Repository: repository, Projects: projects,
+		Hostname: "admin.example.com", Repository: repository, Projects: projects,
 		Services: services, Logs: logs, Images: repository, Registry: application,
 		RegistrySettings: settings, Admission: admission.New(),
 	})
@@ -137,23 +137,23 @@ func TestAutomationRegistryRejectsProjectBoundTokensBeforeLookup(t *testing.T) {
 	identity := automation.Identity{TokenID: "bound", Role: "read", ProjectID: &projectID}
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/registry/repositories", identity))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/registry/repositories", identity))
 	if response.Code != http.StatusForbidden || application.listCalls != 0 {
 		t.Fatalf("bound repository list = %d/%s calls=%d", response.Code, response.Body, application.listCalls)
 	}
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/registry", identity))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/registry", identity))
 	if response.Code != http.StatusForbidden || settings.getCalls != 0 {
 		t.Fatalf("bound settings read = %d/%s calls=%d", response.Code, response.Body, settings.getCalls)
 	}
 
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/registry/repositories", automation.Identity{TokenID: "read", Role: "read"}))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/registry/repositories", automation.Identity{TokenID: "read", Role: "read"}))
 	if response.Code != http.StatusOK || application.listCalls != 1 || !strings.Contains(response.Body.String(), `"name":"apps"`) {
 		t.Fatalf("unbound repository list = %d/%s calls=%d", response.Code, response.Body, application.listCalls)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "https://api.example.com/api/v1/registry/repositories", strings.NewReader("not-json"))
+	request := httptest.NewRequest(http.MethodPost, "https://admin.example.com/public/api/v1/registry/repositories", strings.NewReader("not-json"))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "read", Role: "read"}))
 	response = httptest.NewRecorder()
@@ -168,7 +168,7 @@ func TestAutomationRegistryUsesTokenActorsAndReturnsSecretsOnlyAtCreation(t *tes
 	settings := &registrySettingsStub{}
 	handler := registryHandlerForTest(t, application, settings)
 
-	request := httptest.NewRequest(http.MethodPost, "https://api.example.com/api/v1/registry/repositories", strings.NewReader(`{"name":"apps","publicPull":true}`))
+	request := httptest.NewRequest(http.MethodPost, "https://admin.example.com/public/api/v1/registry/repositories", strings.NewReader(`{"name":"apps","publicPull":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "root-token", Role: "admin"}))
 	response := httptest.NewRecorder()
@@ -177,7 +177,7 @@ func TestAutomationRegistryUsesTokenActorsAndReturnsSecretsOnlyAtCreation(t *tes
 		!strings.Contains(response.Body.String(), `"secret":"one-time-secret"`) {
 		t.Fatalf("repository create = %d/%s input=%+v", response.Code, response.Body, application.createInput)
 	}
-	request = httptest.NewRequest(http.MethodPost, "https://api.example.com/api/v1/registry/repositories/repository/credentials", strings.NewReader(`{"name":"robot","permission":"pull"}`))
+	request = httptest.NewRequest(http.MethodPost, "https://admin.example.com/public/api/v1/registry/repositories/repository/credentials", strings.NewReader(`{"name":"robot","permission":"pull"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "root-token", Role: "admin"}))
 	response = httptest.NewRecorder()
@@ -188,12 +188,12 @@ func TestAutomationRegistryUsesTokenActorsAndReturnsSecretsOnlyAtCreation(t *tes
 	}
 
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/registry/repositories/repository/credentials", automation.Identity{TokenID: "read", Role: "read"}))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/registry/repositories/repository/credentials", automation.Identity{TokenID: "read", Role: "read"}))
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "must-not-leak") || strings.Contains(response.Body.String(), `"secret"`) {
 		t.Fatalf("credential list = %d/%s", response.Code, response.Body)
 	}
 
-	request = httptest.NewRequest(http.MethodPut, "https://api.example.com/api/v1/registry/hostname", strings.NewReader(`{}`))
+	request = httptest.NewRequest(http.MethodPut, "https://admin.example.com/public/api/v1/registry/hostname", strings.NewReader(`{}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "root-token", Role: "admin"}))
 	response = httptest.NewRecorder()
@@ -202,7 +202,7 @@ func TestAutomationRegistryUsesTokenActorsAndReturnsSecretsOnlyAtCreation(t *tes
 		t.Fatalf("missing hostname = %d/%s input=%+v", response.Code, response.Body, settings.input)
 	}
 
-	request = httptest.NewRequest(http.MethodPut, "https://api.example.com/api/v1/registry/hostname", strings.NewReader(`{"hostname":"registry.example.com"}`))
+	request = httptest.NewRequest(http.MethodPut, "https://admin.example.com/public/api/v1/registry/hostname", strings.NewReader(`{"hostname":"registry.example.com"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "root-token", Role: "admin"}))
 	response = httptest.NewRecorder()
@@ -216,7 +216,7 @@ func TestAutomationRegistryUsesTokenActorsAndReturnsSecretsOnlyAtCreation(t *tes
 func TestAutomationRegistryOpenAPIDescribesAdminRoutesWithoutDockerProtocol(t *testing.T) {
 	handler := registryHandlerForTest(t, &registryApplicationStub{}, &registrySettingsStub{})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "read", Role: "read"}))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/openapi.json", automation.Identity{TokenID: "read", Role: "read"}))
 	if response.Code != http.StatusOK {
 		t.Fatalf("OpenAPI status = %d/%s", response.Code, response.Body)
 	}
@@ -226,9 +226,9 @@ func TestAutomationRegistryOpenAPIDescribesAdminRoutesWithoutDockerProtocol(t *t
 	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.Paths["/api/v1/registry/repositories"]["post"] == nil ||
-		document.Paths["/api/v1/registry/repositories/{repositoryID}/cleanup"]["post"] == nil ||
-		document.Paths["/api/v1/registry/hostname"]["put"] == nil {
+	if document.Paths["/public/api/v1/registry/repositories"]["post"] == nil ||
+		document.Paths["/public/api/v1/registry/repositories/{repositoryID}/cleanup"]["post"] == nil ||
+		document.Paths["/public/api/v1/registry/hostname"]["put"] == nil {
 		t.Fatalf("Registry OpenAPI paths are incomplete: %s", response.Body)
 	}
 	response = httptest.NewRecorder()

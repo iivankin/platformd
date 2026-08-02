@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type fakeServiceRuntime struct {
@@ -80,7 +81,8 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 		t.Fatal(err)
 	}
 	runtime := &fakeServiceRuntime{}
-	repository := liveServiceRepository{store: store, runtime: runtime}
+	traffic := trafficmetrics.NewRegistry()
+	repository := liveServiceRepository{store: store, runtime: runtime, traffic: traffic}
 	created, err := repository.CreateService(context.Background(), state.CreateService{
 		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
 		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:latest")},
@@ -133,6 +135,7 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	if err != nil {
 		t.Fatal(err)
 	}
+	traffic.StartHTTP(created.ID)
 	if _, err := repository.DeleteService(context.Background(), state.DeleteServiceInput{
 		ID: current.ID, ProjectID: current.ProjectID, ExpectedUpdatedMillis: current.UpdatedAtMillis,
 		AuditEventID: "delete-audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", DeletedAtMillis: 6,
@@ -141,6 +144,9 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	}
 	if len(runtime.deleted) != 1 || runtime.deleted[0] != created.ID || len(runtime.logsDeleted) != 1 {
 		t.Fatalf("delete runtime calls = services %v logs %v", runtime.deleted, runtime.logsDeleted)
+	}
+	if _, exists := traffic.Snapshot()[created.ID]; exists {
+		t.Fatal("deleted service traffic counters were retained")
 	}
 }
 

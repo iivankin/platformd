@@ -293,6 +293,7 @@ func rawRuntimeProfile(t *testing.T) []rawBundleEntry {
 	add("crun", []byte("runtime-crun"), 0o755)
 	add("mounts.conf", []byte("{}"), 0o644)
 	add("netavark", []byte("runtime-netavark"), 0o755)
+	add("platformd-objectstore", []byte("runtime-platformd-objectstore"), 0o755)
 	for _, name := range []string{"policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
 		add(name, []byte("{}"), 0o644)
 	}
@@ -312,7 +313,7 @@ func writeFile(t *testing.T, path string, value []byte, mode fs.FileMode) {
 
 func writeRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	executables := []string{"catatonit", "conmon", "crun", "netavark"}
+	executables := []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"}
 	configurations := []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"}
 	for _, name := range executables {
 		writeFile(t, filepath.Join(root, name), []byte("runtime-"+name), 0o755)

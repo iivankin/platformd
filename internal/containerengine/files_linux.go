@@ -18,7 +18,6 @@ import (
 )
 
 const maximumContainerFileEntries = 10_000
-const containerFileListingDepth = 3
 
 func (e *Engine) ListContainerFiles(ctx context.Context, containerID, rootPath string) (entries []ContainerFileEntry, returnErr error) {
 	if err := validateContainerFilePath(rootPath); err != nil {
@@ -37,13 +36,13 @@ func (e *Engine) ListContainerFiles(ctx context.Context, containerID, rootPath s
 	}()
 
 	entries = make([]ContainerFileEntry, 0, 256)
-	if err := walkContainerDirectory(ctx, mountpoint, rootPath, 0, &entries); err != nil {
+	if err := listContainerDirectory(ctx, mountpoint, rootPath, &entries); err != nil {
 		return nil, err
 	}
 	return entries, nil
 }
 
-func walkContainerDirectory(ctx context.Context, mountpoint, directoryPath string, depth int, result *[]ContainerFileEntry) error {
+func listContainerDirectory(ctx context.Context, mountpoint, directoryPath string, result *[]ContainerFileEntry) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -77,15 +76,6 @@ func walkContainerDirectory(ctx context.Context, mountpoint, directoryPath strin
 			Path: childPath, Directory: child.IsDir(), SizeBytes: info.Size(),
 			Mode: uint32(info.Mode().Perm()), ModifiedAt: info.ModTime(),
 		})
-		// Symlinks are represented as leaf entries. Following them while the
-		// container is mutating would make the visible tree ambiguous.
-		// Bound each response so large image filesystems remain usable. A caller
-		// can use any returned directory as the root of the next listing.
-		if depth < containerFileListingDepth && child.IsDir() && child.Type()&os.ModeSymlink == 0 {
-			if err := walkContainerDirectory(ctx, mountpoint, childPath, depth+1, result); err != nil {
-				return err
-			}
-		}
 	}
 	return nil
 }

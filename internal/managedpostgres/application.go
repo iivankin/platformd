@@ -116,7 +116,7 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		return CreateResult{}, fmt.Errorf("%w: %v", ErrImageUnavailable, err)
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 4)
+	identifiers, err := application.identifiers(4)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -260,7 +260,7 @@ func (application *Application) ChangeExtension(ctx context.Context, input Chang
 		}
 	}()
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 3)
+	identifiers, err := application.identifiers(3)
 	if err != nil {
 		return ChangeExtensionOutput{}, err
 	}
@@ -389,7 +389,7 @@ func (application *Application) Query(ctx context.Context, input QueryInput) (Qu
 		return QueryOutput{}, err
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return QueryOutput{}, err
 	}
@@ -426,10 +426,10 @@ func (application *Application) Query(ctx context.Context, input QueryInput) (Qu
 	return QueryOutput{QueryResult: result, RequestID: identifiers[1], AuditRecorded: auditErr == nil}, nil
 }
 
-func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {
+func (application *Application) identifiers(count int) ([]string, error) {
 	result := make([]string, count)
 	for index := range result {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return nil, fmt.Errorf("allocate managed PostgreSQL identifiers: %w", err)
 		}

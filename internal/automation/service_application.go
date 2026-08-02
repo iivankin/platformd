@@ -2,10 +2,8 @@ package automation
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/id"
@@ -30,7 +28,6 @@ type ServiceMutationRepository interface {
 
 type ServiceApplication struct {
 	repository ServiceMutationRepository
-	random     io.Reader
 	now        func() time.Time
 }
 
@@ -67,17 +64,14 @@ type ServiceMutationResult struct {
 	RequestID string
 }
 
-func NewServiceApplication(repository ServiceMutationRepository, random io.Reader, now func() time.Time) (*ServiceApplication, error) {
+func NewServiceApplication(repository ServiceMutationRepository, now func() time.Time) (*ServiceApplication, error) {
 	if repository == nil {
 		return nil, errors.New("service automation repository is required")
-	}
-	if random == nil {
-		random = rand.Reader
 	}
 	if now == nil {
 		now = time.Now
 	}
-	return &ServiceApplication{repository: repository, random: random, now: now}, nil
+	return &ServiceApplication{repository: repository, now: now}, nil
 }
 
 func (application *ServiceApplication) Create(ctx context.Context, identity Identity, input CreateServiceInput) (ServiceMutationResult, error) {
@@ -94,8 +88,11 @@ func (application *ServiceApplication) Create(ctx context.Context, identity Iden
 	if snapshot.Source.Type == servicesource.PrivateImage {
 		return ServiceMutationResult{}, fmt.Errorf("%w: private registry credentials must be configured through the service admin API", ErrInvalidInput)
 	}
+	if snapshot.BeforeDeploy != nil && len(snapshot.BeforeDeploy.CloudflareHostnames) > 0 {
+		return ServiceMutationResult{}, fmt.Errorf("%w: attach service domains before configuring a Cloudflare cache purge", ErrInvalidInput)
+	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 3)
+	identifiers, err := application.identifiers(3)
 	if err != nil {
 		return ServiceMutationResult{}, err
 	}
@@ -123,7 +120,7 @@ func (application *ServiceApplication) Update(ctx context.Context, identity Iden
 		return ServiceMutationResult{}, fmt.Errorf("%w: private registry credentials must be configured through the service admin API", ErrInvalidInput)
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return ServiceMutationResult{}, err
 	}
@@ -144,7 +141,7 @@ func (application *ServiceApplication) Redeploy(ctx context.Context, identity Id
 		return ServiceMutationResult{}, fmt.Errorf("%w: serviceId and expectedUpdatedAt are required", ErrInvalidInput)
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return ServiceMutationResult{}, err
 	}
@@ -164,7 +161,7 @@ func (application *ServiceApplication) Rollback(ctx context.Context, identity Id
 		return ServiceMutationResult{}, fmt.Errorf("%w: serviceId, deploymentId, and expectedUpdatedAt are required", ErrInvalidInput)
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return ServiceMutationResult{}, err
 	}
@@ -190,10 +187,10 @@ func authorizeServiceMutation(identity Identity, projectID string) error {
 	return nil
 }
 
-func (application *ServiceApplication) identifiers(timestamp time.Time, count int) ([]string, error) {
+func (application *ServiceApplication) identifiers(count int) ([]string, error) {
 	identifiers := make([]string, count)
 	for index := range identifiers {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return nil, fmt.Errorf("allocate service mutation identifiers: %w", err)
 		}

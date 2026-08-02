@@ -73,7 +73,7 @@ func createManagedPostgres(application *automation.ManagedPostgresApplication) h
 			writeManagedPostgresMutationError(response, err)
 			return
 		}
-		response.Header().Set("Location", "/api/v1/projects/"+result.Resource.ProjectID+"/postgres/"+result.Resource.ID)
+		response.Header().Set("Location", "/public/api/v1/projects/"+result.Resource.ProjectID+"/postgres/"+result.Resource.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicManagedPostgres(result.Resource, result.OwnerPassword))
 	}

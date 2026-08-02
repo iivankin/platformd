@@ -56,7 +56,7 @@ func createService(application *automation.ServiceApplication) http.HandlerFunc 
 		if writeServiceMutationError(response, err) {
 			return
 		}
-		response.Header().Set("Location", "/api/v1/projects/"+result.Service.ProjectID+"/services/"+result.Service.ID)
+		response.Header().Set("Location", "/public/api/v1/projects/"+result.Service.ProjectID+"/services/"+result.Service.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicService(result.Service))
 	}

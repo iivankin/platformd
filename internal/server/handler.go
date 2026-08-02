@@ -22,6 +22,7 @@ import (
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
+	"github.com/iivankin/platformd/internal/projectwebhook"
 	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/ui"
@@ -38,6 +39,7 @@ type Meta struct {
 
 type handlerConfig struct {
 	projects                ProjectRepository
+	projectWebhooks         *projectwebhook.Application
 	services                ServiceRepository
 	serviceEnvironment      ServiceEnvironmentResolver
 	volumes                 *volume.Application
@@ -56,6 +58,7 @@ type handlerConfig struct {
 	registry                *registry.Application
 	registrySettings        RegistrySettings
 	installationSettings    *installationsettings.Application
+	afterInstallationChange func()
 	githubApp               *githubapp.Application
 	cloudflareDNS           *cloudflaredns.Application
 	cloudflareMesh          *cloudflaremesh.Application
@@ -71,6 +74,7 @@ type handlerConfig struct {
 	serverTerminalLife      time.Duration
 	adminHostname           string
 	diskPressure            DiskPressure
+	imageGarbageCollector   ImageGarbageCollector
 	resourceUsage           ResourceUsage
 	infrastructureLogs      InfrastructureLogs
 	admission               *admission.Gate
@@ -86,6 +90,12 @@ type Option func(*handlerConfig)
 func WithProjects(repository ProjectRepository) Option {
 	return func(config *handlerConfig) {
 		config.projects = repository
+	}
+}
+
+func WithProjectWebhooks(application *projectwebhook.Application) Option {
+	return func(config *handlerConfig) {
+		config.projectWebhooks = application
 	}
 }
 
@@ -181,9 +191,10 @@ func WithRegistry(application *registry.Application, settings RegistrySettings) 
 	}
 }
 
-func WithInstallationSettings(application *installationsettings.Application) Option {
+func WithInstallationSettings(application *installationsettings.Application, afterInstallationChange func()) Option {
 	return func(config *handlerConfig) {
 		config.installationSettings = application
+		config.afterInstallationChange = afterInstallationChange
 	}
 }
 
@@ -263,6 +274,12 @@ func WithDiskPressure(pressure DiskPressure) Option {
 	}
 }
 
+func WithImageGarbageCollector(collector ImageGarbageCollector) Option {
+	return func(config *handlerConfig) {
+		config.imageGarbageCollector = collector
+	}
+}
+
 func WithResourceUsage(usage ResourceUsage) Option {
 	return func(config *handlerConfig) {
 		config.resourceUsage = usage
@@ -306,6 +323,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	mux.HandleFunc("GET /api/v1/me", handleIdentity)
 	if config.projects != nil {
 		registerProjectRoutes(mux, config)
+	}
+	if config.projectWebhooks != nil {
+		registerProjectWebhookRoutes(mux, config)
 	}
 	if config.services != nil {
 		registerServiceRoutes(mux, config)
@@ -394,8 +414,14 @@ func Handler(meta Meta, options ...Option) http.Handler {
 			panic("register server terminal: " + err.Error())
 		}
 	}
-	if config.diskPressure != nil || config.resourceUsage != nil || config.infrastructureLogs != nil {
-		registerInfrastructureRoutes(mux, config.diskPressure, config.resourceUsage, config.infrastructureLogs)
+	if config.diskPressure != nil || config.imageGarbageCollector != nil || config.resourceUsage != nil || config.infrastructureLogs != nil {
+		registerInfrastructureRoutes(
+			mux,
+			config.diskPressure,
+			config.imageGarbageCollector,
+			config.resourceUsage,
+			config.infrastructureLogs,
+		)
 	}
 	if config.selfUpdater != nil && config.afterUpdate != nil {
 		registerSelfUpdateRoute(mux, config.selfUpdater, config.afterUpdate)
@@ -410,6 +436,7 @@ func Handler(meta Meta, options ...Option) http.Handler {
 			config.admission, "admin_request", "/api/v1/infrastructure/update", exclusiveAdminMutation, handler,
 		)
 	}
+	handler = observeServerErrors(handler)
 	return securityHeaders(handler)
 }
 
@@ -442,7 +469,7 @@ func handleMeta(meta Meta) http.HandlerFunc {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self' data: wss:; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: https://avatars.githubusercontent.com; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'")
+		response.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self' data: wss:; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: https:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'")
 		response.Header().Set("Referrer-Policy", "no-referrer")
 		response.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(response, request)

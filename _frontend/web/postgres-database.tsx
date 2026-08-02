@@ -1,21 +1,16 @@
-import { Play, RefreshCw } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import { queryManagedPostgres } from "@/api";
 import type { PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { PostgresDataBrowser } from "@/postgres-data-browser";
 import { PostgresExtensions } from "@/postgres-extensions";
+import { PostgresResultTable, postgresCellText } from "@/postgres-query-result";
+import { PostgresQueryRunner } from "@/postgres-query-runner";
 
-type DatabaseView = "config" | "data" | "stats";
-
-const starterSQL = `SELECT
-  schemaname AS schema,
-  relname AS table,
-  n_live_tup AS approximate_rows
-FROM pg_stat_user_tables
-ORDER BY schemaname, relname
-LIMIT 100;`;
+type DatabaseView = "data" | "extensions" | "query" | "stats";
 
 const inspectionSQL = `SELECT
   current_setting('server_version') AS version,
@@ -35,74 +30,6 @@ SELECT
 FROM pg_stat_user_tables
 ORDER BY pg_total_relation_size(relid) DESC
 LIMIT 100;`;
-
-interface Cell {
-  base64?: string;
-  null?: boolean;
-  text?: string;
-}
-
-const cellText = (cell?: Cell) => {
-  if (!cell || cell.null) {
-    return "—";
-  }
-  return cell.base64 === undefined
-    ? (cell.text ?? "")
-    : `base64:${cell.base64}`;
-};
-
-const ResultTable = ({ result }: { result: PostgresQueryResult | null }) => (
-  <div className="min-h-0 flex-1 overflow-auto">
-    {result?.statements.map((statement, statementIndex) => (
-      <section
-        className="border-b border-border"
-        key={`${statementIndex.toString()}:${statement.commandTag}`}
-      >
-        <div className="flex items-center gap-3 border-b border-border px-4 py-2 text-[9px] text-muted-foreground">
-          <span>{statement.commandTag || "Result"}</span>
-          <span>{statement.rows.length.toLocaleString()} rows</span>
-          {statement.truncated ? <span>bounded</span> : null}
-        </div>
-        {statement.columns.length > 0 ? (
-          <table className="w-full border-collapse text-left text-[10px]">
-            <thead>
-              <tr className="border-b border-border">
-                {statement.columns.map((column, columnIndex) => (
-                  <th
-                    className="border-r border-border px-3 py-2 font-medium last:border-r-0"
-                    key={`${columnIndex.toString()}:${column.name}`}
-                  >
-                    {column.name}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {statement.rows.map((row, rowIndex) => (
-                <tr
-                  className="border-b border-border last:border-b-0"
-                  key={rowIndex.toString()}
-                >
-                  {row.map((cell, cellIndex) => (
-                    <td
-                      className={cn(
-                        "max-w-80 border-r border-border px-3 py-2 align-top break-all last:border-r-0",
-                        cell.null && "text-muted-foreground italic"
-                      )}
-                      key={cellIndex.toString()}
-                    >
-                      {cellText(cell)}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        ) : null}
-      </section>
-    ))}
-  </div>
-);
 
 const PostgresStats = ({
   postgresID,
@@ -179,8 +106,8 @@ const PostgresStats = ({
               {label}
             </p>
             <p className="mt-1 text-xs">
-              {cellText(summary[index])}
-              {label === "Cache hit" && cellText(summary[index]) !== "—"
+              {postgresCellText(summary[index])}
+              {label === "Cache hit" && postgresCellText(summary[index]) !== "—"
                 ? "%"
                 : ""}
             </p>
@@ -199,7 +126,7 @@ const PostgresStats = ({
         </Button>
       </header>
       {tables ? (
-        <ResultTable
+        <PostgresResultTable
           result={{
             auditRecorded: true,
             statements: [tables],
@@ -224,27 +151,10 @@ export const PostgresDatabase = ({
   projectID: string;
 }) => {
   const [view, setView] = useState<DatabaseView>("data");
-  const [sql, setSQL] = useState(starterSQL);
-  const [result, setResult] = useState<PostgresQueryResult | null>(null);
-  const [running, setRunning] = useState(false);
-  const [error, setError] = useState<string>();
-
-  const run = async () => {
-    setRunning(true);
-    try {
-      setResult(await queryManagedPostgres(projectID, postgresID, sql));
-      setError(undefined);
-    } catch (queryError) {
-      setError(
-        queryError instanceof Error ? queryError.message : "SQL query failed"
-      );
-    } finally {
-      setRunning(false);
-    }
-  };
+  const [queryDraft, setQueryDraft] = useState<string>();
 
   const renderView = () => {
-    if (view === "config") {
+    if (view === "extensions") {
       return (
         <PostgresExtensions postgresID={postgresID} projectID={projectID} />
       );
@@ -252,34 +162,24 @@ export const PostgresDatabase = ({
     if (view === "stats") {
       return <PostgresStats postgresID={postgresID} projectID={projectID} />;
     }
-    return (
-      <div className="flex min-h-[34rem] flex-col">
-        <div className="relative h-52 shrink-0 border-b border-border">
-          <textarea
-            aria-label="PostgreSQL SQL editor"
-            className="h-full w-full resize-none bg-background p-4 pr-24 font-mono text-[11px] leading-5 outline-none focus:bg-muted/10"
-            onChange={(event) => setSQL(event.target.value)}
-            spellCheck={false}
-            value={sql}
-          />
-          <Button
-            className="absolute top-3 right-3"
-            disabled={running || !sql.trim()}
-            onClick={() => void run()}
-            size="sm"
-          >
-            <Play /> {running ? "Running…" : "Run"}
-          </Button>
-        </div>
-        <ResultTable result={result} />
-        {error ? (
-          <p className="border-b border-border px-4 py-3 text-[10px] text-destructive">
-            {error}
-          </p>
-        ) : null}
-      </div>
-    );
+    if (view === "query") {
+      return (
+        <PostgresQueryRunner
+          initialSQL={queryDraft}
+          postgresID={postgresID}
+          projectID={projectID}
+        />
+      );
+    }
+    return null;
   };
+
+  const views: { label: string; value: DatabaseView }[] = [
+    { label: "Data", value: "data" },
+    { label: "Query", value: "query" },
+    { label: "Stats", value: "stats" },
+    { label: "Extensions", value: "extensions" },
+  ];
 
   return (
     <div>
@@ -287,20 +187,30 @@ export const PostgresDatabase = ({
         className="flex min-h-10 border-b border-border px-4"
         aria-label="PostgreSQL database pages"
       >
-        {(["data", "stats", "config"] as const).map((item) => (
+        {views.map((item) => (
           <button
             className={cn(
-              "border-b-2 border-transparent px-4 text-[10px] text-muted-foreground capitalize",
-              view === item && "border-foreground text-foreground"
+              "border-b-2 border-transparent px-4 text-[10px] text-muted-foreground",
+              view === item.value && "border-foreground text-foreground"
             )}
-            key={item}
-            onClick={() => setView(item)}
+            key={item.value}
+            onClick={() => setView(item.value)}
             type="button"
           >
-            {item}
+            {item.label}
           </button>
         ))}
       </nav>
+      <div hidden={view !== "data"}>
+        <PostgresDataBrowser
+          onOpenInQuery={(sql) => {
+            setQueryDraft(sql);
+            setView("query");
+          }}
+          postgresID={postgresID}
+          projectID={projectID}
+        />
+      </div>
       {renderView()}
     </div>
   );

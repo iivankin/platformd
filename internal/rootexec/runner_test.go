@@ -1,7 +1,6 @@
 package rootexec
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -17,8 +16,8 @@ func (testLeaf) Close(context.Context) error { return nil }
 func TestRunnerRejectsInvalidRequestsBeforeCreatingCgroup(t *testing.T) {
 	created := 0
 	runner, err := New(Config{
-		CreateLeaf: func(string) (Leaf, error) { created++; return testLeaf{}, nil },
-		Random:     bytes.NewReader(make([]byte, 32)), Now: time.Now,
+		CreateLeaf:   func(string) (Leaf, error) { created++; return testLeaf{}, nil },
+		Now:          time.Now,
 		CommandBytes: 8, OutputBytes: 16, DefaultTimeout: time.Second,
 		MaximumTimeout: 2 * time.Second, MaximumParallel: 1,
 	})

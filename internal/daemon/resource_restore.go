@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
@@ -91,26 +90,11 @@ func resourceRestorers(
 			if err := requireConfirmedResourceReplacement(request.Options, "ObjectStore"); err != nil {
 				return err
 			}
-			metadata, err := io.ReadAll(request.Source.Reader)
-			if err != nil {
+			if err := requireNoResourceAttachments(request.Source.Envelope); err != nil {
 				return err
 			}
-			_, err = objectStoreApplication.RestoreSnapshot(ctx, objectstore.RestoreInput{
-				StoreID: request.ResourceID, Metadata: metadata,
-				ValidateAttachments: func(attachments []objectstore.BackupAttachment) error {
-					descriptors := make([]backup.ResourceAttachment, len(attachments))
-					for index, attachment := range attachments {
-						descriptors[index] = backup.ResourceAttachment{
-							Index: attachment.Index, Size: attachment.Size, SHA256: attachment.SHA256,
-						}
-					}
-					return backup.ValidateResourceAttachments(request.Source.Envelope, descriptors)
-				},
-				OpenAttachment: func(_ context.Context, attachment objectstore.BackupAttachment) (io.ReadCloser, error) {
-					return request.Source.OpenAttachment(backup.ResourceAttachment{
-						Index: attachment.Index, Size: attachment.Size, SHA256: attachment.SHA256,
-					})
-				},
+			_, err := objectStoreApplication.RestoreSnapshot(ctx, objectstore.RestoreInput{
+				StoreID: request.ResourceID, Archive: request.Source.Reader,
 				Actor: objectstore.Actor{
 					Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
 				},

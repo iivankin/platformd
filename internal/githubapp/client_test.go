@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"net/http"
@@ -50,6 +51,10 @@ func TestCreateDeploymentAndStatusUseInstallationRepository(t *testing.T) {
 	}
 	var createdCommentBody string
 	var updatedCommentBody string
+	var workflowDispatchBody struct {
+		Ref    string         `json:"ref"`
+		Inputs map[string]any `json:"inputs"`
+	}
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		switch request.URL.Path {
 		case "/app/installations":
@@ -88,7 +93,26 @@ func TestCreateDeploymentAndStatusUseInstallationRepository(t *testing.T) {
 			updatedCommentBody = body["body"]
 			writer.WriteHeader(http.StatusOK)
 		case "/repos/acme/api/git/trees/main":
-			_, _ = writer.Write([]byte(`{"tree":[{"path":"Dockerfile","type":"blob"},{"path":"apps/api","type":"tree"},{"path":"apps/api/Dockerfile","type":"blob"},{"path":"README.md","type":"blob"}]}`))
+			_, _ = writer.Write([]byte(`{"tree":[{"path":"Dockerfile","type":"blob"},{"path":"apps/api","type":"tree"},{"path":"apps/api/Dockerfile","type":"blob"},{"path":"README.md","type":"blob"},{"path":".github/workflows/migrate.yml","sha":"workflow-sha","type":"blob"},{"path":".github/workflows/push.yml","sha":"push-sha","type":"blob"}]}`))
+		case "/repos/acme/api/git/blobs/workflow-sha":
+			content := []byte("name: Migrate database\non:\n  workflow_dispatch:\n")
+			_ = json.NewEncoder(writer).Encode(map[string]any{"content": base64.StdEncoding.EncodeToString(content), "encoding": "base64", "size": len(content)})
+		case "/repos/acme/api/git/blobs/push-sha":
+			content := []byte("name: Build\non: push\n")
+			_ = json.NewEncoder(writer).Encode(map[string]any{"content": base64.StdEncoding.EncodeToString(content), "encoding": "base64", "size": len(content)})
+		case "/repos/acme/api/actions/workflows/migrate.yml/dispatches":
+			if request.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
+				t.Errorf("workflow dispatch API version = %q", request.Header.Get("X-GitHub-Api-Version"))
+			}
+			if err := json.NewDecoder(request.Body).Decode(&workflowDispatchBody); err != nil {
+				t.Errorf("decode workflow dispatch: %v", err)
+			}
+			_ = json.NewEncoder(writer).Encode(map[string]any{"workflow_run_id": 91, "html_url": "https://github.com/acme/api/actions/runs/91"})
+		case "/repos/acme/api/actions/runs/91":
+			if request.Header.Get("X-GitHub-Api-Version") != "2026-03-10" {
+				t.Errorf("workflow run API version = %q", request.Header.Get("X-GitHub-Api-Version"))
+			}
+			_, _ = writer.Write([]byte(`{"id":91,"name":"Migrate database","status":"completed","conclusion":"success","html_url":"https://github.com/acme/api/actions/runs/91"}`))
 		default:
 			http.NotFound(writer, request)
 		}
@@ -150,6 +174,23 @@ func TestCreateDeploymentAndStatusUseInstallationRepository(t *testing.T) {
 	}
 	if len(directories) != 1 || directories[0].Path != "apps/api" || directories[0].Type != "tree" {
 		t.Fatalf("repository directory suggestions = %+v", directories)
+	}
+	workflows, err := application.Workflows(context.Background(), 23)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(workflows) != 1 || workflows[0].Name != "Migrate database" || workflows[0].Path != ".github/workflows/migrate.yml" {
+		t.Fatalf("workflow suggestions = %+v", workflows)
+	}
+	run, err := application.DispatchWorkflowAndWait(
+		context.Background(), 23, workflows[0].Path, "main",
+		map[string]any{"dryRun": false, "batch": float64(20)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.ID != 91 || run.Conclusion != "success" || workflowDispatchBody.Ref != "main" || workflowDispatchBody.Inputs["dryRun"] != false || workflowDispatchBody.Inputs["batch"] != float64(20) {
+		t.Fatalf("workflow run/body = %+v / %#v", run, workflowDispatchBody)
 	}
 }
 

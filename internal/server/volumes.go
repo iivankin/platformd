@@ -123,6 +123,6 @@ func writeVolumeError(response http.ResponseWriter, err error) {
 	case errors.Is(err, state.ErrVolumeInUse):
 		writeAPIError(response, http.StatusConflict, "volume_in_use", "Volume is referenced by desired or active service configuration")
 	default:
-		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage volume")
+		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage volume", err)
 	}
 }

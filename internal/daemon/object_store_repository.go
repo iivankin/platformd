@@ -39,7 +39,7 @@ func (repository *liveObjectStoreRepository) CreateObjectStore(ctx context.Conte
 	}
 	// Desired state is authoritative. Publication is intentionally best-effort:
 	// runtime startup retries it from SQLite after a daemon restart.
-	if err := repository.runtime.EnableObjectStore(created); err != nil {
+	if err := repository.runtime.EnableObjectStore(ctx, created); err != nil {
 		repository.runtime.recordObjectStoreFailure(created.ProjectID, err)
 	}
 	_ = repository.reloadPublicRoutes(ctx)
@@ -76,66 +76,10 @@ func (repository *liveObjectStoreRepository) ObjectStoresByProject(ctx context.C
 	return repository.store.ObjectStoresByProject(ctx, projectID)
 }
 
-func (repository *liveObjectStoreRepository) S3Credential(ctx context.Context, credentialID string) (state.S3Credential, error) {
-	return repository.store.S3Credential(ctx, credentialID)
-}
-
 func (repository *liveObjectStoreRepository) S3CredentialsByObjectStore(ctx context.Context, objectStoreID string) ([]state.S3Credential, error) {
 	return repository.store.S3CredentialsByObjectStore(ctx, objectStoreID)
 }
 
-func (repository *liveObjectStoreRepository) CommitObject(ctx context.Context, input state.CommitObject) (state.ObjectMetadata, error) {
-	return repository.store.CommitObject(ctx, input)
-}
-
-func (repository *liveObjectStoreRepository) Object(ctx context.Context, storeID, objectKey string) (state.ObjectMetadata, error) {
-	return repository.store.Object(ctx, storeID, objectKey)
-}
-
-func (repository *liveObjectStoreRepository) ObjectPayload(ctx context.Context, storeID, payloadID string) (state.ObjectPayload, error) {
-	return repository.store.ObjectPayload(ctx, storeID, payloadID)
-}
-
-func (repository *liveObjectStoreRepository) ListObjects(ctx context.Context, storeID, prefix, after string, limit int) ([]state.ObjectMetadata, bool, error) {
-	return repository.store.ListObjects(ctx, storeID, prefix, after, limit)
-}
-
-func (repository *liveObjectStoreRepository) DeleteObject(ctx context.Context, storeID, objectKey string) error {
-	return repository.store.DeleteObject(ctx, storeID, objectKey)
-}
-
-func (repository *liveObjectStoreRepository) CreateMultipartUpload(ctx context.Context, input state.CreateMultipartUpload) (state.MultipartUpload, error) {
-	return repository.store.CreateMultipartUpload(ctx, input)
-}
-
-func (repository *liveObjectStoreRepository) MultipartUpload(ctx context.Context, storeID, uploadID, objectKey string) (state.MultipartUpload, error) {
-	return repository.store.MultipartUpload(ctx, storeID, uploadID, objectKey)
-}
-
-func (repository *liveObjectStoreRepository) CommitMultipartPart(ctx context.Context, storeID, uploadID, objectKey string, part state.MultipartPart, nowMillis int64) error {
-	return repository.store.CommitMultipartPart(ctx, storeID, uploadID, objectKey, part, nowMillis)
-}
-
-func (repository *liveObjectStoreRepository) MultipartPart(ctx context.Context, storeID, uploadID, objectKey string, partNumber int) (state.MultipartPart, error) {
-	return repository.store.MultipartPart(ctx, storeID, uploadID, objectKey, partNumber)
-}
-
-func (repository *liveObjectStoreRepository) MultipartParts(ctx context.Context, storeID, uploadID, objectKey string, after, limit int) ([]state.MultipartPart, bool, error) {
-	return repository.store.MultipartParts(ctx, storeID, uploadID, objectKey, after, limit)
-}
-
-func (repository *liveObjectStoreRepository) CompleteMultipartUpload(ctx context.Context, input state.CompleteMultipartUpload) (state.ObjectMetadata, error) {
-	return repository.store.CompleteMultipartUpload(ctx, input)
-}
-
-func (repository *liveObjectStoreRepository) AbortMultipartUpload(ctx context.Context, storeID, uploadID, objectKey string) error {
-	return repository.store.AbortMultipartUpload(ctx, storeID, uploadID, objectKey)
-}
-
-func (repository *liveObjectStoreRepository) ExpiredMultipartUploads(ctx context.Context, beforeMillis int64, limit int) ([]state.MultipartUpload, error) {
-	return repository.store.ExpiredMultipartUploads(ctx, beforeMillis, limit)
-}
-
-func (repository *liveObjectStoreRepository) RestoreObjectStore(ctx context.Context, input state.RestoreObjectStore) error {
-	return repository.store.RestoreObjectStore(ctx, input)
+func (repository *liveObjectStoreRepository) RecordObjectStoreRestore(ctx context.Context, input state.RecordObjectStoreRestore) error {
+	return repository.store.RecordObjectStoreRestore(ctx, input)
 }

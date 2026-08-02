@@ -6,18 +6,23 @@ import (
 	"fmt"
 	"net/netip"
 	"path"
+	"slices"
 	"strings"
 
+	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/imagecredential"
 	"github.com/iivankin/platformd/internal/preview"
+	"github.com/iivankin/platformd/internal/projectwebhook"
 	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -25,7 +30,18 @@ const (
 	serviceLogMaxFiles     = 3
 )
 
-func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, registryApplication *registry.Application, githubApplication *githubapp.Application, adminHostname string) error {
+type publishedBackend struct {
+	deploymentID string
+	address      string
+}
+
+type serviceBackendSnapshot struct {
+	// A snapshot is immutable after publication so proxy lookups need only one
+	// atomic load and a map lookup.
+	services map[string]publishedBackend
+}
+
+func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, registryApplication *registry.Application, githubApplication *githubapp.Application, cloudflareApplication *cloudflaredns.Application, webhooks *projectwebhook.Application, adminHostname string) error {
 	var imageSources deployment.ImageSourceResolver
 	if registryApplication != nil {
 		imageSources = embeddedImageSourceResolver{
@@ -36,11 +52,18 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
 		Environment:  resourceVariableResolver{store: store, master: master},
 		ImageSources: imageSources, Growth: stack.growth, Admission: stack.admission,
+		Webhooks: webhooks,
 		Sources: githubSourceResolver{
 			github: githubApplication, engine: stack.engine, generatedRoot: stack.paths.GeneratedRoot,
 			buildNetwork: stack.buildNetwork.Name,
+			variables:    resourceVariableResolver{store: store, master: master},
 		},
-		Reporter:  githubDeploymentReporter{github: githubApplication, adminHostname: adminHostname},
+		Reporter: githubDeploymentReporter{github: githubApplication, adminHostname: adminHostname},
+		BeforeDeploy: beforeDeployExecutor{
+			engine: stack.engine, environment: resourceVariableResolver{store: store, master: master},
+			placement: stack.servicePlacement, github: githubApplication, cloudflare: cloudflareApplication,
+			logSizeBytes: serviceLogSegmentBytes, logMaxFiles: serviceLogMaxFiles,
+		},
 		Placement: stack.servicePlacement,
 		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
 		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,
@@ -190,11 +213,16 @@ func (stack *runtimeStack) NotifyGitHubPush(
 ) {
 	serviceIDs, err := store.EnabledServiceIDs(ctx)
 	if err != nil {
+		systemevent.Failure("github_push_service_list_failed", err)
 		return
 	}
 	for _, serviceID := range serviceIDs {
 		desired, err := store.DesiredService(ctx, serviceID)
-		if err != nil || desired.Snapshot.Source.GitHub == nil {
+		if err != nil {
+			stack.recordServiceFailure(serviceID, err)
+			continue
+		}
+		if desired.Snapshot.Source.GitHub == nil {
 			continue
 		}
 		source := desired.Snapshot.Source.GitHub
@@ -226,12 +254,19 @@ func (stack *runtimeStack) NotifyGitHubPush(
 				stack.recordServiceFailure(serviceID, errors.New("service deployment runtime is not configured"))
 				return
 			}
-			if err := controller.DeployRevision(ctx, serviceID, event.Revision, false); err != nil &&
-				!errors.Is(err, deployment.ErrSourceChecksPending) && !errors.Is(err, deployment.ErrBlockedPair) {
-				stack.recordServiceFailure(serviceID, err)
-			}
+			stack.recordGitHubDeploymentResult(
+				serviceID,
+				controller.DeployRevision(ctx, serviceID, event.Revision, false),
+			)
 		}(serviceID)
 	}
+}
+
+func (stack *runtimeStack) recordGitHubDeploymentResult(serviceID string, err error) {
+	if errors.Is(err, deployment.ErrSourceChecksPending) || errors.Is(err, deployment.ErrBlockedPair) {
+		return
+	}
+	stack.recordServiceResult(serviceID, err)
 }
 
 func githubPathsMatch(filters, changed []string) bool {
@@ -279,13 +314,7 @@ func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, 
 		return errors.New("deployment controller is not configured")
 	}
 	err := deploy(controller)
-	stack.mu.Lock()
-	if err == nil {
-		delete(stack.serviceFailures, serviceID)
-	} else {
-		stack.serviceFailures[serviceID] = err
-	}
-	stack.mu.Unlock()
+	stack.recordServiceResult(serviceID, err)
 	return err
 }
 
@@ -298,13 +327,7 @@ func (stack *runtimeStack) RestartServiceDeployment(ctx context.Context, service
 		return errors.New("service deployment runtime is not ready")
 	}
 	err := controller.RestartCurrent(ctx, serviceID, deploymentID)
-	stack.mu.Lock()
-	if err == nil {
-		delete(stack.serviceFailures, serviceID)
-	} else {
-		stack.serviceFailures[serviceID] = err
-	}
-	stack.mu.Unlock()
+	stack.recordServiceResult(serviceID, err)
 	return err
 }
 
@@ -328,13 +351,7 @@ func (stack *runtimeStack) DeleteService(ctx context.Context, service state.Serv
 		return errors.New("service deployment runtime is not ready")
 	}
 	err := controller.DeleteService(ctx, service)
-	stack.mu.Lock()
-	if err == nil {
-		delete(stack.serviceFailures, service.ID)
-	} else {
-		stack.serviceFailures[service.ID] = err
-	}
-	stack.mu.Unlock()
+	stack.recordServiceResult(service.ID, err)
 	return err
 }
 
@@ -442,6 +459,9 @@ func (stack *runtimeStack) servicePlacement(service state.ServiceDesired) (deplo
 func (stack *runtimeStack) Publish(service state.ServiceDesired, container containerengine.Container) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
+	if stack.closed {
+		return errors.New("container runtime is closed")
+	}
 	zone := stack.dnsZones[service.ProjectID]
 	network, ok := stack.projectNetworks[service.ProjectID]
 	if zone == nil || !ok {
@@ -455,10 +475,34 @@ func (stack *runtimeStack) Publish(service state.ServiceDesired, container conta
 	if err != nil {
 		return fmt.Errorf("parse service address: %w", err)
 	}
-	if err := zone.Set(service.Name+"."+service.ProjectName+".internal", address); err != nil {
+	project, exists := stack.firewallProjects[service.ProjectID]
+	if !exists {
+		return fmt.Errorf("project %s firewall runtime is unavailable", service.ProjectID)
+	}
+	previousEndpoints := slices.Clone(project.PublicTrafficEndpoints)
+	project.PublicTrafficEndpoints = slices.DeleteFunc(project.PublicTrafficEndpoints, func(endpoint firewall.PublicTrafficEndpoint) bool {
+		return endpoint.ServiceID == service.ID
+	})
+	project.PublicTrafficEndpoints = append(project.PublicTrafficEndpoints, firewall.PublicTrafficEndpoint{
+		ServiceID: service.ID, Address: address,
+	})
+	if err := stack.applyFirewallProjectLocked(project); err != nil {
 		return err
 	}
-	stack.publishedServices[service.ID] = true
+	stack.firewallProjects[service.ProjectID] = project
+	if err := zone.Set(service.Name+"."+service.ProjectName+".internal", address); err != nil {
+		project.PublicTrafficEndpoints = previousEndpoints
+		if rollbackErr := stack.applyFirewallProjectLocked(project); rollbackErr == nil {
+			stack.firewallProjects[service.ProjectID] = project
+		} else {
+			return errors.Join(err, rollbackErr)
+		}
+		return err
+	}
+	stack.publishBackendLocked(service.ID, publishedBackend{
+		deploymentID: service.ActiveDeploymentID,
+		address:      address.String(),
+	})
 	if stack.serviceRestarts != nil {
 		stack.serviceRestarts.Publish(service.ID, service.ActiveDeploymentID, container.ID)
 	}
@@ -471,24 +515,73 @@ func (stack *runtimeStack) Withdraw(service state.ServiceDesired) error {
 	if stack.serviceRestarts != nil {
 		stack.serviceRestarts.Withdraw(service.ID)
 	}
-	delete(stack.publishedServices, service.ID)
 	zone := stack.dnsZones[service.ProjectID]
 	if zone == nil {
 		return fmt.Errorf("project %s DNS runtime is unavailable", service.ProjectID)
 	}
+	project, exists := stack.firewallProjects[service.ProjectID]
+	if !exists {
+		return fmt.Errorf("project %s firewall runtime is unavailable", service.ProjectID)
+	}
+	project.PublicTrafficEndpoints = slices.DeleteFunc(
+		slices.Clone(project.PublicTrafficEndpoints),
+		func(endpoint firewall.PublicTrafficEndpoint) bool { return endpoint.ServiceID == service.ID },
+	)
+	if err := stack.applyFirewallProjectLocked(project); err != nil {
+		return err
+	}
+	stack.firewallProjects[service.ProjectID] = project
+	stack.withdrawBackendLocked(service.ID)
 	return zone.Delete(service.Name + "." + service.ProjectName + ".internal")
 }
 
 func (stack *runtimeStack) ServiceBackend(serviceID string, targetPort int) (deployment.Backend, bool, error) {
-	stack.mu.Lock()
-	controller := stack.deployments
-	published := stack.publishedServices[serviceID]
-	closed := stack.closed
-	stack.mu.Unlock()
-	if closed || controller == nil || !published {
+	if serviceID == "" || targetPort < 1 || targetPort > 65535 {
 		return deployment.Backend{}, false, nil
 	}
-	return controller.Backend(serviceID, targetPort)
+	snapshot := stack.publishedBackends.Load()
+	if snapshot == nil {
+		return deployment.Backend{}, false, nil
+	}
+	published, exists := snapshot.services[serviceID]
+	if !exists {
+		return deployment.Backend{}, false, nil
+	}
+	return deployment.Backend{
+		DeploymentID: published.deploymentID,
+		Address:      published.address,
+		Port:         targetPort,
+	}, true, nil
+}
+
+func (stack *runtimeStack) publishBackendLocked(serviceID string, backend publishedBackend) {
+	current := stack.publishedBackends.Load()
+	size := 1
+	if current != nil {
+		size += len(current.services)
+	}
+	services := make(map[string]publishedBackend, size)
+	if current != nil {
+		for currentServiceID, currentBackend := range current.services {
+			services[currentServiceID] = currentBackend
+		}
+	}
+	services[serviceID] = backend
+	stack.publishedBackends.Store(&serviceBackendSnapshot{services: services})
+}
+
+func (stack *runtimeStack) withdrawBackendLocked(serviceID string) {
+	current := stack.publishedBackends.Load()
+	if current == nil {
+		return
+	}
+	services := make(map[string]publishedBackend, max(len(current.services)-1, 0))
+	for currentServiceID, currentBackend := range current.services {
+		if currentServiceID != serviceID {
+			services[currentServiceID] = currentBackend
+		}
+	}
+	stack.publishedBackends.Store(&serviceBackendSnapshot{services: services})
 }
 
 func (stack *runtimeStack) PreviewBackend(previewID string, targetPort int) (deployment.Backend, bool, error) {
@@ -514,17 +607,31 @@ func (stack *runtimeStack) previewPlacement(service state.ServiceDesired) (previ
 }
 
 func (stack *runtimeStack) recordServiceFailure(serviceID string, err error) {
-	stack.mu.Lock()
-	stack.serviceFailures[serviceID] = err
-	stack.mu.Unlock()
+	stack.recordServiceResult(serviceID, err)
 }
 
 func (stack *runtimeStack) recordServiceResult(serviceID string, err error) {
 	stack.mu.Lock()
+	previous := stack.serviceFailures[serviceID]
 	if err == nil {
 		delete(stack.serviceFailures, serviceID)
 	} else {
 		stack.serviceFailures[serviceID] = err
 	}
 	stack.mu.Unlock()
+	if err == nil && previous != nil {
+		systemevent.Info(
+			"service_failure_cleared",
+			systemevent.String("service_id", serviceID),
+			systemevent.String("previous_error", previous.Error()),
+		)
+		return
+	}
+	if err != nil && (previous == nil || previous.Error() != err.Error()) {
+		systemevent.Failure(
+			"service_failure_recorded",
+			err,
+			systemevent.String("service_id", serviceID),
+		)
+	}
 }

@@ -37,4 +37,13 @@ UPDATE services SET active_deployment_id = 'active' WHERE id = 'service';`)
 	if _, ok := digests["sha256:old"]; ok {
 		t.Fatal("inactive service deployment digest was retained")
 	}
+	known, err := store.KnownContainerImageDigests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, digest := range []string{"sha256:active", "sha256:old"} {
+		if _, ok := known[digest]; !ok {
+			t.Fatalf("known final image digest %s was omitted", digest)
+		}
+	}
 }

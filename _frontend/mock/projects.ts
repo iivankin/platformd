@@ -1,5 +1,16 @@
-import type { Project } from "../web/api";
-import { apiSegments, json, mockError, readObject, stringField } from "./http";
+import type {
+  Project,
+  ProjectWebhook,
+  ProjectWebhookEventType,
+} from "../web/api";
+import {
+  apiSegments,
+  json,
+  mockError,
+  noContent,
+  readObject,
+  stringField,
+} from "./http";
 import { handleManagedResourcesAPI } from "./managed-resources";
 import { handleResourceCreation } from "./project-resources";
 import { handleServicesAPI } from "./services";
@@ -60,6 +71,110 @@ const handleCanvas = (
   return state.canvases[projectID]
     ? json(state.canvases[projectID])
     : mockError("not_found", "Project not found", 404);
+};
+
+const projectWebhookEventTypes: ProjectWebhookEventType[] = [
+  "deployment.started",
+  "deployment.succeeded",
+  "deployment.failed",
+  "deployment.interrupted",
+  "deployment.skipped",
+];
+
+const webhookInput = async (request: Request) => {
+  const input = await readObject(request);
+  const eventTypes = Array.isArray(input.eventTypes)
+    ? input.eventTypes.filter(
+        (value): value is ProjectWebhookEventType =>
+          typeof value === "string" &&
+          projectWebhookEventTypes.includes(value as ProjectWebhookEventType)
+      )
+    : [];
+  return { eventTypes, url: stringField(input, "url") };
+};
+
+const isProjectWebhooksPath = (segments: string[]) => {
+  const [root, projectID, collection] = segments;
+  return (
+    root === "projects" &&
+    Boolean(projectID) &&
+    collection === "webhooks" &&
+    segments.length <= 4
+  );
+};
+
+const handleProjectWebhooks = async (
+  request: Request,
+  state: MockState,
+  segments: string[]
+): Promise<Response | undefined> => {
+  if (!isProjectWebhooksPath(segments)) {
+    return undefined;
+  }
+  const [, projectID = "", , webhookID] = segments;
+  if (!state.projects.some((project) => project.id === projectID)) {
+    return mockError("project_not_found", "Project not found", 404);
+  }
+  if (request.method === "GET" && !webhookID) {
+    return json({
+      eventTypes: projectWebhookEventTypes,
+      webhooks: state.projectWebhooks[projectID] ?? [],
+    });
+  }
+  if (request.method === "POST" && webhookID === "test") {
+    const input = await webhookInput(request);
+    return input.url
+      ? noContent()
+      : mockError("invalid_webhook_url", "Webhook URL is required");
+  }
+  if (request.method === "POST" && !webhookID) {
+    const input = await webhookInput(request);
+    if (!input.url || input.eventTypes.length === 0) {
+      return mockError("invalid_webhook", "URL and event types are required");
+    }
+    const webhook: ProjectWebhook = {
+      createdAt: mockNow(),
+      eventTypes: input.eventTypes,
+      id: nextMockID(state, "webhook"),
+      projectId: projectID,
+      updatedAt: mockNow(),
+      url: input.url,
+    };
+    state.projectWebhooks[projectID] = [
+      ...(state.projectWebhooks[projectID] ?? []),
+      webhook,
+    ];
+    return json(webhook, 201);
+  }
+  const current = state.projectWebhooks[projectID] ?? [];
+  const existing = current.find((webhook) => webhook.id === webhookID);
+  if (!existing) {
+    return mockError(
+      "project_webhook_not_found",
+      "Project webhook not found",
+      404
+    );
+  }
+  if (request.method === "PUT") {
+    const input = await webhookInput(request);
+    const updated: ProjectWebhook = {
+      ...existing,
+      eventTypes: input.eventTypes,
+      updatedAt: mockNow(),
+      url: input.url,
+    };
+    state.projectWebhooks[projectID] = current.map((webhook) =>
+      webhook.id === webhookID ? updated : webhook
+    );
+    return json(updated);
+  }
+  if (request.method === "DELETE") {
+    state.projectWebhooks[projectID] = current.filter(
+      (webhook) => webhook.id !== webhookID
+    );
+    return noContent();
+  }
+  return undefined;
 };
 
 const withoutKeys = <Value>(
@@ -161,6 +276,10 @@ const handleProjectDelete = async (
   }
   removeProjectResources(state, projectID);
   state.projects = state.projects.filter((entry) => entry.id !== projectID);
+  state.projectWebhooks = withoutKeys(
+    state.projectWebhooks,
+    new Set([projectID])
+  );
   state.tokens = state.tokens.filter((token) => token.projectId !== projectID);
   state.canvases = withoutKeys(state.canvases, new Set([projectID]));
   return new Response(null, { status: 204 });
@@ -176,6 +295,7 @@ export const handleProjectsAPI = async (
   return (
     (await handleProjectCollection(request, state, segments)) ??
     (await handleProjectDelete(request, state, segments)) ??
+    (await handleProjectWebhooks(request, state, segments)) ??
     handleCanvas(request, state, segments) ??
     (await handleResourceCreation(request, state, segments)) ??
     (await handleServicesAPI(request, state, segments, url)) ??

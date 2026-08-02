@@ -57,7 +57,7 @@ func TestServiceAPICommitsCanonicalDesiredConfigAndCanvasNode(t *testing.T) {
 	)
 	create := projectRequest(http.MethodPost, "/api/v1/projects/"+project.ID+"/services", `{
   "name":"api",
-  "source":{"type":"public_image","autoUpdate":true,"image":{"reference":"alpine:3.22"}},
+  "source":{"type":"public_image","autoUpdate":true,"minimumReleaseAgeDays":7,"image":{"reference":"alpine:3.22"}},
   "environment":{"APP_ENV":"production"},
   "healthCheck":{"port":8080,"path":"/healthz","timeoutSeconds":60},
   "enabled":false
@@ -65,7 +65,7 @@ func TestServiceAPICommitsCanonicalDesiredConfigAndCanvasNode(t *testing.T) {
 	create.Header.Set("Origin", "https://admin.example.com")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, create)
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"source":{"type":"public_image","autoUpdate":true,"image":{"reference":"docker.io/library/alpine:3.22"}}`) || !strings.Contains(response.Body.String(), `"healthCheck":{"port":8080,"path":"/healthz","timeoutSeconds":60}`) {
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"source":{"type":"public_image","autoUpdate":true,"minimumReleaseAgeDays":7,"image":{"reference":"docker.io/library/alpine:3.22"}}`) || !strings.Contains(response.Body.String(), `"healthCheck":{"port":8080,"path":"/healthz","timeoutSeconds":60}`) {
 		t.Fatalf("create status/body = %d/%s", response.Code, response.Body)
 	}
 	canvas := projectRequest(http.MethodGet, "/api/v1/projects/"+project.ID+"/canvas", "")
@@ -73,6 +73,38 @@ func TestServiceAPICommitsCanonicalDesiredConfigAndCanvasNode(t *testing.T) {
 	handler.ServeHTTP(canvasResponse, canvas)
 	if canvasResponse.Code != http.StatusOK || !strings.Contains(canvasResponse.Body.String(), `"kind":"service"`) || !strings.Contains(canvasResponse.Body.String(), `"internalHostname":"api.shop.internal"`) || !strings.Contains(canvasResponse.Body.String(), `"status":"disabled"`) {
 		t.Fatalf("canvas status/body = %d/%s", canvasResponse.Code, canvasResponse.Body)
+	}
+}
+
+func TestServiceAPIPersistsGitHubBuildEnvironment(t *testing.T) {
+	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(context.Background(), state.CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	handler := access.ProtectAdmin(
+		"admin.example.com", projectVerifier{},
+		server.Handler(server.DefaultMeta("ready"), server.WithServices(store)),
+	)
+	request := projectRequest(http.MethodPost, "/api/v1/projects/project/services", `{
+  "name":"web",
+  "source":{"type":"github","github":{"repositoryId":1,"repository":"acme/web","branch":"main","dockerfilePath":"Dockerfile","contextPath":".","triggerPaths":[],"waitForCi":false}},
+  "buildEnvironment":{"DATABASE_URL":"${{database.DATABASE_URL}}","SENTRY_AUTH_TOKEN":"secret"},
+  "environment":{},
+  "enabled":false
+}`)
+	request.Header.Set("Origin", "https://admin.example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated ||
+		!strings.Contains(response.Body.String(), `"buildEnvironment":{"DATABASE_URL":"${{database.DATABASE_URL}}","SENTRY_AUTH_TOKEN":"secret"}`) {
+		t.Fatalf("create status/body = %d/%s", response.Code, response.Body)
 	}
 }
 

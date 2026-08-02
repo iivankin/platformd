@@ -1,7 +1,6 @@
 package server_test
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -99,7 +98,7 @@ func TestAdminStartsAndReadsRedisVersionChange(t *testing.T) {
 	service, err := databaseversion.New(databaseversion.Config{
 		Context: context.Background(), Store: store, Admission: admission.New(),
 		Adapters: map[string]databaseversion.Adapter{databaseversion.Redis: adapter},
-		Random:   bytes.NewReader(make([]byte, 64)), Now: func() time.Time { return time.UnixMilli(10) },
+		Now:      func() time.Time { return time.UnixMilli(10) },
 	})
 	if err != nil {
 		t.Fatal(err)

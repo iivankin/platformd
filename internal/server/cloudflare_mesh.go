@@ -76,7 +76,7 @@ func putCloudflareMeshSettings(config handlerConfig) http.HandlerFunc {
 		body.APIToken = ""
 		defer clear(token)
 		timestamp := config.now()
-		_, auditID, requestID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, requestID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "cloudflare_mesh_configure_failed", "Unable to allocate request IDs")
 			return

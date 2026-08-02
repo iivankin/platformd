@@ -2,10 +2,8 @@ package volume
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"time"
 
 	"github.com/iivankin/platformd/internal/id"
@@ -54,7 +52,6 @@ type MutationResult struct {
 type Config struct {
 	Repository     Repository
 	Filesystem     Filesystem
-	Random         io.Reader
 	Now            func() time.Time
 	OnCleanupError func(error)
 }
@@ -62,7 +59,6 @@ type Config struct {
 type Application struct {
 	repository     Repository
 	filesystem     Filesystem
-	random         io.Reader
 	now            func() time.Time
 	onCleanupError func(error)
 }
@@ -70,9 +66,6 @@ type Application struct {
 func New(config Config) (*Application, error) {
 	if config.Repository == nil || config.Filesystem == nil {
 		return nil, errors.New("volume application dependencies are incomplete")
-	}
-	if config.Random == nil {
-		config.Random = rand.Reader
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -82,7 +75,7 @@ func New(config Config) (*Application, error) {
 	}
 	return &Application{
 		repository: config.Repository, filesystem: config.Filesystem,
-		random: config.Random, now: config.Now, onCleanupError: config.OnCleanupError,
+		now: config.Now, onCleanupError: config.OnCleanupError,
 	}, nil
 }
 
@@ -173,7 +166,7 @@ func (application *Application) identifiers(timestamp time.Time, count int) ([]s
 	}
 	values := make([]string, count)
 	for index := range values {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return nil, fmt.Errorf("allocate volume mutation identifiers: %w", err)
 		}

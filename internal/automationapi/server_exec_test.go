@@ -1,7 +1,6 @@
 package automationapi
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -39,7 +38,7 @@ func TestServerExecRESTRequiresUnboundAdminAndReturnsBoundedResult(t *testing.T)
 	runner := &serverExecRunnerStub{}
 	audit := &serverExecAuditStub{}
 	application, err := automation.NewServerExecApplication(
-		runner, audit, bytes.NewReader(make([]byte, 64)),
+		runner, audit,
 		func() time.Time { return time.UnixMilli(10) },
 	)
 	if err != nil {
@@ -47,7 +46,7 @@ func TestServerExecRESTRequiresUnboundAdminAndReturnsBoundedResult(t *testing.T)
 	}
 	handler := executeServerCommand(application)
 	request := httptest.NewRequest(
-		http.MethodPost, "https://api.example.com/api/v1/server/exec",
+		http.MethodPost, "https://admin.example.com/public/api/v1/server/exec",
 		strings.NewReader(`{"command":"id","timeoutSeconds":12}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
@@ -67,7 +66,7 @@ func TestServerExecRESTRequiresUnboundAdminAndReturnsBoundedResult(t *testing.T)
 
 	projectID := "project"
 	request = httptest.NewRequest(
-		http.MethodPost, "https://api.example.com/api/v1/server/exec",
+		http.MethodPost, "https://admin.example.com/public/api/v1/server/exec",
 		strings.NewReader(`{"command":"id"}`),
 	)
 	request.Header.Set("Content-Type", "application/json")
@@ -83,14 +82,14 @@ func TestServerExecRESTRequiresUnboundAdminAndReturnsBoundedResult(t *testing.T)
 
 func TestServerExecOpenAPIPathMatchesConfiguredRoute(t *testing.T) {
 	response := httptest.NewRecorder()
-	serveOpenAPI("api.example.com", openAPIFeatures{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
-	if strings.Contains(response.Body.String(), `"/api/v1/server/exec"`) {
+	serveOpenAPI("admin.example.com", openAPIFeatures{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/public/api/v1/openapi.json", nil))
+	if strings.Contains(response.Body.String(), `"/public/api/v1/server/exec"`) {
 		t.Fatalf("disabled server exec was advertised: %s", response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
-	serveOpenAPI("api.example.com", openAPIFeatures{serverExec: true}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
-	if !strings.Contains(response.Body.String(), `"/api/v1/server/exec"`) ||
+	serveOpenAPI("admin.example.com", openAPIFeatures{serverExec: true}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/public/api/v1/openapi.json", nil))
+	if !strings.Contains(response.Body.String(), `"/public/api/v1/server/exec"`) ||
 		!strings.Contains(response.Body.String(), `"ServerExecRequest"`) {
 		t.Fatalf("enabled server exec is absent from OpenAPI: %s", response.Body.String())
 	}

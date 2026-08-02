@@ -56,7 +56,7 @@ func (store *Store) CreateVolume(ctx context.Context, input CreateVolume) (Volum
 	if err := resourcename.Validate(volume.Name); err != nil {
 		return Volume{}, err
 	}
-	metadata, err := volumeAuditMetadata(input.ActorEmail, volume.ServiceID)
+	metadata, err := volumeAuditMetadata(input.ActorEmail, volume.ServiceID, volume.Name)
 	if err != nil {
 		return Volume{}, err
 	}
@@ -80,7 +80,7 @@ VALUES (?, ?, ?, ?, ?, ?)`, volume.ID, volume.ProjectID, volume.ServiceID,
 		); err != nil {
 			return fmt.Errorf("create volume: %w", err)
 		}
-		return insertVolumeAudit(ctx, transaction, volume.ID, input.AuditEventID,
+		return insertVolumeAudit(ctx, transaction, volume.ProjectID, volume.ID, input.AuditEventID,
 			input.ActorKind, input.ActorID, input.RequestCorrelationID,
 			"volume.create", metadata, volume.CreatedAtMillis,
 		)
@@ -163,11 +163,11 @@ DELETE FROM volumes WHERE id = ? AND project_id = ? AND service_id = ?`,
 		if changed != 1 {
 			return ErrVolumeNotFound
 		}
-		metadata, err := volumeAuditMetadata(input.ActorEmail, deleted.ServiceID)
+		metadata, err := volumeAuditMetadata(input.ActorEmail, deleted.ServiceID, deleted.Name)
 		if err != nil {
 			return err
 		}
-		return insertVolumeAudit(ctx, transaction, deleted.ID, input.AuditEventID,
+		return insertVolumeAudit(ctx, transaction, deleted.ProjectID, deleted.ID, input.AuditEventID,
 			input.ActorKind, input.ActorID, input.RequestCorrelationID,
 			"volume.delete", metadata, input.DeletedAtMillis,
 		)
@@ -258,16 +258,16 @@ WHERE s.id = ? AND s.project_id = ?`, volume.ServiceID, volume.ProjectID).Scan(&
 func insertVolumeAudit(
 	ctx context.Context,
 	transaction *sql.Tx,
-	volumeID, auditID, actorKind, actorID, correlationID, action string,
+	projectID, volumeID, auditID, actorKind, actorID, correlationID, action string,
 	metadata []byte,
 	timestampMillis int64,
 ) error {
 	if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, ?, 'volume', ?, ?, 'succeeded', ?, ?)`,
-		auditID, actorKind, actorID, action, volumeID, nullableString(correlationID),
+) VALUES (?, ?, ?, ?, ?, 'volume', ?, ?, 'succeeded', ?, ?)`,
+		auditID, projectID, actorKind, actorID, action, volumeID, nullableString(correlationID),
 		string(metadata), timestampMillis,
 	); err != nil {
 		return fmt.Errorf("audit %s: %w", action, err)
@@ -275,8 +275,8 @@ INSERT INTO audit_events(
 	return nil
 }
 
-func volumeAuditMetadata(actorEmail, serviceID string) ([]byte, error) {
-	metadata := map[string]string{"serviceId": serviceID}
+func volumeAuditMetadata(actorEmail, serviceID, name string) ([]byte, error) {
+	metadata := map[string]string{"serviceId": serviceID, "name": name}
 	if actorEmail != "" {
 		metadata["actorEmail"] = actorEmail
 	}

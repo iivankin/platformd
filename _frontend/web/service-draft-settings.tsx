@@ -3,6 +3,7 @@ import { Network, Server } from "lucide-react";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
+import { ServiceBeforeDeploy } from "@/service-before-deploy";
 import { ServiceConfiguration } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
 import { ServiceListeners } from "@/service-listeners";
@@ -23,8 +24,38 @@ export const ServiceDraftSettings = ({
   onChange: (draft: ServiceDraft) => void;
   projectID: string;
 }) => {
-  const updateSettings = (settings: ServiceDraft["settings"]) =>
-    onChange({ ...draft, settings });
+  const updateSettings = (settings: ServiceDraft["settings"]) => {
+    const domainHostnames = new Set(
+      settings.domains.map(({ hostname }) => hostname)
+    );
+    const previousRepositoryID =
+      draft.settings.configuration.source.type === "github"
+        ? draft.settings.configuration.source.github.repositoryId
+        : undefined;
+    const nextRepositoryID =
+      settings.configuration.source.type === "github"
+        ? settings.configuration.source.github.repositoryId
+        : undefined;
+    onChange({
+      ...draft,
+      settings: {
+        ...settings,
+        beforeDeploy: {
+          ...settings.beforeDeploy,
+          cloudflareHostnames: settings.beforeDeploy.cloudflareHostnames.filter(
+            (hostname) => domainHostnames.has(hostname)
+          ),
+          githubWorkflow:
+            nextRepositoryID && nextRepositoryID === previousRepositoryID
+              ? settings.beforeDeploy.githubWorkflow
+              : undefined,
+          githubWorkflowEnabled: nextRepositoryID
+            ? settings.beforeDeploy.githubWorkflowEnabled
+            : false,
+        },
+      },
+    });
+  };
 
   return (
     <div className="grid gap-3">
@@ -68,6 +99,15 @@ export const ServiceDraftSettings = ({
         onDraftChange={(configuration) =>
           updateSettings({ ...draft.settings, configuration })
         }
+      />
+
+      <ServiceBeforeDeploy
+        domains={draft.settings.domains}
+        draft={draft.settings.beforeDeploy}
+        onChange={(beforeDeploy) =>
+          updateSettings({ ...draft.settings, beforeDeploy })
+        }
+        source={draft.settings.configuration.source}
       />
 
       <ServiceVolumes

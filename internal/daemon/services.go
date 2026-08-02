@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 	"github.com/iivankin/platformd/internal/volume"
 )
 
@@ -15,6 +16,7 @@ type liveServiceRepository struct {
 	domains          *liveDomainRepository
 	listeners        *liveServiceListenerRepository
 	volumeFilesystem volume.Filesystem
+	traffic          *trafficmetrics.Registry
 	onCleanupError   func(error)
 }
 
@@ -61,6 +63,7 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 	if repository.domains != nil {
 		repository.reportCleanupError(repository.domains.reload(ctx))
 	}
+	repository.traffic.Forget(service.ID)
 	repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
 	if repository.volumeFilesystem != nil {
 		for _, item := range deleted.Volumes {

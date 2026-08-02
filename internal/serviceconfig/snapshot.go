@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/iivankin/platformd/internal/publichostname"
 	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/opencontainers/go-digest"
 	"go.podman.io/image/v5/docker/reference"
@@ -19,10 +20,13 @@ import (
 
 const (
 	DefaultHealthTimeoutSeconds = 60
+	maximumBeforeDeployBytes    = 256 << 10
+	maximumCloudflareHostnames  = 30
 	maximumEnvironmentBytes     = 256 << 10
 	maximumEnvironmentVariables = 1024
 	maximumProcessArguments     = 1024
 	maximumProcessBytes         = 256 << 10
+	maximumWorkflowInputs       = 25
 )
 
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -43,11 +47,25 @@ type HealthCheck struct {
 	TimeoutSeconds int    `json:"timeoutSeconds"`
 }
 
+type GitHubWorkflow struct {
+	Path   string         `json:"path"`
+	Name   string         `json:"name"`
+	Inputs map[string]any `json:"inputs"`
+}
+
+type BeforeDeploy struct {
+	Command             string          `json:"command,omitempty"`
+	GitHubWorkflow      *GitHubWorkflow `json:"githubWorkflow,omitempty"`
+	CloudflareHostnames []string        `json:"cloudflareHostnames"`
+}
+
 type Snapshot struct {
 	Source           servicesource.Source `json:"source"`
+	BeforeDeploy     *BeforeDeploy        `json:"beforeDeploy,omitempty"`
 	Command          []string             `json:"command,omitempty"`
 	Args             []string             `json:"args,omitempty"`
 	Environment      map[string]string    `json:"environment"`
+	BuildEnvironment map[string]string    `json:"buildEnvironment"`
 	SecretReferences []SecretReference    `json:"secretReferences"`
 	HealthCheck      *HealthCheck         `json:"healthCheck,omitempty"`
 	CPUMillicores    int64                `json:"cpuMillicores,omitempty"`
@@ -85,6 +103,11 @@ func Normalize(input Snapshot) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	normalized.Source = source
+	beforeDeploy, err := normalizeBeforeDeploy(input.BeforeDeploy, source)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	normalized.BeforeDeploy = beforeDeploy
 	if input.HealthCheck != nil {
 		healthCheck := *input.HealthCheck
 		if healthCheck.TimeoutSeconds == 0 {
@@ -99,6 +122,7 @@ func Normalize(input Snapshot) (Snapshot, error) {
 	normalized.Command = cloneSlice(input.Command)
 	normalized.Args = cloneSlice(input.Args)
 	normalized.Environment = cloneMap(input.Environment)
+	normalized.BuildEnvironment = cloneMap(input.BuildEnvironment)
 	normalized.SecretReferences = append([]SecretReference(nil), input.SecretReferences...)
 	normalized.VolumeMounts = append([]VolumeMount(nil), input.VolumeMounts...)
 	sort.Slice(normalized.SecretReferences, func(left, right int) bool {
@@ -115,6 +139,9 @@ func Normalize(input Snapshot) (Snapshot, error) {
 	})
 	if normalized.Environment == nil {
 		normalized.Environment = make(map[string]string)
+	}
+	if normalized.BuildEnvironment == nil {
+		normalized.BuildEnvironment = make(map[string]string)
 	}
 	if normalized.SecretReferences == nil {
 		normalized.SecretReferences = make([]SecretReference, 0)
@@ -174,6 +201,18 @@ func validateSnapshot(snapshot Snapshot) error {
 	if err := validateEnvironment(snapshot.Environment, snapshot.SecretReferences); err != nil {
 		return err
 	}
+	if len(snapshot.BuildEnvironment) > 0 && snapshot.Source.Type != servicesource.GitHubImage {
+		return errors.New("build environment is only valid for GitHub sources")
+	}
+	if err := validateEnvironment(snapshot.BuildEnvironment, nil); err != nil {
+		return fmt.Errorf("build environment: %w", err)
+	}
+	if len(snapshot.Environment)+len(snapshot.SecretReferences)+len(snapshot.BuildEnvironment) > maximumEnvironmentVariables {
+		return errors.New("service contains too many variables")
+	}
+	if environmentBytes(snapshot.Environment, snapshot.SecretReferences)+environmentBytes(snapshot.BuildEnvironment, nil) > maximumEnvironmentBytes {
+		return errors.New("service variables exceed 256 KiB")
+	}
 	if snapshot.HealthCheck != nil {
 		if snapshot.HealthCheck.Port < 1 || snapshot.HealthCheck.Port > 65535 {
 			return errors.New("health check port must be between 1 and 65535")
@@ -190,6 +229,73 @@ func validateSnapshot(snapshot Snapshot) error {
 		return errors.New("resource limits cannot be negative")
 	}
 	return validateVolumeMounts(snapshot.VolumeMounts)
+}
+
+func normalizeBeforeDeploy(input *BeforeDeploy, source servicesource.Source) (*BeforeDeploy, error) {
+	if input == nil {
+		return nil, nil
+	}
+	result := &BeforeDeploy{
+		Command:             strings.TrimSpace(input.Command),
+		CloudflareHostnames: make([]string, 0, len(input.CloudflareHostnames)),
+	}
+	if strings.ContainsRune(result.Command, '\x00') || len(result.Command) > maximumBeforeDeployBytes {
+		return nil, errors.New("before-deploy command is invalid or exceeds 256 KiB")
+	}
+	seenHostnames := make(map[string]struct{}, len(input.CloudflareHostnames))
+	for _, value := range input.CloudflareHostnames {
+		hostname, err := publichostname.Normalize(value)
+		if err != nil {
+			return nil, fmt.Errorf("invalid before-deploy Cloudflare hostname: %w", err)
+		}
+		if _, exists := seenHostnames[hostname]; exists {
+			continue
+		}
+		seenHostnames[hostname] = struct{}{}
+		result.CloudflareHostnames = append(result.CloudflareHostnames, hostname)
+	}
+	if len(result.CloudflareHostnames) > maximumCloudflareHostnames {
+		return nil, fmt.Errorf("before-deploy Cloudflare purge supports at most %d hostnames", maximumCloudflareHostnames)
+	}
+	sort.Strings(result.CloudflareHostnames)
+	if input.GitHubWorkflow != nil {
+		if source.Type != servicesource.GitHubImage {
+			return nil, errors.New("before-deploy GitHub workflow requires a GitHub source")
+		}
+		workflow := &GitHubWorkflow{
+			Path: strings.TrimSpace(input.GitHubWorkflow.Path),
+			Name: strings.TrimSpace(input.GitHubWorkflow.Name),
+		}
+		if !validWorkflowPath(workflow.Path) || workflow.Name == "" || len(workflow.Name) > 512 || strings.ContainsRune(workflow.Name, '\x00') {
+			return nil, errors.New("before-deploy GitHub workflow is invalid")
+		}
+		if len(input.GitHubWorkflow.Inputs) > maximumWorkflowInputs {
+			return nil, fmt.Errorf("before-deploy GitHub workflow supports at most %d inputs", maximumWorkflowInputs)
+		}
+		encoded, err := json.Marshal(input.GitHubWorkflow.Inputs)
+		if err != nil || len(encoded) > maximumBeforeDeployBytes {
+			return nil, errors.New("before-deploy GitHub inputs are invalid or exceed 256 KiB")
+		}
+		if input.GitHubWorkflow.Inputs == nil {
+			workflow.Inputs = make(map[string]any)
+		} else if err := json.Unmarshal(encoded, &workflow.Inputs); err != nil {
+			return nil, errors.New("before-deploy GitHub inputs are invalid")
+		}
+		result.GitHubWorkflow = workflow
+	}
+	if result.Command == "" && result.GitHubWorkflow == nil && len(result.CloudflareHostnames) == 0 {
+		return nil, nil
+	}
+	return result, nil
+}
+
+func validWorkflowPath(value string) bool {
+	if !strings.HasPrefix(value, ".github/workflows/") || path.Clean(value) != value {
+		return false
+	}
+	name := strings.TrimPrefix(value, ".github/workflows/")
+	return name != "" && !strings.Contains(name, "/") &&
+		(strings.HasSuffix(strings.ToLower(name), ".yml") || strings.HasSuffix(strings.ToLower(name), ".yaml"))
 }
 
 func validateProcess(command, arguments []string) error {
@@ -214,7 +320,6 @@ func validateEnvironment(environment map[string]string, secretReferences []Secre
 		return errors.New("environment contains too many variables")
 	}
 	seen := make(map[string]struct{}, len(environment)+len(secretReferences))
-	bytes := 0
 	for name, value := range environment {
 		if !environmentName.MatchString(name) {
 			return fmt.Errorf("invalid environment name %q", name)
@@ -226,7 +331,6 @@ func validateEnvironment(environment map[string]string, secretReferences []Secre
 			return fmt.Errorf("environment %s contains NUL", name)
 		}
 		seen[name] = struct{}{}
-		bytes += len(name) + len(value)
 	}
 	for _, reference := range secretReferences {
 		if !environmentName.MatchString(reference.EnvironmentName) || reference.SecretID == "" || strings.ContainsRune(reference.SecretID, '\x00') {
@@ -239,12 +343,22 @@ func validateEnvironment(environment map[string]string, secretReferences []Secre
 			return fmt.Errorf("duplicate environment name %q", reference.EnvironmentName)
 		}
 		seen[reference.EnvironmentName] = struct{}{}
-		bytes += len(reference.EnvironmentName) + len(reference.SecretID)
 	}
-	if bytes > maximumEnvironmentBytes {
+	if environmentBytes(environment, secretReferences) > maximumEnvironmentBytes {
 		return errors.New("environment exceeds 256 KiB")
 	}
 	return nil
+}
+
+func environmentBytes(environment map[string]string, secretReferences []SecretReference) int {
+	bytes := 0
+	for name, value := range environment {
+		bytes += len(name) + len(value)
+	}
+	for _, reference := range secretReferences {
+		bytes += len(reference.EnvironmentName) + len(reference.SecretID)
+	}
+	return bytes
 }
 
 func validateVolumeMounts(mounts []VolumeMount) error {

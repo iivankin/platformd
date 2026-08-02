@@ -10,10 +10,22 @@ import (
 	"github.com/iivankin/platformd/internal/automation"
 )
 
-type resourceRepositoryStub struct{ err error }
+type resourceRepositoryStub struct {
+	kind        string
+	projectErr  error
+	resourceErr error
+}
 
-func (repository resourceRepositoryStub) Resource(context.Context, string, string, string) error {
-	return repository.err
+func (repository resourceRepositoryStub) ResolveProject(_ context.Context, name string) (ResolvedProject, error) {
+	return ResolvedProject{ID: "project", Name: name}, repository.projectErr
+}
+
+func (repository resourceRepositoryStub) ResolveResource(_ context.Context, _ string, name string) (ResolvedResource, error) {
+	kind := repository.kind
+	if kind == "" {
+		kind = "postgres"
+	}
+	return ResolvedResource{ID: "resource-id", Kind: kind, Name: name}, repository.resourceErr
 }
 
 type resolverStub struct {
@@ -48,16 +60,18 @@ func TestTicketLifecycleAndConnectionLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity := automation.Identity{TokenID: "admin-token", Role: "admin"}
+	projectID := "project"
+	identity := automation.Identity{TokenID: "admin-token", Role: "admin", ProjectID: &projectID}
 	grant, err := application.Create(context.Background(), identity, CreateInput{
-		ProjectID: "project", ResourceKind: "postgres", ResourceID: "database", Port: 5432,
+		Project: "shop", Resource: "database", Port: 5432,
 		LifetimeSeconds: 60,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if grant.ID != "ticket-id" || !strings.HasPrefix(grant.Ticket, "pft_") ||
-		audit.record.ActorTokenID != "admin-token" || audit.record.Port != 5432 {
+	if grant.ID != "ticket-id" || grant.Project != "shop" || grant.Resource != "database" || grant.ResourceKind != "postgres" ||
+		!strings.HasPrefix(grant.Ticket, "pft_") || audit.record.ActorTokenID != "admin-token" ||
+		audit.record.ProjectID != "project" || audit.record.ResourceID != "resource-id" || audit.record.Port != 5432 {
 		t.Fatalf("grant/audit = %+v / %+v", grant, audit.record)
 	}
 
@@ -102,7 +116,7 @@ func TestTicketCreationRequiresBoundAdminAndAudit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := CreateInput{ProjectID: "project", ResourceKind: "redis", ResourceID: "cache", Port: 6379}
+	input := CreateInput{Project: "shop", Resource: "cache", Port: 6379}
 	if _, err := application.Create(context.Background(), automation.Identity{Role: "read"}, input); !errors.Is(err, automation.ErrAdminRequired) {
 		t.Fatalf("read identity error = %v", err)
 	}

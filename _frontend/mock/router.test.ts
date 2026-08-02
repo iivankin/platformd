@@ -55,7 +55,8 @@ import {
   fetchServiceListeners,
   fetchVolumes,
   scanManagedRedisKeys,
-  setAutomationHostname,
+  setAdminHostname,
+  setCloudflareAccessConfiguration,
   setRegistryHostname,
   setManagedPostgresExtension,
   uploadContainerFile,
@@ -225,7 +226,7 @@ describe("mock API", () => {
       fetchBackupTargets(undefined, mockFetch),
       fetchBackupPolicies(undefined, mockFetch),
       fetchDiskPressure(undefined, mockFetch),
-      fetchInfrastructureLogs(500, undefined, mockFetch),
+      fetchInfrastructureLogs({ limit: 500 }, undefined, mockFetch),
       fetchAuditEvents({}, undefined, mockFetch),
       fetchRegistrySettings(undefined, mockFetch),
       fetchRegistryRepositories(undefined, mockFetch),
@@ -505,7 +506,14 @@ describe("mock API", () => {
       },
       mockFetch
     );
-    await setAutomationHostname("api.preview.local", mockFetch);
+    await setAdminHostname("admin.preview.local", mockFetch);
+    await setCloudflareAccessConfiguration(
+      {
+        audience: "preview-audience",
+        teamDomain: "preview.cloudflareaccess.com",
+      },
+      mockFetch
+    );
     const githubSettings = await configureGitHubApp(
       {
         appId: 42,
@@ -525,7 +533,9 @@ describe("mock API", () => {
     expect(backupTargets.targets[0]?.bucket).toBe("mock-backups");
     expect(registrySettings.hostname).toBe("registry.preview.local");
     expect(repositories[0]?.id).toBe(repository.id);
-    expect(settings.automationHostname).toBe("api.preview.local");
+    expect(settings.adminHostname).toBe("admin.preview.local");
+    expect(settings.accessAudience).toBe("preview-audience");
+    expect(settings.accessTeamDomain).toBe("preview.cloudflareaccess.com");
     expect(githubSettings).toMatchObject({ appId: 42, configured: true });
   });
 
@@ -576,6 +586,26 @@ describe("mock API", () => {
     expect(
       initial.entries.some((entry) => entry.path === "/app/README.md")
     ).toBe(true);
+    expect(
+      initial.entries.some(
+        (entry) => entry.directory && entry.path === "/app/config"
+      )
+    ).toBe(true);
+    expect(
+      initial.entries.some((entry) => entry.path === "/app/config/runtime.json")
+    ).toBe(false);
+
+    const nested = await fetchContainerFiles(
+      "project-demo",
+      "service",
+      "service-api",
+      "/app/config",
+      undefined,
+      mockFetch
+    );
+    expect(nested.entries.map((entry) => entry.path)).toEqual([
+      "/app/config/runtime.json",
+    ]);
 
     await uploadContainerFile(
       "project-demo",

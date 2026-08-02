@@ -42,7 +42,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const publicID = "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	const publicID = "abcdefghijklmnopqrstuvwx"
 	value, secret, err := apitoken.Generate(publicID, bytes.NewReader(bytes.Repeat([]byte{0x29}, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	serviceAutomation, err := automation.NewServiceApplication(store, nil, nil)
+	serviceAutomation, err := automation.NewServiceApplication(store, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +70,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	mcpHandler, err := mcp.New(mcp.Config{
-		Hostname: "api.example.com", Version: "test", Repository: store,
+		Hostname: "admin.example.com", Version: "test", Repository: store,
 		Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalogStub{},
 		Admission: admission.New(),
 	})
@@ -111,7 +111,7 @@ func (managedImageCatalogStub) List(context.Context, managedimages.Engine, int, 
 
 func initializeRequest(token string) *http.Request {
 	body := `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"agent","version":"1"}}}`
-	request := httptest.NewRequest(http.MethodPost, "https://api.example.com/mcp", strings.NewReader(body))
+	request := httptest.NewRequest(http.MethodPost, "https://admin.example.com/public/mcp", strings.NewReader(body))
 	request.Header.Set("Accept", "application/json, text/event-stream")
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Authorization", "Bearer "+token)

@@ -62,7 +62,7 @@ func (controller *Controller) RestoreReplace(
 	}
 
 	timestamp := controller.now()
-	identifiers, err := controller.restoreIdentifiers(timestamp)
+	identifiers, err := controller.restoreIdentifiers()
 	if err != nil {
 		return err
 	}
@@ -237,11 +237,11 @@ func (controller *Controller) probeRestoredCandidate(
 	return errors.Join(connection.Ping(ctx), connection.Close(ctx))
 }
 
-func (controller *Controller) restoreIdentifiers(timestamp time.Time) ([4]string, error) {
+func (controller *Controller) restoreIdentifiers() ([4]string, error) {
 	var identifiers [4]string
 	seen := make(map[string]struct{}, len(identifiers))
 	for index := range identifiers {
-		identifier, err := controller.newID(timestamp)
+		identifier, err := controller.newID()
 		if err != nil {
 			return [4]string{}, fmt.Errorf("allocate managed PostgreSQL restore ID: %w", err)
 		}

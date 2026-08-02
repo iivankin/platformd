@@ -39,7 +39,7 @@ FROM audit_events WHERE id = 'volume-create-audit'`).Scan(
 	}
 	if action != "volume.create" || targetKind != "volume" || targetID != created.ID ||
 		correlationID != "request" ||
-		metadata != `{"actorEmail":"user@example.com","serviceId":"service"}` {
+		metadata != `{"actorEmail":"user@example.com","name":"data","serviceId":"service"}` {
 		t.Fatalf("volume audit = %q/%q/%q/%q %s", action, targetKind, targetID, correlationID, metadata)
 	}
 }

@@ -1,31 +1,29 @@
 package objectstore
 
 import (
-	"bytes"
+	"archive/tar"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
-	"strings"
-	"unicode/utf8"
+	"os"
 
 	"github.com/iivankin/platformd/internal/state"
-	"github.com/iivankin/platformd/internal/strictjson"
-	"golang.org/x/crypto/chacha20poly1305"
+)
+
+const (
+	maximumBackupManifestSize       = 64 << 10
+	maximumBackupObjectMetadataSize = 64 << 10
 )
 
 type RestoreInput struct {
-	StoreID             string
-	Metadata            []byte
-	ValidateAttachments func([]BackupAttachment) error
-	OpenAttachment      BackupAttachmentOpener
-	Actor               Actor
+	StoreID string
+	Archive io.Reader
+	Actor   Actor
 }
 
 func (application *Application) RestoreSnapshot(ctx context.Context, input RestoreInput) (string, error) {
-	if ctx == nil || input.StoreID == "" || len(input.Metadata) == 0 || input.ValidateAttachments == nil || input.Actor.ID == "" ||
+	if ctx == nil || input.StoreID == "" || input.Archive == nil || input.Actor.ID == "" ||
 		(input.Actor.Kind != "access" && input.Actor.Kind != "token" && input.Actor.Kind != "system") ||
 		(input.Actor.Kind == "access" && input.Actor.Email == "") ||
 		(input.Actor.Kind != "access" && input.Actor.Email != "") {
@@ -34,11 +32,28 @@ func (application *Application) RestoreSnapshot(ctx context.Context, input Resto
 	if _, err := application.repository.ObjectStore(ctx, input.StoreID); err != nil {
 		return "", err
 	}
-	snapshot, err := decodeBackupSnapshot(input.Metadata, input.StoreID)
+	temporary, err := os.CreateTemp("", "platformd-objectstore-restore-*.tar")
 	if err != nil {
+		return "", fmt.Errorf("create object restore spool: %w", err)
+	}
+	temporaryName := temporary.Name()
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporaryName)
+	}()
+	if _, err := io.Copy(temporary, restoreContextReader{ctx: ctx, source: input.Archive}); err != nil {
+		return "", fmt.Errorf("spool object backup before restore: %w", err)
+	}
+	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
-	if err := input.ValidateAttachments(snapshot.Attachments); err != nil {
+	if _, err := readBackupArchive(temporary, input.StoreID, func(_ BackupObject, body io.Reader) error {
+		_, err := io.Copy(io.Discard, body)
+		return err
+	}); err != nil {
+		return "", err
+	}
+	if _, err := temporary.Seek(0, io.SeekStart); err != nil {
 		return "", err
 	}
 	releaseExclusion, err := application.beginBackupExclusion(input.StoreID)
@@ -46,152 +61,125 @@ func (application *Application) RestoreSnapshot(ctx context.Context, input Resto
 		return "", err
 	}
 	defer releaseExclusion()
-	releaseMetadata, err := application.blockMetadataForRestore(ctx, input.StoreID)
+	releaseDataPlane, err := application.beginDataPlaneRestore(ctx, input.StoreID)
 	if err != nil {
 		return "", err
 	}
-	defer releaseMetadata()
-
-	attachmentsByPayload := make(map[string][]BackupAttachment, len(snapshot.Payloads))
-	for _, attachment := range snapshot.Attachments {
-		attachmentsByPayload[attachment.PayloadID] = append(
-			attachmentsByPayload[attachment.PayloadID], attachment,
-		)
+	defer func() { _ = releaseDataPlane() }()
+	releaseRequests, err := application.blockRequestsForRestore(ctx, input.StoreID)
+	if err != nil {
+		return "", err
 	}
-	for _, payload := range snapshot.Payloads {
-		if err := application.payloads.InstallBackupPayload(
-			ctx, input.StoreID, payload, attachmentsByPayload[payload.ID], input.OpenAttachment,
-		); err != nil {
-			return "", err
+	defer releaseRequests()
+	releaseWrites, err := application.blockMetadataForRestore(ctx, input.StoreID)
+	if err != nil {
+		return "", err
+	}
+	defer releaseWrites()
+	if err := application.storage.EnsureBucket(ctx, input.StoreID); err != nil {
+		return "", err
+	}
+	if err := application.storage.ClearBucket(ctx, input.StoreID); err != nil {
+		return "", err
+	}
+	objectCount, err := readBackupArchive(temporary, input.StoreID, func(object BackupObject, body io.Reader) error {
+		written, err := application.storage.Put(ctx, PutInput{
+			StoreID: input.StoreID, ObjectKey: object.Key, ContentType: object.ContentType,
+			Body: body, BodySize: object.Size, BodySizeKnown: true,
+			PreserveETag: object.ETag, ModTimeMillis: object.UpdatedAtMillis,
+		})
+		if err != nil {
+			return err
 		}
+		if written.Size != object.Size || written.ETag != object.ETag {
+			return errors.New("restored object metadata differs from backup metadata")
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return "", err
 	}
-	payloads := make([]state.ObjectPayload, len(snapshot.Payloads))
-	for index, payload := range snapshot.Payloads {
-		payloads[index] = state.ObjectPayload{
-			ID: payload.ID, ObjectStoreID: input.StoreID, PlaintextSize: payload.PlaintextSize,
-			ChunkCount: payload.ChunkCount, PlaintextSHA256: payload.PlaintextSHA256,
-			CreatedAtMillis: payload.CreatedAtMillis,
-		}
+	if err := application.repository.RecordObjectStoreRestore(ctx, state.RecordObjectStoreRestore{
+		ObjectStoreID: input.StoreID, ObjectCount: objectCount, AuditEventID: identifiers[0],
+		ActorKind: input.Actor.Kind, ActorID: input.Actor.ID, ActorEmail: input.Actor.Email,
+		RequestCorrelationID: identifiers[1], CreatedAtMillis: timestamp.UnixMilli(),
+	}); err != nil {
+		return "", err
 	}
-	objects := make([]state.ObjectMetadata, len(snapshot.Objects))
-	for index, object := range snapshot.Objects {
-		objects[index] = state.ObjectMetadata{
-			ObjectStoreID: input.StoreID, ObjectKey: object.Key, PayloadID: object.PayloadID,
-			ContentType: object.ContentType, ETag: object.ETag, Size: object.Size,
-			CreatedAtMillis: object.CreatedAtMillis, UpdatedAtMillis: object.UpdatedAtMillis,
-		}
-	}
-	err = application.repository.RestoreObjectStore(ctx, state.RestoreObjectStore{
-		ObjectStoreID: input.StoreID, Payloads: payloads, Objects: objects,
-		AuditEventID: identifiers[0], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
-		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[1],
-		CreatedAtMillis: timestamp.UnixMilli(),
-	})
-	return identifiers[1], err
+	return identifiers[1], nil
 }
 
-func decodeBackupSnapshot(value []byte, storeID string) (BackupSnapshot, error) {
-	if len(value) == 0 || !safeComponent(storeID) {
-		return BackupSnapshot{}, errors.New("object backup snapshot input is invalid")
+func readBackupArchive(input io.Reader, storeID string, consume func(BackupObject, io.Reader) error) (int, error) {
+	archive := tar.NewReader(input)
+	header, err := archive.Next()
+	if err != nil {
+		return 0, fmt.Errorf("read object backup manifest: %w", err)
 	}
-	if err := strictjson.RejectDuplicateKeys(value); err != nil {
-		return BackupSnapshot{}, err
+	if header.Name != "manifest.json" || header.Typeflag != tar.TypeReg || header.Mode != 0o600 ||
+		header.Size < 1 || header.Size > maximumBackupManifestSize {
+		return 0, errors.New("object backup manifest entry is invalid")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(value))
-	decoder.DisallowUnknownFields()
-	var snapshot BackupSnapshot
-	if err := decoder.Decode(&snapshot); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
-		return BackupSnapshot{}, errors.New("object backup snapshot JSON is invalid")
+	manifest, err := io.ReadAll(io.LimitReader(archive, maximumBackupManifestSize+1))
+	if err != nil || int64(len(manifest)) != header.Size {
+		return 0, errors.New("object backup manifest is truncated")
 	}
-	if err := validateBackupSnapshot(snapshot, storeID); err != nil {
-		return BackupSnapshot{}, err
+	if _, err := decodeBackupSnapshot(manifest, storeID); err != nil {
+		return 0, err
 	}
-	return snapshot, nil
+
+	previous := ""
+	for index := 0; ; index++ {
+		header, err := archive.Next()
+		if errors.Is(err, io.EOF) {
+			return index, nil
+		}
+		if err != nil {
+			return 0, fmt.Errorf("read object backup metadata %d: %w", index, err)
+		}
+		if header.Name != backupMetadataName(index) || header.Typeflag != tar.TypeReg ||
+			header.Mode != 0o600 || header.Size < 1 || header.Size > maximumBackupObjectMetadataSize {
+			return 0, errors.New("object backup metadata entry is invalid")
+		}
+		metadata, err := io.ReadAll(io.LimitReader(archive, maximumBackupObjectMetadataSize+1))
+		if err != nil || int64(len(metadata)) != header.Size {
+			return 0, errors.New("object backup metadata is truncated")
+		}
+		object, err := decodeBackupObject(metadata, previous)
+		if err != nil {
+			return 0, err
+		}
+		header, err = archive.Next()
+		if err != nil {
+			return 0, fmt.Errorf("read object backup data %d: %w", index, err)
+		}
+		if header.Name != backupDataName(index) || header.Typeflag != tar.TypeReg ||
+			header.Mode != 0o600 || header.Size != object.Size {
+			return 0, errors.New("object backup data entry is invalid")
+		}
+		body := &io.LimitedReader{R: archive, N: object.Size}
+		if err := consume(object, body); err != nil {
+			return 0, err
+		}
+		if body.N != 0 {
+			return 0, errors.New("object backup data is truncated")
+		}
+		previous = object.Key
+	}
 }
 
-func validateBackupSnapshot(snapshot BackupSnapshot, storeID string) error {
-	if snapshot.FormatVersion != BackupFormatVersion || snapshot.StoreID != storeID {
-		return errors.New("object backup snapshot identity is invalid")
-	}
-	payloads := make(map[string]BackupPayload, len(snapshot.Payloads))
-	for _, payload := range snapshot.Payloads {
-		if !safeComponent(payload.ID) || payload.PlaintextSize < 0 || payload.PlaintextSize > MaximumObjectSize ||
-			payload.ChunkCount < 0 || !validBackupSHA256(payload.PlaintextSHA256) || payload.CreatedAtMillis <= 0 {
-			return errors.New("object backup payload metadata is invalid")
-		}
-		expectedChunks := int64(0)
-		if payload.PlaintextSize > 0 {
-			expectedChunks = (payload.PlaintextSize + ChunkSize - 1) / ChunkSize
-		}
-		if int64(payload.ChunkCount) != expectedChunks {
-			return errors.New("object backup payload chunk count differs from size")
-		}
-		if _, exists := payloads[payload.ID]; exists {
-			return errors.New("object backup payload IDs are duplicated")
-		}
-		payloads[payload.ID] = payload
-	}
-
-	referencedPayloads := make(map[string]struct{}, len(payloads))
-	previousKey := ""
-	for _, object := range snapshot.Objects {
-		payload, exists := payloads[object.PayloadID]
-		if validateObjectKey(object.Key) != nil || (previousKey != "" && object.Key <= previousKey) ||
-			!exists || object.Size != payload.PlaintextSize || object.ETag != `"`+payload.PlaintextSHA256+`"` ||
-			object.CreatedAtMillis <= 0 || object.UpdatedAtMillis < object.CreatedAtMillis ||
-			!utf8.ValidString(object.ContentType) || strings.ContainsRune(object.ContentType, 0) {
-			return errors.New("object backup object metadata is invalid or not canonically sorted")
-		}
-		previousKey = object.Key
-		referencedPayloads[object.PayloadID] = struct{}{}
-	}
-	if len(referencedPayloads) != len(payloads) {
-		return errors.New("object backup contains unreferenced payloads")
-	}
-
-	seenChunks := make(map[string]map[int]struct{}, len(payloads))
-	for index, attachment := range snapshot.Attachments {
-		payload, exists := payloads[attachment.PayloadID]
-		if attachment.Index != index || !exists || attachment.ChunkIndex < 0 ||
-			attachment.ChunkIndex >= payload.ChunkCount || attachment.Size <= 0 ||
-			!validBackupSHA256(attachment.SHA256) {
-			return errors.New("object backup attachment metadata is invalid")
-		}
-		plainSize := ChunkSize
-		if attachment.ChunkIndex == payload.ChunkCount-1 {
-			plainSize = int(payload.PlaintextSize - int64(attachment.ChunkIndex)*ChunkSize)
-		}
-		expectedSize := int64(chacha20poly1305.NonceSizeX + plainSize + chacha20poly1305.Overhead)
-		if attachment.Size != expectedSize {
-			return errors.New("object backup attachment encrypted size is invalid")
-		}
-		chunks := seenChunks[attachment.PayloadID]
-		if chunks == nil {
-			chunks = make(map[int]struct{}, payload.ChunkCount)
-			seenChunks[attachment.PayloadID] = chunks
-		}
-		if _, duplicate := chunks[attachment.ChunkIndex]; duplicate {
-			return errors.New("object backup attachment chunk is duplicated")
-		}
-		chunks[attachment.ChunkIndex] = struct{}{}
-	}
-	for payloadID, payload := range payloads {
-		if len(seenChunks[payloadID]) != payload.ChunkCount {
-			return errors.New("object backup payload attachment set is incomplete")
-		}
-	}
-	return nil
+type restoreContextReader struct {
+	ctx    context.Context
+	source io.Reader
 }
 
-func validBackupSHA256(value string) bool {
-	if len(value) != sha256.Size*2 || strings.ToLower(value) != value {
-		return false
+func (reader restoreContextReader) Read(buffer []byte) (int, error) {
+	if err := reader.ctx.Err(); err != nil {
+		return 0, err
 	}
-	_, err := hex.DecodeString(value)
-	return err == nil
+	return reader.source.Read(buffer)
 }

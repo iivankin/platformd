@@ -1,11 +1,12 @@
-import { Globe, Plus, Trash2 } from "lucide-react";
+import { ArrowRight, Globe, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
-import type { ContainerPort } from "@/api";
+import type { ContainerPort, ServiceDomain } from "@/api";
 import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { ContainerPortCombobox } from "@/container-port-combobox";
+import { ServiceDomainDNSStatus } from "@/service-domain-dns-status";
 import type { ServiceDomainDraft } from "@/service-settings-model";
 import type { ContainerPortDetectionStatus } from "@/use-container-ports";
 
@@ -15,10 +16,15 @@ interface ServiceDomainsProperties {
   disabled?: boolean;
   domains: ServiceDomainDraft[];
   onChanged: (domains: ServiceDomainDraft[]) => void;
+  persistedDomains?: ServiceDomain[];
+  projectID?: string;
+  serviceID?: string;
 }
 
 const validPort = (port: number) =>
   Number.isInteger(port) && port >= 1 && port <= 65_535;
+
+const noPersistedDomains: ServiceDomain[] = [];
 
 export const ServiceDomains = ({
   containerPorts,
@@ -26,6 +32,9 @@ export const ServiceDomains = ({
   disabled = false,
   domains,
   onChanged,
+  persistedDomains = noPersistedDomains,
+  projectID,
+  serviceID,
 }: ServiceDomainsProperties) => {
   const [hostname, setHostname] = useState("");
   const [targetPort, setTargetPort] = useState(0);
@@ -56,6 +65,10 @@ export const ServiceDomains = ({
       domains.filter((current) => current.hostname !== domain.hostname)
     );
 
+  const persistedHostnames = new Set(
+    persistedDomains.map((domain) => domain.hostname)
+  );
+
   return (
     <SectionCard>
       <header className="flex min-h-14 items-center justify-between gap-4 bg-muted/25 px-5 py-3">
@@ -75,9 +88,23 @@ export const ServiceDomains = ({
               className="grid min-h-12 grid-cols-[minmax(0,1fr)_7rem_2.5rem] items-center border-b border-border px-5 last:border-b-0"
               key={domain.hostname}
             >
-              <span className="truncate text-[10px]">{domain.hostname}</span>
-              <div className="flex items-center gap-1 text-[9px] text-muted-foreground">
-                <span>→ :</span>
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-[10px]">{domain.hostname}</span>
+                {projectID &&
+                serviceID &&
+                persistedHostnames.has(domain.hostname) ? (
+                  <span className="shrink-0">
+                    <ServiceDomainDNSStatus
+                      hostname={domain.hostname}
+                      projectID={projectID}
+                      serviceID={serviceID}
+                    />
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <ArrowRight className="size-3.5 shrink-0" />
+                <span>:</span>
                 <ContainerPortCombobox
                   ariaLabel={`Container port for ${domain.hostname}`}
                   className="h-7 min-w-0 px-2 text-[9px]"

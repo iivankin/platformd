@@ -53,9 +53,15 @@ const handleSettings = async (
   if (request.method === "GET" && !resource) {
     return settingsResponse(state);
   }
-  if (request.method === "PUT" && resource === "automation-hostname") {
+  if (request.method === "PUT" && resource === "admin-hostname") {
     const input = await readObject(request);
-    state.settings.automationHostname = stringField(input, "hostname");
+    state.settings.adminHostname = stringField(input, "hostname");
+    return settingsResponse(state);
+  }
+  if (request.method === "PUT" && resource === "cloudflare-access") {
+    const input = await readObject(request);
+    state.settings.accessTeamDomain = stringField(input, "teamDomain");
+    state.settings.accessAudience = stringField(input, "audience");
     return settingsResponse(state);
   }
   if (resource !== "origin-certificates") {

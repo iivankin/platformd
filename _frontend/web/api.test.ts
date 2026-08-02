@@ -6,7 +6,6 @@ import {
   deleteOriginCertificate,
   fetchInstallationSettings,
   replaceOriginCertificate,
-  setAutomationHostname,
   attachServiceDomain,
   attachServiceListener,
   createAPIToken,
@@ -43,6 +42,7 @@ import {
   fetchService,
   fetchServiceDeployment,
   fetchServiceDeployments,
+  fetchServiceDomainDNSStatus,
   fetchServiceDomains,
   fetchServiceListeners,
   fetchServiceLogs,
@@ -51,7 +51,11 @@ import {
   fetchVolumes,
   fetchIdentity,
   fetchInfrastructureLogs,
+  fetchHostUsageHistory,
+  fetchInstallationUsage,
+  fetchInstallationUsageHistory,
   fetchDiskPressure,
+  forceImageGarbageCollection,
   applySelfUpdate,
   fetchManagedImageTags,
   previewDatabaseVersion,
@@ -66,6 +70,8 @@ import {
   fetchObjects,
   fetchObjectStore,
   fetchProjectCanvas,
+  fetchProjectUsage,
+  fetchProjectUsageHistory,
   fetchProjects,
   fetchRegistryImage,
   fetchRegistryImages,
@@ -76,6 +82,7 @@ import {
   fetchResourceLogs,
   fetchResourceUsage,
   fetchResourceUsageHistory,
+  fetchResolvedServiceBuildEnvironment,
   fetchSelfUpdateStatus,
   deployServiceVersion,
   mutateManagedRedis,
@@ -87,6 +94,7 @@ import {
   revokeAPIToken,
   runBackupNow,
   scanManagedRedisKeys,
+  setAdminHostname,
   setRegistryHostname,
   setRegistryRepositoryPublicPull,
   setManagedPostgresExtension,
@@ -192,7 +200,7 @@ test("returns the validated Cloudflare Access identity", async () => {
   expect(requested).toEqual(["/api/v1/me", "/cdn-cgi/access/get-identity"]);
 });
 
-test("does not load an Access profile image from an untrusted host", async () => {
+test("loads an Access profile image from any https host", async () => {
   await expect(
     fetchIdentity(undefined, (input) =>
       Promise.resolve(
@@ -208,8 +216,35 @@ test("does not load an Access profile image from an untrusted host", async () =>
       )
     )
   ).resolves.toEqual({
+    avatarUrl: "https://tracking.example/avatar.png",
     email: "admin@example.com",
     name: "Admin Example",
+    subject: "access-user",
+  });
+});
+
+test("reads Access display name and picture from custom OIDC claims", async () => {
+  await expect(
+    fetchIdentity(undefined, (input) =>
+      Promise.resolve(
+        input === "/api/v1/me"
+          ? Response.json({
+              email: "ilya@looma.llc",
+              subject: "access-user",
+            })
+          : Response.json({
+              custom: {
+                name: "Ilya Ivankin",
+                picture: "https://cdn.example.com/avatars/ilya.png",
+              },
+              email: "ilya@looma.llc",
+            })
+      )
+    )
+  ).resolves.toEqual({
+    avatarUrl: "https://cdn.example.com/avatars/ilya.png",
+    email: "ilya@looma.llc",
+    name: "Ilya Ivankin",
     subject: "access-user",
   });
 });
@@ -328,6 +363,7 @@ test("creates a private image service with service-owned credentials", async () 
   const service = await createService(
     "project",
     {
+      buildEnvironment: {},
       domains: [{ hostname: "api.example.com", targetPort: 8080 }],
       environment: { APP_ENV: "production" },
       healthCheck: { path: "/healthz", port: 8080, timeoutSeconds: 60 },
@@ -353,6 +389,7 @@ test("creates a private image service with service-owned credentials", async () 
       return Promise.resolve(
         Response.json(
           {
+            buildEnvironment: {},
             createdAt: 1,
             enabled: true,
             environment: { APP_ENV: "production" },
@@ -401,6 +438,7 @@ test("creates a private image service with service-owned credentials", async () 
 
 test("reads and mutates service lifecycle with optimistic version fields", async () => {
   const service = {
+    buildEnvironment: {},
     createdAt: 1,
     enabled: true,
     environment: {},
@@ -411,6 +449,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     source: {
       autoUpdate: true,
       image: { reference: "docker.io/library/alpine:latest" },
+      minimumReleaseAgeDays: 7,
       type: "public_image" as const,
     },
     updatedAt: 2,
@@ -427,6 +466,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     "project",
     "service",
     {
+      buildEnvironment: {},
       enabled: false,
       environment: {},
       expectedUpdatedAt: 2,
@@ -442,6 +482,7 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     }
   );
   expect(JSON.parse(updateBody)).toEqual({
+    buildEnvironment: {},
     enabled: false,
     environment: {},
     expectedUpdatedAt: 2,
@@ -472,6 +513,26 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       return Promise.resolve(new Response(null, { status: 204 }));
     })
   ).resolves.toBeUndefined();
+});
+
+test("loads resolved GitHub build variables", async () => {
+  let requested = "";
+  await expect(
+    fetchResolvedServiceBuildEnvironment(
+      "project/id",
+      "service/id",
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({ environment: { DATABASE_URL: "postgres://db" } })
+        );
+      }
+    )
+  ).resolves.toEqual({ DATABASE_URL: "postgres://db" });
+  expect(requested).toBe(
+    "/api/v1/projects/project%2Fid/services/service%2Fid/build-variables/resolved"
+  );
 });
 
 test("manages service-owned volumes", async () => {
@@ -526,6 +587,7 @@ test("validates bounded deployment history pages", async () => {
               serviceConfigHash: "config",
               serviceId: "service",
               snapshot: {
+                buildEnvironment: {},
                 environment: {},
                 secretReferences: [],
                 source: {
@@ -563,6 +625,7 @@ test("loads one deployment by its stable route", async () => {
             serviceConfigHash: "config",
             serviceId: "service/id",
             snapshot: {
+              buildEnvironment: {},
               environment: {},
               secretReferences: [],
               source: {
@@ -729,29 +792,63 @@ test("reads derived disk pressure without a persisted operation", async () => {
   ).resolves.toMatchObject({ level: "critical", reservePresent: false });
 });
 
-test("reads a bounded platform journald window", async () => {
+test("runs container image garbage collection immediately", async () => {
   let requested = "";
+  let method = "";
   await expect(
-    fetchInfrastructureLogs(25, undefined, (input) => {
+    forceImageGarbageCollection((input, init) => {
       requested = input.toString();
+      method = init?.method ?? "";
       return Promise.resolve(
         Response.json({
-          records: [
-            {
-              cursor: "cursor",
-              identifier: "platformd",
-              message: "ready",
-              pid: "42",
-              priority: 6,
-              timestamp: "2026-07-12T10:00:00Z",
-            },
-          ],
-          truncated: false,
+          buildCacheImagesRemoved: 3,
+          finalImagesRemoved: 2,
+          orphanLayersRemoved: 1,
+          removedBytes: 42,
+          skipped: 0,
         })
       );
     })
+  ).resolves.toEqual({
+    buildCacheImagesRemoved: 3,
+    finalImagesRemoved: 2,
+    orphanLayersRemoved: 1,
+    removedBytes: 42,
+    skipped: 0,
+  });
+  expect(requested).toBe("/api/v1/infrastructure/container-images/gc");
+  expect(method).toBe("POST");
+});
+
+test("reads a cursor-paginated system journal window", async () => {
+  let requested = "";
+  await expect(
+    fetchInfrastructureLogs(
+      { beforeCursor: "opaque;cursor=value", limit: 25 },
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            nextCursor: "next-cursor",
+            records: [
+              {
+                cursor: "cursor",
+                identifier: "platformd",
+                message: "ready",
+                pid: "42",
+                priority: 6,
+                timestamp: "2026-07-12T10:00:00Z",
+              },
+            ],
+          })
+        );
+      }
+    )
   ).resolves.toMatchObject({ records: [{ message: "ready" }] });
-  expect(requested).toBe("/api/v1/infrastructure/logs?limit=25");
+  expect(requested).toBe(
+    "/api/v1/infrastructure/logs?limit=25&beforeCursor=opaque%3Bcursor%3Dvalue"
+  );
 });
 
 test("reads stateless resource cgroup usage", async () => {
@@ -761,15 +858,15 @@ test("reads stateless resource cgroup usage", async () => {
       requested = input.toString();
       return Promise.resolve(
         Response.json({
-          cpuUsageMicros: 123_456,
           hostCpuCores: 8,
           hostMemoryBytes: 16 * 1024 ** 3,
           memoryBytes: 64 * 1024 ** 2,
+          memoryPeakBytes: 64 * 1024 ** 2,
           networkAvailable: true,
-          networkRxBytes: 100,
-          networkTxBytes: 200,
           observedAt: 42,
           running: true,
+          runningResources: 1,
+          totalResources: 1,
         })
       );
     })
@@ -790,7 +887,10 @@ test("reads persisted resource usage history", async () => {
           points: [
             {
               cpuMillicores: 12,
+              cpuPeakMillicores: 20,
+              durationMillis: 60_000,
               memoryBytes: 64 * 1024 ** 2,
+              memoryPeakBytes: 70 * 1024 ** 2,
               networkEgressBytesPerSecond: 34,
               networkIngressBytesPerSecond: 56,
               observedAt: 2,
@@ -808,6 +908,47 @@ test("reads persisted resource usage history", async () => {
   );
 });
 
+test("reads project and installation usage from aggregate scope routes", async () => {
+  const requested: string[] = [];
+  const fetcher = (input: RequestInfo | URL) => {
+    const path = input.toString();
+    requested.push(path);
+    if (path.includes("/history")) {
+      return Promise.resolve(
+        Response.json({ from: 1, points: [], stepMillis: 60_000, to: 2 })
+      );
+    }
+    return Promise.resolve(
+      Response.json({
+        cpuMillicores: 250,
+        hostCpuCores: 8,
+        hostMemoryBytes: 16 * 1024 ** 3,
+        memoryBytes: 512 * 1024 ** 2,
+        memoryPeakBytes: 512 * 1024 ** 2,
+        networkAvailable: true,
+        networkEgressBytesPerSecond: 100,
+        networkIngressBytesPerSecond: 200,
+        observedAt: 42,
+        running: true,
+        runningResources: 2,
+        totalResources: 3,
+      })
+    );
+  };
+  await fetchProjectUsage("project/id", undefined, fetcher);
+  await fetchProjectUsageHistory("project/id", "1h", undefined, fetcher);
+  await fetchInstallationUsage(undefined, fetcher);
+  await fetchInstallationUsageHistory("30d", undefined, fetcher);
+  await fetchHostUsageHistory("6h", undefined, fetcher);
+  expect(requested).toEqual([
+    "/api/v1/infrastructure/projects/project%2Fid/usage",
+    "/api/v1/infrastructure/projects/project%2Fid/usage/history?range=1h",
+    "/api/v1/infrastructure/usage",
+    "/api/v1/infrastructure/usage/history?range=30d",
+    "/api/v1/infrastructure/host/usage/history?range=6h",
+  ]);
+});
+
 test("reads filtered paginated audit history", async () => {
   let requested = "";
   await expect(
@@ -817,6 +958,7 @@ test("reads filtered paginated audit history", async () => {
         actorKind: "token",
         cursor: "cursor",
         limit: 25,
+        projectId: "project",
         result: "succeeded",
       },
       undefined,
@@ -843,7 +985,7 @@ test("reads filtered paginated audit history", async () => {
     )
   ).resolves.toMatchObject({ events: [{ action: "server.exec" }] });
   expect(requested).toBe(
-    "/api/v1/audit?limit=25&action=server.exec&actorKind=token&cursor=cursor&result=succeeded"
+    "/api/v1/audit?limit=25&action=server.exec&actorKind=token&cursor=cursor&projectId=project&result=succeeded"
   );
 });
 
@@ -1189,15 +1331,18 @@ test("creates PostgreSQL and runs bounded SQL only through the admin client", as
   ).resolves.toEqual(resource);
 
   const sql = "DELETE FROM sessions WHERE expired_at < now(); SELECT 1;";
+  const queryController = new AbortController();
   const result = await queryManagedPostgres(
     resource.projectId,
     resource.id,
     sql,
+    queryController.signal,
     (input, init) => {
       expect(input.toString()).toBe(
         "/api/v1/projects/project%2Fid/postgres/postgres%2Fid/query"
       );
       expect(init?.method).toBe("POST");
+      expect(init?.signal).toBe(queryController.signal);
       expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({ sql });
       return Promise.resolve(
         Response.json({
@@ -1442,6 +1587,23 @@ test("lists, attaches, moves, and detaches exact service domains", async () => {
       Promise.resolve(Response.json({ domains: [domain] }))
     )
   ).resolves.toEqual([domain]);
+
+  let statusURL = "";
+  await expect(
+    fetchServiceDomainDNSStatus(
+      "project/id",
+      "service/id",
+      domain.hostname,
+      undefined,
+      (input) => {
+        statusURL = input.toString();
+        return Promise.resolve(Response.json({ status: "ready" }));
+      }
+    )
+  ).resolves.toBe("ready");
+  expect(statusURL).toBe(
+    "/api/v1/projects/project%2Fid/services/service%2Fid/domains/api.example.com/dns"
+  );
 
   let attachBody = "";
   await expect(
@@ -2012,7 +2174,6 @@ test("manages live installation hostnames and write-only Origin certificates", a
     accessAudience: "audience",
     accessTeamDomain: "team.cloudflareaccess.com",
     adminHostname: "admin.example.com",
-    automationHostname: "api.example.com",
     certificates: [
       { createdAt: 42, dnsNames: ["*.example.com"], id: "certificate-1" },
     ],
@@ -2026,14 +2187,14 @@ test("manages live installation hostnames and write-only Origin certificates", a
     })
   ).resolves.toEqual(settings);
 
-  await setAutomationHostname("agents.example.com", (input, init) => {
-    expect(input.toString()).toBe("/api/v1/settings/automation-hostname");
+  await setAdminHostname("control.example.com", (input, init) => {
+    expect(input.toString()).toBe("/api/v1/settings/admin-hostname");
     expect(init?.method).toBe("PUT");
     expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
-      hostname: "agents.example.com",
+      hostname: "control.example.com",
     });
     return Promise.resolve(
-      Response.json({ ...settings, automationHostname: "agents.example.com" })
+      Response.json({ ...settings, adminHostname: "control.example.com" })
     );
   });
 

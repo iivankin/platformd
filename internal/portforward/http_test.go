@@ -30,14 +30,14 @@ func TestWebSocketForwardsRawTCPWithoutTicketInURL(t *testing.T) {
 
 	resolver := &resolverStub{address: echo.Addr().String()}
 	application, err := New(Config{
-		Repository: resourceRepositoryStub{}, Resolver: resolver, Audit: &auditStub{},
+		Repository: resourceRepositoryStub{kind: "service"}, Resolver: resolver, Audit: &auditStub{},
 		NewID: func() (string, error) { return "ticket-id", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	grant, err := application.Create(context.Background(), automation.Identity{TokenID: "admin", Role: "admin"}, CreateInput{
-		ProjectID: "project", ResourceKind: "service", ResourceID: "api", Port: 8080,
+		Project: "shop", Resource: "api", Port: 8080,
 	})
 	if err != nil {
 		t.Fatal(err)

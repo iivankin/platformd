@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -35,6 +36,11 @@ func (store *fakeStore) DesiredService(context.Context, string) (state.ServiceDe
 
 func (store *fakeStore) BeginDeployment(_ context.Context, deployment state.BeginDeployment) error {
 	store.deployments[deployment.ID] = deployment
+	return nil
+}
+
+func (store *fakeStore) DiscardDeployment(_ context.Context, deploymentID string) error {
+	delete(store.deployments, deploymentID)
 	return nil
 }
 
@@ -113,6 +119,7 @@ type fakeEngine struct {
 	events     []string
 	created    []containerengine.ContainerSpec
 	pulls      []containerengine.PullRequest
+	pullImage  *containerengine.Image
 	containers map[string]containerengine.Container
 	images     map[string]containerengine.Image
 	createErr  error
@@ -123,6 +130,9 @@ func (engine *fakeEngine) Pull(_ context.Context, request containerengine.PullRe
 	engine.pulls = append(engine.pulls, request)
 	image := containerengine.Image{
 		ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68",
+	}
+	if engine.pullImage != nil {
+		image = *engine.pullImage
 	}
 	if engine.images == nil {
 		engine.images = make(map[string]containerengine.Image)
@@ -207,18 +217,18 @@ func (resolver imageSourceResolverFunc) Resolve(ctx context.Context, reference s
 	return resolver(ctx, reference)
 }
 
-type sourceResolverFunc func(context.Context, state.ServiceDesired, string, string, io.Writer, bool, SourceBuildStarted) (SourceResolution, error)
+type sourceResolverFunc func(context.Context, state.ServiceDesired, EnvironmentContext, string, io.Writer, bool, SourceBuildStarted) (SourceResolution, error)
 
 func (resolver sourceResolverFunc) Resolve(
 	ctx context.Context,
 	desired state.ServiceDesired,
-	deploymentID string,
+	environmentContext EnvironmentContext,
 	revision string,
 	log io.Writer,
 	force bool,
 	onBuildStarted SourceBuildStarted,
 ) (SourceResolution, error) {
-	return resolver(ctx, desired, deploymentID, revision, log, force, onBuildStarted)
+	return resolver(ctx, desired, environmentContext, revision, log, force, onBuildStarted)
 }
 
 type reportEvent struct {
@@ -284,7 +294,7 @@ func TestGitHubDeploymentReportingFollowsLocalOutcome(t *testing.T) {
 			clock := int64(0)
 			controller, err := New(Config{
 				Store: store, Engine: engine, Publisher: &fakePublisher{}, Growth: allowGrowth, Admission: admission.New(),
-				Sources: sourceResolverFunc(func(_ context.Context, _ state.ServiceDesired, _ string, _ string, _ io.Writer, _ bool, started SourceBuildStarted) (SourceResolution, error) {
+				Sources: sourceResolverFunc(func(_ context.Context, _ state.ServiceDesired, _ EnvironmentContext, _ string, _ io.Writer, _ bool, started SourceBuildStarted) (SourceResolution, error) {
 					resolution := SourceResolution{
 						Image:          containerengine.Image{ID: "image-id", Digest: "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"},
 						ImageReference: "localhost/platformd-build/service:commit", Revision: "commit-sha", CommitMessage: "change",
@@ -307,7 +317,7 @@ func TestGitHubDeploymentReportingFollowsLocalOutcome(t *testing.T) {
 					clock += 5
 					return time.Unix(clock, 0)
 				},
-				NewID: func(time.Time) (string, error) {
+				NewID: func() (string, error) {
 					value := identifiers[identifierIndex]
 					identifierIndex++
 					return value, nil
@@ -330,6 +340,63 @@ func TestGitHubDeploymentReportingFollowsLocalOutcome(t *testing.T) {
 	}
 }
 
+func TestResolvedGitHubNoOpDoesNotCreateDeploymentHistory(t *testing.T) {
+	snapshot := serviceconfig.Snapshot{Source: servicesource.Source{
+		Type: servicesource.GitHubImage,
+		GitHub: &servicesource.GitHub{
+			RepositoryID: 7, Repository: "acme/api", Branch: "main",
+			DockerfilePath: "Dockerfile", ContextPath: ".",
+		},
+	}}
+	normalized, _, configHash, err := serviceconfig.Canonical(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const digest = "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: normalized, ActiveDeploymentID: "active", ActiveImageDigest: digest, ActiveConfigHash: configHash,
+		},
+		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
+	}
+	engine := &fakeEngine{containers: make(map[string]containerengine.Container)}
+	publisher := &fakePublisher{}
+	controller, err := New(Config{
+		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth, Admission: admission.New(),
+		Sources: sourceResolverFunc(func(_ context.Context, _ state.ServiceDesired, _ EnvironmentContext, _ string, _ io.Writer, _ bool, started SourceBuildStarted) (SourceResolution, error) {
+			resolution := SourceResolution{
+				Image: containerengine.Image{Digest: digest}, ImageReference: "localhost/platformd-build/service:commit",
+				Revision: "commit", CommitMessage: "unchanged",
+			}
+			if err := started(resolution); err != nil {
+				return resolution, err
+			}
+			return resolution, nil
+		}),
+		Placement: func(state.ServiceDesired) (Placement, error) {
+			return Placement{NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1")}, nil
+		},
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2,
+		NewID: func() (string, error) { return "poll", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := containerengine.Container{ID: "active-container", State: "running"}
+	controller.active["service"] = activeContainer{deploymentID: "active", container: active}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.deployments) != 0 {
+		t.Fatalf("GitHub no-op created deployment history: %+v", store.deployments)
+	}
+	if !slices.Equal(publisher.events, []string{"publish:service:active-container"}) {
+		t.Fatalf("publisher events = %v", publisher.events)
+	}
+}
+
 func TestEmbeddedImageSourceReplacesRemotePullAndCloses(t *testing.T) {
 	engine := &fakeEngine{containers: make(map[string]containerengine.Container)}
 	closed := false
@@ -349,6 +416,67 @@ func TestEmbeddedImageSourceReplacesRemotePullAndCloses(t *testing.T) {
 	}
 	if !closed || len(engine.pulls) != 1 || engine.pulls[0].Reference != "oci:/run/platformd/generated/pull" || engine.pulls[0].Refresh {
 		t.Fatalf("embedded pull = closed:%t requests:%+v", closed, engine.pulls)
+	}
+}
+
+func TestAutomaticRemoteImageUpdateWaitsForMinimumReleaseAge(t *testing.T) {
+	const (
+		activeDigest    = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		candidateDigest = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	)
+	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
+	snapshot := serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:latest")}
+	snapshot.Source.MinimumReleaseAgeDays = 7
+	normalized, _, configHash, err := serviceconfig.Canonical(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: normalized, ActiveDeploymentID: "active", ActiveImageDigest: activeDigest, ActiveConfigHash: configHash,
+		},
+		deployments: make(map[string]state.BeginDeployment), failed: make(map[string]bool),
+	}
+	candidate := containerengine.Image{
+		ID: "candidate", Digest: candidateDigest,
+		Created: now.Add(-(6*24*time.Hour + 23*time.Hour)),
+	}
+	engine := &fakeEngine{containers: make(map[string]containerengine.Container), pullImage: &candidate}
+	controller, err := New(Config{
+		Store: store, Engine: engine,
+		Publisher: &fakePublisher{}, Growth: allowGrowth, Admission: admission.New(),
+		Placement: func(state.ServiceDesired) (Placement, error) {
+			return Placement{NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1")}, nil
+		},
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2, Now: func() time.Time { return now },
+		NewID: func() (string, error) { return "poll", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatal(err)
+	}
+	if len(engine.pulls) != 1 || len(store.deployments) != 0 || len(engine.created) != 0 {
+		t.Fatalf("pending update mutated runtime: pulls=%d deployments=%+v containers=%+v", len(engine.pulls), store.deployments, engine.created)
+	}
+}
+
+func TestMinimumReleaseAgePendingUsesOCICreated(t *testing.T) {
+	now := time.Date(2026, time.August, 1, 12, 0, 0, 0, time.UTC)
+	if !minimumReleaseAgePending(time.Time{}, now, 7) {
+		t.Fatal("image without OCI Created was eligible")
+	}
+	if !minimumReleaseAgePending(now.Add(-7*24*time.Hour+time.Second), now, 7) {
+		t.Fatal("image younger than the minimum age was eligible")
+	}
+	if minimumReleaseAgePending(now.Add(-7*24*time.Hour), now, 7) {
+		t.Fatal("image at the minimum age remained pending")
+	}
+	if minimumReleaseAgePending(now, now, 0) {
+		t.Fatal("disabled minimum age blocked an image")
 	}
 }
 
@@ -390,8 +518,9 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
 	})}
 	identifierIndex := 0
-	identifiers := []string{"deployment-1", "attempt-1", "deployment-2", "attempt-2", "blocked-deployment"}
+	identifiers := []string{"deployment-1", "attempt-1", "poll-noop", "deployment-2", "attempt-2", "blocked-deployment"}
 	clockIndex := 0
+	logRoot := filepath.Join(t.TempDir(), "logs")
 	controller, err := New(Config{
 		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth, Admission: admission.New(),
 		Placement: func(state.ServiceDesired) (Placement, error) {
@@ -400,13 +529,13 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
 			}, nil
 		},
-		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogRoot: logRoot, VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2,
 		Now: func() time.Time {
 			clockIndex++
 			return time.Unix(int64(clockIndex*2), 0)
 		},
-		NewID: func(time.Time) (string, error) {
+		NewID: func() (string, error) {
 			value := identifiers[identifierIndex]
 			identifierIndex++
 			return value, nil
@@ -432,6 +561,15 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	runtimeStatus, active, err := controller.Status("service")
 	if err != nil || !active || runtimeStatus.State != "running" || runtimeStatus.DeploymentID != "deployment-1" {
 		t.Fatalf("runtime status = %+v, active=%t, error=%v", runtimeStatus, active, err)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatalf("unchanged image poll = %v", err)
+	}
+	if len(store.deployments) != 1 {
+		t.Fatalf("unchanged image poll created deployment history: %+v", store.deployments)
+	}
+	if _, err := os.Stat(filepath.Join(logRoot, "services", "service", "poll-noop")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unchanged image poll left build logs: %v", err)
 	}
 
 	store.service.Snapshot.Environment = map[string]string{"REVISION": "2"}
@@ -487,7 +625,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
-		NewID: func(time.Time) (string, error) {
+		NewID: func() (string, error) {
 			value := identifiers[identifierIndex]
 			identifierIndex++
 			return value, nil
@@ -507,7 +645,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "restored-logs"), VolumeRoot: filepath.Join(t.TempDir(), "restored-volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
-		NewID: func(time.Time) (string, error) { return "restored-attempt", nil },
+		NewID: func() (string, error) { return "restored-attempt", nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -601,7 +739,7 @@ func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
 		},
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
 		LogSizeBytes: 1024, LogMaxFiles: 2,
-		NewID: func(time.Time) (string, error) { return "attempt", nil },
+		NewID: func() (string, error) { return "attempt", nil },
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
 		})},

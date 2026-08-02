@@ -31,16 +31,15 @@ INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_
  VALUES ('redis-delete', 'delete-me', 'cache', '8', 'sha256:redis', 'redis-volume', x'01', 1, 1);
 INSERT INTO object_stores(id, project_id, name, bucket_name, created_at, updated_at)
  VALUES ('store-delete', 'delete-me', 'assets', 'assets', 1, 1);
-INSERT INTO object_payloads(id, object_store_id, plaintext_size, chunk_count, plaintext_sha256, created_at)
- VALUES ('payload-delete', 'store-delete', 1, 1, '00', 1);
-INSERT INTO objects(object_store_id, object_key, payload_id, etag, size, created_at, updated_at)
- VALUES ('store-delete', 'file', 'payload-delete', 'etag', 1, 1, 1);
 INSERT INTO network_gateways(id, project_id, name, mode, transport, protocol, interface_name, source_address, listen_port, target_service_id, target_port, created_at, updated_at)
  VALUES ('gateway-delete', 'delete-me', 'export', 'export', 'vpc', 'tcp', 'wg0', '10.0.0.1', 15432, 'service-delete', 8080, 1, 1);
 INSERT INTO runtime_deployments(id, resource_kind, resource_id, image_tag, image_digest, status, created_at)
  VALUES ('runtime-delete', 'postgres', 'postgres-delete', '18', 'sha256:db', 'succeeded', 1);
-INSERT INTO resource_metric_samples(resource_kind, resource_id, observed_at, cpu_usage_micros, memory_bytes, running)
- VALUES ('service', 'service-delete', 1, 1, 1, 1), ('service', 'service-keep', 1, 1, 1, 1);
+INSERT INTO resource_metric_samples(
+ resource_kind, resource_id, observed_at, duration_millis,
+ cpu_duration_millis, cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes, running
+)
+ VALUES ('service', 'service-delete', 1, 1, 1, 1, 1, 1, 1, 1), ('service', 'service-keep', 1, 1, 1, 1, 1, 1, 1, 1);
 INSERT INTO backups(id, target_id, resource_kind, resource_id, status, started_at)
  VALUES ('backup-delete', 'removed-target', 'volume', 'volume-delete', 'succeeded', 1);
 INSERT INTO operations(id, kind, target_id, status, started_at)
@@ -65,7 +64,7 @@ INSERT INTO operations(id, kind, target_id, status, started_at)
 	if _, err := store.Project(context.Background(), "keep-me"); err != nil {
 		t.Fatalf("unrelated project was changed: %v", err)
 	}
-	for _, table := range []string{"services", "volumes", "managed_postgres", "managed_redis", "object_stores", "object_payloads", "network_gateways", "runtime_deployments", "backups", "operations"} {
+	for _, table := range []string{"services", "volumes", "managed_postgres", "managed_redis", "object_stores", "network_gateways", "runtime_deployments", "backups", "operations"} {
 		var count int
 		if err := store.database.QueryRow("SELECT count(*) FROM " + table + " WHERE id LIKE '%-delete'").Scan(&count); err != nil {
 			t.Fatal(err)
@@ -78,7 +77,7 @@ INSERT INTO operations(id, kind, target_id, status, started_at)
 	if err := store.database.QueryRow("SELECT count(*) FROM resource_metric_samples WHERE resource_id = 'service-keep'").Scan(&keptMetrics); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.database.QueryRow("SELECT count(*) FROM audit_events WHERE id = 'audit-delete' AND action = 'project.delete'").Scan(&audit); err != nil {
+	if err := store.database.QueryRow("SELECT count(*) FROM audit_events WHERE id = 'audit-delete' AND project_id = 'delete-me' AND action = 'project.delete'").Scan(&audit); err != nil {
 		t.Fatal(err)
 	}
 	if keptMetrics != 1 || audit != 1 {

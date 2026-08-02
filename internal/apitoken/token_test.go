@@ -18,7 +18,7 @@ func TestTokenFormatAndConstantTimeVerifierMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const publicID = "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	const publicID = "abcdefghijklmnopqrstuvwx"
 	value, secret, err := apitoken.Generate(publicID, bytes.NewReader(bytes.Repeat([]byte{0x17}, 32)))
 	if err != nil {
 		t.Fatal(err)
@@ -33,5 +33,8 @@ func TestTokenFormatAndConstantTimeVerifierMaterial(t *testing.T) {
 	}
 	if _, _, err := apitoken.Parse(value + "="); err == nil {
 		t.Fatal("non-canonical token secret was accepted")
+	}
+	if _, _, err := apitoken.Generate("018bcfe5-687b-7fff-bfff-ffffffffffff", bytes.NewReader(make([]byte, 32))); err == nil {
+		t.Fatal("legacy UUID public ID was accepted")
 	}
 }

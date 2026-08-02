@@ -1,4 +1,7 @@
 import type { ProjectCanvas, Service, ServiceDomain } from "@/api";
+import { newID } from "@/id";
+import type { PendingResourceCreation } from "@/pending-resource-creation";
+import type { PendingServiceSettings } from "@/service-settings-model";
 
 export const environmentName = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
@@ -205,50 +208,80 @@ export const serviceVariableRows = (
   service: Pick<Service, "environment">
 ): VariableRow[] =>
   Object.entries(service.environment)
-    .map(([name, value]) => ({ id: crypto.randomUUID(), name, value }))
+    .map(([name, value]) => ({ id: newID(), name, value }))
     .toSorted((left, right) => left.name.localeCompare(right.name));
+
+const suggestionsForService = (
+  resource: ProjectCanvas["resources"][number],
+  environment: Record<string, string>,
+  resourceDomains: ServiceDomain[],
+  currentServiceID: string
+): VariableSuggestion[] => {
+  const suggestions: VariableSuggestion[] = [];
+  if (resource.id !== currentServiceID) {
+    for (const output of Object.keys(environment)) {
+      suggestions.push({
+        expression: `\${{${resource.name}.${output}}}`,
+        source: resource.name,
+        variableName: output,
+      });
+    }
+  }
+  const seenDomainOutputs = new Set<string>();
+  const duplicateDomainOutputs = new Set<string>();
+  for (const domain of resourceDomains) {
+    for (const output of [domain.publicOutputName, domain.internalOutputName]) {
+      if (seenDomainOutputs.has(output)) {
+        duplicateDomainOutputs.add(output);
+      }
+      seenDomainOutputs.add(output);
+    }
+  }
+  for (const output of seenDomainOutputs) {
+    if (!duplicateDomainOutputs.has(output)) {
+      suggestions.push({
+        expression: `\${{${resource.name}.${output}}}`,
+        source: resource.name,
+        variableName: output,
+      });
+    }
+  }
+  return suggestions;
+};
 
 export const variableSuggestions = (
   resources: ProjectCanvas["resources"],
   services: Map<string, Service>,
   domains: Map<string, ServiceDomain[]>,
-  currentServiceID: string
+  currentServiceID: string,
+  drafts: PendingResourceCreation[] = [],
+  changes: Readonly<Record<string, PendingServiceSettings>> = {}
 ): VariableSuggestion[] => {
-  const suggestions: VariableSuggestion[] = [];
+  const draftServices = new Map(
+    drafts.flatMap((draft) =>
+      draft.kind === "service" ? [[draft.id, draft] as const] : []
+    )
+  );
+  const suggestions: {
+    sourceOrder: number;
+    suggestion: VariableSuggestion;
+  }[] = [];
   for (const resource of resources) {
     if (resource.kind === "service") {
       const service = services.get(resource.id);
-      if (resource.id !== currentServiceID) {
-        for (const output of Object.keys(service?.environment ?? {})) {
-          suggestions.push({
-            expression: `\${{${resource.name}.${output}}}`,
-            source: resource.name,
-            variableName: output,
-          });
-        }
-      }
-      const seenDomainOutputs = new Set<string>();
-      const duplicateDomainOutputs = new Set<string>();
-      for (const domain of domains.get(resource.id) ?? []) {
-        for (const output of [
-          domain.publicOutputName,
-          domain.internalOutputName,
-        ]) {
-          if (seenDomainOutputs.has(output)) {
-            duplicateDomainOutputs.add(output);
-          }
-          seenDomainOutputs.add(output);
-        }
-      }
-      for (const output of seenDomainOutputs) {
-        if (!duplicateDomainOutputs.has(output)) {
-          suggestions.push({
-            expression: `\${{${resource.name}.${output}}}`,
-            source: resource.name,
-            variableName: output,
-          });
-        }
-      }
+      const environment =
+        draftServices.get(resource.id)?.input.environment ??
+        changes[resource.id]?.environment ??
+        service?.environment ??
+        {};
+      suggestions.push(
+        ...suggestionsForService(
+          resource,
+          environment,
+          domains.get(resource.id) ?? [],
+          currentServiceID
+        ).map((suggestion) => ({ sourceOrder: 1, suggestion }))
+      );
       continue;
     }
     const outputs =
@@ -257,15 +290,23 @@ export const variableSuggestions = (
         : staticOutputs[resource.kind];
     for (const output of outputs) {
       suggestions.push({
-        expression: `\${{${resource.name}.${output}}}`,
-        source: resource.name,
-        variableName: output,
+        sourceOrder: 0,
+        suggestion: {
+          expression: `\${{${resource.name}.${output}}}`,
+          source: resource.name,
+          variableName: output,
+        },
       });
     }
   }
-  return suggestions.toSorted(
-    (left, right) =>
-      left.variableName.localeCompare(right.variableName) ||
-      left.source.localeCompare(right.source)
-  );
+  return suggestions
+    .toSorted(
+      (left, right) =>
+        left.suggestion.variableName.localeCompare(
+          right.suggestion.variableName
+        ) ||
+        left.sourceOrder - right.sourceOrder ||
+        left.suggestion.source.localeCompare(right.suggestion.source)
+    )
+    .map(({ suggestion }) => suggestion);
 };

@@ -35,6 +35,7 @@ export const ServiceCreatePanel = ({
     try {
       const parsed = parseServiceConfiguration(configuration);
       onDrafted({
+        buildEnvironment: {},
         environment: {},
         healthCheck: parsed.healthCheck,
         name,

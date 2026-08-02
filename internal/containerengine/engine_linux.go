@@ -25,8 +25,9 @@ type Engine struct {
 	config  Config
 	logs    logActivity
 
-	closeOnce sync.Once
-	closeErr  error
+	imageOperations sync.RWMutex
+	closeOnce       sync.Once
+	closeErr        error
 }
 
 func Open(ctx context.Context, config Config) (*Engine, error) {

@@ -95,16 +95,26 @@ export const ServiceDraftPage = ({
             variables: (
               <ServiceVariables
                 busy={false}
-                onSave={(environment) => {
+                onSave={({ buildEnvironment, environment }) => {
                   onChange({
                     ...draft,
-                    input: { ...draft.input, environment },
+                    input: {
+                      ...draft.input,
+                      buildEnvironment:
+                        buildEnvironment ?? draft.input.buildEnvironment,
+                      environment: environment ?? draft.input.environment,
+                    },
                   });
                   return Promise.resolve(true);
                 }}
                 projectID={projectID}
                 resolvedRaw={false}
-                service={{ environment: draft.input.environment, id: draft.id }}
+                service={{
+                  buildEnvironment: draft.input.buildEnvironment,
+                  environment: draft.input.environment,
+                  id: draft.id,
+                  source: draft.settings.configuration.source,
+                }}
               />
             ),
           }}

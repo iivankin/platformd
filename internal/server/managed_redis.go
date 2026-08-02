@@ -343,7 +343,7 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):
 		writeAPIError(response, http.StatusBadRequest, "invalid_backup_policy", err.Error())
 	case errors.Is(err, managedredis.ErrImageUnavailable):
-		writeAPIError(response, http.StatusBadGateway, "managed_redis_image_unavailable", "Unable to resolve the selected official Redis image")
+		writeAPIError(response, http.StatusBadGateway, "managed_redis_image_unavailable", "Unable to resolve the selected official Redis image", err)
 	case errors.Is(err, managedredis.ErrInvalidInput), errors.Is(err, managedimages.ErrInvalidQuery):
 		writeAPIError(response, http.StatusBadRequest, "invalid_managed_redis", err.Error())
 	case errors.Is(err, managedredis.ErrInvalidBrowserQuery):
@@ -351,12 +351,12 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 	case errors.Is(err, managedredis.ErrMaintenance):
 		writeAPIError(response, http.StatusConflict, "resource_busy", "Managed Redis is in maintenance")
 	case errors.Is(err, managedredis.ErrNotRunning):
-		writeAPIError(response, http.StatusServiceUnavailable, "redis_not_running", "Managed Redis resource is not running")
+		writeAPIError(response, http.StatusServiceUnavailable, "redis_not_running", "Managed Redis resource is not running", err)
 	case errors.Is(err, managedredis.ErrKeyNotFound):
 		writeAPIError(response, http.StatusNotFound, "redis_key_not_found", "Redis key no longer exists")
 	case errors.As(err, &commandError):
 		writeAPIError(response, http.StatusConflict, "redis_mutation_rejected", commandError.Error())
 	default:
-		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage Redis resource")
+		writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to manage Redis resource", err)
 	}
 }

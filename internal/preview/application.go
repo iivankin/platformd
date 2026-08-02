@@ -2,7 +2,6 @@ package preview
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -67,7 +66,7 @@ type Engine interface {
 }
 
 type EnvironmentResolver interface {
-	Resolve(context.Context, state.ServiceDesired, string) (map[string]string, error)
+	Resolve(context.Context, state.ServiceDesired, deployment.EnvironmentContext) (map[string]string, error)
 }
 
 type GitHub interface {
@@ -106,7 +105,7 @@ type Config struct {
 	LogSizeBytes      int64
 	LogMaxFiles       uint
 	Now               func() time.Time
-	NewID             func(time.Time) (string, error)
+	NewID             func() (string, error)
 }
 
 type activeContainer struct {
@@ -131,7 +130,7 @@ type Application struct {
 	logSizeBytes      int64
 	logMaxFiles       uint
 	now               func() time.Time
-	newID             func(time.Time) (string, error)
+	newID             func() (string, error)
 	httpClient        *http.Client
 
 	mu     sync.Mutex
@@ -153,7 +152,7 @@ func New(config Config) (*Application, error) {
 	}
 	newID := config.NewID
 	if newID == nil {
-		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
+		newID = id.New
 	}
 	return &Application{
 		store: config.Store, engine: config.Engine, environment: config.Environment,
@@ -204,7 +203,7 @@ func (application *Application) Deploy(ctx context.Context, serviceID string, ev
 	}
 	desired.Snapshot = normalized
 	startedAt := application.now()
-	previewID, err := application.newID(startedAt)
+	previewID, err := application.newID()
 	if err != nil {
 		return err
 	}
@@ -245,7 +244,14 @@ func (application *Application) Deploy(ctx context.Context, serviceID string, ev
 	if err != nil {
 		return application.fail(ctx, desired, event, previewID, githubDeploymentID, commentID, hostname, "build_log_failed", err)
 	}
-	resolution, resolveErr := application.sources.Resolve(ctx, desired, previewID, event.Revision, logFile, false, nil)
+	environmentContext := deployment.EnvironmentContext{
+		DeploymentID: previewID, Kind: deployment.EnvironmentPreview,
+		PreviewURL: "https://" + hostname, PullRequestNumber: event.Number,
+		SourceRevision: event.Revision,
+	}
+	resolution, resolveErr := application.sources.Resolve(
+		ctx, desired, environmentContext, event.Revision, logFile, false, nil,
+	)
 	closeErr := logFile.Close()
 	if closeErr != nil && resolveErr == nil {
 		resolveErr = closeErr
@@ -266,7 +272,8 @@ func (application *Application) Deploy(ctx context.Context, serviceID string, ev
 	if err := application.store.SetPreviewBuild(ctx, previewID, resolution.Image.Digest, resolution.ImageReference, resolution.CommitMessage); err != nil {
 		return application.fail(ctx, desired, event, previewID, githubDeploymentID, commentID, hostname, "state_update_failed", err)
 	}
-	candidate, placement, err := application.createContainer(ctx, desired, previewID, event, hostname, resolution.Image.ID)
+	environmentContext.CommitMessage = resolution.CommitMessage
+	candidate, placement, err := application.createContainer(ctx, desired, environmentContext, resolution.Image.ID)
 	if err != nil {
 		return application.fail(ctx, desired, event, previewID, githubDeploymentID, commentID, hostname, "candidate_create_failed", err)
 	}
@@ -406,8 +413,12 @@ func (application *Application) Restore(ctx context.Context) error {
 			}
 			continue
 		}
-		event := githubapp.PullRequestEvent{Number: preview.PullRequestNumber, Revision: preview.SourceRevision}
-		container, placement, err := application.createContainer(ctx, desired, preview.ID, event, preview.Hostname, image.ID)
+		environmentContext := deployment.EnvironmentContext{
+			DeploymentID: preview.ID, Kind: deployment.EnvironmentPreview,
+			PreviewURL: "https://" + preview.Hostname, PullRequestNumber: preview.PullRequestNumber,
+			SourceRevision: preview.SourceRevision, CommitMessage: preview.CommitMessage,
+		}
+		container, placement, err := application.createContainer(ctx, desired, environmentContext, image.ID)
 		if err != nil {
 			return err
 		}
@@ -553,12 +564,18 @@ func (application *Application) desiredPreview(ctx context.Context, serviceID st
 	return desired, domains, *github.PullRequestPreview, nil
 }
 
-func (application *Application) createContainer(ctx context.Context, desired state.ServiceDesired, previewID string, event githubapp.PullRequestEvent, hostname, imageID string) (containerengine.Container, Placement, error) {
+func (application *Application) createContainer(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+	imageID string,
+) (containerengine.Container, Placement, error) {
+	previewID := environmentContext.DeploymentID
 	placement, err := application.placement(desired)
 	if err != nil {
 		return containerengine.Container{}, Placement{}, err
 	}
-	attemptID, err := application.newID(application.now())
+	attemptID, err := application.newID()
 	if err != nil {
 		return containerengine.Container{}, Placement{}, err
 	}
@@ -566,13 +583,10 @@ func (application *Application) createContainer(ctx context.Context, desired sta
 	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return containerengine.Container{}, Placement{}, err
 	}
-	environment, err := application.environment.Resolve(ctx, desired, previewID)
+	environment, err := application.environment.Resolve(ctx, desired, environmentContext)
 	if err != nil {
 		return containerengine.Container{}, Placement{}, err
 	}
-	environment["PLATFORMD_PREVIEW"] = "true"
-	environment["PLATFORMD_PREVIEW_URL"] = "https://" + hostname
-	environment["PLATFORMD_PULL_REQUEST_NUMBER"] = strconv.Itoa(event.Number)
 	container, err := application.engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID: imageID, Name: "platformd-preview-" + previewID,
 		Entrypoint: desired.Snapshot.Command, Command: desired.Snapshot.Args, Environment: environment,

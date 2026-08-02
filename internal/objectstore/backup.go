@@ -1,54 +1,34 @@
 package objectstore
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"math"
-
-	"github.com/iivankin/platformd/internal/state"
+	"fmt"
+	"io"
+	"sync"
 )
 
 const BackupFormatVersion = 1
 
 type BackupSnapshot struct {
-	FormatVersion int                `json:"formatVersion"`
-	StoreID       string             `json:"storeId"`
-	Objects       []BackupObject     `json:"objects"`
-	Payloads      []BackupPayload    `json:"payloads"`
-	Attachments   []BackupAttachment `json:"attachments"`
+	FormatVersion int    `json:"formatVersion"`
+	StoreID       string `json:"storeId"`
 }
 
 type BackupObject struct {
 	Key             string `json:"key"`
-	PayloadID       string `json:"payloadId"`
 	ContentType     string `json:"contentType,omitempty"`
 	ETag            string `json:"etag"`
 	Size            int64  `json:"size"`
-	CreatedAtMillis int64  `json:"createdAt"`
 	UpdatedAtMillis int64  `json:"updatedAt"`
 }
 
-type BackupPayload struct {
-	ID              string `json:"id"`
-	PlaintextSize   int64  `json:"plaintextSize"`
-	ChunkCount      int    `json:"chunkCount"`
-	PlaintextSHA256 string `json:"plaintextSha256"`
-	CreatedAtMillis int64  `json:"createdAt"`
-}
-
-type BackupAttachment struct {
-	Index      int    `json:"index"`
-	PayloadID  string `json:"payloadId"`
-	ChunkIndex int    `json:"chunkIndex"`
-	Size       int64  `json:"size"`
-	SHA256     string `json:"sha256"`
-}
-
 type BackupExport struct {
-	Metadata        []byte
-	AttachmentPaths []string
-	Release         func()
+	Reader  io.ReadCloser
+	Release func()
 }
 
 func (application *Application) BackupSnapshot(ctx context.Context, storeID string) (BackupExport, error) {
@@ -59,91 +39,140 @@ func (application *Application) BackupSnapshot(ctx context.Context, storeID stri
 	if err != nil {
 		return BackupExport{}, err
 	}
-	releaseMetadata, err := application.blockMetadata(ctx, storeID)
+	releaseDataPlane, err := application.beginDataPlaneBackup(ctx, storeID)
 	if err != nil {
 		releaseBackup()
 		return BackupExport{}, err
 	}
-	snapshot, paths, err := application.enumerateBackupSnapshot(ctx, storeID)
-	releaseMetadata()
+	releaseWrites, err := application.blockMetadata(ctx, storeID)
 	if err != nil {
+		_ = releaseDataPlane()
 		releaseBackup()
 		return BackupExport{}, err
 	}
-	metadata, err := json.Marshal(snapshot)
-	if err != nil {
+	reader, writer := io.Pipe()
+	go application.writeBackupArchive(ctx, writer, storeID)
+	release := sync.OnceFunc(func() {
+		releaseWrites()
+		_ = releaseDataPlane()
 		releaseBackup()
-		return BackupExport{}, err
-	}
-	return BackupExport{Metadata: metadata, AttachmentPaths: paths, Release: releaseBackup}, nil
+	})
+	return BackupExport{Reader: reader, Release: release}, nil
 }
 
-func (application *Application) enumerateBackupSnapshot(ctx context.Context, storeID string) (BackupSnapshot, []string, error) {
+func (application *Application) writeBackupArchive(ctx context.Context, pipe *io.PipeWriter, storeID string) {
+	archive := tar.NewWriter(pipe)
+	fail := func(err error) {
+		_ = archive.Close()
+		_ = pipe.CloseWithError(err)
+	}
+	manifest, err := json.Marshal(BackupSnapshot{
+		FormatVersion: BackupFormatVersion, StoreID: storeID,
+	})
+	if err != nil {
+		fail(err)
+		return
+	}
+	if err := writeTarHeader(archive, "manifest.json", int64(len(manifest))); err != nil {
+		fail(err)
+		return
+	}
+	if _, err := archive.Write(manifest); err != nil {
+		fail(err)
+		return
+	}
 	const pageSize = 1000
-	snapshot := BackupSnapshot{FormatVersion: BackupFormatVersion, StoreID: storeID}
-	paths := make([]string, 0)
-	seenPayloads := make(map[string]struct{})
 	after := ""
+	index := 0
 	for {
-		objects, more, err := application.repository.ListObjects(ctx, storeID, "", after, pageSize)
+		objects, more, err := application.List(ctx, storeID, "", after, pageSize)
 		if err != nil {
-			return BackupSnapshot{}, nil, err
+			fail(err)
+			return
 		}
-		for _, object := range objects {
-			snapshot.Objects = append(snapshot.Objects, BackupObject{
-				Key: object.ObjectKey, PayloadID: object.PayloadID, ContentType: object.ContentType,
-				ETag: object.ETag, Size: object.Size, CreatedAtMillis: object.CreatedAtMillis,
-				UpdatedAtMillis: object.UpdatedAtMillis,
-			})
-			if _, exists := seenPayloads[object.PayloadID]; exists {
-				continue
+		for _, stored := range objects {
+			object := BackupObject{
+				Key: stored.ObjectKey, ContentType: stored.ContentType, ETag: stored.ETag,
+				Size: stored.Size, UpdatedAtMillis: stored.UpdatedAtMillis,
 			}
-			payload, err := application.repository.ObjectPayload(ctx, storeID, object.PayloadID)
+			metadata, err := json.Marshal(object)
 			if err != nil {
-				return BackupSnapshot{}, nil, err
+				fail(err)
+				return
 			}
-			if err := validateBackupPayload(payload); err != nil {
-				return BackupSnapshot{}, nil, err
+			if len(metadata) > maximumBackupObjectMetadataSize {
+				fail(errors.New("object backup metadata exceeds the format limit"))
+				return
 			}
-			seenPayloads[payload.ID] = struct{}{}
-			snapshot.Payloads = append(snapshot.Payloads, BackupPayload{
-				ID: payload.ID, PlaintextSize: payload.PlaintextSize, ChunkCount: payload.ChunkCount,
-				PlaintextSHA256: payload.PlaintextSHA256, CreatedAtMillis: payload.CreatedAtMillis,
-			})
-			for chunkIndex := 0; chunkIndex < payload.ChunkCount; chunkIndex++ {
-				chunk, err := application.payloads.BackupChunk(ctx, storeID, payload.ID, chunkIndex)
-				if err != nil {
-					return BackupSnapshot{}, nil, err
-				}
-				index := len(paths)
-				paths = append(paths, chunk.Path)
-				snapshot.Attachments = append(snapshot.Attachments, BackupAttachment{
-					Index: index, PayloadID: payload.ID, ChunkIndex: chunkIndex,
-					Size: chunk.Size, SHA256: chunk.SHA256,
-				})
+			if err := writeTarHeader(archive, backupMetadataName(index), int64(len(metadata))); err != nil {
+				fail(err)
+				return
 			}
+			if _, err := archive.Write(metadata); err != nil {
+				fail(err)
+				return
+			}
+			if err := writeTarHeader(archive, backupDataName(index), object.Size); err != nil {
+				fail(err)
+				return
+			}
+			if err := application.storage.ReadRange(ctx, storeID, object.Key, 0, object.Size, archive); err != nil {
+				fail(err)
+				return
+			}
+			index++
 		}
 		if !more || len(objects) == 0 {
 			break
 		}
 		after = objects[len(objects)-1].ObjectKey
 	}
-	return snapshot, paths, nil
+	if err := archive.Close(); err != nil {
+		_ = pipe.CloseWithError(err)
+		return
+	}
+	_ = pipe.Close()
 }
 
-func validateBackupPayload(payload state.ObjectPayload) error {
-	if payload.ID == "" || payload.PlaintextSize < 0 || payload.ChunkCount < 0 || payload.PlaintextSHA256 == "" || payload.CreatedAtMillis <= 0 {
-		return errors.New("object backup payload metadata is invalid")
+func backupMetadataName(index int) string { return fmt.Sprintf("objects/%012d.json", index) }
+func backupDataName(index int) string     { return fmt.Sprintf("objects/%012d.data", index) }
+
+func writeTarHeader(archive *tar.Writer, name string, size int64) error {
+	return archive.WriteHeader(&tar.Header{
+		Name: name, Mode: 0o600, Size: size, Typeflag: tar.TypeReg,
+		Format: tar.FormatPAX,
+	})
+}
+
+func decodeBackupSnapshot(value []byte, storeID string) (BackupSnapshot, error) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	var snapshot BackupSnapshot
+	if err := decoder.Decode(&snapshot); err != nil || decoder.Decode(&struct{}{}) != io.EOF {
+		return BackupSnapshot{}, errors.New("object backup manifest JSON is invalid")
 	}
-	expectedChunks := int64(0)
-	if payload.PlaintextSize > 0 {
-		if payload.PlaintextSize > math.MaxInt64-(ChunkSize-1) {
-			return errors.New("object backup payload size overflows")
-		}
-		expectedChunks = (payload.PlaintextSize + ChunkSize - 1) / ChunkSize
+	if err := validateBackupSnapshot(snapshot, storeID); err != nil {
+		return BackupSnapshot{}, err
 	}
-	if expectedChunks != int64(payload.ChunkCount) {
-		return errors.New("object backup payload chunk count differs from size")
+	return snapshot, nil
+}
+
+func validateBackupSnapshot(snapshot BackupSnapshot, storeID string) error {
+	if snapshot.FormatVersion != BackupFormatVersion || snapshot.StoreID != storeID {
+		return errors.New("object backup manifest identity is invalid")
 	}
 	return nil
+}
+
+func decodeBackupObject(value []byte, previous string) (BackupObject, error) {
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	var object BackupObject
+	if err := decoder.Decode(&object); err != nil || decoder.Decode(&struct{}{}) != io.EOF ||
+		validateObjectKey(object.Key) != nil || (previous != "" && object.Key <= previous) ||
+		object.Size < 0 || object.Size > MaximumObjectSize || object.ETag == "" ||
+		object.UpdatedAtMillis <= 0 {
+		return BackupObject{}, errors.New("object backup metadata is invalid")
+	}
+	return object, nil
 }

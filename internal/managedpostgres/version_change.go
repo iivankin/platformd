@@ -89,7 +89,7 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	}
 
 	timestamp := controller.now()
-	identifiers, err := controller.restoreIdentifiers(timestamp)
+	identifiers, err := controller.restoreIdentifiers()
 	if err != nil {
 		return err
 	}

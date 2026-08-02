@@ -7,6 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 const (
@@ -33,14 +35,19 @@ type udpEndpoint struct {
 	done      chan struct{}
 	capacity  chan struct{}
 	sessions  map[string]*udpSession
+	buffers   sync.Pool
 	waitGroup sync.WaitGroup
+	traffic   *trafficmetrics.Registry
 }
 
-func newUDPEndpoint(listener *net.UDPConn, route Route, backends BackendResolver, onError func(string, error)) *udpEndpoint {
+func newUDPEndpoint(listener *net.UDPConn, route Route, backends BackendResolver, onError func(string, error), traffic *trafficmetrics.Registry) *udpEndpoint {
 	endpoint := &udpEndpoint{
-		listener: listener, backends: backends, onError: onError,
+		listener: listener, backends: backends, onError: onError, traffic: traffic,
 		done: make(chan struct{}), capacity: make(chan struct{}, maximumUDPSessions),
 		sessions: make(map[string]*udpSession),
+	}
+	endpoint.buffers.New = func() any {
+		return new([maximumUDPPacketBytes]byte)
 	}
 	endpoint.route.Store(&route)
 	endpoint.waitGroup.Add(2)
@@ -52,28 +59,30 @@ func newUDPEndpoint(listener *net.UDPConn, route Route, backends BackendResolver
 func (endpoint *udpEndpoint) readPublic() {
 	defer endpoint.waitGroup.Done()
 	for {
-		buffer := make([]byte, maximumUDPPacketBytes)
+		buffer := endpoint.packetBuffer()
 		count, client, err := endpoint.listener.ReadFromUDP(buffer)
 		if err != nil {
+			endpoint.releasePacketBuffer(buffer)
 			if !errors.Is(err, net.ErrClosed) {
 				endpoint.onError(endpoint.route.Load().ID, err)
 			}
 			return
 		}
-		packet := append([]byte(nil), buffer[:count]...)
 		select {
 		case endpoint.capacity <- struct{}{}:
 			endpoint.waitGroup.Add(1)
-			go endpoint.forward(client, packet)
+			go endpoint.forward(client, buffer[:count])
 		default:
 			// UDP has no backpressure signal. Dropping excess datagrams keeps a
 			// network flood from creating an unbounded number of goroutines.
+			endpoint.releasePacketBuffer(buffer)
 		}
 	}
 }
 
 func (endpoint *udpEndpoint) forward(client *net.UDPAddr, packet []byte) {
 	defer endpoint.waitGroup.Done()
+	defer endpoint.releasePacketBuffer(packet)
 	defer func() { <-endpoint.capacity }()
 	route := endpoint.route.Load()
 	backend, available, err := route.Target.Resolve(endpoint.backends)
@@ -93,7 +102,21 @@ func (endpoint *udpEndpoint) forward(client *net.UDPAddr, packet []byte) {
 	}
 	if _, err := session.private.Write(packet); err != nil && !errors.Is(err, net.ErrClosed) {
 		endpoint.onError(route.ID, err)
+	} else if err == nil {
+		endpoint.traffic.AddUDPIngress(routeServiceID(*route), uint64(len(packet)))
 	}
+}
+
+func (endpoint *udpEndpoint) packetBuffer() []byte {
+	return endpoint.buffers.Get().(*[maximumUDPPacketBytes]byte)[:]
+}
+
+func (endpoint *udpEndpoint) releasePacketBuffer(buffer []byte) {
+	if cap(buffer) != maximumUDPPacketBytes {
+		return
+	}
+	buffer = buffer[:maximumUDPPacketBytes]
+	endpoint.buffers.Put((*[maximumUDPPacketBytes]byte)(buffer))
 }
 
 func (endpoint *udpEndpoint) Update(route Route) {
@@ -155,6 +178,7 @@ func (endpoint *udpEndpoint) readPrivate(key string, session *udpSession) {
 			}
 			return
 		}
+		endpoint.traffic.AddUDPEgress(routeServiceID(*endpoint.route.Load()), uint64(count))
 		endpoint.mu.Lock()
 		if endpoint.sessions[key] == session {
 			session.lastSeen = time.Now()

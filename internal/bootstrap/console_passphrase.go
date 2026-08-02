@@ -66,7 +66,7 @@ func (resetter ConsolePassphraseResetter) Run(ctx context.Context) (returnErr er
 		return err
 	}
 	timestamp := resetter.Now()
-	auditID, err := id.NewWith(timestamp, resetter.Random)
+	auditID, err := id.New()
 	if err != nil {
 		return err
 	}

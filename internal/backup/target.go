@@ -209,16 +209,16 @@ func (application *TargetApplication) SetTarget(ctx context.Context, input Targe
 	timestamp := application.now()
 	targetID := input.ID
 	if targetID == "" {
-		targetID, err = id.NewWith(timestamp, application.random)
+		targetID, err = id.New()
 		if err != nil {
 			return TargetResult{}, err
 		}
 	}
-	auditID, err := id.NewWith(timestamp, application.random)
+	auditID, err := id.New()
 	if err != nil {
 		return TargetResult{}, err
 	}
-	requestID, err := id.NewWith(timestamp, application.random)
+	requestID, err := id.New()
 	if err != nil {
 		return TargetResult{}, err
 	}
@@ -247,11 +247,11 @@ func (application *TargetApplication) SetControlTarget(ctx context.Context, targ
 	}
 	defer release()
 	timestamp := application.now()
-	auditID, err := id.NewWith(timestamp, application.random)
+	auditID, err := id.New()
 	if err != nil {
 		return ControlTargetResult{}, err
 	}
-	requestID, err := id.NewWith(timestamp, application.random)
+	requestID, err := id.New()
 	if err != nil {
 		return ControlTargetResult{}, err
 	}
@@ -272,11 +272,11 @@ func (application *TargetApplication) DeleteTarget(ctx context.Context, targetID
 	}
 	defer release()
 	timestamp := application.now()
-	auditID, err := id.NewWith(timestamp, application.random)
+	auditID, err := id.New()
 	if err != nil {
 		return "", err
 	}
-	requestID, err := id.NewWith(timestamp, application.random)
+	requestID, err := id.New()
 	if err != nil {
 		return "", err
 	}
@@ -311,8 +311,8 @@ func SealTargetSecret(master cryptobox.MasterKey, installationID, secret string)
 	}
 	plaintext := []byte(secret)
 	defer clear(plaintext)
-	// Keep the installation-scoped AAD so the v9 singleton target can be
-	// migrated in SQL without ever decrypting its secret.
+	// Bind the target secret to this installation so copied ciphertext cannot
+	// be opened under another installation's master key context.
 	return box.Seal(plaintext, []byte(installationID+":backup-target-secret"))
 }
 

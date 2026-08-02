@@ -11,6 +11,7 @@ import type { PendingResourceCreation } from "@/pending-resource-creation";
 
 test("counts every dependency configured on a pending service", () => {
   const input = {
+    buildEnvironment: {},
     environment: {},
     name: "api",
     source: {
@@ -129,6 +130,7 @@ test("hides a draft once its applying resource is materialized", () => {
   const draft: PendingResourceCreation = {
     id: "draft:service",
     input: {
+      buildEnvironment: {},
       environment: {},
       name: "api",
       source: {
@@ -139,6 +141,7 @@ test("hides a draft once its applying resource is materialized", () => {
     },
     kind: "service",
     settings: emptyPendingServiceCreationSettings({
+      buildEnvironment: {},
       environment: {},
       name: "api",
       source: {

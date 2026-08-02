@@ -16,6 +16,7 @@ type AuditRepository interface {
 
 type auditEventResponse struct {
 	ID                   string         `json:"id"`
+	ProjectID            string         `json:"projectId,omitempty"`
 	ActorKind            string         `json:"actorKind"`
 	ActorID              string         `json:"actorId"`
 	Action               string         `json:"action"`
@@ -52,7 +53,7 @@ func listAuditEvents(repository AuditRepository) http.HandlerFunc {
 			limit = parsed
 		}
 		page, err := repository.AuditEvents(request.Context(), state.AuditQuery{
-			ActorKind: request.URL.Query().Get("actorKind"), Action: request.URL.Query().Get("action"),
+			ProjectID: request.URL.Query().Get("projectId"), ActorKind: request.URL.Query().Get("actorKind"), Action: request.URL.Query().Get("action"),
 			Result: request.URL.Query().Get("result"), Cursor: request.URL.Query().Get("cursor"), Limit: limit,
 		})
 		if errors.Is(err, state.ErrAuditPageInvalid) || errors.Is(err, state.ErrAuditCursorInvalid) {
@@ -66,7 +67,7 @@ func listAuditEvents(repository AuditRepository) http.HandlerFunc {
 		events := make([]auditEventResponse, 0, len(page.Events))
 		for _, event := range page.Events {
 			events = append(events, auditEventResponse{
-				ID: event.ID, ActorKind: event.ActorKind, ActorID: event.ActorID,
+				ID: event.ID, ProjectID: event.ProjectID, ActorKind: event.ActorKind, ActorID: event.ActorID,
 				Action: event.Action, TargetKind: event.TargetKind, TargetID: event.TargetID,
 				RequestCorrelationID: event.RequestCorrelationID, Result: event.Result,
 				Metadata: event.Metadata, CreatedAt: event.CreatedAtMillis,

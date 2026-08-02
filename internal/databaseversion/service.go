@@ -2,10 +2,8 @@ package databaseversion
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 	"sync"
 	"time"
@@ -82,7 +80,6 @@ type Config struct {
 	Store     Store
 	Admission *admission.Gate
 	Adapters  map[string]Adapter
-	Random    io.Reader
 	Now       func() time.Time
 	OnError   func(error)
 }
@@ -121,9 +118,6 @@ func New(config Config) (*Service, error) {
 		if (kind != Postgres && kind != Redis) || adapter == nil {
 			return nil, errors.New("managed database version adapters are invalid")
 		}
-	}
-	if config.Random == nil {
-		config.Random = rand.Reader
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -187,7 +181,7 @@ func (service *Service) Start(
 		return StartResult{}, ErrInsufficientSpace
 	}
 	startedAt := service.config.Now()
-	operationID, err := id.NewWith(startedAt, service.config.Random)
+	operationID, err := id.New()
 	if err != nil {
 		lease.Release()
 		return StartResult{}, err

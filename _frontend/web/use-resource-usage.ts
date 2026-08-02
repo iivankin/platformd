@@ -7,12 +7,8 @@ import type {
   ResourceUsageKind,
   ResourceUsageRange,
 } from "@/api";
-import {
-  cpuMillicoresBetween,
-  networkBytesPerSecondBetween,
-} from "@/resource-usage-rates";
 
-const currentRefreshMillis = 5000;
+const currentRefreshMillis = 2000;
 const historyRefreshMillis = 60_000;
 
 const messageFor = (error: unknown, fallback: string) =>
@@ -26,17 +22,11 @@ export const useCurrentResourceUsage = (
   resourceID: string
 ) => {
   const [usage, setUsage] = useState<ResourceUsage | null>(null);
-  const [cpuMillicores, setCPUMillicores] = useState<number>();
-  const [network, setNetwork] = useState<{
-    egress: number;
-    ingress: number;
-  }>();
   const [error, setError] = useState<string>();
 
   useEffect(() => {
     const controller = new AbortController();
     let inFlight = false;
-    let previous: ResourceUsage | null = null;
     const load = async () => {
       if (inFlight) {
         return;
@@ -48,13 +38,6 @@ export const useCurrentResourceUsage = (
           resourceID,
           controller.signal
         );
-        setCPUMillicores(
-          previous ? cpuMillicoresBetween(previous, current) : undefined
-        );
-        setNetwork(
-          previous ? networkBytesPerSecondBetween(previous, current) : undefined
-        );
-        previous = current;
         setUsage(current);
         setError(undefined);
       } catch (loadError) {
@@ -76,7 +59,16 @@ export const useCurrentResourceUsage = (
     };
   }, [kind, resourceID]);
 
-  return { cpuMillicores, error, network, usage };
+  const network =
+    usage?.networkIngressBytesPerSecond !== undefined &&
+    usage.networkEgressBytesPerSecond !== undefined
+      ? {
+          egress: usage.networkEgressBytesPerSecond,
+          ingress: usage.networkIngressBytesPerSecond,
+        }
+      : undefined;
+
+  return { cpuMillicores: usage?.cpuMillicores, error, network, usage };
 };
 
 export const useResourceUsageHistory = (

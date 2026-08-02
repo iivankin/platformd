@@ -1,73 +1,46 @@
 package daemon
 
 import (
-	"errors"
+	"sync/atomic"
 
-	"github.com/iivankin/platformd/internal/cgroupstats"
-	"github.com/iivankin/platformd/internal/containerengine"
-	"github.com/iivankin/platformd/internal/deployment"
-	"github.com/iivankin/platformd/internal/managedpostgres"
-	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/resourcemetrics"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
-func (stack *runtimeStack) ReadResourceNetwork(kind cgroupstats.Kind, resourceID string) (resourcemetrics.NetworkCounters, bool, error) {
-	stack.mu.Lock()
-	if stack.closed {
-		stack.mu.Unlock()
-		return resourcemetrics.NetworkCounters{}, false, errors.New("container runtime is closed")
-	}
-	engine := stack.engine
-	deployments := stack.deployments
-	postgres := stack.managedPostgres
-	redis := stack.managedRedis
-	stack.mu.Unlock()
-
-	container, available, err := metricContainer(kind, resourceID, deployments, postgres, redis)
-	if err != nil || !available {
-		return resourcemetrics.NetworkCounters{}, available, err
-	}
-	counters, err := engine.ContainerNetworkCounters(container.ID)
-	return resourcemetrics.NetworkCounters{
-		RXBytes: counters.RXBytes,
-		TXBytes: counters.TXBytes,
-	}, err == nil, err
+type publicNetworkReader struct {
+	proxy    *trafficmetrics.Registry
+	firewall *firewall.Manager
+	tcp      atomic.Pointer[tcpTrafficSampler]
 }
 
-func metricContainer(
-	kind cgroupstats.Kind,
-	resourceID string,
-	deployments *deployment.Controller,
-	postgres *managedpostgres.Controller,
-	redis *managedredis.Controller,
-) (containerengine.Container, bool, error) {
-	switch kind {
-	case cgroupstats.Service:
-		if deployments == nil {
-			return containerengine.Container{}, false, nil
-		}
-		return deployments.Container(resourceID)
-	case cgroupstats.Postgres:
-		if postgres == nil {
-			return containerengine.Container{}, false, nil
-		}
-		return runningMetricContainer(postgres.Status(resourceID))
-	case cgroupstats.Redis:
-		if redis == nil {
-			return containerengine.Container{}, false, nil
-		}
-		return runningMetricContainer(redis.Status(resourceID))
-	default:
-		return containerengine.Container{}, false, cgroupstats.ErrInvalidResource
+type tcpTrafficSampler struct {
+	sample func()
+}
+
+func (reader *publicNetworkReader) setTCPSampler(sample func()) {
+	if sample != nil {
+		reader.tcp.Store(&tcpTrafficSampler{sample: sample})
 	}
 }
 
-func runningMetricContainer(container containerengine.Container, available bool, err error) (containerengine.Container, bool, error) {
-	if err != nil || !available {
-		return containerengine.Container{}, available, err
+// PublicNetworkCounters combines disjoint paths: host-terminated public
+// proxies and directly forwarded container traffic. It performs one nftables
+// object dump for the whole installation, never one container/netns query.
+func (reader *publicNetworkReader) PublicNetworkCounters() (resourcemetrics.PublicNetworkSnapshot, error) {
+	if sampler := reader.tcp.Load(); sampler != nil {
+		sampler.sample()
 	}
-	if container.State != "running" {
-		return containerengine.Container{}, false, nil
+	result := reader.proxy.Collect()
+	direct, err := reader.firewall.PublicTraffic()
+	if err != nil {
+		return resourcemetrics.PublicNetworkSnapshot{Counters: result}, err
 	}
-	return container, true, nil
+	for serviceID, counters := range direct {
+		current := result[serviceID]
+		current.IngressBytes += counters.IngressBytes
+		current.EgressBytes += counters.EgressBytes
+		result[serviceID] = current
+	}
+	return resourcemetrics.PublicNetworkSnapshot{Counters: result, Complete: true}, nil
 }

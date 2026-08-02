@@ -1,7 +1,6 @@
 package automationapi
 
 import (
-	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
@@ -93,7 +92,7 @@ func TestAutomationStartsDatabaseVersionChangeWithinTokenBoundary(t *testing.T) 
 	service, err := databaseversion.New(databaseversion.Config{
 		Context: context.Background(), Store: store, Admission: admission.New(),
 		Adapters: map[string]databaseversion.Adapter{databaseversion.Redis: adapter},
-		Random:   bytes.NewReader(make([]byte, 64)), Now: func() time.Time { return time.UnixMilli(10) },
+		Now:      func() time.Time { return time.UnixMilli(10) },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -151,12 +150,12 @@ func TestAutomationStartsDatabaseVersionChangeWithinTokenBoundary(t *testing.T) 
 
 func TestAutomationOpenAPIAdvertisesDatabaseVersionRoutesOnlyWhenConfigured(t *testing.T) {
 	without := httptest.NewRecorder()
-	serveOpenAPI("api.example.com", openAPIFeatures{}).ServeHTTP(without, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("admin.example.com", openAPIFeatures{}).ServeHTTP(without, httptest.NewRequest(http.MethodGet, "/public/api/v1/openapi.json", nil))
 	if strings.Contains(without.Body.String(), "version-change") {
 		t.Fatalf("unconfigured OpenAPI contains version change: %s", without.Body.String())
 	}
 	with := httptest.NewRecorder()
-	serveOpenAPI("api.example.com", openAPIFeatures{databaseVersions: true}).ServeHTTP(with, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("admin.example.com", openAPIFeatures{databaseVersions: true}).ServeHTTP(with, httptest.NewRequest(http.MethodGet, "/public/api/v1/openapi.json", nil))
 	if !strings.Contains(with.Body.String(), "/managed-databases/{kind}/{resourceID}/version-change") ||
 		!strings.Contains(with.Body.String(), "/version-change/preview") ||
 		!strings.Contains(with.Body.String(), "DatabaseVersionPreviewRequest") ||

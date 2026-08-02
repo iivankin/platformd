@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"strings"
 	"sync"
@@ -91,13 +90,13 @@ func TestMCPStartsAndReadsDatabaseVersionChangeWithinTokenBoundary(t *testing.T)
 	service, err := databaseversion.New(databaseversion.Config{
 		Context: context.Background(), Store: store, Admission: admission.New(),
 		Adapters: map[string]databaseversion.Adapter{databaseversion.Redis: adapter},
-		Random:   bytes.NewReader(make([]byte, 64)), Now: func() time.Time { return time.UnixMilli(10) },
+		Now:      func() time.Time { return time.UnixMilli(10) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	handler := &Handler{
-		hostname: "api.example.com", version: "test", versions: service,
+		hostname: "admin.example.com", version: "test", versions: service,
 		tools: configuredReadTools(false, true), admission: admission.New(),
 	}
 	projectID := "project"

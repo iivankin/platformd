@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/domainvariables"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -16,6 +17,10 @@ type DomainRepository interface {
 	ServiceDomains(context.Context, string, string) ([]state.ServiceDomain, error)
 	AttachServiceDomain(context.Context, state.AttachServiceDomainInput) (state.ServiceDomain, error)
 	DetachServiceDomain(context.Context, state.DetachServiceDomainInput) error
+}
+
+type serviceDomainDNSStatusRepository interface {
+	ServiceDomainDNSStatus(context.Context, string, string, string) (cloudflaredns.DNSStatus, error)
 }
 
 type serviceDomainResponse struct {
@@ -35,6 +40,33 @@ func registerServiceDomainRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET "+pattern, listServiceDomains(config.domains))
 	mux.HandleFunc("POST "+pattern, attachServiceDomain(config))
 	mux.HandleFunc("DELETE "+pattern+"/{hostname}", detachServiceDomain(config))
+	mux.HandleFunc("GET "+pattern+"/{hostname}/dns", serviceDomainDNSStatus(config.domains))
+}
+
+func serviceDomainDNSStatus(repository DomainRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		checker, ok := repository.(serviceDomainDNSStatusRepository)
+		if !ok {
+			writeJSON(response, http.StatusOK, map[string]any{"status": cloudflaredns.DNSStatusUnmanaged})
+			return
+		}
+		status, err := checker.ServiceDomainDNSStatus(
+			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"), request.PathValue("hostname"),
+		)
+		if errors.Is(err, state.ErrDomainNotFound) {
+			writeAPIError(response, http.StatusNotFound, "domain_not_found", "Domain not found on this service")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "domain_dns_status_failed", "Unable to check domain DNS status")
+			return
+		}
+		writeJSON(response, http.StatusOK, map[string]any{"status": status})
+	}
 }
 
 func listServiceDomains(repository DomainRepository) http.HandlerFunc {
@@ -77,7 +109,7 @@ func attachServiceDomain(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate domain identifiers")
 			return
@@ -104,7 +136,7 @@ func detachServiceDomain(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate domain identifiers")
 			return

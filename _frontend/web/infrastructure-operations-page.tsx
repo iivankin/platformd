@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { PageStack } from "@/components/ui/page-stack";
+import { ImageGarbageCollectionOperation } from "@/image-garbage-collection-operation";
 import { PlatformReleaseOperation } from "@/platform-release-operation";
 import { ServerTerminalOverlay } from "@/server-terminal-overlay";
 import type { UpdateStatusState } from "@/use-update-status";
@@ -40,6 +41,8 @@ export const InfrastructureOperationsPage = ({
           Open console
         </Button>
       </SectionCard>
+
+      <ImageGarbageCollectionOperation />
 
       <PlatformReleaseOperation update={update} />
 

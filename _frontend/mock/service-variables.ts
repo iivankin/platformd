@@ -4,6 +4,7 @@ import type { MockState } from "./state";
 const expressionPattern =
   /\$\{\{\s*(?<resource>[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)\.(?<output>[A-Za-z_][A-Za-z0-9_]*)\s*\}\}/gu;
 const expressionOpening = `${String.fromCodePoint(36)}{{`;
+type EnvironmentScope = "build" | "runtime";
 
 const connectionURL = (
   scheme: string,
@@ -37,17 +38,54 @@ class MockEnvironmentResolution {
     );
   }
 
-  resolve(): Record<string, string> {
+  resolve(
+    environment?: Record<string, string>,
+    scope: EnvironmentScope = "runtime"
+  ): Record<string, string> {
     const service = this.state.services[this.serviceID];
     if (!service) {
       throw new Error("Service not found");
     }
-    return Object.fromEntries(
-      Object.keys(service.environment).map((name) => [
-        name,
-        this.serviceVariable(service.id, name),
-      ])
+    const source = environment ?? service.environment;
+    const result = Object.fromEntries(
+      Object.entries(source).map(([name, value]) => [name, this.expand(value)])
     );
+    if (!("NODE_ENV" in result)) {
+      result.NODE_ENV = "production";
+    }
+    if (scope === "build" && !("CI" in result)) {
+      result.CI = "1";
+    }
+    const project = this.state.projects.find(
+      (candidate) => candidate.id === service.projectId
+    );
+    result.PLATFORMD_ENVIRONMENT = "production";
+    result.PLATFORMD_PROJECT_ID = service.projectId;
+    result.PLATFORMD_PROJECT_NAME = project?.name ?? "";
+    result.PLATFORMD_SERVICE_ID = service.id;
+    result.PLATFORMD_SERVICE_NAME = service.name;
+    result.PLATFORMD_PRIVATE_DOMAIN = `${service.name}.${project?.name ?? ""}.internal`;
+    if (scope === "build") {
+      return result;
+    }
+    const publicURLs = (this.state.domains[service.id] ?? [])
+      .map((domain) => `https://${domain.hostname}`)
+      .toSorted();
+    result.PLATFORMD_DEPLOYMENT_ID = service.activeDeploymentId ?? "";
+    result.PLATFORMD_PUBLIC_URLS = publicURLs.join(",");
+    if (service.source.type === "github") {
+      result.PLATFORMD_GIT_REPOSITORY = service.source.github.repository;
+      const activeDeployment = (this.state.deployments[service.id] ?? []).find(
+        (deployment) => deployment.id === service.activeDeploymentId
+      );
+      if (activeDeployment?.sourceRevision) {
+        result.PLATFORMD_GIT_COMMIT_SHA = activeDeployment.sourceRevision;
+      }
+      if (activeDeployment?.commitMessage) {
+        result.PLATFORMD_GIT_COMMIT_MESSAGE = activeDeployment.commitMessage;
+      }
+    }
+    return result;
   }
 
   private expand(value: string): string {
@@ -226,6 +264,20 @@ export const resolveMockEnvironment = (
   serviceID: string
 ): Record<string, string> =>
   new MockEnvironmentResolution(state, serviceID).resolve();
+
+export const resolveMockBuildEnvironment = (
+  state: MockState,
+  serviceID: string
+): Record<string, string> => {
+  const service = state.services[serviceID];
+  if (!service) {
+    throw new Error("Service not found");
+  }
+  return new MockEnvironmentResolution(state, serviceID).resolve(
+    service.buildEnvironment,
+    "build"
+  );
+};
 
 export const referencedResourceNames = (value: string): string[] =>
   [...value.matchAll(expressionPattern)].flatMap((match) =>

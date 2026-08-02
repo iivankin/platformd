@@ -36,7 +36,13 @@ type repositoryStub struct {
 	domainDetach  state.DetachServiceDomainInput
 }
 
-func (*repositoryStub) Resource(context.Context, string, string, string) error { return nil }
+func (*repositoryStub) ResolveProject(_ context.Context, name string) (portforward.ResolvedProject, error) {
+	return portforward.ResolvedProject{ID: "project", Name: name}, nil
+}
+
+func (*repositoryStub) ResolveResource(_ context.Context, _ string, name string) (portforward.ResolvedResource, error) {
+	return portforward.ResolvedResource{ID: "database-id", Kind: "postgres", Name: name}, nil
+}
 
 func (*repositoryStub) ResolveResourceAddress(string, string, string, int) (string, error) {
 	return "10.42.0.4:5432", nil
@@ -127,15 +133,15 @@ func (*repositoryStub) List(context.Context, managedimages.Engine, int, int, str
 
 func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	t.Helper()
-	projects, err := automation.NewProjectApplication(repository, nil, nil)
+	projects, err := automation.NewProjectApplication(repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	services, err := automation.NewServiceApplication(repository, nil, nil)
+	services, err := automation.NewServiceApplication(repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	domains, err := automation.NewDomainApplication(repository, nil, nil)
+	domains, err := automation.NewDomainApplication(repository, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +167,7 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 		t.Fatal(err)
 	}
 	handler, err := Handler(Config{
-		Hostname: "api.example.com", Repository: repository, Projects: projects,
+		Hostname: "admin.example.com", Repository: repository, Projects: projects,
 		Services: services, Domains: domains, Logs: logs, Images: repository, ObjectStores: repository,
 		Volumes: volumes, PortForwards: portForwards, Admission: admission.New(),
 	})
@@ -181,7 +187,7 @@ func (automationVolumeFilesystem) Remove(context.Context, string, string) error 
 func TestAutomationAPIListsOfficialManagedImageTags(t *testing.T) {
 	handler := automationHandler(t, &repositoryStub{})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/managed-images/postgres/tags?page=1&pageSize=50&search=18", automation.Identity{TokenID: "token", Role: "read"}))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/managed-images/postgres/tags?page=1&pageSize=50&search=18", automation.Identity{TokenID: "token", Role: "read"}))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"18.3"`) {
 		t.Fatalf("managed image tags = %d/%s", response.Code, response.Body)
 	}
@@ -254,7 +260,7 @@ func TestAutomationAPIEnforcesProjectBoundaryBeforeLookup(t *testing.T) {
 	identity := automation.Identity{TokenID: "token", Role: "read", ProjectID: &projectID}
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/projects", identity))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/projects", identity))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"id":"project-a"`) || strings.Contains(response.Body.String(), "project-b") {
 		t.Fatalf("bounded project list = %d/%s", response.Code, response.Body)
 	}
@@ -263,7 +269,7 @@ func TestAutomationAPIEnforcesProjectBoundaryBeforeLookup(t *testing.T) {
 	}
 
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/projects/project-b/services", identity))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/projects/project-b/services", identity))
 	if response.Code != http.StatusForbidden || repository.canvasCalls != 0 {
 		t.Fatalf("cross-project request = %d/%s, lookups=%d", response.Code, response.Body, repository.canvasCalls)
 	}
@@ -272,13 +278,13 @@ func TestAutomationAPIEnforcesProjectBoundaryBeforeLookup(t *testing.T) {
 func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 	handler := automationHandler(t, &repositoryStub{})
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "https://admin.example.com/public/api/v1/projects", nil))
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing identity status = %d", response.Code)
 	}
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://api.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || !strings.Contains(response.Body.String(), `/object-stores`) || !strings.Contains(response.Body.String(), `/domains`) || !strings.Contains(response.Body.String(), `ProjectCreateRequest`) || strings.Contains(response.Body.String(), `/query`) {
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/openapi.json", automation.Identity{TokenID: "token", Role: "read"}))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"openapi":"3.1.0"`) || !strings.Contains(response.Body.String(), `"url":"https://admin.example.com"`) || !strings.Contains(response.Body.String(), `/volumes`) || !strings.Contains(response.Body.String(), `/object-stores`) || !strings.Contains(response.Body.String(), `/domains`) || !strings.Contains(response.Body.String(), `ProjectCreateRequest`) || strings.Contains(response.Body.String(), `/query`) {
 		t.Fatalf("OpenAPI response = %d/%s", response.Code, response.Body)
 	}
 }
@@ -286,7 +292,7 @@ func TestAutomationAPIPublishesOpenAPIAndRequiresIdentity(t *testing.T) {
 func TestAutomationAPIManagesServiceDomainsWithinTokenBoundary(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := automationHandler(t, repository)
-	path := "https://api.example.com/api/v1/projects/project/services/service/domains"
+	path := "https://admin.example.com/public/api/v1/projects/project/services/service/domains"
 	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"hostname":"app.example.com","targetPort":8080,"move":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
@@ -315,7 +321,7 @@ func TestAutomationAPIManagesServiceDomainsWithinTokenBoundary(t *testing.T) {
 func TestAutomationAPICreatesProjectOnlyWithUnboundAdmin(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := automationHandler(t, repository)
-	path := "https://api.example.com/api/v1/projects"
+	path := "https://admin.example.com/public/api/v1/projects"
 	bound := "project"
 	for _, identity := range []automation.Identity{
 		{TokenID: "read", Role: "read"},
@@ -343,7 +349,7 @@ func TestAutomationAPICreatesProjectOnlyWithUnboundAdmin(t *testing.T) {
 func TestAutomationAPIManagesObjectStoreMetadataWithoutObjectDataRoutes(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := automationHandler(t, repository)
-	path := "https://api.example.com/api/v1/projects/project/object-stores"
+	path := "https://admin.example.com/public/api/v1/projects/project/object-stores"
 	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"assets","bucketName":"assets-bucket"}`))
 	request.Header.Set("Content-Type", "application/json")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin"}))
@@ -352,13 +358,13 @@ func TestAutomationAPIManagesObjectStoreMetadataWithoutObjectDataRoutes(t *testi
 	if response.Code != http.StatusCreated || repository.objectCreate.Actor.Kind != "token" || repository.objectCreate.Actor.ID != "admin" || !strings.Contains(response.Body.String(), `"secret":"one-time-secret"`) {
 		t.Fatalf("object store create = %d/%s input=%+v", response.Code, response.Body, repository.objectCreate)
 	}
-	list := automationRequest("/api/v1/projects/project/object-stores", automation.Identity{TokenID: "read", Role: "read"})
+	list := automationRequest("/public/api/v1/projects/project/object-stores", automation.Identity{TokenID: "read", Role: "read"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, list)
 	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), "one-time-secret") || !strings.Contains(response.Body.String(), `"region":"us-east-1"`) {
 		t.Fatalf("object store list = %d/%s", response.Code, response.Body)
 	}
-	dataRequest := automationRequest("/api/v1/projects/project/object-stores/store/objects", automation.Identity{TokenID: "admin", Role: "admin"})
+	dataRequest := automationRequest("/public/api/v1/projects/project/object-stores/store/objects", automation.Identity{TokenID: "admin", Role: "admin"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, dataRequest)
 	if response.Code != http.StatusNotFound {
@@ -369,7 +375,7 @@ func TestAutomationAPIManagesObjectStoreMetadataWithoutObjectDataRoutes(t *testi
 func TestAutomationAPIVolumesRespectReadAndAdminRoles(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := automationHandler(t, repository)
-	path := "https://api.example.com/api/v1/projects/project/services/service/volumes"
+	path := "https://admin.example.com/public/api/v1/projects/project/services/service/volumes"
 
 	readRequest := httptest.NewRequest(http.MethodGet, path, nil)
 	readRequest = readRequest.WithContext(automation.WithIdentity(readRequest.Context(), automation.Identity{TokenID: "read", Role: "read"}))
@@ -413,12 +419,12 @@ func TestAutomationAPIReadsLogsWithinTokenProjectBoundary(t *testing.T) {
 	identity := automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound}
 
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/projects/project-b/services/service/logs", identity))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/projects/project-b/services/service/logs", identity))
 	if response.Code != http.StatusForbidden || repository.serviceCalls != 0 {
 		t.Fatalf("cross-project logs = %d/%s calls=%d", response.Code, response.Body, repository.serviceCalls)
 	}
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, automationRequest("/api/v1/projects/project-a/services/service/logs?limit=10", identity))
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/projects/project-a/services/service/logs?limit=10", identity))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.serviceCalls != 1 {
 		t.Fatalf("visible logs = %d/%s calls=%d", response.Code, response.Body, repository.serviceCalls)
 	}
@@ -427,7 +433,7 @@ func TestAutomationAPIReadsLogsWithinTokenProjectBoundary(t *testing.T) {
 func TestAutomationAPIRequiresAdminBeforeDecodingAndCreatesTokenActor(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := automationHandler(t, repository)
-	path := "https://api.example.com/api/v1/projects/project/services"
+	path := "https://admin.example.com/public/api/v1/projects/project/services"
 
 	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader("not-json"))
 	request.Header.Set("Content-Type", "application/json")
@@ -455,6 +461,6 @@ func TestAutomationAPIRequiresAdminBeforeDecodingAndCreatesTokenActor(t *testing
 }
 
 func automationRequest(path string, identity automation.Identity) *http.Request {
-	request := httptest.NewRequest(http.MethodGet, "https://api.example.com"+path, nil)
+	request := httptest.NewRequest(http.MethodGet, "https://admin.example.com"+path, nil)
 	return request.WithContext(automation.WithIdentity(request.Context(), identity))
 }

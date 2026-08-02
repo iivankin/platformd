@@ -79,7 +79,7 @@ func applyInitialServiceSetup(
 			return created, initialServiceSetupDomains, errors.New("domain management is unavailable")
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			return created, initialServiceSetupDomains, err
 		}
@@ -98,7 +98,7 @@ func applyInitialServiceSetup(
 			return created, initialServiceSetupListeners, errors.New("listener management is unavailable")
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			return created, initialServiceSetupListeners, err
 		}
@@ -115,7 +115,7 @@ func applyInitialServiceSetup(
 
 	snapshot.VolumeMounts = mounts
 	timestamp := config.now()
-	_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+	_, auditID, correlationID, err := createRequestIDs()
 	if err != nil {
 		return created, initialServiceSetupService, err
 	}
@@ -138,7 +138,7 @@ func rollbackInitialService(
 	identity access.Identity,
 ) error {
 	timestamp := config.now()
-	_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+	_, auditID, correlationID, err := createRequestIDs()
 	if err != nil {
 		return err
 	}

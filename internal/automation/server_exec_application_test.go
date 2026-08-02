@@ -1,7 +1,6 @@
 package automation
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"testing"
@@ -34,7 +33,7 @@ func (audit *serverAudit) RecordServerExec(_ context.Context, input state.Record
 func TestServerExecApplicationRequiresUnboundAdminBeforeExecution(t *testing.T) {
 	executor := &serverExecutor{}
 	audit := &serverAudit{}
-	application, err := NewServerExecApplication(executor, audit, bytes.NewReader(make([]byte, 32)), func() time.Time { return time.UnixMilli(10) })
+	application, err := NewServerExecApplication(executor, audit, func() time.Time { return time.UnixMilli(10) })
 	if err != nil {
 		t.Fatal(err)
 	}

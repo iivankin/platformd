@@ -66,7 +66,7 @@ func TestAutomationManagedResourceReadsAreProjectScopedAndSecretFree(t *testing.
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects/project/managed-resources", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://admin.example.com/public/api/v1/projects/project/managed-resources", nil)
 	request.SetPathValue("projectID", "project")
 	request = request.WithContext(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "read", Role: "read"}))
 	response := httptest.NewRecorder()
@@ -78,7 +78,7 @@ func TestAutomationManagedResourceReadsAreProjectScopedAndSecretFree(t *testing.
 	}
 
 	bound := "project"
-	request = httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects/other/managed-resources/redis/redis", nil)
+	request = httptest.NewRequest(http.MethodGet, "https://admin.example.com/public/api/v1/projects/other/managed-resources/redis/redis", nil)
 	request.SetPathValue("projectID", "other")
 	request.SetPathValue("kind", "redis")
 	request.SetPathValue("resourceID", "redis")
@@ -89,7 +89,7 @@ func TestAutomationManagedResourceReadsAreProjectScopedAndSecretFree(t *testing.
 		t.Fatalf("cross-project read = %d/%s calls=%d", response.Code, response.Body.String(), repository.redisCalls)
 	}
 
-	request = httptest.NewRequest(http.MethodGet, "https://api.example.com/api/v1/projects/project/managed-resources/redis/redis/backups?limit=10", nil)
+	request = httptest.NewRequest(http.MethodGet, "https://admin.example.com/public/api/v1/projects/project/managed-resources/redis/redis/backups?limit=10", nil)
 	request.SetPathValue("projectID", "project")
 	request.SetPathValue("kind", "redis")
 	request.SetPathValue("resourceID", "redis")
@@ -103,13 +103,13 @@ func TestAutomationManagedResourceReadsAreProjectScopedAndSecretFree(t *testing.
 
 func TestManagedResourceOpenAPIPathsMatchFeatureConfiguration(t *testing.T) {
 	response := httptest.NewRecorder()
-	serveOpenAPI("api.example.com", openAPIFeatures{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("admin.example.com", openAPIFeatures{}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/public/api/v1/openapi.json", nil))
 	if strings.Contains(response.Body.String(), `managed-resources`) {
 		t.Fatalf("disabled managed resource routes were advertised: %s", response.Body.String())
 	}
 
 	response = httptest.NewRecorder()
-	serveOpenAPI("api.example.com", openAPIFeatures{managedResources: true}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/openapi.json", nil))
+	serveOpenAPI("admin.example.com", openAPIFeatures{managedResources: true}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/public/api/v1/openapi.json", nil))
 	if !strings.Contains(response.Body.String(), `/managed-resources`) || !strings.Contains(response.Body.String(), `/backups`) {
 		t.Fatalf("managed resource routes are absent: %s", response.Body.String())
 	}

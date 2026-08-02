@@ -5,9 +5,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"io"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/publichostname"
@@ -17,14 +19,11 @@ import (
 type Repository interface {
 	Installation(context.Context) (state.Installation, error)
 	PublicHostnames(context.Context) ([]string, error)
-	SetAutomationHostname(context.Context, state.SetAutomationHostnameInput) (*string, error)
+	SetAdminHostname(context.Context, state.SetAdminHostnameInput) error
+	SetAccessConfiguration(context.Context, state.SetAccessConfigurationInput) error
 	AddOriginCertificate(context.Context, state.PutOriginCertificateInput) error
 	ReplaceOriginCertificate(context.Context, state.PutOriginCertificateInput) error
 	DeleteOriginCertificate(context.Context, state.DeleteOriginCertificateInput) error
-}
-
-type AutomationRoute interface {
-	Prepare(string) (func() error, error)
 }
 
 type Actor struct {
@@ -39,12 +38,11 @@ type Certificate struct {
 }
 
 type Settings struct {
-	InstallationID     string
-	AdminHostname      string
-	AutomationHostname string
-	AccessTeamDomain   string
-	AccessAudience     string
-	Certificates       []Certificate
+	InstallationID   string
+	AdminHostname    string
+	AccessTeamDomain string
+	AccessAudience   string
+	Certificates     []Certificate
 }
 
 type Mutation struct {
@@ -65,7 +63,6 @@ type Application struct {
 	repository   Repository
 	master       cryptobox.MasterKey
 	certificates *origin.Selector
-	automation   AutomationRoute
 	random       io.Reader
 	publicMu     *sync.Mutex
 }
@@ -74,15 +71,14 @@ func New(
 	repository Repository,
 	master cryptobox.MasterKey,
 	certificates *origin.Selector,
-	automation AutomationRoute,
 	publicMu *sync.Mutex,
 ) (*Application, error) {
-	if repository == nil || certificates == nil || automation == nil || publicMu == nil {
+	if repository == nil || certificates == nil || publicMu == nil {
 		return nil, errors.New("installation settings dependencies are incomplete")
 	}
 	return &Application{
 		repository: repository, master: master, certificates: certificates,
-		automation: automation, random: rand.Reader, publicMu: publicMu,
+		random: rand.Reader, publicMu: publicMu,
 	}, nil
 }
 
@@ -96,9 +92,6 @@ func (application *Application) Settings(ctx context.Context) (Settings, error) 
 		AccessTeamDomain: installation.AccessTeamDomain, AccessAudience: installation.AccessAudience,
 		Certificates: make([]Certificate, 0, len(installation.OriginCertificates)),
 	}
-	if installation.AutomationHostname != nil {
-		result.AutomationHostname = *installation.AutomationHostname
-	}
 	for _, certificate := range installation.OriginCertificates {
 		names, err := origin.DNSNames(certificate.CertificatePEM)
 		if err != nil {
@@ -111,37 +104,67 @@ func (application *Application) Settings(ctx context.Context) (Settings, error) 
 	return result, nil
 }
 
-func (application *Application) SetAutomationHostname(ctx context.Context, hostname string, mutation Mutation) (Settings, error) {
+func (application *Application) SetAdminHostname(ctx context.Context, hostname string, mutation Mutation) (Settings, bool, error) {
 	application.publicMu.Lock()
 	defer application.publicMu.Unlock()
 
-	normalized := ""
-	if hostname != "" {
-		var err error
-		normalized, err = publichostname.Normalize(hostname)
-		if err != nil {
-			return Settings{}, err
-		}
-		if !application.certificates.Covers(normalized) {
-			return Settings{}, &state.OriginCertificateCoverageError{Hostnames: []string{normalized}}
-		}
-	}
-	publish, err := application.automation.Prepare(normalized)
+	normalized, err := publichostname.Normalize(hostname)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, false, err
 	}
-	_, err = application.repository.SetAutomationHostname(ctx, state.SetAutomationHostnameInput{
+	installation, err := application.repository.Installation(ctx)
+	if err != nil {
+		return Settings{}, false, err
+	}
+	if normalized == installation.AdminHostname {
+		settings, settingsErr := application.Settings(ctx)
+		return settings, false, settingsErr
+	}
+	if !application.certificates.Covers(normalized) {
+		return Settings{}, false, &state.OriginCertificateCoverageError{Hostnames: []string{normalized}}
+	}
+	if err := application.repository.SetAdminHostname(ctx, state.SetAdminHostnameInput{
 		Hostname: normalized, AuditEventID: mutation.AuditEventID,
 		ActorID: mutation.Actor.ID, ActorEmail: mutation.Actor.Email,
 		RequestCorrelationID: mutation.CorrelationID, UpdatedAtMillis: mutation.Timestamp.UnixMilli(),
-	})
+	}); err != nil {
+		return Settings{}, false, err
+	}
+	settings, err := application.Settings(ctx)
+	return settings, err == nil, err
+}
+
+func (application *Application) SetAccessConfiguration(
+	ctx context.Context,
+	teamDomain string,
+	audience string,
+	mutation Mutation,
+) (Settings, bool, error) {
+	application.publicMu.Lock()
+	defer application.publicMu.Unlock()
+
+	teamDomain = strings.ToLower(strings.TrimSpace(teamDomain))
+	audience = strings.TrimSpace(audience)
+	if _, err := access.New(access.Config{TeamDomain: teamDomain, Audience: audience}); err != nil {
+		return Settings{}, false, err
+	}
+	installation, err := application.repository.Installation(ctx)
 	if err != nil {
-		return Settings{}, err
+		return Settings{}, false, err
 	}
-	if err := publish(); err != nil {
-		return Settings{}, err
+	if teamDomain == installation.AccessTeamDomain && audience == installation.AccessAudience {
+		settings, settingsErr := application.Settings(ctx)
+		return settings, false, settingsErr
 	}
-	return application.Settings(ctx)
+	if err := application.repository.SetAccessConfiguration(ctx, state.SetAccessConfigurationInput{
+		TeamDomain: teamDomain, Audience: audience, AuditEventID: mutation.AuditEventID,
+		ActorID: mutation.Actor.ID, ActorEmail: mutation.Actor.Email,
+		RequestCorrelationID: mutation.CorrelationID, UpdatedAtMillis: mutation.Timestamp.UnixMilli(),
+	}); err != nil {
+		return Settings{}, false, err
+	}
+	settings, err := application.Settings(ctx)
+	return settings, err == nil, err
 }
 
 func (application *Application) AddCertificate(ctx context.Context, mutation CertificateMutation) (Settings, error) {

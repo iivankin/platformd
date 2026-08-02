@@ -84,12 +84,31 @@ func TestRepositoryDrainTimeoutReopensAdmission(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err = fixture.application.DeleteRepository(ctx, DeleteInput{
-		RepositoryID: fixture.private.Repository.ID, ExpectedName: fixture.private.Repository.Name,
-		Actor: Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
-	})
+	result := make(chan error, 1)
+	go func() {
+		_, deleteErr := fixture.application.DeleteRepository(ctx, DeleteInput{
+			RepositoryID: fixture.private.Repository.ID, ExpectedName: fixture.private.Repository.Name,
+			Actor: Actor{Kind: "access", ID: "user", Email: "admin@example.com"},
+		})
+		result <- deleteErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		fixture.application.admissionMu.Lock()
+		blocked := fixture.application.admissions[fixture.private.Repository.ID].blocked
+		fixture.application.admissionMu.Unlock()
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("repository deletion did not begin draining")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	err = <-result
 	if !errors.Is(err, ErrRepositoryBusy) {
 		t.Fatalf("drain timeout error = %v", err)
 	}

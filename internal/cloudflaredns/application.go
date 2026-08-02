@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -20,6 +21,8 @@ import (
 
 const managedRecordCommentPrefix = "Managed by platformd PR preview "
 
+const maximumPurgeHostnames = 30
+
 type Repository interface {
 	CloudflareDNSSettings(context.Context) (state.CloudflareDNSSettings, error)
 	PutCloudflareDNSSettings(context.Context, state.PutCloudflareDNSSettingsInput) error
@@ -30,6 +33,7 @@ type Config struct {
 	Master         cryptobox.MasterKey
 	InstallationID string
 	HTTPClient     *http.Client
+	Resolver       HostResolver
 	BaseURL        string
 }
 
@@ -37,6 +41,7 @@ type Application struct {
 	repository Repository
 	box        cryptobox.Box
 	client     *http.Client
+	resolver   HostResolver
 	baseURL    string
 }
 
@@ -66,11 +71,18 @@ func New(config Config) (*Application, error) {
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
+	resolver := config.Resolver
+	if resolver == nil {
+		resolver = net.DefaultResolver
+	}
 	baseURL := strings.TrimRight(config.BaseURL, "/")
 	if baseURL == "" {
 		baseURL = "https://api.cloudflare.com/client/v4"
 	}
-	return &Application{repository: config.Repository, box: box, client: client, baseURL: baseURL}, nil
+	return &Application{
+		repository: config.Repository, box: box, client: client,
+		resolver: resolver, baseURL: baseURL,
+	}, nil
 }
 
 func (application *Application) Settings(ctx context.Context) (Settings, error) {
@@ -252,6 +264,57 @@ func (application *Application) DeletePreviewHostname(ctx context.Context, hostn
 	return application.deleteRecords(ctx, string(token), zone.ID, recordIDs)
 }
 
+func (application *Application) PurgeHostnames(ctx context.Context, hostnames []string) error {
+	if len(hostnames) == 0 || len(hostnames) > maximumPurgeHostnames {
+		return fmt.Errorf("Cloudflare cache purge requires between 1 and %d hostnames", maximumPurgeHostnames)
+	}
+	normalized := make([]string, 0, len(hostnames))
+	seen := make(map[string]struct{}, len(hostnames))
+	for _, value := range hostnames {
+		hostname, err := publichostname.Normalize(value)
+		if err != nil {
+			return err
+		}
+		if _, exists := seen[hostname]; exists {
+			continue
+		}
+		seen[hostname] = struct{}{}
+		normalized = append(normalized, hostname)
+	}
+	sort.Strings(normalized)
+	token, err := application.token(ctx)
+	if err != nil {
+		return err
+	}
+	defer clear(token)
+	zones, err := application.zones(ctx, string(token))
+	if err != nil {
+		return err
+	}
+	byZone := make(map[string][]string)
+	for _, hostname := range normalized {
+		selected, err := zoneForHostname(zones, hostname)
+		if err != nil {
+			return err
+		}
+		byZone[selected.ID] = append(byZone[selected.ID], hostname)
+	}
+	zoneIDs := make([]string, 0, len(byZone))
+	for zoneID := range byZone {
+		zoneIDs = append(zoneIDs, zoneID)
+	}
+	sort.Strings(zoneIDs)
+	for _, zoneID := range zoneIDs {
+		if err := application.request(
+			ctx, http.MethodPost, "/zones/"+url.PathEscape(zoneID)+"/purge_cache", string(token),
+			map[string]any{"hosts": byZone[zoneID]}, nil,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (application *Application) deleteRecords(ctx context.Context, token, zoneID string, recordIDs []string) error {
 	var result error
 	for _, recordID := range recordIDs {
@@ -266,18 +329,30 @@ func (application *Application) deleteRecords(ctx context.Context, token, zoneID
 }
 
 func (application *Application) zoneForHostname(ctx context.Context, token, hostname string) (zone, error) {
+	zones, err := application.zones(ctx, token)
+	if err != nil {
+		return zone{}, err
+	}
+	return zoneForHostname(zones, hostname)
+}
+
+func (application *Application) zones(ctx context.Context, token string) ([]zone, error) {
 	var zones []zone
 	for page := 1; page <= 5; page++ {
 		var response []zone
 		path := fmt.Sprintf("/zones?status=active&per_page=50&page=%d", page)
 		if err := application.request(ctx, http.MethodGet, path, token, nil, &response); err != nil {
-			return zone{}, err
+			return nil, err
 		}
 		zones = append(zones, response...)
 		if len(response) < 50 {
 			break
 		}
 	}
+	return zones, nil
+}
+
+func zoneForHostname(zones []zone, hostname string) (zone, error) {
 	var selected zone
 	for _, candidate := range zones {
 		name, err := publichostname.Normalize(candidate.Name)

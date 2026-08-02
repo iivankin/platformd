@@ -47,8 +47,8 @@ FROM installation WHERE singleton = 1`).Scan(&installationID, &teamDomain, &audi
 			return errors.New("restored Access configuration is empty")
 		}
 		// The control snapshot contains complete SQLite configuration, but a
-		// fresh VPS has none of the corresponding Registry/S3 payload files.
-		// Clear only content metadata at the one-time recovery boundary; each
+		// fresh VPS has none of the corresponding Registry payload files.
+		// Clear only Registry content metadata at the one-time recovery boundary; each
 		// resource restore will republish its own latest generation. Keeping
 		// repositories, stores, credentials and policies makes recovery usable
 		// without introducing a second control-state format.
@@ -56,9 +56,6 @@ FROM installation WHERE singleton = 1`).Scan(&installationID, &teamDomain, &audi
 			"DELETE FROM registry_uploads",
 			"DELETE FROM registry_tags",
 			"DELETE FROM registry_manifests",
-			"DELETE FROM multipart_uploads",
-			"DELETE FROM objects",
-			"DELETE FROM object_payloads",
 			// Resource generations are restored after the control database. Clear
 			// first-mount markers so restored volumes are marked by their resource
 			// restore, while a volume without a generation receives ordinary image

@@ -55,75 +55,75 @@ func Handler(config Config) (http.Handler, error) {
 		return nil, errors.New("automation API dependencies are incomplete")
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /api/v1/openapi.json", serveOpenAPI(config.Hostname, openAPIFeatures{
+	mux.HandleFunc("GET /public/api/v1/openapi.json", serveOpenAPI(config.Hostname, openAPIFeatures{
 		serverExec: config.ServerExec != nil, managedResources: config.Managed != nil,
 		databaseVersions: config.Versions != nil, volumes: config.Volumes != nil,
 		projects: config.Projects != nil, objectStores: config.ObjectStores != nil,
 		domains: config.Domains != nil, registry: config.Registry != nil && config.RegistrySettings != nil,
 		portForwards: config.PortForwards != nil,
 	}))
-	mux.HandleFunc("GET /api/v1/me", serveIdentity)
-	mux.HandleFunc("GET /api/v1/projects", listProjects(config.Repository))
+	mux.HandleFunc("GET /public/api/v1/me", serveIdentity)
+	mux.HandleFunc("GET /public/api/v1/projects", listProjects(config.Repository))
 	if config.Projects != nil {
-		mux.HandleFunc("POST /api/v1/projects", createProject(config.Projects))
+		mux.HandleFunc("POST /public/api/v1/projects", createProject(config.Projects))
 	}
-	mux.HandleFunc("GET /api/v1/projects/{projectID}", getProject(config.Repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services", listServices(config.Repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}", getService(config.Repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments", listDeployments(config.Repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", readServiceLogs(config.Logs))
-	mux.HandleFunc("POST /api/v1/projects/{projectID}/services", createService(config.Services))
-	mux.HandleFunc("PUT /api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
-	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
-	mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
+	mux.HandleFunc("GET /public/api/v1/projects/{projectID}", getProject(config.Repository))
+	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services", listServices(config.Repository))
+	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}", getService(config.Repository))
+	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/deployments", listDeployments(config.Repository))
+	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/logs", readServiceLogs(config.Logs))
+	mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services", createService(config.Services))
+	mux.HandleFunc("PUT /public/api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
+	mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
+	mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services/{serviceID}/rollback", rollbackService(config.Services))
 	if config.Domains != nil {
-		pattern := "/api/v1/projects/{projectID}/services/{serviceID}/domains"
+		pattern := "/public/api/v1/projects/{projectID}/services/{serviceID}/domains"
 		mux.HandleFunc("GET "+pattern, listServiceDomains(config.Domains))
 		mux.HandleFunc("POST "+pattern, attachServiceDomain(config.Domains))
 		mux.HandleFunc("DELETE "+pattern+"/{hostname}", detachServiceDomain(config.Domains))
 	}
 	if config.Volumes != nil {
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(config.Volumes))
-		mux.HandleFunc("POST /api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(config.Volumes))
-		mux.HandleFunc("DELETE /api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}", deleteVolume(config.Volumes))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(config.Volumes))
+		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(config.Volumes))
+		mux.HandleFunc("DELETE /public/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}", deleteVolume(config.Volumes))
 	}
 	if config.PortForwards != nil {
 		mux.HandleFunc(
-			"POST /api/v1/projects/{projectID}/resources/{kind}/{resourceID}/port-forwards",
+			"POST /public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards",
 			createPortForward(config.Hostname, config.PortForwards),
 		)
 	}
 	if config.Registry != nil && config.RegistrySettings != nil {
 		registerRegistryRoutes(mux, config.Registry, config.RegistrySettings)
 	}
-	mux.HandleFunc("GET /api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
+	mux.HandleFunc("GET /public/api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
 	if config.Redis != nil && config.RedisStore != nil {
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(config.RedisStore))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(config.RedisStore))
-		mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(config.Redis))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/redis", listManagedRedis(config.RedisStore))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(config.RedisStore))
+		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/redis", createManagedRedis(config.Redis))
 	}
 	if config.Postgres != nil && config.PostgresStore != nil {
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(config.PostgresStore))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(config.PostgresStore))
-		mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(config.Postgres))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/postgres", listManagedPostgres(config.PostgresStore))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(config.PostgresStore))
+		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/postgres", createManagedPostgres(config.Postgres))
 	}
 	if config.ObjectStores != nil {
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores", listObjectStores(config.ObjectStores))
-		mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores", createObjectStore(config.ObjectStores))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}", getObjectStore(config.ObjectStores))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/object-stores", listObjectStores(config.ObjectStores))
+		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/object-stores", createObjectStore(config.ObjectStores))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/object-stores/{storeID}", getObjectStore(config.ObjectStores))
 	}
 	if config.ServerExec != nil {
-		mux.HandleFunc("POST /api/v1/server/exec", executeServerCommand(config.ServerExec))
+		mux.HandleFunc("POST /public/api/v1/server/exec", executeServerCommand(config.ServerExec))
 	}
 	if config.Managed != nil {
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources", listManagedResources(config.Managed))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}", getManagedResource(config.Managed))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups", readManagedResourceBackups(config.Managed))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/managed-resources", listManagedResources(config.Managed))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}", getManagedResource(config.Managed))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups", readManagedResourceBackups(config.Managed))
 	}
 	if config.Versions != nil {
-		mux.HandleFunc("POST /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/preview", previewDatabaseVersionChange(config.Versions))
-		mux.HandleFunc("POST /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change", startDatabaseVersionChange(config.Versions))
-		mux.HandleFunc("GET /api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}", readDatabaseVersionChange(config.Versions))
+		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/preview", previewDatabaseVersionChange(config.Versions))
+		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change", startDatabaseVersionChange(config.Versions))
+		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}", readDatabaseVersionChange(config.Versions))
 	}
 	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", nil, mux)), nil
 }

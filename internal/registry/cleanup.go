@@ -61,7 +61,7 @@ func (application *Application) Cleanup(ctx context.Context, repositoryID string
 		}
 	}
 	now := application.now()
-	identifiers, err := application.identifiers(now, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return CleanupResult{}, err
 	}

@@ -12,7 +12,12 @@ import (
 
 type portForwardResourceStub struct{}
 
-func (portForwardResourceStub) Resource(context.Context, string, string, string) error { return nil }
+func (portForwardResourceStub) ResolveProject(_ context.Context, name string) (portforward.ResolvedProject, error) {
+	return portforward.ResolvedProject{ID: "project", Name: name}, nil
+}
+func (portForwardResourceStub) ResolveResource(_ context.Context, _ string, name string) (portforward.ResolvedResource, error) {
+	return portforward.ResolvedResource{ID: "database-id", Kind: "postgres", Name: name}, nil
+}
 func (portForwardResourceStub) ResolveResourceAddress(string, string, string, int) (string, error) {
 	return "10.42.0.5:5432", nil
 }
@@ -38,11 +43,11 @@ func TestMCPPortForwardReturnsCLIInstructions(t *testing.T) {
 		t.Fatalf("port forward tool is missing: %s", response.Body)
 	}
 
-	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_port_forward","arguments":{"projectId":"project","resourceKind":"postgres","resourceId":"database","port":5432,"localPort":15432}}}`), automation.Identity{TokenID: "admin", Role: "admin"})
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"create_port_forward","arguments":{"project":"shop","resource":"database","port":5432,"localPort":15432}}}`), automation.Identity{TokenID: "admin", Role: "admin"})
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
 	body := response.Body.String()
-	for _, expected := range []string{"ticket-id", "platformd-forward", "raw.githubusercontent.com/iivankin/platformd/main/install.sh", "sh -s -- forward", "wss://api.example.com/api/v1/port-forward", "--local-port 15432"} {
+	for _, expected := range []string{"ticket-id", "platformd-forward", "raw.githubusercontent.com/iivankin/platformd/main/install.sh", "sh -s -- forward", "wss://admin.example.com/public/api/v1/port-forward", "--local-port 15432"} {
 		if !strings.Contains(body, expected) {
 			t.Fatalf("MCP result does not contain %q: %s", expected, body)
 		}

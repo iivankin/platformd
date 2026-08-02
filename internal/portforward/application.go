@@ -13,6 +13,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/id"
+	"github.com/iivankin/platformd/internal/resourcename"
 )
 
 const (
@@ -32,7 +33,19 @@ var (
 )
 
 type ResourceRepository interface {
-	Resource(context.Context, string, string, string) error
+	ResolveProject(context.Context, string) (ResolvedProject, error)
+	ResolveResource(context.Context, string, string) (ResolvedResource, error)
+}
+
+type ResolvedProject struct {
+	ID   string
+	Name string
+}
+
+type ResolvedResource struct {
+	ID   string
+	Kind string
+	Name string
 }
 
 type TargetResolver interface {
@@ -77,9 +90,8 @@ type Application struct {
 }
 
 type CreateInput struct {
-	ProjectID       string
-	ResourceKind    string
-	ResourceID      string
+	Project         string
+	Resource        string
 	Port            int
 	LifetimeSeconds int
 }
@@ -87,9 +99,9 @@ type CreateInput struct {
 type Grant struct {
 	ID           string    `json:"id"`
 	Ticket       string    `json:"ticket"`
-	ProjectID    string    `json:"projectId"`
+	Project      string    `json:"project"`
+	Resource     string    `json:"resource"`
 	ResourceKind string    `json:"resourceKind"`
-	ResourceID   string    `json:"resourceId"`
 	Port         int       `json:"port"`
 	ExpiresAt    time.Time `json:"expiresAt"`
 }
@@ -139,17 +151,33 @@ func (application *Application) Create(ctx context.Context, identity automation.
 	if !identity.IsAdmin() {
 		return Grant{}, automation.ErrAdminRequired
 	}
-	if !identity.AllowsProject(input.ProjectID) {
-		return Grant{}, automation.ErrProjectBoundary
-	}
 	lifetime, err := validateCreateInput(input)
 	if err != nil {
 		return Grant{}, err
 	}
-	if err := application.repository.Resource(ctx, input.ProjectID, input.ResourceKind, input.ResourceID); err != nil {
+	project, err := application.repository.ResolveProject(ctx, input.Project)
+	if err != nil {
 		return Grant{}, err
 	}
-	if _, err := application.resolver.ResolveResourceAddress(input.ProjectID, input.ResourceKind, input.ResourceID, input.Port); err != nil {
+	if project.ID == "" || project.Name != input.Project {
+		return Grant{}, errors.New("resolved port forward project is invalid")
+	}
+	if !identity.AllowsProject(project.ID) {
+		return Grant{}, automation.ErrProjectBoundary
+	}
+	resource, err := application.repository.ResolveResource(ctx, project.ID, input.Resource)
+	if err != nil {
+		return Grant{}, err
+	}
+	switch resource.Kind {
+	case "service", "postgres", "redis":
+	default:
+		return Grant{}, ErrInvalidInput
+	}
+	if resource.ID == "" || resource.Name != input.Resource {
+		return Grant{}, errors.New("resolved port forward resource is invalid")
+	}
+	if _, err := application.resolver.ResolveResourceAddress(project.ID, resource.Kind, resource.ID, input.Port); err != nil {
 		return Grant{}, fmt.Errorf("%w: %v", ErrTargetUnavailable, err)
 	}
 	ticketID, err := application.newID()
@@ -163,8 +191,8 @@ func (application *Application) Create(ctx context.Context, identity automation.
 	createdAt := application.now().UTC()
 	expiresAt := createdAt.Add(lifetime)
 	state := &ticketState{
-		id: ticketID, projectID: input.ProjectID, resourceKind: input.ResourceKind,
-		resourceID: input.ResourceID, port: input.Port, expiresAt: expiresAt,
+		id: ticketID, projectID: project.ID, resourceKind: resource.Kind,
+		resourceID: resource.ID, port: input.Port, expiresAt: expiresAt,
 	}
 	hash := sha256.Sum256([]byte(ticket))
 	application.mu.Lock()
@@ -178,8 +206,8 @@ func (application *Application) Create(ctx context.Context, identity automation.
 
 	audit := AuditRecord{
 		ID: ticketID, ActorTokenID: identity.TokenID, TicketID: ticketID,
-		ProjectID: input.ProjectID, ResourceKind: input.ResourceKind,
-		ResourceID: input.ResourceID, Port: input.Port, CreatedAt: createdAt, ExpiresAt: expiresAt,
+		ProjectID: project.ID, ResourceKind: resource.Kind,
+		ResourceID: resource.ID, Port: input.Port, CreatedAt: createdAt, ExpiresAt: expiresAt,
 	}
 	if err := application.audit.RecordPortForwardTicket(ctx, audit); err != nil {
 		application.mu.Lock()
@@ -190,8 +218,8 @@ func (application *Application) Create(ctx context.Context, identity automation.
 		return Grant{}, fmt.Errorf("audit port forward ticket: %w", err)
 	}
 	return Grant{
-		ID: ticketID, Ticket: ticket, ProjectID: input.ProjectID, ResourceKind: input.ResourceKind,
-		ResourceID: input.ResourceID, Port: input.Port, ExpiresAt: expiresAt,
+		ID: ticketID, Ticket: ticket, Project: project.Name, Resource: resource.Name,
+		ResourceKind: resource.Kind, Port: input.Port, ExpiresAt: expiresAt,
 	}, nil
 }
 
@@ -251,12 +279,7 @@ func (application *Application) removeExpiredLocked(now time.Time) {
 }
 
 func validateCreateInput(input CreateInput) (time.Duration, error) {
-	if input.ProjectID == "" || input.ResourceID == "" || input.Port < 1 || input.Port > 65535 {
-		return 0, ErrInvalidInput
-	}
-	switch input.ResourceKind {
-	case "service", "postgres", "redis":
-	default:
+	if resourcename.Validate(input.Project) != nil || resourcename.Validate(input.Resource) != nil || input.Port < 1 || input.Port > 65535 {
 		return 0, ErrInvalidInput
 	}
 	if input.LifetimeSeconds == 0 {

@@ -72,7 +72,7 @@ func createVolume(application *automation.VolumeApplication) http.HandlerFunc {
 			writeVolumeError(response, err)
 			return
 		}
-		response.Header().Set("Location", "/api/v1/projects/"+result.Volume.ProjectID+"/services/"+result.Volume.ServiceID+"/volumes/"+result.Volume.ID)
+		response.Header().Set("Location", "/public/api/v1/projects/"+result.Volume.ProjectID+"/services/"+result.Volume.ServiceID+"/volumes/"+result.Volume.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicVolume(result.Volume))
 	}

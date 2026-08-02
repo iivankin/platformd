@@ -1,0 +1,70 @@
+import { expect, test } from "bun:test";
+
+import type { ProjectCanvas } from "@/api";
+import {
+  demoCanvasPresets,
+  projectCanvasForDemoPreset,
+} from "@/project-canvas-demo";
+
+const canvas: ProjectCanvas = {
+  connections: [],
+  project: {
+    createdAt: 1,
+    id: "project-demo",
+    name: "storefront",
+    networkGatewayCount: 0,
+    objectStoreCount: 0,
+    postgresCount: 0,
+    redisCount: 0,
+    serviceCount: 0,
+    updatedAt: 1,
+  },
+  resources: [],
+};
+
+test("keeps the live demo canvas for the default preset", () => {
+  expect(projectCanvasForDemoPreset(canvas, "default")).toBe(canvas);
+});
+
+test("builds valid connected resources for every complex demo preset", () => {
+  const expectedSizes = {
+    "data-pipeline": { connections: 10, resources: 10 },
+    dense: { connections: 14, resources: 9 },
+    diamond: { connections: 4, resources: 4 },
+    "fan-out": { connections: 6, resources: 7 },
+    microservices: { connections: 13, resources: 9 },
+    saas: { connections: 10, resources: 8 },
+    "web-app": { connections: 7, resources: 6 },
+  } as const;
+
+  for (const preset of demoCanvasPresets) {
+    if (preset.value === "default") {
+      continue;
+    }
+    const result = projectCanvasForDemoPreset(canvas, preset.value);
+    const resourceIDs = new Set(
+      result.resources.map((resource) => resource.id)
+    );
+    expect(result.resources).toHaveLength(
+      expectedSizes[preset.value].resources
+    );
+    expect(result.connections).toHaveLength(
+      expectedSizes[preset.value].connections
+    );
+    expect(resourceIDs.size).toBe(result.resources.length);
+    const connectedResourceIDs = new Set(
+      result.connections.flatMap((connection) => [
+        connection.sourceId,
+        connection.targetId,
+      ])
+    );
+    expect(connectedResourceIDs).toEqual(resourceIDs);
+    expect(
+      result.connections.every(
+        (connection) =>
+          resourceIDs.has(connection.sourceId) &&
+          resourceIDs.has(connection.targetId)
+      )
+    ).toBe(true);
+  }
+});

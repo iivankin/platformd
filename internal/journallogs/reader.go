@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -15,8 +16,10 @@ import (
 )
 
 const (
-	journalctlPath = "/usr/bin/journalctl"
-	platformUnit   = "platformd.service"
+	journalctlPath        = "/usr/bin/journalctl"
+	platformUnit          = "platformd.service"
+	cloudflareMeshName    = "platformd-cloudflare-mesh"
+	kernelIncidentPattern = `(?i)(out of memory|oom-kill|killed process|I/O error|filesystem error|EXT4-fs error|XFS.*error|BTRFS.*error|buffer I/O error|read-only file system|segfault|general protection fault)`
 )
 
 type Runner interface {
@@ -45,32 +48,85 @@ func (reader *Reader) Read(ctx context.Context, query Query) (Window, error) {
 	if query.Limit < 1 || query.Limit > MaximumLimit {
 		return Window{}, fmt.Errorf("%w: limit must be between 1 and %d", ErrInvalidQuery, MaximumLimit)
 	}
+	if query.BeforeCursor != "" && !validCursor(query.BeforeCursor) {
+		return Window{}, fmt.Errorf("%w: before cursor is invalid", ErrInvalidQuery)
+	}
 	commandContext, cancel := context.WithTimeout(ctx, commandTimeout)
 	defer cancel()
-	stdout := &boundedBuffer{maximum: maximumOutputBytes}
-	stderr := &boundedBuffer{maximum: maximumErrorBytes}
-	err := reader.runner.Run(commandContext, []string{
-		"--unit=" + platformUnit,
-		"--output=json",
-		"--no-pager",
-		"--reverse",
-		"--lines=" + strconv.Itoa(query.Limit+1),
-	}, stdout, stderr)
-	if err != nil {
-		if commandContext.Err() != nil {
-			return Window{}, fmt.Errorf("read platform journal: %w", commandContext.Err())
+	sources := []struct {
+		name      string
+		arguments []string
+	}{
+		{name: "platform", arguments: []string{"--unit=" + platformUnit}},
+		{name: "cloudflare-mesh", arguments: []string{"CONTAINER_NAME=" + cloudflareMeshName}},
+		{name: "kernel", arguments: []string{"--dmesg", "--grep=" + kernelIncidentPattern}},
+		{name: "systemd", arguments: []string{"_PID=1", "--priority=0..4"}},
+	}
+	records := make([]Record, 0, query.Limit+1)
+	outputTruncated := false
+	seen := make(map[string]struct{}, query.Limit+1)
+	for _, source := range sources {
+		sourceRecords, sourceTruncated, err := reader.readSource(
+			commandContext, source.name, source.arguments, query.Limit+1, query.BeforeCursor,
+		)
+		if err != nil {
+			return Window{}, err
 		}
-		return Window{}, fmt.Errorf("read platform journal: %w: %s", err, sanitizeMessage(stderr.String()))
+		outputTruncated = outputTruncated || sourceTruncated
+		for _, record := range sourceRecords {
+			if _, exists := seen[record.Cursor]; exists {
+				continue
+			}
+			seen[record.Cursor] = struct{}{}
+			records = append(records, record)
+		}
 	}
-	records, err := parseOutput(stdout.Bytes(), stdout.truncated)
-	if err != nil {
-		return Window{}, err
-	}
-	truncated := stdout.truncated || len(records) > query.Limit
+	sort.SliceStable(records, func(left, right int) bool {
+		return records[left].Timestamp.After(records[right].Timestamp)
+	})
+	hasMore := outputTruncated || len(records) > query.Limit
 	if len(records) > query.Limit {
 		records = records[:query.Limit]
 	}
-	return Window{Records: records, Truncated: truncated}, nil
+	window := Window{Records: records}
+	if hasMore && len(records) != 0 {
+		window.NextCursor = records[len(records)-1].Cursor
+	}
+	return window, nil
+}
+
+func (reader *Reader) readSource(
+	ctx context.Context,
+	name string,
+	sourceArguments []string,
+	limit int,
+	beforeCursor string,
+) ([]Record, bool, error) {
+	stdout := &boundedBuffer{maximum: maximumOutputBytes}
+	stderr := &boundedBuffer{maximum: maximumErrorBytes}
+	arguments := append([]string(nil), sourceArguments...)
+	if beforeCursor != "" {
+		// With reverse traversal, journalctl advances to entries older than
+		// the cursor and excludes the boundary entry when it is still present.
+		arguments = append(arguments, "--after-cursor="+beforeCursor)
+	}
+	arguments = append(arguments,
+		"--output=json",
+		"--no-pager",
+		"--reverse",
+		"--lines="+strconv.Itoa(limit),
+	)
+	if err := reader.runner.Run(ctx, arguments, stdout, stderr); err != nil {
+		if ctx.Err() != nil {
+			return nil, false, fmt.Errorf("read %s journal: %w", name, ctx.Err())
+		}
+		return nil, false, fmt.Errorf("read %s journal: %w: %s", name, err, sanitizeMessage(stderr.String()))
+	}
+	records, err := parseOutput(stdout.Bytes(), stdout.truncated)
+	if err != nil {
+		return nil, false, err
+	}
+	return records, stdout.truncated, nil
 }
 
 type commandRunner struct {
@@ -132,39 +188,71 @@ func parseOutput(output []byte, truncated bool) ([]Record, error) {
 func parseRecord(line []byte) (Record, error) {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(line, &fields); err != nil {
-		return Record{}, fmt.Errorf("decode platform journal record: %w", err)
+		return Record{}, fmt.Errorf("decode system journal record: %w", err)
 	}
 	timestampText, err := journalString(fields["__REALTIME_TIMESTAMP"])
 	if err != nil {
-		return Record{}, fmt.Errorf("decode platform journal timestamp: %w", err)
+		return Record{}, fmt.Errorf("decode system journal timestamp: %w", err)
 	}
 	timestampMicros, err := strconv.ParseInt(timestampText, 10, 64)
 	if err != nil {
-		return Record{}, fmt.Errorf("decode platform journal timestamp: %w", err)
+		return Record{}, fmt.Errorf("decode system journal timestamp: %w", err)
 	}
 	priorityText, err := journalString(fields["PRIORITY"])
 	if err != nil {
-		return Record{}, fmt.Errorf("decode platform journal priority: %w", err)
+		return Record{}, fmt.Errorf("decode system journal priority: %w", err)
 	}
 	priority, err := strconv.Atoi(priorityText)
 	if err != nil || priority < 0 || priority > 7 {
-		return Record{}, errors.New("decode platform journal priority: value must be 0..7")
+		return Record{}, errors.New("decode system journal priority: value must be 0..7")
 	}
 	message, err := journalString(fields["MESSAGE"])
 	if err != nil {
-		return Record{}, fmt.Errorf("decode platform journal message: %w", err)
+		return Record{}, fmt.Errorf("decode system journal message: %w", err)
 	}
+	priority = systemEventPriority(message, priority)
 	cursor, err := journalString(fields["__CURSOR"])
 	if err != nil || cursor == "" {
-		return Record{}, errors.New("decode platform journal cursor: value is required")
+		return Record{}, errors.New("decode system journal cursor: value is required")
 	}
 	identifier, _ := journalString(fields["SYSLOG_IDENTIFIER"])
+	if containerName, _ := journalString(fields["CONTAINER_NAME"]); containerName != "" {
+		identifier = containerName
+	}
 	pid, _ := journalString(fields["_PID"])
+	if !validCursor(cursor) {
+		return Record{}, errors.New("decode system journal cursor: value is invalid")
+	}
 	return Record{
 		Timestamp: time.UnixMicro(timestampMicros).UTC(), Priority: priority,
 		Message: sanitizeMessage(message), Identifier: sanitizeLabel(identifier),
-		PID: sanitizeLabel(pid), Cursor: sanitizeLabel(cursor),
+		PID: sanitizeLabel(pid), Cursor: cursor,
 	}, nil
+}
+
+func validCursor(value string) bool {
+	if value == "" || len(value) > maximumCursorBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for _, character := range value {
+		if character < 0x20 || character == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
+func systemEventPriority(message string, fallback int) int {
+	switch {
+	case strings.HasPrefix(message, "level=error event="):
+		return 3
+	case strings.HasPrefix(message, "level=warning event="):
+		return 4
+	case strings.HasPrefix(message, "level=info event="):
+		return 6
+	default:
+		return fallback
+	}
 }
 
 func journalString(value json.RawMessage) (string, error) {

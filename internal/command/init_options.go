@@ -27,7 +27,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 	flags.IntVar(&options.inputFD, "input-fd", -1, "read bounded bootstrap JSON from an inherited file descriptor")
 	flags.BoolVar(&options.restore, "restore", false, "restore an installation from its remote control backup")
 	flags.BoolVar(&options.resetConsolePassphrase, "reset-console-passphrase", false, "replace the server console passphrase verifier")
-	flags.BoolVar(&options.rollbackUpdate, "rollback-update", false, "restore the previous signed release before schema migration")
+	flags.BoolVar(&options.rollbackUpdate, "rollback-update", false, "restore the previous compatible signed release")
 	flags.StringVar(&options.installUpdate, "install-signed-update", "", "install a signed forward fix from a local manifest or HTTPS URL")
 	flags.StringVar(&options.binaryPath, "binary", "", "use a local binary with --install-signed-update")
 	if err := flags.Parse(args); err != nil {

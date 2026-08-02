@@ -10,6 +10,7 @@ const errorMessage = (error: unknown, fallback: string) =>
 export const useAppData = () => {
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [identityError, setIdentityError] = useState<string | null>(null);
+  const [identityLoading, setIdentityLoading] = useState(true);
   const [meta, setMeta] = useState<Meta | null>(null);
   const [metaError, setMetaError] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -46,6 +47,10 @@ export const useAppData = () => {
       } catch (error) {
         if (!ignoreAbort(error)) {
           setIdentityError(errorMessage(error, "Identity request failed"));
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setIdentityLoading(false);
         }
       }
     };
@@ -97,6 +102,7 @@ export const useAppData = () => {
     handleProjectDeleted,
     identity,
     identityError,
+    identityLoading,
     meta,
     metaError,
     projects,

@@ -60,11 +60,18 @@ func (store *Store) SwitchManagedPostgresVolume(ctx context.Context, input Switc
 	if input.ActorEmail != "" {
 		metadataFields["actorEmail"] = input.ActorEmail
 	}
-	metadata, err := json.Marshal(metadataFields)
-	if err != nil {
-		return err
-	}
-	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var projectID, name string
+		if err := transaction.QueryRowContext(ctx, "SELECT project_id, name FROM managed_postgres WHERE id = ?", input.ResourceID).Scan(&projectID, &name); errors.Is(err, sql.ErrNoRows) {
+			return ErrManagedPostgresNotFound
+		} else if err != nil {
+			return fmt.Errorf("load managed PostgreSQL audit scope: %w", err)
+		}
+		metadataFields["name"] = name
+		metadata, err := json.Marshal(metadataFields)
+		if err != nil {
+			return err
+		}
 		var result sql.Result
 		if versionChange {
 			result, err = transaction.ExecContext(ctx, `
@@ -102,10 +109,10 @@ WHERE id = ? AND volume_id = ?`, input.VolumeID, input.UpdatedAtMillis,
 		}
 		_, err = transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, ?, 'postgres', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.Action, input.ResourceID,
+) VALUES (?, ?, ?, ?, ?, 'postgres', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, projectID, input.ActorKind, input.ActorID, input.Action, input.ResourceID,
 			nullableString(input.RequestCorrelationID), string(metadata), input.UpdatedAtMillis)
 		return err
 	})

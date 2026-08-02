@@ -33,7 +33,7 @@ func TestReadSchemaVersionIsReadOnlyAndDoesNotCreateMissingState(t *testing.T) {
 	}
 }
 
-func TestInspectDatabaseChecksIntegrityWithoutMigrating(t *testing.T) {
+func TestInspectDatabaseChecksIntegrityWithoutMutating(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "state.db")

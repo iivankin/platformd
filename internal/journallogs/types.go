@@ -10,6 +10,7 @@ var ErrInvalidQuery = errors.New("invalid journal log query")
 const (
 	DefaultLimit        = 500
 	MaximumLimit        = 2000
+	maximumCursorBytes  = 4 << 10
 	maximumOutputBytes  = 4 << 20
 	maximumErrorBytes   = 64 << 10
 	maximumMessageBytes = 64 << 10
@@ -18,7 +19,8 @@ const (
 const commandTimeout = 5 * time.Second
 
 type Query struct {
-	Limit int
+	Limit        int
+	BeforeCursor string
 }
 
 type Record struct {
@@ -31,6 +33,6 @@ type Record struct {
 }
 
 type Window struct {
-	Records   []Record `json:"records"`
-	Truncated bool     `json:"truncated"`
+	Records    []Record `json:"records"`
+	NextCursor string   `json:"nextCursor,omitempty"`
 }

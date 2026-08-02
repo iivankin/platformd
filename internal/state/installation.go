@@ -15,7 +15,6 @@ var (
 type InitialInstallation struct {
 	ID                   string
 	AdminHostname        string
-	AutomationHostname   *string
 	RegistryHostname     *string
 	AccessTeamDomain     string
 	AccessAudience       string
@@ -30,7 +29,6 @@ type InitialInstallation struct {
 type Installation struct {
 	ID                   string
 	AdminHostname        string
-	AutomationHostname   *string
 	RegistryHostname     *string
 	AccessTeamDomain     string
 	AccessAudience       string
@@ -70,13 +68,12 @@ VALUES (?, ?, ?, ?)`, input.OriginCertificateID, input.OriginCertificatePEM, inp
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO installation(
-  singleton, id, admin_hostname, automation_hostname, registry_hostname,
+  singleton, id, admin_hostname, registry_hostname,
   access_team_domain, access_audience,
   console_passphrase_phc, recovery_mode, created_at, updated_at
-) VALUES (1, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+) VALUES (1, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
 			input.ID,
 			input.AdminHostname,
-			input.AutomationHostname,
 			input.RegistryHostname,
 			input.AccessTeamDomain,
 			input.AccessAudience,
@@ -103,17 +100,16 @@ INSERT INTO audit_events(
 
 func (store *Store) Installation(ctx context.Context) (Installation, error) {
 	var installation Installation
-	var automationHostname, registryHostname sql.NullString
+	var registryHostname sql.NullString
 	var recoveryMode int
 	err := store.database.QueryRowContext(ctx, `
-SELECT id, admin_hostname, automation_hostname, registry_hostname, access_team_domain,
+SELECT id, admin_hostname, registry_hostname, access_team_domain,
        access_audience, console_passphrase_phc,
        recovery_mode, created_at, updated_at
 FROM installation
 WHERE singleton = 1`).Scan(
 		&installation.ID,
 		&installation.AdminHostname,
-		&automationHostname,
 		&registryHostname,
 		&installation.AccessTeamDomain,
 		&installation.AccessAudience,
@@ -127,9 +123,6 @@ WHERE singleton = 1`).Scan(
 	}
 	if err != nil {
 		return Installation{}, fmt.Errorf("read installation: %w", err)
-	}
-	if automationHostname.Valid {
-		installation.AutomationHostname = &automationHostname.String
 	}
 	if registryHostname.Valid {
 		installation.RegistryHostname = &registryHostname.String

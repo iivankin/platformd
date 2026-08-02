@@ -14,6 +14,11 @@ import type {
   CreateServiceInput,
   ProjectCanvas,
 } from "@/api";
+import { newID } from "@/id";
+import {
+  emptyBeforeDeployDraft,
+  parseBeforeDeploy,
+} from "@/service-before-deploy-model";
 import {
   parseServiceConfiguration,
   serviceConfigurationDraftFromCreateInput,
@@ -34,6 +39,7 @@ export const emptyPendingBackupPolicy = (): PendingBackupPolicy => ({
 export const emptyPendingServiceCreationSettings = (
   input: CreateServiceInput
 ): PendingServiceCreationSettings => ({
+  beforeDeploy: emptyBeforeDeployDraft(),
   configuration: serviceConfigurationDraftFromCreateInput(input),
   domains: [],
   listeners: [],
@@ -72,7 +78,7 @@ export type PendingResourceCreation =
       settings: PendingServiceCreationSettings;
     };
 
-export const newResourceDraftID = () => `draft:${crypto.randomUUID()}`;
+export const newResourceDraftID = () => `draft:${newID()}`;
 
 const resourceLabels: Record<PendingResourceCreation["kind"], string> = {
   network_gateway: "Network gateway",
@@ -198,6 +204,15 @@ export const applyPendingResource = (
       );
       return createService(projectID, {
         ...draft.input,
+        beforeDeploy: parseBeforeDeploy(
+          draft.settings.beforeDeploy,
+          configuration.source,
+          draft.settings.domains
+        ),
+        buildEnvironment:
+          configuration.source.type === "github"
+            ? draft.input.buildEnvironment
+            : {},
         domains: draft.settings.domains,
         healthCheck: configuration.healthCheck,
         listeners: draft.settings.listeners,

@@ -1,7 +1,6 @@
 package databaseversion
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"sync"
@@ -95,8 +94,8 @@ func TestServiceRunsOneInMemoryVersionChangeAndKeepsOperationObservational(t *te
 	adapter := &versionAdapter{started: make(chan struct{}), release: make(chan struct{})}
 	service, err := New(Config{
 		Context: context.Background(), Store: store, Admission: admission.New(),
-		Adapters: map[string]Adapter{Redis: adapter}, Random: bytes.NewReader(make([]byte, 64)),
-		Now: func() time.Time { return time.UnixMilli(10) },
+		Adapters: map[string]Adapter{Redis: adapter},
+		Now:      func() time.Time { return time.UnixMilli(10) },
 	})
 	if err != nil {
 		t.Fatal(err)

@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	PreviewHashToken  = "{{hash}}"
-	PreviewHashLength = 12
+	PreviewHashToken      = "{{hash}}"
+	PreviewHashLength     = 12
+	MaximumReleaseAgeDays = 36_500
 )
 
 type Kind string
@@ -45,10 +46,11 @@ type PullRequestPreview struct {
 }
 
 type Source struct {
-	Type       Kind    `json:"type"`
-	AutoUpdate bool    `json:"autoUpdate,omitempty"`
-	Image      *Image  `json:"image,omitempty"`
-	GitHub     *GitHub `json:"github,omitempty"`
+	Type                  Kind    `json:"type"`
+	AutoUpdate            bool    `json:"autoUpdate,omitempty"`
+	MinimumReleaseAgeDays int     `json:"minimumReleaseAgeDays,omitempty"`
+	Image                 *Image  `json:"image,omitempty"`
+	GitHub                *GitHub `json:"github,omitempty"`
 }
 
 func Normalize(input Source) (Source, error) {
@@ -58,6 +60,12 @@ func Normalize(input Source) (Source, error) {
 		if input.Image == nil || input.GitHub != nil {
 			return Source{}, errors.New("image source must contain only image settings")
 		}
+		if input.MinimumReleaseAgeDays < 0 || input.MinimumReleaseAgeDays > MaximumReleaseAgeDays {
+			return Source{}, fmt.Errorf("minimum release age must be between 0 and %d days", MaximumReleaseAgeDays)
+		}
+		if input.Type == RegistryImage && input.MinimumReleaseAgeDays != 0 {
+			return Source{}, errors.New("minimum release age is only valid for remote image sources")
+		}
 		parsed, err := reference.ParseDockerRef(strings.TrimSpace(input.Image.Reference))
 		if err != nil {
 			return Source{}, fmt.Errorf("invalid image reference: %w", err)
@@ -66,6 +74,9 @@ func Normalize(input Source) (Source, error) {
 	case GitHubImage:
 		if input.GitHub == nil || input.Image != nil {
 			return Source{}, errors.New("GitHub source must contain only GitHub settings")
+		}
+		if input.MinimumReleaseAgeDays != 0 {
+			return Source{}, errors.New("minimum release age is only valid for remote image sources")
 		}
 		github := *input.GitHub
 		github.Repository = strings.TrimSpace(github.Repository)
@@ -140,6 +151,10 @@ func ImageReference(source Source) string {
 
 func IsImage(source Source) bool {
 	return source.Type == RegistryImage || source.Type == PublicImage || source.Type == PrivateImage
+}
+
+func IsRemoteImage(source Source) bool {
+	return source.Type == PublicImage || source.Type == PrivateImage
 }
 
 func cleanRelativePath(value, fallback string) string {

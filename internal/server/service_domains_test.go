@@ -10,10 +10,19 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/server"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
+
+type domainRepositoryWithDNSStatus struct {
+	*state.Store
+}
+
+func (domainRepositoryWithDNSStatus) ServiceDomainDNSStatus(context.Context, string, string, string) (cloudflaredns.DNSStatus, error) {
+	return cloudflaredns.DNSStatusReady, nil
+}
 
 func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
@@ -30,16 +39,17 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 		}
 		if _, err := store.CreateService(context.Background(), state.CreateService{
 			ID: "service-" + projectID, ProjectID: projectID, Name: "api", Enabled: true,
-			Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine"),},
+			Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")},
 			AuditEventID: "service-audit-" + projectID, ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com",
 			CreatedAtMillis: int64(index + 3),
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	repository := domainRepositoryWithDNSStatus{Store: store}
 	handler := access.ProtectAdmin(
 		"admin.example.com", projectVerifier{},
-		server.Handler(server.DefaultMeta("ready"), server.WithDomains(store)),
+		server.Handler(server.DefaultMeta("ready"), server.WithDomains(repository)),
 	)
 	pathA := "/api/v1/projects/project-a/services/service-project-a/domains"
 	attach := projectRequest(http.MethodPost, pathA, `{"hostname":"App.Example.com","targetPort":8080}`)
@@ -48,6 +58,12 @@ func TestServiceDomainAPIRequiresExplicitMoveAndDetaches(t *testing.T) {
 	handler.ServeHTTP(response, attach)
 	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"hostname":"app.example.com"`) || !strings.Contains(response.Body.String(), `"publicOutputName":"APP_URL"`) || !strings.Contains(response.Body.String(), `"internalOutputName":"APP_URL_INTERNAL"`) {
 		t.Fatalf("attach = %d/%s", response.Code, response.Body)
+	}
+	statusRequest := projectRequest(http.MethodGet, pathA+"/app.example.com/dns", "")
+	statusResponse := httptest.NewRecorder()
+	handler.ServeHTTP(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK || !strings.Contains(statusResponse.Body.String(), `"status":"ready"`) {
+		t.Fatalf("DNS status = %d/%s", statusResponse.Code, statusResponse.Body)
 	}
 
 	pathB := "/api/v1/projects/project-b/services/service-project-b/domains"

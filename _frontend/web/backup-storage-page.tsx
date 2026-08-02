@@ -165,7 +165,7 @@ export const BackupStoragePage = () => {
         </div>
         <Button
           className="ml-auto"
-          onClick={() => navigate("/backups/storage/new")}
+          onClick={() => navigate("/settings/backups/storage/new")}
           size="sm"
         >
           <Plus />

@@ -14,10 +14,10 @@ func TestAuditPaginationFiltersAndBoundedCleanup(t *testing.T) {
 	}
 	defer store.Close()
 	if _, err := store.database.Exec(`
-INSERT INTO audit_events(id, actor_kind, actor_id, action, target_kind, target_id, result, metadata_json, created_at) VALUES
-('a', 'access', 'user', 'project.create', 'project', 'p', 'succeeded', '{"actorEmail":"a@example.com"}', 10),
-('b', 'token', 'token', 'service.update', 'service', 's', 'failed', '{}', 20),
-('c', 'token', 'token', 'service.update', 'service', 's', 'succeeded', '{}', 30)`); err != nil {
+INSERT INTO audit_events(id, project_id, actor_kind, actor_id, action, target_kind, target_id, result, metadata_json, created_at) VALUES
+('a', 'p', 'access', 'user', 'project.create', 'project', 'p', 'succeeded', '{"actorEmail":"a@example.com"}', 10),
+('b', 'p', 'token', 'token', 'service.update', 'service', 's', 'failed', '{}', 20),
+('c', 'other', 'token', 'token', 'service.update', 'service', 's', 'succeeded', '{}', 30)`); err != nil {
 		t.Fatal(err)
 	}
 	first, err := store.AuditEvents(context.Background(), AuditQuery{Limit: 2})
@@ -38,6 +38,10 @@ INSERT INTO audit_events(id, actor_kind, actor_id, action, target_kind, target_i
 	targeted, err := store.AuditEvents(context.Background(), AuditQuery{TargetKind: "service", TargetID: "s"})
 	if err != nil || len(targeted.Events) != 2 || targeted.Events[0].ID != "c" || targeted.Events[1].ID != "b" {
 		t.Fatalf("targeted page = %+v, %v", targeted, err)
+	}
+	project, err := store.AuditEvents(context.Background(), AuditQuery{ProjectID: "p"})
+	if err != nil || len(project.Events) != 2 || project.Events[0].ID != "b" || project.Events[1].ID != "a" {
+		t.Fatalf("project page = %+v, %v", project, err)
 	}
 	deleted, err := store.CleanupAuditEvents(context.Background(), 25, 1)
 	if err != nil || deleted != 1 {

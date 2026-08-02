@@ -3,7 +3,6 @@ package managedpostgres
 import (
 	"bytes"
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -119,7 +118,7 @@ type ControllerConfig struct {
 	ProbePeriod       time.Duration
 	MaintenanceDrain  time.Duration
 	Now               func() time.Time
-	NewID             func(time.Time) (string, error)
+	NewID             func() (string, error)
 }
 
 type activeRuntime struct {
@@ -151,7 +150,7 @@ type Controller struct {
 	probePeriod       time.Duration
 	maintenanceDrain  time.Duration
 	now               func() time.Time
-	newID             func(time.Time) (string, error)
+	newID             func() (string, error)
 	mu                sync.Mutex
 	locks             map[string]*sync.Mutex
 	active            map[string]activeRuntime
@@ -192,7 +191,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 	}
 	newID := config.NewID
 	if newID == nil {
-		newID = func(timestamp time.Time) (string, error) { return id.NewWith(timestamp, rand.Reader) }
+		newID = id.New
 	}
 	return &Controller{
 		store: config.Store, deployments: config.Deployments, extensions: config.Extensions, extensionBuilder: config.ExtensionBuilder,
@@ -651,7 +650,7 @@ func (controller *Controller) createContainerAttempt(
 	if !safePathComponent(volumeID) {
 		return containerengine.Container{}, errors.New("managed PostgreSQL volume ID is invalid")
 	}
-	attemptID, err := controller.newID(controller.now())
+	attemptID, err := controller.newID()
 	if err != nil {
 		return containerengine.Container{}, err
 	}

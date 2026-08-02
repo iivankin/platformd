@@ -47,7 +47,7 @@ FROM audit_events WHERE id = 'restore-audit'`).Scan(&action, &requestID, &metada
 		t.Fatal(err)
 	}
 	if action != "redis.restore" || requestID != "request" ||
-		metadata != `{"actorEmail":"user@example.com","previousVolumeId":"old-volume","volumeId":"new-volume"}` {
+		metadata != `{"actorEmail":"user@example.com","name":"cache","previousVolumeId":"old-volume","volumeId":"new-volume"}` {
 		t.Fatalf("restore audit = %q %q %s", action, requestID, metadata)
 	}
 	if err := store.SwitchManagedRedisVolume(ctx, state.SwitchManagedRedisVolume{

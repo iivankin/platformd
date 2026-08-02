@@ -77,7 +77,7 @@ func (store *Store) CreateManagedRedis(ctx context.Context, input CreateManagedR
 	if err != nil {
 		return ManagedRedis{}, err
 	}
-	metadata := make(map[string]string)
+	metadata := map[string]string{"name": input.Name}
 	if input.ActorEmail != "" {
 		metadata["actorEmail"] = input.ActorEmail
 	}
@@ -119,10 +119,10 @@ INSERT INTO managed_redis(
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO audit_events(
-  id, actor_kind, actor_id, action, target_kind, target_id,
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
   request_correlation_id, result, metadata_json, created_at
-) VALUES (?, ?, ?, 'redis.create', 'redis', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.ID,
+) VALUES (?, ?, ?, ?, 'redis.create', 'redis', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorKind, input.ActorID, input.ID,
 			nullableString(input.RequestCorrelationID), string(metadataJSON), input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("audit managed Redis creation: %w", err)

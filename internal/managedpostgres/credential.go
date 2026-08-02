@@ -5,9 +5,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
-	"strings"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/id"
 )
 
 const (
@@ -35,8 +35,7 @@ func GenerateCredentials(resourceID string, random io.Reader) (Credentials, erro
 	if random == nil {
 		random = rand.Reader
 	}
-	identifier := strings.ReplaceAll(resourceID, "-", "")
-	if len(identifier) < 16 {
+	if !id.Valid(resourceID) {
 		return Credentials{}, errors.New("managed PostgreSQL resource ID is invalid")
 	}
 	ownerPassword, err := generatePassword(random)
@@ -48,7 +47,7 @@ func GenerateCredentials(resourceID string, random io.Reader) (Credentials, erro
 		return Credentials{}, err
 	}
 	return Credentials{
-		DatabaseName: "app_" + identifier[:24], OwnerUsername: "owner_" + identifier[:24],
+		DatabaseName: "app_" + resourceID, OwnerUsername: "owner_" + resourceID,
 		OwnerPassword: ownerPassword, BootstrapPassword: bootstrapPassword,
 	}, nil
 }

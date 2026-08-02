@@ -153,6 +153,7 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			return ErrProjectChanged
 		}
 		statements := []string{
+			`DELETE FROM aggregate_metric_samples WHERE scope_kind = 'project' AND scope_id = ?`,
 			`DELETE FROM resource_metric_samples WHERE
 			 (resource_kind = 'service' AND resource_id IN (SELECT id FROM services WHERE project_id = ?)) OR
 			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
@@ -169,7 +170,6 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			 SELECT id FROM services WHERE project_id = ? UNION SELECT id FROM managed_postgres WHERE project_id = ?
 			 UNION SELECT id FROM managed_redis WHERE project_id = ? UNION SELECT id FROM object_stores WHERE project_id = ?
 			 UNION SELECT id FROM volumes WHERE project_id = ? UNION SELECT id FROM network_gateways WHERE project_id = ?)`,
-			`DELETE FROM objects WHERE object_store_id IN (SELECT id FROM object_stores WHERE project_id = ?)`,
 			`DELETE FROM network_gateways WHERE project_id = ?`,
 			`DELETE FROM service_secret_refs WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)`,
 			`DELETE FROM service_volume_mounts WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)`,
@@ -177,8 +177,8 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			`DELETE FROM services WHERE project_id = ?`,
 		}
 		arguments := [][]any{
-			{input.ID, input.ID, input.ID}, {input.ID, input.ID}, {input.ID, input.ID, input.ID, input.ID},
-			{input.ID, input.ID, input.ID, input.ID, input.ID, input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID},
+			{input.ID}, {input.ID, input.ID, input.ID}, {input.ID, input.ID}, {input.ID, input.ID, input.ID, input.ID},
+			{input.ID, input.ID, input.ID, input.ID, input.ID, input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID},
 		}
 		for index, statement := range statements {
 			if _, err := transaction.ExecContext(ctx, statement, arguments[index]...); err != nil {
@@ -197,10 +197,10 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			correlationID = input.RequestCorrelationID
 		}
 		_, err = transaction.ExecContext(ctx, `
-INSERT INTO audit_events(id, actor_kind, actor_id, action, target_kind, target_id,
+		INSERT INTO audit_events(id, project_id, actor_kind, actor_id, action, target_kind, target_id,
  request_correlation_id, result, metadata_json, created_at)
-VALUES (?, ?, ?, 'project.delete', 'project', ?, ?, 'succeeded', ?, ?)`,
-			input.AuditEventID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadata), input.DeletedAtMillis,
+VALUES (?, ?, ?, ?, 'project.delete', 'project', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ID, input.ActorKind, input.ActorID, input.ID, correlationID, string(metadata), input.DeletedAtMillis,
 		)
 		return err
 	})

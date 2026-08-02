@@ -1,4 +1,5 @@
 import type { FitAddon as GhosttyFitAddon } from "ghostty-web";
+import { SquareTerminal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 const initializeGhostty = async () => {
@@ -22,67 +23,52 @@ const connectionColors = {
 } as const;
 
 const theme = () => {
-  const dark = document.documentElement.classList.contains("dark");
-  return dark
-    ? {
-        background: "#171615",
-        black: "#262321",
-        blue: "#78a9e8",
-        brightBlack: "#746e68",
-        brightBlue: "#91baf0",
-        brightCyan: "#8addd7",
-        brightGreen: "#82dbad",
-        brightMagenta: "#e2a2d4",
-        brightRed: "#ff8a83",
-        brightWhite: "#fffaf4",
-        brightYellow: "#f3ce7d",
-        cursor: "#f0ece7",
-        cursorAccent: "#171615",
-        cyan: "#6fc9c4",
-        foreground: "#e7e2dc",
-        green: "#66c99a",
-        magenta: "#d58ac5",
-        red: "#ff6b64",
-        selectionBackground: "#425b58",
-        selectionForeground: "#fffaf4",
-        white: "#d9d3cc",
-        yellow: "#e8bd69",
-      }
-    : {
-        background: "#191816",
-        black: "#262321",
-        blue: "#78a9e8",
-        brightBlack: "#746e68",
-        brightBlue: "#91baf0",
-        brightCyan: "#8addd7",
-        brightGreen: "#82dbad",
-        brightMagenta: "#e2a2d4",
-        brightRed: "#ff8a83",
-        brightWhite: "#fffaf4",
-        brightYellow: "#f3ce7d",
-        cursor: "#f0ece7",
-        cursorAccent: "#191816",
-        cyan: "#6fc9c4",
-        foreground: "#e7e2dc",
-        green: "#66c99a",
-        magenta: "#d58ac5",
-        red: "#ff6b64",
-        selectionBackground: "#425b58",
-        selectionForeground: "#fffaf4",
-        white: "#d9d3cc",
-        yellow: "#e8bd69",
-      };
+  const background = document.documentElement.classList.contains("dark")
+    ? "#171615"
+    : "#191816";
+  return {
+    background,
+    black: "#262321",
+    blue: "#78a9e8",
+    brightBlack: "#746e68",
+    brightBlue: "#91baf0",
+    brightCyan: "#8addd7",
+    brightGreen: "#82dbad",
+    brightMagenta: "#e2a2d4",
+    brightRed: "#ff8a83",
+    brightWhite: "#fffaf4",
+    brightYellow: "#f3ce7d",
+    cursor: "#f0ece7",
+    cursorAccent: background,
+    cyan: "#6fc9c4",
+    foreground: "#e7e2dc",
+    green: "#66c99a",
+    magenta: "#d58ac5",
+    red: "#ff6b64",
+    selectionBackground: "#425b58",
+    selectionForeground: "#fffaf4",
+    white: "#d9d3cc",
+    yellow: "#e8bd69",
+  };
 };
 
 interface TerminalProperties {
+  onConnectionChange?: (connection: TerminalConnection) => void;
+  showStatusBar?: boolean;
   socketProtocols?: readonly string[];
   socketURL: (cols: number, rows: number) => string;
+  title?: string;
   visible?: boolean;
 }
 
+export type TerminalConnection = "connected" | "connecting" | "disconnected";
+
 export const Terminal = ({
+  onConnectionChange,
+  showStatusBar = true,
   socketProtocols,
   socketURL,
+  title = "PTY session",
   visible = true,
 }: TerminalProperties) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -90,8 +76,10 @@ export const Terminal = ({
   const [connection, setConnection] = useState<
     "connected" | "connecting" | "disconnected"
   >("connecting");
+  const [disconnectReason, setDisconnectReason] = useState<string>();
   const [error, setError] = useState<string>();
-  const [painted, setPainted] = useState(false);
+  const [hasOutput, setHasOutput] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -99,11 +87,17 @@ export const Terminal = ({
       return;
     }
     let disposed = false;
-    let hasPainted = false;
+    let hasReceivedOutput = false;
     let socket: WebSocket | undefined;
     let disposeTerminal: (() => void) | undefined;
+    let focusTimer: ReturnType<typeof setTimeout> | undefined;
 
     const start = async () => {
+      setConnection("connecting");
+      setDisconnectReason(undefined);
+      setError(undefined);
+      setHasOutput(false);
+      setReady(false);
       try {
         const { FitAddon, Terminal: GhosttyTerminal } = await loadGhostty();
         if (disposed) {
@@ -123,6 +117,7 @@ export const Terminal = ({
         terminal.open(container);
         fit.fit();
         fit.observeResize();
+        setReady(true);
 
         socket = new WebSocket(
           socketURL(terminal.cols, terminal.rows),
@@ -133,6 +128,12 @@ export const Terminal = ({
           if (!disposed) {
             setConnection("connected");
             terminal.focus();
+            terminal.textarea?.focus();
+            focusTimer = setTimeout(() => {
+              if (!disposed) {
+                terminal.textarea?.focus();
+              }
+            }, 0);
           }
         });
         socket.addEventListener("message", (event) => {
@@ -141,20 +142,26 @@ export const Terminal = ({
             return;
           }
           terminal.write(new Uint8Array(event.data), () => {
-            if (hasPainted) {
+            if (hasReceivedOutput) {
               return;
             }
-            hasPainted = true;
+            hasReceivedOutput = true;
             requestAnimationFrame(() => {
               if (!disposed) {
-                setPainted(true);
+                setHasOutput(true);
               }
             });
           });
         });
-        socket.addEventListener("close", () => {
+        socket.addEventListener("close", (event) => {
           if (!disposed) {
             setConnection("disconnected");
+            setDisconnectReason(
+              event.reason ||
+                (event.code === 1000
+                  ? "Session ended"
+                  : "Session ended unexpectedly")
+            );
           }
         });
         socket.addEventListener("error", () => {
@@ -217,10 +224,17 @@ export const Terminal = ({
     void start();
     return () => {
       disposed = true;
+      if (focusTimer !== undefined) {
+        clearTimeout(focusTimer);
+      }
       socket?.close(1000, "terminal closed");
       disposeTerminal?.();
     };
   }, [socketProtocols, socketURL]);
+
+  useEffect(() => {
+    onConnectionChange?.(connection);
+  }, [connection, onConnectionChange]);
 
   useEffect(() => {
     if (!visible) {
@@ -231,22 +245,43 @@ export const Terminal = ({
   }, [visible]);
 
   return (
-    <div className="relative flex min-h-0 flex-1 overflow-hidden bg-[#191816]">
-      <div className="absolute top-2 right-3 z-10 flex items-center gap-1.5 bg-[#191816]/90 px-1.5 py-1 text-[9px] text-[#8d8780]">
-        <span className={`size-1.5 ${connectionColors[connection]}`} />
-        {connection}
-      </div>
-      <div
-        className={`min-h-0 min-w-0 flex-1 overflow-hidden py-3 pl-3 transition-opacity duration-150 [&_canvas]:block ${
-          painted ? "opacity-100" : "opacity-0"
-        }`}
-        ref={containerRef}
-      />
-      {error ? (
-        <div className="absolute inset-0 grid place-items-center bg-[#191816] px-8 text-center text-xs text-rose-300">
-          {error}
+    <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#171615]">
+      {showStatusBar ? (
+        <div className="flex h-7 shrink-0 items-center gap-2 border-b border-[#2b2926] px-3 text-[9px] text-[#8d8780]">
+          <SquareTerminal className="size-3" />
+          <code className="min-w-0 flex-1 truncate text-[#b7b1aa]">
+            {title}
+          </code>
+          <span className={`size-1.5 ${connectionColors[connection]}`} />
+          <span>{disconnectReason ?? connection}</span>
         </div>
       ) : null}
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        <div
+          className="h-full min-h-0 min-w-0 overflow-hidden px-3 py-2.5 caret-transparent [&_canvas]:block"
+          ref={containerRef}
+        />
+        {!ready && !error ? (
+          <div className="absolute inset-0 grid place-items-center bg-[#171615] px-8 text-center text-[10px] text-[#8d8780]">
+            Starting PTY…
+          </div>
+        ) : null}
+        {connection === "disconnected" && !hasOutput && !error ? (
+          <div className="absolute inset-0 grid place-items-center bg-[#171615] px-8 text-center">
+            <div>
+              <p className="text-xs text-[#d9d3cc]">Session did not start</p>
+              <p className="mt-2 text-[10px] text-[#8d8780]">
+                {disconnectReason ?? "The terminal connection was closed"}
+              </p>
+            </div>
+          </div>
+        ) : null}
+        {error ? (
+          <div className="absolute inset-0 grid place-items-center bg-[#171615] px-8 text-center text-xs text-rose-300">
+            {error}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 };

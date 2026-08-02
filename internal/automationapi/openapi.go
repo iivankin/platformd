@@ -20,48 +20,48 @@ type openAPIFeatures struct {
 func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	schemas := serviceMutationSchemas()
 	paths := map[string]any{
-		"/api/v1/me":                                                    readOperation("Read current token identity"),
-		"/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
-		"/api/v1/projects":                                              readOperation("List visible projects"),
-		"/api/v1/projects/{projectID}":                                  readOperation("Get one visible project"),
-		"/api/v1/projects/{projectID}/services":                         readWriteOperation("List services in one visible project", "Create a service (admin token)"),
-		"/api/v1/projects/{projectID}/services/{serviceID}":             readUpdateOperation("Get one visible service", "Update a service (admin token)"),
-		"/api/v1/projects/{projectID}/services/{serviceID}/deployments": readOperation("List bounded deployment history"),
-		"/api/v1/projects/{projectID}/services/{serviceID}/logs":        logReadOperation(),
-		"/api/v1/projects/{projectID}/services/{serviceID}/redeploy":    mutationOperation("Redeploy a service (admin token)", "ServiceRedeployRequest"),
-		"/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
-		"/api/v1/projects/{projectID}/redis":                            managedRedisOperation(),
-		"/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
-		"/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
-		"/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
+		"/public/api/v1/me":                                                    readOperation("Read current token identity"),
+		"/public/api/v1/managed-images/{engine}/tags":                          managedImageTagsOperation(),
+		"/public/api/v1/projects":                                              readOperation("List visible projects"),
+		"/public/api/v1/projects/{projectID}":                                  readOperation("Get one visible project"),
+		"/public/api/v1/projects/{projectID}/services":                         readWriteOperation("List services in one visible project", "Create a service (admin token)"),
+		"/public/api/v1/projects/{projectID}/services/{serviceID}":             readUpdateOperation("Get one visible service", "Update a service (admin token)"),
+		"/public/api/v1/projects/{projectID}/services/{serviceID}/deployments": readOperation("List bounded deployment history"),
+		"/public/api/v1/projects/{projectID}/services/{serviceID}/logs":        logReadOperation(),
+		"/public/api/v1/projects/{projectID}/services/{serviceID}/redeploy":    mutationOperation("Redeploy a service (admin token)", "ServiceRedeployRequest"),
+		"/public/api/v1/projects/{projectID}/services/{serviceID}/rollback":    mutationOperation("Rollback a service (admin token)", "ServiceRollbackRequest"),
+		"/public/api/v1/projects/{projectID}/redis":                            managedRedisOperation(),
+		"/public/api/v1/projects/{projectID}/redis/{redisID}":                  readOperation("Get one managed Redis resource"),
+		"/public/api/v1/projects/{projectID}/postgres":                         managedPostgresOperation(),
+		"/public/api/v1/projects/{projectID}/postgres/{postgresID}":            readOperation("Get one managed PostgreSQL resource"),
 	}
 	if features.projects {
-		paths["/api/v1/projects"] = projectCollectionOperation()
+		paths["/public/api/v1/projects"] = projectCollectionOperation()
 	}
 	if features.objectStores {
-		paths["/api/v1/projects/{projectID}/object-stores"] = objectStoreCollectionOperation()
-		paths["/api/v1/projects/{projectID}/object-stores/{storeID}"] = readOperation("Get one private S3 resource")
+		paths["/public/api/v1/projects/{projectID}/object-stores"] = objectStoreCollectionOperation()
+		paths["/public/api/v1/projects/{projectID}/object-stores/{storeID}"] = readOperation("Get one private S3 resource")
 	}
 	if features.domains {
-		paths["/api/v1/projects/{projectID}/services/{serviceID}/domains"] = domainCollectionOperation()
-		paths["/api/v1/projects/{projectID}/services/{serviceID}/domains/{hostname}"] = domainDeleteOperation()
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/domains"] = domainCollectionOperation()
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/domains/{hostname}"] = domainDeleteOperation()
 	}
 	if features.serverExec {
-		paths["/api/v1/server/exec"] = serverExecOperation()
+		paths["/public/api/v1/server/exec"] = serverExecOperation()
 	}
 	if features.managedResources {
-		paths["/api/v1/projects/{projectID}/managed-resources"] = managedResourceListOperation()
-		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}"] = managedResourceReadOperation("Read one managed resource's lifecycle/configuration metadata")
-		paths["/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups"] = managedResourceBackupReadOperation()
+		paths["/public/api/v1/projects/{projectID}/managed-resources"] = managedResourceListOperation()
+		paths["/public/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}"] = managedResourceReadOperation("Read one managed resource's lifecycle/configuration metadata")
+		paths["/public/api/v1/projects/{projectID}/managed-resources/{kind}/{resourceID}/backups"] = managedResourceBackupReadOperation()
 	}
 	if features.databaseVersions {
-		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/preview"] = databaseVersionPreviewOperation()
-		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change"] = databaseVersionStartOperation()
-		paths["/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}"] = databaseVersionReadOperation()
+		paths["/public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/preview"] = databaseVersionPreviewOperation()
+		paths["/public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change"] = databaseVersionStartOperation()
+		paths["/public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}"] = databaseVersionReadOperation()
 	}
 	if features.volumes {
-		paths["/api/v1/projects/{projectID}/services/{serviceID}/volumes"] = volumeCollectionOperation()
-		paths["/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}"] = volumeDeleteOperation()
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/volumes"] = volumeCollectionOperation()
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}"] = volumeDeleteOperation()
 	}
 	if features.registry {
 		addRegistryPaths(paths)
@@ -70,7 +70,7 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		}
 	}
 	if features.portForwards {
-		paths["/api/v1/projects/{projectID}/resources/{kind}/{resourceID}/port-forwards"] = portForwardOperation()
+		paths["/public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards"] = portForwardOperation()
 		schemas["PortForwardRequest"] = map[string]any{
 			"type": "object", "additionalProperties": false,
 			"required": []string{"port"},
@@ -105,9 +105,8 @@ func portForwardOperation() map[string]any {
 	return map[string]any{"post": map[string]any{
 		"summary": "Create a short-lived WSS-to-TCP port forward ticket (admin token)",
 		"parameters": []map[string]any{
-			{"name": "projectID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
-			{"name": "kind", "in": "path", "required": true, "schema": map[string]any{"type": "string", "enum": []string{"service", "postgres", "redis"}}},
-			{"name": "resourceID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+			{"name": "projectName", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+			{"name": "resourceName", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
 		},
 		"requestBody": map[string]any{
 			"required": true,
@@ -117,9 +116,10 @@ func portForwardOperation() map[string]any {
 		},
 		"responses": map[string]any{
 			"201": map[string]string{"description": "Short-lived bearer ticket plus CLI installation and connection instructions"},
-			"400": map[string]string{"description": "Invalid kind, port, or lifetime"},
+			"400": map[string]string{"description": "Invalid project name, resource name, port, or lifetime"},
 			"401": map[string]string{"description": "Missing or invalid API token"},
 			"403": map[string]string{"description": "Admin role or project boundary denied"},
+			"404": map[string]string{"description": "Project or resource not found"},
 			"409": map[string]string{"description": "Resource is not currently running"},
 		},
 	}}
@@ -390,8 +390,9 @@ func serviceMutationSchemas() map[string]any {
 		"type": "object", "additionalProperties": false,
 		"required": []string{"type"},
 		"properties": map[string]any{
-			"type":       map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
-			"autoUpdate": map[string]string{"type": "boolean"},
+			"type":                  map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
+			"autoUpdate":            map[string]string{"type": "boolean"},
+			"minimumReleaseAgeDays": map[string]any{"type": "integer", "minimum": 1, "maximum": 36_500},
 			"image": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"required": []string{"reference"},
@@ -418,10 +419,28 @@ func serviceMutationSchemas() map[string]any {
 		"type": "object", "additionalProperties": false,
 		"required": []string{"source"},
 		"properties": map[string]any{
-			"source":      source,
-			"command":     map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"args":        map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"environment": map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"source": source,
+			"beforeDeploy": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"command": map[string]any{"type": "string", "maxLength": 262_144},
+					"cloudflareHostnames": map[string]any{
+						"type": "array", "maxItems": 30, "items": map[string]string{"type": "string"},
+					},
+					"githubWorkflow": map[string]any{
+						"type": "object", "additionalProperties": false,
+						"required": []string{"path", "name"},
+						"properties": map[string]any{
+							"path": map[string]string{"type": "string"}, "name": map[string]string{"type": "string"},
+							"inputs": map[string]any{"type": "object", "maxProperties": 25},
+						},
+					},
+				},
+			},
+			"command":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"args":             map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"environment":      map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"buildEnvironment": map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
 			"secretReferences": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "required": []string{"environmentName", "secretId"},
 				"properties": map[string]any{"environmentName": map[string]string{"type": "string"}, "secretId": map[string]string{"type": "string"}},

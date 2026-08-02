@@ -1,10 +1,8 @@
 package state_test
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -36,7 +34,7 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != state.SupportedSchemaVersion() {
+	if version != 1 || state.SupportedSchemaVersion() != 1 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int
@@ -45,6 +43,39 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	}
 	if tableCount != 12 {
 		t.Fatalf("core table count = %d, want 12", tableCount)
+	}
+}
+
+func TestOpenReopensCurrentSchema(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "platformd.db")
+	store, err := state.Open(ctx, path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Write(ctx, func(transaction *sql.Tx) error {
+		_, err := transaction.ExecContext(ctx, "INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'project', 1, 1)")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = state.Open(ctx, path, os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var count int
+	if err := store.QueryRowContext(ctx, "SELECT count(*) FROM projects WHERE id = 'project'").Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("preserved project count = %d, want 1", count)
 	}
 }
 
@@ -102,10 +133,7 @@ func TestWriterSerializesTransactions(t *testing.T) {
 func TestControlObserverRunsOnlyAfterSuccessfulControlCommit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
+	store := openStore(t)
 	defer store.Close()
 	commits := 0
 	store.SetControlCommitObserver(func() { commits++ })
@@ -132,355 +160,6 @@ func TestControlObserverRunsOnlyAfterSuccessfulControlCommit(t *testing.T) {
 	}
 	if commits != 1 {
 		t.Fatalf("failed control transaction notified observer %d times", commits)
-	}
-}
-
-func TestOpenMigratesVersionOneRegistryStateAtomically(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "platformd.db")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	database, err := sql.Open("sqlite3", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = database.Exec(`
-CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
-CREATE TABLE installation(
-  singleton INTEGER PRIMARY KEY, admin_hostname TEXT NOT NULL UNIQUE,
-  automation_hostname TEXT UNIQUE
-) STRICT;
-CREATE TABLE registry_repositories(id TEXT PRIMARY KEY) STRICT;
-CREATE TABLE registry_credentials(
-  id TEXT PRIMARY KEY,
-  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE
-) STRICT;
-INSERT INTO schema_migrations(version, applied_at) VALUES (1, 1);
-PRAGMA user_version = 1;`)
-	if err != nil {
-		_ = database.Close()
-		t.Fatal(err)
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := state.Open(context.Background(), path, os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var version, tables int
-	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.QueryRowContext(context.Background(), `
-SELECT count(*) FROM sqlite_schema
-WHERE type = 'table' AND name IN ('registry_manifests', 'registry_tags', 'registry_uploads')`).Scan(&tables); err != nil {
-		t.Fatal(err)
-	}
-	if version != state.SupportedSchemaVersion() || tables != 3 {
-		t.Fatalf("migrated version/tables = %d/%d", version, tables)
-	}
-}
-
-func TestOpenPreservesLegacyRegistryCredentialDuringVersionThreeMigration(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "platformd.db")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	database, err := sql.Open("sqlite3", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = database.Exec(`
-CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
-CREATE TABLE registry_repositories(id TEXT PRIMARY KEY) STRICT;
-CREATE TABLE registry_credentials(
-  id TEXT PRIMARY KEY,
-  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  permission TEXT NOT NULL,
-  secret_hmac BLOB NOT NULL,
-  created_at INTEGER NOT NULL,
-  last_used_at INTEGER
-) STRICT;
-INSERT INTO registry_repositories(id) VALUES ('repository');
-INSERT INTO registry_credentials(id, repository_id, name, permission, secret_hmac, created_at)
-VALUES ('credential', 'repository', 'legacy', 'pull', zeroblob(32), 1);
-INSERT INTO schema_migrations(version, applied_at) VALUES (2, 1);
-PRAGMA user_version = 2;`)
-	if err != nil {
-		_ = database.Close()
-		t.Fatal(err)
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
-	}
-	store, err := state.Open(context.Background(), path, os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var version int
-	var verifier, encrypted []byte
-	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.QueryRowContext(context.Background(), `
-SELECT secret_hmac, secret_encrypted FROM registry_credentials WHERE id = 'credential'`).Scan(&verifier, &encrypted); err != nil {
-		t.Fatal(err)
-	}
-	if version != state.SupportedSchemaVersion() || len(verifier) != 32 || len(encrypted) != 0 {
-		t.Fatalf("migrated legacy credential = version %d, verifier %d bytes, encrypted %d bytes", version, len(verifier), len(encrypted))
-	}
-}
-
-func TestVersionEightMigrationMovesResourceReferencesIntoEnvironmentValues(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "platformd.db")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	database, err := sql.Open("sqlite3", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = database.Exec(`
-CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
-CREATE TABLE projects(
-  id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE installation(
-  singleton INTEGER PRIMARY KEY CHECK (singleton = 1), registry_hostname TEXT
-) STRICT;
-CREATE TABLE services(
-  id TEXT PRIMARY KEY, project_id TEXT NOT NULL, name TEXT NOT NULL,
-  image_reference TEXT NOT NULL, image_credential_id TEXT,
-  command_json TEXT, args_json TEXT, environment_json TEXT NOT NULL,
-  target_port INTEGER, health_path TEXT, startup_timeout_seconds INTEGER NOT NULL,
-  cpu_millis INTEGER, memory_bytes INTEGER, enabled INTEGER NOT NULL DEFAULT 1,
-  active_deployment_id TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE deployments(
-  id TEXT PRIMARY KEY, service_id TEXT NOT NULL, image_digest TEXT NOT NULL,
-  service_config_hash TEXT NOT NULL, snapshot_json TEXT NOT NULL,
-  status TEXT NOT NULL, error_code TEXT, error_message TEXT,
-  created_at INTEGER NOT NULL, finished_at INTEGER
-) STRICT;
-CREATE TABLE managed_postgres(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
-CREATE TABLE managed_redis(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
-CREATE TABLE object_stores(id TEXT PRIMARY KEY, name TEXT NOT NULL) STRICT;
-CREATE TABLE service_resource_variable_refs(
-  service_id TEXT NOT NULL, environment_name TEXT NOT NULL,
-  resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL, output_name TEXT NOT NULL
-) STRICT;
-INSERT INTO projects VALUES ('project', 'project', 1, 1);
-INSERT INTO installation(singleton, registry_hostname) VALUES (1, NULL);
-INSERT INTO services(
-  id, project_id, name, image_reference, environment_json, target_port,
-  health_path, startup_timeout_seconds, created_at, updated_at
-) VALUES ('worker', 'project', 'worker', 'alpine:latest', '{"PLAIN":"value"}', 8080, NULL, 60, 1, 1);
-INSERT INTO managed_postgres(id, name) VALUES ('postgres-id', 'main');
-INSERT INTO service_resource_variable_refs(service_id, environment_name, resource_kind, resource_id, output_name)
-VALUES ('worker', 'POSTGRES_URL', 'postgres', 'postgres-id', 'POSTGRES_URL');
-INSERT INTO schema_migrations(version, applied_at) VALUES (7, 1);
-PRAGMA user_version = 7;`)
-	if err != nil {
-		_ = database.Close()
-		t.Fatal(err)
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := state.Open(context.Background(), path, os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var environmentJSON string
-	if err := store.QueryRowContext(context.Background(), `
-SELECT environment_json FROM services WHERE id = 'worker'`).Scan(&environmentJSON); err != nil {
-		t.Fatal(err)
-	}
-	var environment map[string]string
-	if err := json.Unmarshal([]byte(environmentJSON), &environment); err != nil {
-		t.Fatal(err)
-	}
-	if environment["PLAIN"] != "value" || environment["POSTGRES_URL"] != "${{main.POSTGRES_URL}}" {
-		t.Fatalf("migrated environment = %#v", environment)
-	}
-	var version, oldReferenceTables int
-	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.QueryRowContext(context.Background(), `
-SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'service_resource_variable_refs'`).Scan(&oldReferenceTables); err != nil {
-		t.Fatal(err)
-	}
-	if version != state.SupportedSchemaVersion() || oldReferenceTables != 0 {
-		t.Fatalf("schema version/reference tables = %d/%d", version, oldReferenceTables)
-	}
-	var healthPort any
-	if err := store.QueryRowContext(context.Background(), `
-SELECT health_port FROM services WHERE id = 'worker'`).Scan(&healthPort); err != nil {
-		t.Fatal(err)
-	}
-	if healthPort != nil {
-		t.Fatalf("health port = %v, want NULL when the old health path was disabled", healthPort)
-	}
-}
-
-func TestVersionTenMigrationPreservesSingletonTargetAssignmentsAndHistory(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "platformd.db")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	database, err := sql.Open("sqlite3", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = database.Exec(`
-CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
-CREATE TABLE installation(singleton INTEGER PRIMARY KEY CHECK (singleton = 1)) STRICT;
-CREATE TABLE backup_target(
-  singleton INTEGER PRIMARY KEY CHECK (singleton = 1), endpoint TEXT NOT NULL,
-  region TEXT NOT NULL, bucket TEXT NOT NULL, prefix TEXT NOT NULL,
-  access_key_id TEXT NOT NULL, secret_access_key_encrypted BLOB NOT NULL,
-  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-) STRICT;
-CREATE TABLE registry_repositories(
-  id TEXT PRIMARY KEY, backup_enabled INTEGER NOT NULL DEFAULT 0,
-  backup_cron TEXT, backup_retention_count INTEGER NOT NULL DEFAULT 7
-) STRICT;
-CREATE TABLE object_stores(
-  id TEXT PRIMARY KEY, backup_enabled INTEGER NOT NULL DEFAULT 0,
-  backup_cron TEXT, backup_retention_count INTEGER NOT NULL DEFAULT 7
-) STRICT;
-CREATE TABLE managed_postgres(
-  id TEXT PRIMARY KEY, backup_enabled INTEGER NOT NULL DEFAULT 0,
-  backup_cron TEXT, backup_retention_count INTEGER NOT NULL DEFAULT 7
-) STRICT;
-CREATE TABLE managed_redis(
-  id TEXT PRIMARY KEY, backup_enabled INTEGER NOT NULL DEFAULT 0,
-  backup_cron TEXT, backup_retention_count INTEGER NOT NULL DEFAULT 7
-) STRICT;
-CREATE TABLE volumes(id TEXT PRIMARY KEY, created_at INTEGER NOT NULL) STRICT;
-CREATE TABLE backups(
-  id TEXT PRIMARY KEY, resource_kind TEXT NOT NULL, resource_id TEXT NOT NULL,
-  scheduled_occurrence INTEGER, generation_id TEXT, status TEXT NOT NULL,
-  size_bytes INTEGER, error_code TEXT, error_message TEXT,
-  started_at INTEGER NOT NULL, finished_at INTEGER
-) STRICT;
-INSERT INTO installation(singleton) VALUES (1);
-INSERT INTO backup_target VALUES (
-  1, 'https://s3.example.com', 'region', 'bucket', 'prefix', 'access', x'0102', 1, 2
-);
-INSERT INTO registry_repositories(id) VALUES ('registry');
-INSERT INTO object_stores(id) VALUES ('object-store');
-INSERT INTO managed_postgres(id) VALUES ('postgres');
-INSERT INTO managed_redis(id) VALUES ('redis');
-INSERT INTO volumes(id, created_at) VALUES ('volume', 3);
-INSERT INTO backups(
-  id, resource_kind, resource_id, generation_id, status, size_bytes, started_at, finished_at
-) VALUES ('backup', 'postgres', 'postgres', 'generation', 'succeeded', 10, 4, 5);
-INSERT INTO schema_migrations(version, applied_at) VALUES (9, 1);
-PRAGMA user_version = 9;`)
-	if err != nil {
-		_ = database.Close()
-		t.Fatal(err)
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := state.Open(context.Background(), path, os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	target, err := store.BackupTarget(context.Background(), "primary")
-	if err != nil || target.Name != "Primary storage" || target.Endpoint != "https://s3.example.com" ||
-		!bytes.Equal(target.SecretAccessKeyEncrypted, []byte{1, 2}) {
-		t.Fatalf("migrated target = %+v, %v", target, err)
-	}
-	var controlTarget string
-	if err := store.QueryRowContext(context.Background(), `
-SELECT backup_control_target_id FROM installation WHERE singleton = 1`).Scan(&controlTarget); err != nil || controlTarget != "primary" {
-		t.Fatalf("control target = %q, %v", controlTarget, err)
-	}
-	for table := range map[string]struct{}{
-		"registry_repositories": {}, "object_stores": {}, "managed_postgres": {}, "managed_redis": {},
-	} {
-		var targetID string
-		if err := store.QueryRowContext(context.Background(), "SELECT backup_target_id FROM "+table+" LIMIT 1").Scan(&targetID); err != nil || targetID != "primary" {
-			t.Fatalf("%s target = %q, %v", table, targetID, err)
-		}
-	}
-	var volumeTarget sql.NullString
-	var volumeUpdatedAt int64
-	if err := store.QueryRowContext(context.Background(), `
-SELECT backup_target_id, updated_at FROM volumes WHERE id = 'volume'`).Scan(&volumeTarget, &volumeUpdatedAt); err != nil ||
-		volumeTarget.Valid || volumeUpdatedAt != 3 {
-		t.Fatalf("migrated volume policy = target %+v, updated %d, %v", volumeTarget, volumeUpdatedAt, err)
-	}
-	record, err := store.Backup(context.Background(), "backup")
-	if err != nil || record.TargetID != "primary" || record.GenerationID != "generation" {
-		t.Fatalf("migrated backup = %+v, %v", record, err)
-	}
-}
-
-func TestVersionSixteenMigrationRemovesManualVolumeOwnership(t *testing.T) {
-	t.Parallel()
-	path := filepath.Join(t.TempDir(), "platformd.db")
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	database, err := sql.Open("sqlite3", "file:"+path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, err = database.Exec(`
-CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL) STRICT;
-CREATE TABLE volumes(
-  id TEXT PRIMARY KEY,
-  owner_uid INTEGER NOT NULL CHECK (owner_uid >= 0),
-  owner_gid INTEGER NOT NULL CHECK (owner_gid >= 0)
-) STRICT;
-INSERT INTO volumes(id, owner_uid, owner_gid) VALUES ('volume', 1000, 1001);
-INSERT INTO schema_migrations(version, applied_at) VALUES (15, 1);
-PRAGMA user_version = 15;`)
-	if err != nil {
-		_ = database.Close()
-		t.Fatal(err)
-	}
-	if err := database.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	store, err := state.Open(context.Background(), path, os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	var ownershipColumns int
-	if err := store.QueryRowContext(context.Background(), `
-SELECT count(*) FROM pragma_table_info('volumes') WHERE name IN ('owner_uid', 'owner_gid')`).Scan(&ownershipColumns); err != nil {
-		t.Fatal(err)
-	}
-	if ownershipColumns != 0 {
-		t.Fatalf("%d manual ownership columns survived migration", ownershipColumns)
-	}
-	var initializationTable int
-	if err := store.QueryRowContext(context.Background(), `
-SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'volume_initializations'`).Scan(&initializationTable); err != nil {
-		t.Fatal(err)
-	}
-	if initializationTable != 1 {
-		t.Fatal("volume initialization table was not created")
 	}
 }
 

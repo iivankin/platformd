@@ -183,7 +183,7 @@ func (application *Application) CreateRepository(ctx context.Context, input Crea
 		input.CredentialPermission = "pull_push"
 	}
 	now := application.now()
-	identifiers, err := application.identifiers(now, 4)
+	identifiers, err := application.identifiers(4)
 	if err != nil {
 		return CreateRepositoryResult{}, err
 	}
@@ -278,7 +278,7 @@ func (application *Application) BeginUpload(ctx context.Context, authentication 
 		return state.RegistryUpload{}, ErrDenied
 	}
 	now := application.now()
-	uploadID, err := id.NewWith(now, application.random)
+	uploadID, err := id.New()
 	if err != nil {
 		return state.RegistryUpload{}, err
 	}
@@ -607,10 +607,10 @@ func (application *Application) releaseUploadLock(uploadID string, lock *uploadL
 	application.locksMu.Unlock()
 }
 
-func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {
+func (application *Application) identifiers(count int) ([]string, error) {
 	result := make([]string, count)
 	for index := range result {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return nil, err
 		}

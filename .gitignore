@@ -16,3 +16,4 @@
 *.crt
 .DS_Store
 node_modules/
+/internal/objectstore/sidecar/target/

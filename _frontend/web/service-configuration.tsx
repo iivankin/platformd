@@ -34,6 +34,7 @@ import { ServiceRegistryCredentialFields } from "@/service-registry-credential-f
 import { TriggerPathEditor } from "@/trigger-path-editor";
 
 const configureGitHubAppValue = "__configure_github_app__";
+const maximumReleaseAgeDays = 36_500;
 
 export interface ServiceConfigurationDraft {
   healthEnabled: boolean;
@@ -138,6 +139,18 @@ const validateServiceSource = (
     }
   } else if (!draft.source.image.reference.trim()) {
     throw new Error("Image reference is required");
+  }
+  if (
+    draft.source.type !== "github" &&
+    draft.source.type !== "platformd_registry" &&
+    draft.source.minimumReleaseAgeDays !== undefined &&
+    (!Number.isInteger(draft.source.minimumReleaseAgeDays) ||
+      draft.source.minimumReleaseAgeDays < 1 ||
+      draft.source.minimumReleaseAgeDays > maximumReleaseAgeDays)
+  ) {
+    throw new Error(
+      `Minimum release age must be between 1 and ${maximumReleaseAgeDays} days`
+    );
   }
   if (
     draft.source.type === "private_image" &&
@@ -564,6 +577,37 @@ const SourceFields = ({
         label="Automatically deploy new image digests for this tag"
         onChange={(autoUpdate) => onSourceChange({ ...draft, autoUpdate })}
       />
+      {draft.autoUpdate && draft.type !== "platformd_registry" ? (
+        <div className="grid gap-2 border-t border-border px-5 py-4">
+          <label
+            className="grid gap-1.5 text-[9px] text-muted-foreground"
+            htmlFor="service-source-minimum-release-age"
+          >
+            Minimum release age (days)
+            <Input
+              id="service-source-minimum-release-age"
+              inputMode="numeric"
+              max={maximumReleaseAgeDays}
+              min={1}
+              onChange={(event) => {
+                const days = event.currentTarget.valueAsNumber;
+                onSourceChange({
+                  ...draft,
+                  minimumReleaseAgeDays: Number.isNaN(days) ? undefined : days,
+                });
+              }}
+              placeholder="Optional"
+              step={1}
+              type="number"
+              value={draft.minimumReleaseAgeDays ?? ""}
+            />
+          </label>
+          <p className="text-[9px] leading-4 text-muted-foreground">
+            Auto-updates wait until OCI Created reaches this age. Images without
+            Created remain pending; manual deploys are not delayed.
+          </p>
+        </div>
+      ) : null}
     </>
   );
 };

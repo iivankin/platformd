@@ -120,7 +120,7 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		return CreateResult{}, fmt.Errorf("%w: %v", ErrImageUnavailable, err)
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 4)
+	identifiers, err := application.identifiers(4)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -288,7 +288,7 @@ func (application *Application) Mutate(ctx context.Context, input DataMutationIn
 		return DataMutationResult{}, err
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 2)
+	identifiers, err := application.identifiers(2)
 	if err != nil {
 		return DataMutationResult{}, err
 	}
@@ -321,10 +321,10 @@ func (application *Application) Mutate(ctx context.Context, input DataMutationIn
 	}, nil
 }
 
-func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {
+func (application *Application) identifiers(count int) ([]string, error) {
 	result := make([]string, count)
 	for index := range result {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return nil, fmt.Errorf("allocate managed Redis identifiers: %w", err)
 		}

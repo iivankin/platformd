@@ -2,7 +2,6 @@ package hostterminal
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"time"
@@ -40,7 +39,7 @@ type Config struct {
 	CreateLeaf     func(string) (Leaf, error)
 	InstallationID string
 	Now            func() time.Time
-	NewID          func(time.Time) (string, error)
+	NewID          func() (string, error)
 }
 
 type Application struct {
@@ -48,7 +47,7 @@ type Application struct {
 	createLeaf     func(string) (Leaf, error)
 	installationID string
 	now            func() time.Time
-	newID          func(time.Time) (string, error)
+	newID          func() (string, error)
 	spawn          spawn
 }
 
@@ -62,9 +61,7 @@ func New(config Config) (*Application, error) {
 	}
 	newID := config.NewID
 	if newID == nil {
-		newID = func(timestamp time.Time) (string, error) {
-			return id.NewWith(timestamp, rand.Reader)
-		}
+		newID = id.New
 	}
 	return &Application{
 		audit: config.Audit, createLeaf: config.CreateLeaf, installationID: config.InstallationID,
@@ -77,7 +74,7 @@ func (application *Application) Open(ctx context.Context, input OpenInput) (term
 		return nil, err
 	}
 	startedAt := application.now()
-	sessionID, err := application.newID(startedAt)
+	sessionID, err := application.newID()
 	if err != nil {
 		return nil, fmt.Errorf("generate host terminal session ID: %w", err)
 	}
@@ -104,7 +101,7 @@ func (application *Application) Open(ctx context.Context, input OpenInput) (term
 
 func (application *Application) finish(input OpenInput, startedAt time.Time, reason string, exitCode int, runErr error) error {
 	finishedAt := application.now()
-	auditID, err := application.newID(finishedAt)
+	auditID, err := application.newID()
 	if err != nil {
 		return fmt.Errorf("generate host terminal completion audit ID: %w", err)
 	}

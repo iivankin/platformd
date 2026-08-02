@@ -91,7 +91,7 @@ func createManagedRedis(application *automation.ManagedRedisApplication) http.Ha
 			writeManagedRedisMutationError(response, err)
 			return
 		}
-		response.Header().Set("Location", "/api/v1/projects/"+result.Resource.ProjectID+"/redis/"+result.Resource.ID)
+		response.Header().Set("Location", "/public/api/v1/projects/"+result.Resource.ProjectID+"/redis/"+result.Resource.ID)
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicManagedRedis(result.Resource, result.Password))
 	}

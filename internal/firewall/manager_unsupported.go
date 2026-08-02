@@ -22,6 +22,10 @@ func (*Manager) Probe() error {
 	return fmt.Errorf("platform firewall requires Linux")
 }
 
+func (*Manager) PublicTraffic() (map[string]PublicTrafficCounters, error) {
+	return map[string]PublicTrafficCounters{}, nil
+}
+
 func EnableIPv4Forwarding() error {
 	return fmt.Errorf("IPv4 forwarding configuration requires Linux")
 }

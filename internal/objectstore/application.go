@@ -28,6 +28,8 @@ var (
 	ErrBadDigest           = errors.New("object payload digest does not match x-amz-content-sha256")
 	ErrInvalidInput        = errors.New("invalid object store input")
 	ErrMetadataMaintenance = errors.New("object store metadata is in maintenance")
+	ErrObjectNotFound      = errors.New("object not found")
+	ErrPreconditionFailed  = errors.New("object precondition failed")
 )
 
 type Repository interface {
@@ -35,22 +37,8 @@ type Repository interface {
 	ObjectStore(context.Context, string) (state.ObjectStore, error)
 	ObjectStoreInProject(context.Context, string, string) (state.ObjectStore, error)
 	ObjectStoresByProject(context.Context, string) ([]state.ObjectStore, error)
-	S3Credential(context.Context, string) (state.S3Credential, error)
 	S3CredentialsByObjectStore(context.Context, string) ([]state.S3Credential, error)
-	CommitObject(context.Context, state.CommitObject) (state.ObjectMetadata, error)
-	Object(context.Context, string, string) (state.ObjectMetadata, error)
-	ObjectPayload(context.Context, string, string) (state.ObjectPayload, error)
-	ListObjects(context.Context, string, string, string, int) ([]state.ObjectMetadata, bool, error)
-	DeleteObject(context.Context, string, string) error
-	CreateMultipartUpload(context.Context, state.CreateMultipartUpload) (state.MultipartUpload, error)
-	MultipartUpload(context.Context, string, string, string) (state.MultipartUpload, error)
-	CommitMultipartPart(context.Context, string, string, string, state.MultipartPart, int64) error
-	MultipartPart(context.Context, string, string, string, int) (state.MultipartPart, error)
-	MultipartParts(context.Context, string, string, string, int, int) ([]state.MultipartPart, bool, error)
-	CompleteMultipartUpload(context.Context, state.CompleteMultipartUpload) (state.ObjectMetadata, error)
-	AbortMultipartUpload(context.Context, string, string, string) error
-	ExpiredMultipartUploads(context.Context, int64, int) ([]state.MultipartUpload, error)
-	RestoreObjectStore(context.Context, state.RestoreObjectStore) error
+	RecordObjectStoreRestore(context.Context, state.RecordObjectStoreRestore) error
 }
 
 type Actor struct {
@@ -87,33 +75,15 @@ type StoreDetails struct {
 	Secret     string
 }
 
-type PutInput struct {
-	StoreID        string
-	ObjectKey      string
-	ContentType    string
-	ExpectedSHA256 string
-	Body           io.Reader
-}
-
-type Object struct {
-	Metadata state.ObjectMetadata
-	Payload  PayloadInfo
-}
-
-type Credential struct {
-	Store      state.ObjectStore
-	Permission string
-	Secret     string
-}
-
 type Application struct {
 	repository Repository
-	payloads   *PayloadStore
+	storage    Storage
 	master     cryptobox.MasterKey
 	random     io.Reader
 	now        func() time.Time
 	metadataMu sync.Mutex
 	metadata   map[string]*metadataAdmission
+	requests   map[string]*requestAdmission
 	backups    map[string]bool
 }
 
@@ -124,8 +94,14 @@ type metadataAdmission struct {
 	changed       chan struct{}
 }
 
-func NewApplication(repository Repository, payloads *PayloadStore, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
-	if repository == nil || payloads == nil {
+type requestAdmission struct {
+	active  int
+	blocked bool
+	changed chan struct{}
+}
+
+func NewApplication(repository Repository, storage Storage, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
+	if repository == nil || storage == nil {
 		return nil, errors.New("object store application dependencies are incomplete")
 	}
 	if random == nil {
@@ -135,8 +111,9 @@ func NewApplication(repository Repository, payloads *PayloadStore, master crypto
 		now = time.Now
 	}
 	return &Application{
-		repository: repository, payloads: payloads, master: master, random: random, now: now,
-		metadata: make(map[string]*metadataAdmission), backups: make(map[string]bool),
+		repository: repository, storage: storage, master: master, random: random, now: now,
+		metadata: make(map[string]*metadataAdmission), requests: make(map[string]*requestAdmission),
+		backups: make(map[string]bool),
 	}, nil
 }
 
@@ -172,7 +149,7 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		input.CredentialPermission = "read_write"
 	}
 	timestamp := application.now()
-	identifiers, err := application.identifiers(timestamp, 4)
+	identifiers, err := application.identifiers(4)
 	if err != nil {
 		return CreateResult{}, err
 	}
@@ -202,6 +179,9 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 	if err != nil {
 		return CreateResult{}, err
 	}
+	if err := application.storage.EnsureBucket(ctx, identifiers[0]); err != nil {
+		return CreateResult{}, fmt.Errorf("initialize object storage bucket: %w", err)
+	}
 	created, credential, err := application.repository.CreateObjectStore(ctx, state.CreateObjectStore{
 		ID: identifiers[0], ProjectID: input.ProjectID, Name: input.Name, BucketName: input.BucketName,
 		PublicHostname: input.PublicHostname, CORSOrigins: input.CORSOrigins,
@@ -212,6 +192,7 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[3], CreatedAtMillis: timestamp.UnixMilli(),
 	})
 	if err != nil {
+		_ = application.storage.DeleteBucket(ctx, identifiers[0])
 		return CreateResult{}, err
 	}
 	return CreateResult{Store: created, Credential: credential, AccessKey: accessKey, Secret: secret, RequestID: identifiers[3]}, nil
@@ -249,83 +230,95 @@ func (application *Application) Stores(ctx context.Context, projectID string) ([
 	return application.repository.ObjectStoresByProject(ctx, projectID)
 }
 
-func (application *Application) Credential(ctx context.Context, accessKey string) (Credential, error) {
-	credentialID, err := CredentialID(accessKey)
-	if err != nil {
-		return Credential{}, state.ErrS3CredentialNotFound
+func (application *Application) DeleteStoreData(ctx context.Context, storeID string) error {
+	if storeID == "" {
+		return ErrInvalidInput
 	}
-	credential, err := application.repository.S3Credential(ctx, credentialID)
+	releaseExclusion, err := application.beginBackupExclusion(storeID)
 	if err != nil {
-		return Credential{}, err
+		return err
 	}
-	store, err := application.repository.ObjectStore(ctx, credential.ObjectStoreID)
+	defer releaseExclusion()
+	releaseDataPlane, err := application.beginDataPlaneRestore(ctx, storeID)
 	if err != nil {
-		return Credential{}, err
+		return err
 	}
-	secret, err := OpenSecret(application.master, store.ID, credential.ID, credential.SecretEncrypted)
+	defer func() { _ = releaseDataPlane() }()
+	releaseRequests, err := application.blockRequestsForRestore(ctx, storeID)
 	if err != nil {
-		return Credential{}, err
+		return err
 	}
-	return Credential{Store: store, Permission: credential.Permission, Secret: secret}, nil
+	defer releaseRequests()
+	return application.storage.DeleteBucket(ctx, storeID)
 }
 
-func (application *Application) Put(ctx context.Context, input PutInput) (state.ObjectMetadata, error) {
-	if err := validateObjectKey(input.ObjectKey); err != nil || input.Body == nil {
-		return state.ObjectMetadata{}, fmt.Errorf("%w: invalid object key or body", ErrInvalidInput)
+func (application *Application) Put(ctx context.Context, input PutInput) (ObjectMetadata, error) {
+	if err := validateObjectKey(input.ObjectKey); err != nil || input.Body == nil ||
+		(input.BodySizeKnown && (input.BodySize < 0 || input.BodySize > MaximumObjectSize)) {
+		return ObjectMetadata{}, fmt.Errorf("%w: invalid object key or body", ErrInvalidInput)
 	}
-	payloadID, err := id.NewWith(application.now(), application.random)
-	if err != nil {
-		return state.ObjectMetadata{}, err
-	}
-	payload, err := application.payloads.Write(ctx, input.StoreID, payloadID, input.Body)
-	if err != nil {
-		return state.ObjectMetadata{}, err
-	}
-	if input.ExpectedSHA256 != "" && !strings.EqualFold(input.ExpectedSHA256, payload.PlaintextSHA256) {
-		_ = application.payloads.Delete(input.StoreID, payloadID)
-		return state.ObjectMetadata{}, ErrBadDigest
-	}
-	timestamp := application.now().UnixMilli()
 	finishMutation, err := application.beginMetadataMutation(ctx, input.StoreID)
 	if err != nil {
-		_ = application.payloads.Delete(input.StoreID, payload.ID)
-		return state.ObjectMetadata{}, err
+		return ObjectMetadata{}, err
 	}
 	defer finishMutation()
-	return application.repository.CommitObject(ctx, state.CommitObject{
-		ObjectStoreID: input.StoreID, ObjectKey: input.ObjectKey, ContentType: input.ContentType,
-		ETag: "\"" + payload.PlaintextSHA256 + "\"", CommittedAtMillis: timestamp,
-		Payload: state.ObjectPayload{
-			ID: payload.ID, ObjectStoreID: input.StoreID, PlaintextSize: payload.PlaintextSize,
-			ChunkCount: payload.ChunkCount, PlaintextSHA256: payload.PlaintextSHA256, CreatedAtMillis: timestamp,
-		},
-	})
+	return application.storage.Put(ctx, input)
 }
 
 func (application *Application) Object(ctx context.Context, storeID, objectKey string) (Object, error) {
 	if err := validateObjectKey(objectKey); err != nil {
 		return Object{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
 	}
-	metadata, err := application.repository.Object(ctx, storeID, objectKey)
+	release, err := application.beginRequest(storeID)
 	if err != nil {
 		return Object{}, err
 	}
-	payload, err := application.repository.ObjectPayload(ctx, storeID, metadata.PayloadID)
+	defer release()
+	metadata, err := application.storage.Object(ctx, storeID, objectKey)
 	if err != nil {
 		return Object{}, err
 	}
-	return Object{Metadata: metadata, Payload: PayloadInfo{
-		ID: payload.ID, PlaintextSize: payload.PlaintextSize,
-		ChunkCount: payload.ChunkCount, PlaintextSHA256: payload.PlaintextSHA256,
-	}}, nil
+	return Object{Metadata: metadata}, nil
 }
 
 func (application *Application) ReadRange(ctx context.Context, object Object, offset, length int64, output io.Writer) error {
-	return application.payloads.ReadRange(ctx, object.Metadata.ObjectStoreID, object.Payload, offset, length, output)
+	release, err := application.beginRequest(object.Metadata.ObjectStoreID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	return application.storage.ReadRange(ctx, object.Metadata.ObjectStoreID, object.Metadata.ObjectKey, offset, length, output)
 }
 
-func (application *Application) List(ctx context.Context, storeID, prefix, after string, limit int) ([]state.ObjectMetadata, bool, error) {
-	return application.repository.ListObjects(ctx, storeID, prefix, after, limit)
+func (application *Application) List(ctx context.Context, storeID, prefix, after string, limit int) ([]ObjectMetadata, bool, error) {
+	release, err := application.beginRequest(storeID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
+	entries, more, err := application.storage.ListEntries(ctx, storeID, prefix, "", after, limit)
+	objects := make([]ObjectMetadata, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Object != nil {
+			objects = append(objects, *entry.Object)
+		}
+	}
+	return objects, more, err
+}
+
+func (application *Application) ListEntries(ctx context.Context, storeID, prefix, delimiter, after string, limit int) ([]ObjectListEntry, bool, error) {
+	release, err := application.beginRequest(storeID)
+	if err != nil {
+		return nil, false, err
+	}
+	defer release()
+	if delimiter == "" {
+		return application.storage.ListEntries(ctx, storeID, prefix, "", after, limit)
+	}
+	if len(delimiter) > 1024 || !utf8.ValidString(delimiter) || strings.ContainsRune(delimiter, 0) {
+		return nil, false, fmt.Errorf("%w: invalid list delimiter", ErrInvalidInput)
+	}
+	return application.storage.ListEntries(ctx, storeID, prefix, delimiter, after, limit)
 }
 
 func (application *Application) EncodeContinuationToken(storeID, objectKey string) (string, error) {
@@ -372,7 +365,7 @@ func (application *Application) Delete(ctx context.Context, storeID, objectKey s
 		return err
 	}
 	defer finishMutation()
-	return application.repository.DeleteObject(ctx, storeID, objectKey)
+	return application.storage.Delete(ctx, storeID, objectKey)
 }
 
 func (application *Application) beginMetadataMutation(ctx context.Context, storeID string) (func(), error) {
@@ -398,6 +391,55 @@ func (application *Application) beginMetadataMutation(ctx context.Context, store
 		application.metadataMu.Lock()
 		admission.active--
 		application.signalMetadataLocked(admission)
+		application.metadataMu.Unlock()
+	}), nil
+}
+
+func (application *Application) beginRequest(storeID string) (func(), error) {
+	application.metadataMu.Lock()
+	admission := application.requestAdmissionLocked(storeID)
+	if admission.blocked {
+		application.metadataMu.Unlock()
+		return nil, ErrMetadataMaintenance
+	}
+	admission.active++
+	application.metadataMu.Unlock()
+	return sync.OnceFunc(func() {
+		application.metadataMu.Lock()
+		admission.active--
+		application.signalRequestLocked(admission)
+		application.metadataMu.Unlock()
+	}), nil
+}
+
+func (application *Application) blockRequestsForRestore(ctx context.Context, storeID string) (func(), error) {
+	application.metadataMu.Lock()
+	admission := application.requestAdmissionLocked(storeID)
+	if admission.blocked {
+		application.metadataMu.Unlock()
+		return nil, errors.New("object store requests are already in maintenance")
+	}
+	admission.blocked = true
+	application.signalRequestLocked(admission)
+	for admission.active != 0 {
+		changed := admission.changed
+		application.metadataMu.Unlock()
+		select {
+		case <-ctx.Done():
+			application.metadataMu.Lock()
+			admission.blocked = false
+			application.signalRequestLocked(admission)
+			application.metadataMu.Unlock()
+			return nil, ctx.Err()
+		case <-changed:
+		}
+		application.metadataMu.Lock()
+	}
+	application.metadataMu.Unlock()
+	return sync.OnceFunc(func() {
+		application.metadataMu.Lock()
+		admission.blocked = false
+		application.signalRequestLocked(admission)
 		application.metadataMu.Unlock()
 	}), nil
 }
@@ -468,15 +510,29 @@ func (application *Application) metadataAdmissionLocked(storeID string) *metadat
 	return admission
 }
 
+func (application *Application) requestAdmissionLocked(storeID string) *requestAdmission {
+	admission := application.requests[storeID]
+	if admission == nil {
+		admission = &requestAdmission{changed: make(chan struct{})}
+		application.requests[storeID] = admission
+	}
+	return admission
+}
+
 func (application *Application) signalMetadataLocked(admission *metadataAdmission) {
 	close(admission.changed)
 	admission.changed = make(chan struct{})
 }
 
-func (application *Application) identifiers(timestamp time.Time, count int) ([]string, error) {
+func (application *Application) signalRequestLocked(admission *requestAdmission) {
+	close(admission.changed)
+	admission.changed = make(chan struct{})
+}
+
+func (application *Application) identifiers(count int) ([]string, error) {
 	result := make([]string, count)
 	for index := range result {
-		value, err := id.NewWith(timestamp, application.random)
+		value, err := id.New()
 		if err != nil {
 			return nil, err
 		}

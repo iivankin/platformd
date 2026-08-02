@@ -2,7 +2,6 @@ package backup
 
 import (
 	"context"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -67,7 +66,6 @@ type ResourceRestoreServiceConfig struct {
 	Master        cryptobox.MasterKey
 	Restorers     map[string]ResourceRestorer
 	RemoteFactory ControlRemoteFactory
-	Random        io.Reader
 	Now           func() time.Time
 	OnError       func(error)
 	OnSuccess     func(ResourceRestoreRequest)
@@ -87,9 +85,6 @@ func NewResourceRestoreService(config ResourceRestoreServiceConfig) (*ResourceRe
 	}
 	if config.RemoteFactory == nil {
 		config.RemoteFactory = func(config remotes3.Config) (ControlRemote, error) { return remotes3.New(config) }
-	}
-	if config.Random == nil {
-		config.Random = rand.Reader
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -162,7 +157,7 @@ func (service *ResourceRestoreService) Start(
 		return state.Operation{}, ErrResourceGenerationNotFound
 	}
 	startedAt := service.config.Now()
-	operationID, err := id.NewWith(startedAt, service.config.Random)
+	operationID, err := id.New()
 	if err != nil {
 		return state.Operation{}, err
 	}

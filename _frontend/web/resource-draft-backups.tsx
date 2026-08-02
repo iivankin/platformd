@@ -184,7 +184,7 @@ export const ResourceDraftBackups = ({
         {targets.length === 0 && !loading ? (
           <p>
             Connect a storage location in{" "}
-            <Link className="underline" to="/backups/storage">
+            <Link className="underline" to="/settings/backups/storage">
               Backups
             </Link>{" "}
             before enabling automatic backups.

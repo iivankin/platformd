@@ -9,7 +9,7 @@ import (
 
 func TestCredentialsRoundTripWithSeparatedEncryptionDomains(t *testing.T) {
 	t.Parallel()
-	resourceID := "018bcfe5-687b-7fff-bfff-ffffffffffff"
+	resourceID := "abcdefghijklmnopqrstuvwx"
 	credentials, err := GenerateCredentials(resourceID, bytes.NewReader(bytes.Repeat([]byte{7}, 64)))
 	if err != nil {
 		t.Fatal(err)
@@ -39,8 +39,8 @@ func TestCredentialsRoundTripWithSeparatedEncryptionDomains(t *testing.T) {
 func TestDraftCredentialsAcceptGeneratedValues(t *testing.T) {
 	t.Parallel()
 	credentials := InitialCredentials{
-		DatabaseName:  "app_018bcfe5687b7fffbfffffff",
-		OwnerUsername: "owner_018bcfe5687b7fffbfffffff",
+		DatabaseName:  "app_abcdefghijklmnopqrstuvwx",
+		OwnerUsername: "owner_abcdefghijklmnopqrstuvwx",
 		OwnerPassword: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	}
 	if err := validateInitialCredentials(credentials); err != nil {

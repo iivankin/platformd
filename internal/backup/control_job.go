@@ -81,11 +81,11 @@ func (job *ControlJob) RunControl(ctx context.Context) error {
 		return err
 	}
 	startedAt := job.config.Now()
-	backupID, err := id.NewWith(startedAt, job.config.Random)
+	backupID, err := id.New()
 	if err != nil {
 		return err
 	}
-	generationID, err := id.NewWith(startedAt, job.config.Random)
+	generationID, err := id.New()
 	if err != nil {
 		return err
 	}

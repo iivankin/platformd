@@ -201,7 +201,8 @@ export const ProjectResourcePage = () => {
     const load = async () => {
       try {
         const canvas = await fetchProjectCanvas(projectID, controller.signal);
-        const resourceNode = projectFlowElements(canvas).nodes.find(
+        const flow = await projectFlowElements(canvas);
+        const resourceNode = flow.nodes.find(
           (candidate) =>
             candidate.id === resourceID &&
             (!kind || candidate.data.kind === kind)

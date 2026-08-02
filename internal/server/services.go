@@ -5,10 +5,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"mime"
 	"net/http"
 
 	"github.com/iivankin/platformd/internal/access"
+	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/publichostname"
 	"github.com/iivankin/platformd/internal/resourcename"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/servicesource"
@@ -33,7 +36,8 @@ type PreviewDeploymentRepository interface {
 }
 
 type ServiceEnvironmentResolver interface {
-	Resolve(context.Context, state.ServiceDesired, string) (map[string]string, error)
+	Resolve(context.Context, state.ServiceDesired, deployment.EnvironmentContext) (map[string]string, error)
+	ResolveBuild(context.Context, state.ServiceDesired, deployment.EnvironmentContext) (map[string]string, error)
 }
 
 type ServiceDeploymentActionRepository interface {
@@ -49,6 +53,8 @@ type serviceResponse struct {
 	Command            []string                           `json:"command,omitempty"`
 	Args               []string                           `json:"args,omitempty"`
 	Environment        map[string]string                  `json:"environment"`
+	BuildEnvironment   map[string]string                  `json:"buildEnvironment"`
+	BeforeDeploy       *serviceconfig.BeforeDeploy        `json:"beforeDeploy,omitempty"`
 	HealthCheck        *serviceconfig.HealthCheck         `json:"healthCheck,omitempty"`
 	CPUMillicores      int64                              `json:"cpuMillicores,omitempty"`
 	MemoryMaxBytes     int64                              `json:"memoryMaxBytes,omitempty"`
@@ -79,6 +85,8 @@ type serviceConfigRequest struct {
 	Command          []string                        `json:"command"`
 	Args             []string                        `json:"args"`
 	Environment      map[string]string               `json:"environment"`
+	BuildEnvironment map[string]string               `json:"buildEnvironment"`
+	BeforeDeploy     *serviceconfig.BeforeDeploy     `json:"beforeDeploy"`
 	SecretReferences []serviceconfig.SecretReference `json:"secretReferences"`
 	HealthCheck      *serviceconfig.HealthCheck      `json:"healthCheck"`
 	CPUMillicores    int64                           `json:"cpuMillicores"`
@@ -90,6 +98,7 @@ func (request serviceConfigRequest) snapshot() serviceconfig.Snapshot {
 	return serviceconfig.Snapshot{
 		Source:  request.Source,
 		Command: request.Command, Args: request.Args, Environment: request.Environment,
+		BuildEnvironment: request.BuildEnvironment, BeforeDeploy: request.BeforeDeploy,
 		SecretReferences: request.SecretReferences, HealthCheck: request.HealthCheck,
 		CPUMillicores: request.CPUMillicores, MemoryMaxBytes: request.MemoryMaxBytes,
 		VolumeMounts: request.VolumeMounts,
@@ -99,7 +108,28 @@ func (request serviceConfigRequest) snapshot() serviceconfig.Snapshot {
 func registerServiceRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services", createService(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/variables/resolved", resolvedServiceVariables(config))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/build-variables/resolved", resolvedServiceBuildVariables(config))
 	registerServiceLifecycleRoutes(mux, config)
+}
+
+func validateInitialBeforeDeployHostnames(beforeDeploy *serviceconfig.BeforeDeploy, domains []initialServiceDomainRequest) error {
+	if beforeDeploy == nil || len(beforeDeploy.CloudflareHostnames) == 0 {
+		return nil
+	}
+	available := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		hostname, err := publichostname.Normalize(domain.Hostname)
+		if err != nil {
+			continue
+		}
+		available[hostname] = struct{}{}
+	}
+	for _, hostname := range beforeDeploy.CloudflareHostnames {
+		if _, exists := available[hostname]; !exists {
+			return fmt.Errorf("before-deploy Cloudflare hostname %s is not attached to this service", hostname)
+		}
+	}
+	return nil
 }
 
 func createService(config handlerConfig) http.HandlerFunc {
@@ -153,8 +183,12 @@ func createService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusConflict, "preview_domain_count", state.ErrPreviewDomainCount.Error())
 			return
 		}
+		if err := validateInitialBeforeDeployHostnames(snapshot.BeforeDeploy, setup.Domains); err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_config", err.Error())
+			return
+		}
 		timestamp := config.now()
-		serviceID, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		serviceID, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service identifiers")
 			return
@@ -167,12 +201,21 @@ func createService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_registry_auth", credentialErr.Error())
 			return
 		}
+		initialSnapshot := snapshot
+		if snapshot.BeforeDeploy != nil && len(snapshot.BeforeDeploy.CloudflareHostnames) > 0 {
+			beforeDeploy := *snapshot.BeforeDeploy
+			beforeDeploy.CloudflareHostnames = nil
+			initialSnapshot.BeforeDeploy = &beforeDeploy
+			if beforeDeploy.Command == "" && beforeDeploy.GitHubWorkflow == nil {
+				initialSnapshot.BeforeDeploy = nil
+			}
+		}
 		// Filesystem volumes and public ports cannot share SQLite's transaction.
 		// Keep the service stopped until every dependency exists, then enable it
 		// once; DeleteService provides compensating cleanup on any setup failure.
 		created, err := config.services.CreateService(request.Context(), state.CreateService{
 			ID: serviceID, ProjectID: request.PathValue("projectID"), Name: body.Name,
-			Enabled: enabled && setup.empty(), Snapshot: snapshot, ImageCredential: credential,
+			Enabled: enabled && setup.empty(), Snapshot: initialSnapshot, ImageCredential: credential,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
@@ -228,7 +271,9 @@ func publicService(ctx context.Context, config handlerConfig, service state.Serv
 		ID: service.ID, ProjectID: service.ProjectID, Name: service.Name,
 		Source:  service.Snapshot.Source,
 		Command: service.Snapshot.Command, Args: service.Snapshot.Args,
-		Environment: service.Snapshot.Environment, HealthCheck: service.Snapshot.HealthCheck,
+		Environment: service.Snapshot.Environment, BuildEnvironment: service.Snapshot.BuildEnvironment,
+		BeforeDeploy:   service.Snapshot.BeforeDeploy,
+		HealthCheck:    service.Snapshot.HealthCheck,
 		CPUMillicores:  service.Snapshot.CPUMillicores,
 		MemoryMaxBytes: service.Snapshot.MemoryMaxBytes,
 		Enabled:        service.Enabled, ActiveDeploymentID: service.ActiveDeploymentID,
@@ -308,11 +353,69 @@ func resolvedServiceVariables(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load service")
 			return
 		}
-		environment, err := config.serviceEnvironment.Resolve(request.Context(), service, service.ActiveDeploymentID)
+		environmentContext, err := resolvedEnvironmentContext(request.Context(), config, service)
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load active deployment")
+			return
+		}
+		environment, err := config.serviceEnvironment.Resolve(request.Context(), service, environmentContext)
 		if err != nil {
 			writeAPIError(response, http.StatusUnprocessableEntity, "variable_resolution_failed", err.Error())
 			return
 		}
+		response.Header().Set("Cache-Control", "no-store")
 		writeJSON(response, http.StatusOK, responseBody{Environment: environment})
 	}
+}
+
+func resolvedServiceBuildVariables(config handlerConfig) http.HandlerFunc {
+	type responseBody struct {
+		Environment map[string]string `json:"environment"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		if config.serviceEnvironment == nil {
+			writeAPIError(response, http.StatusServiceUnavailable, "variable_resolution_unavailable", "Variable resolution is unavailable")
+			return
+		}
+		service, err := config.services.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+		if errors.Is(err, state.ErrServiceNotFound) || errors.Is(err, sql.ErrNoRows) {
+			writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
+			return
+		}
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load service")
+			return
+		}
+		environment, err := config.serviceEnvironment.ResolveBuild(request.Context(), service, deployment.EnvironmentContext{
+			DeploymentID: service.ActiveDeploymentID, Kind: deployment.EnvironmentProduction,
+		})
+		if err != nil {
+			writeAPIError(response, http.StatusUnprocessableEntity, "variable_resolution_failed", err.Error())
+			return
+		}
+		response.Header().Set("Cache-Control", "no-store")
+		writeJSON(response, http.StatusOK, responseBody{Environment: environment})
+	}
+}
+
+func resolvedEnvironmentContext(
+	ctx context.Context,
+	config handlerConfig,
+	service state.ServiceDesired,
+) (deployment.EnvironmentContext, error) {
+	result := deployment.EnvironmentContext{
+		DeploymentID: service.ActiveDeploymentID, Kind: deployment.EnvironmentProduction,
+	}
+	if service.ActiveDeploymentID == "" {
+		return result, nil
+	}
+	active, err := config.services.ServiceDeployment(
+		ctx, service.ProjectID, service.ID, service.ActiveDeploymentID,
+	)
+	if err != nil {
+		return deployment.EnvironmentContext{}, err
+	}
+	result.SourceRevision = active.SourceRevision
+	result.CommitMessage = active.CommitMessage
+	return result, nil
 }

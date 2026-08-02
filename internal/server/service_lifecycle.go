@@ -117,7 +117,7 @@ func deleteService(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		timestamp := config.now()
-		_, auditID, correlationID, err := createRequestIDs(timestamp, config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service deletion identifiers")
 			return
@@ -187,7 +187,7 @@ func updateService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_service_config", err.Error())
 			return
 		}
-		_, auditID, correlationID, err := createRequestIDs(config.now(), config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service update identifiers")
 			return
@@ -239,7 +239,7 @@ func redeployService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_service_redeploy", "expectedUpdatedAt is required")
 			return
 		}
-		_, auditID, correlationID, err := createRequestIDs(config.now(), config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate redeploy identifiers")
 			return
@@ -276,7 +276,7 @@ func deployServiceVersion(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_service_deploy_version", "expectedUpdatedAt is required")
 			return
 		}
-		_, auditID, correlationID, err := createRequestIDs(config.now(), config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate deployment identifiers")
 			return
@@ -324,7 +324,7 @@ func serviceDeploymentAction(
 			writeAPIError(response, http.StatusBadRequest, "invalid_service_deployment_action", "expectedUpdatedAt is required")
 			return
 		}
-		_, auditID, correlationID, err := createRequestIDs(config.now(), config.random)
+		_, auditID, correlationID, err := createRequestIDs()
 		if err != nil {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate service action identifiers")
 			return
@@ -443,9 +443,9 @@ func writeServiceMutationError(response http.ResponseWriter, err error) bool {
 	case errors.Is(err, state.ErrImageCredentialHostMismatch):
 		writeAPIError(response, http.StatusBadRequest, "image_credential_registry_mismatch", err.Error())
 	case errors.Is(err, state.ErrServiceReconcileFailed):
-		writeAPIError(response, http.StatusBadGateway, "service_reconcile_failed", err.Error())
+		writeAPIError(response, http.StatusBadGateway, "service_reconcile_failed", err.Error(), err)
 	default:
-		writeAPIError(response, http.StatusInternalServerError, "service_action_failed", "Service action failed")
+		writeAPIError(response, http.StatusInternalServerError, "service_action_failed", "Service action failed", err)
 	}
 	return true
 }

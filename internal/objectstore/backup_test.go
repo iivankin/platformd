@@ -1,10 +1,12 @@
 package objectstore
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,84 +16,80 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func TestBackupSnapshotEnumeratesCurrentMetadataAndEncryptedChunks(t *testing.T) {
+func TestBackupSnapshotStreamsOneCanonicalArchiveAndBlocksWritesUntilRelease(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	application, storeID, closeStore := objectBackupFixture(t)
 	defer closeStore()
-	first, err := application.Put(ctx, PutInput{
+	if _, err := application.Put(ctx, PutInput{
 		StoreID: storeID, ObjectKey: "folder/data.txt", ContentType: "text/plain",
-		Body: bytes.NewReader([]byte("secret object payload")),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := application.Put(ctx, PutInput{StoreID: storeID, ObjectKey: "empty", Body: bytes.NewReader(nil)}); err != nil {
+		Body: bytes.NewReader([]byte("secret object payload")), BodySize: 21, BodySizeKnown: true,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	export, err := application.BackupSnapshot(ctx, storeID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer export.Release()
-	var snapshot BackupSnapshot
-	if err := json.Unmarshal(export.Metadata, &snapshot); err != nil {
+	archiveBytes, err := io.ReadAll(export.Reader)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.FormatVersion != BackupFormatVersion || snapshot.StoreID != storeID ||
-		len(snapshot.Objects) != 2 || len(snapshot.Payloads) != 2 || len(snapshot.Attachments) != 1 ||
-		len(export.AttachmentPaths) != 1 {
-		t.Fatalf("object backup snapshot = %+v paths=%v", snapshot, export.AttachmentPaths)
-	}
-	attachment := snapshot.Attachments[0]
-	if attachment.Index != 0 || attachment.PayloadID != first.PayloadID || attachment.Size <= 0 || len(attachment.SHA256) != 64 {
-		t.Fatalf("object backup attachment = %+v", attachment)
-	}
-	ciphertext, err := os.ReadFile(export.AttachmentPaths[0])
-	if err != nil || bytes.Contains(ciphertext, []byte("secret object payload")) {
-		t.Fatalf("backup attachment is not local ciphertext: %v plaintext=%t", err, bytes.Contains(ciphertext, []byte("secret object payload")))
-	}
-	application.metadataMu.Lock()
-	busy := application.backups[storeID]
-	blocked := application.metadataAdmissionLocked(storeID).blocked
-	application.metadataMu.Unlock()
-	if !busy || blocked {
-		t.Fatalf("backup exclusion/metadata admission = busy %t blocked %t", busy, blocked)
-	}
-}
-
-func TestMetadataCommitWaitsOnlyForSnapshotEnumeration(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	application, storeID, closeStore := objectBackupFixture(t)
-	defer closeStore()
-	release, err := application.blockMetadata(ctx, storeID)
-	if err != nil {
+	if err := export.Reader.Close(); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)
 	go func() {
 		_, err := application.Put(ctx, PutInput{
-			StoreID: storeID, ObjectKey: "during-backup", Body: bytes.NewReader([]byte("payload")),
+			StoreID: storeID, ObjectKey: "after-snapshot", Body: bytes.NewReader([]byte("value")),
 		})
 		done <- err
 	}()
 	select {
 	case err := <-done:
-		t.Fatalf("metadata commit did not wait for snapshot enumeration: %v", err)
+		t.Fatalf("write completed before backup release: %v", err)
 	case <-time.After(30 * time.Millisecond):
 	}
-	if _, err := application.repository.Object(ctx, storeID, "during-backup"); err != state.ErrObjectNotFound {
-		t.Fatalf("blocked metadata became visible: %v", err)
+	export.Release()
+	if err := <-done; err != nil {
+		t.Fatal(err)
 	}
-	release()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("metadata commit did not resume")
+
+	archive := tar.NewReader(bytes.NewReader(archiveBytes))
+	header, err := archive.Next()
+	if err != nil || header.Name != "manifest.json" {
+		t.Fatalf("manifest header = %+v, %v", header, err)
+	}
+	manifest, err := io.ReadAll(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot BackupSnapshot
+	if err := json.Unmarshal(manifest, &snapshot); err != nil || snapshot.FormatVersion != 1 || BackupFormatVersion != 1 {
+		t.Fatalf("manifest = %+v, %v", snapshot, err)
+	}
+	header, err = archive.Next()
+	if err != nil || header.Name != backupMetadataName(0) {
+		t.Fatalf("object metadata header = %+v, %v", header, err)
+	}
+	metadata, err := io.ReadAll(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var object BackupObject
+	if err := json.Unmarshal(metadata, &object); err != nil || object.Key != "folder/data.txt" {
+		t.Fatalf("object metadata = %+v, %v", object, err)
+	}
+	header, err = archive.Next()
+	if err != nil || header.Name != backupDataName(0) {
+		t.Fatalf("object data header = %+v, %v", header, err)
+	}
+	payload, err := io.ReadAll(archive)
+	if err != nil || string(payload) != "secret object payload" {
+		t.Fatalf("backup payload = %q, %v", payload, err)
+	}
+	if _, err := archive.Next(); err != io.EOF {
+		t.Fatalf("archive trailer = %v", err)
 	}
 }
 
@@ -109,13 +107,7 @@ func objectBackupFixture(t *testing.T) (*Application, string, func()) {
 		store.Close()
 		t.Fatal(err)
 	}
-	master := cryptobox.MasterKey{1, 2, 3, 4}
-	payloads, err := NewPayloadStore(filepath.Join(t.TempDir(), "objects"), master, rand.Reader)
-	if err != nil {
-		store.Close()
-		t.Fatal(err)
-	}
-	application, err := NewApplication(store, payloads, master, rand.Reader, func() time.Time {
+	application, err := NewApplication(store, newMemoryStorage(), cryptobox.MasterKey{1, 2, 3, 4}, rand.Reader, func() time.Time {
 		return time.UnixMilli(1_720_000_000_000)
 	})
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -47,7 +48,22 @@ func ProductionRuntime(config ProductionRuntimeConfig) (Runtime, error) {
 	}, nil
 }
 
-func (runtime *productionRuntime) Ensure(ctx context.Context, token string, reenroll bool) error {
+func (runtime *productionRuntime) Ensure(ctx context.Context, token string, reenroll bool) (returnErr error) {
+	startedAt := time.Now()
+	defer func() {
+		if returnErr != nil {
+			systemevent.Failure(
+				"cloudflare_mesh_sidecar_failed",
+				returnErr,
+				systemevent.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+			)
+			return
+		}
+		systemevent.Info(
+			"cloudflare_mesh_sidecar_ready",
+			systemevent.Int64("duration_ms", time.Since(startedAt).Milliseconds()),
+		)
+	}()
 	runtime.mu.Lock()
 	defer runtime.mu.Unlock()
 	if strings.TrimSpace(token) == "" {
@@ -89,6 +105,7 @@ func (runtime *productionRuntime) Ensure(ctx context.Context, token string, reen
 		return fmt.Errorf("create Cloudflare Mesh sidecar: %w", err)
 	}
 	runtime.containerID = created.ID
+	systemevent.Info("cloudflare_mesh_sidecar_starting")
 	if err := runtime.config.Engine.StartContainer(ctx, created.ID); err != nil {
 		_ = runtime.removeContainerLocked(context.Background())
 		return fmt.Errorf("start Cloudflare Mesh sidecar: %w", err)
@@ -316,7 +333,13 @@ func (runtime *productionRuntime) removeContainerLocked(ctx context.Context) err
 	id := runtime.containerID
 	runtime.containerID = ""
 	_ = runtime.config.Engine.StopContainer(id, 10)
-	return runtime.config.Engine.RemoveContainer(ctx, id, true)
+	err := runtime.config.Engine.RemoveContainer(ctx, id, true)
+	if err != nil {
+		systemevent.Failure("cloudflare_mesh_sidecar_stop_failed", err)
+	} else {
+		systemevent.Info("cloudflare_mesh_sidecar_stopped")
+	}
+	return err
 }
 
 func disableLegacyHostClient(ctx context.Context) error {
