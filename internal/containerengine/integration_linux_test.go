@@ -282,7 +282,12 @@ func TestDockerfileBuildProducesRunnableImageAndLogs(t *testing.T) {
 	// use `oven/bun` or `node`, and Buildah must receive platformd's private
 	// registries.conf rather than consulting an absent host configuration.
 	shortBase := strings.TrimPrefix(integrationAlpineImage, "docker.io/library/")
-	contents := "FROM " + shortBase + "\nARG PLATFORMD_DEPLOYMENT_ID\nRUN test \"$CI\" = 1 && test \"$PLATFORMD_DEPLOYMENT_ID\" = deployment-integration && printf yes > /platformd-built\n"
+	contents := "FROM " + shortBase + " AS build\n" +
+		"ARG PLATFORMD_DEPLOYMENT_ID\n" +
+		"RUN test \"$CI\" = 1 && test \"$PLATFORMD_DEPLOYMENT_ID\" = deployment-integration && printf yes > /platformd-built\n" +
+		"FROM " + shortBase + "\n" +
+		"ENV CI=1\n" +
+		"COPY --from=build /platformd-built /platformd-built\n"
 	if err := os.WriteFile(dockerfile, []byte(contents), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -38,7 +38,7 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		PullPolicy:          buildahDefine.PullIfMissing,
 		OutputFormat:        buildahDefine.OCIv1ImageManifest,
 		SignaturePolicyPath: e.config.SignaturePolicy,
-		SystemContext:       &imagetypes.SystemContext{SystemRegistriesConfPath: e.config.RegistriesConf},
+		SystemContext:       e.buildSystemContext(),
 		NamespaceOptions: []buildahDefine.NamespaceOption{{
 			Name: string(specs.NetworkNamespace), Path: request.Network,
 		}},
@@ -95,6 +95,14 @@ func (e *Engine) Build(ctx context.Context, request BuildRequest) (Image, error)
 		)
 	}
 	return image, inspectErr
+}
+
+func (e *Engine) buildSystemContext() *imagetypes.SystemContext {
+	return &imagetypes.SystemContext{
+		SystemRegistriesConfPath: e.config.RegistriesConf,
+		// Buildah has nested image-copy paths that consult only SystemContext.
+		SignaturePolicyPath: e.config.SignaturePolicy,
+	}
 }
 
 func (e *Engine) Pull(ctx context.Context, request PullRequest) (Image, error) {
