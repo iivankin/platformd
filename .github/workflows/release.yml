@@ -74,7 +74,7 @@ jobs:
 
       - name: Install the locked Rust toolchain
         run: |
-          rustup toolchain install 1.97.1 --profile minimal --no-self-update
+          rustup toolchain install 1.97.1 --profile minimal --component clippy --no-self-update
           rustup override set 1.97.1
 
       - name: Verify locked toolchain versions
