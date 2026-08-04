@@ -46,6 +46,8 @@ type Store interface {
 	ActivateDeployment(context.Context, string, string, string, int64) error
 	FailDeployment(context.Context, string, string, string, int64) error
 	LatestFailedDeployment(context.Context, string, string, string) (bool, error)
+	LatestUploadedDeployment(context.Context, string) (state.DeploymentRecord, error)
+	LatestReusableProductionRevision(context.Context, string) (state.ImageRevision, error)
 	Deployment(context.Context, string) (state.DeploymentRecord, error)
 	VolumeInitialized(context.Context, string, string, string) (bool, error)
 	RecordVolumeInitialization(context.Context, string, string, string, int64) error
@@ -404,16 +406,41 @@ func (controller *Controller) deploy(
 		sourceRevision = uploaded.Revision
 		commitMessage = uploaded.CommitMessage
 	} else if normalized.Source.Type == servicesource.DockerImageUpload {
-		if desired.ActiveDeploymentID == "" {
-			return ErrImageUploadRequired
+		if desired.ActiveDeploymentID != "" {
+			source, loadErr := controller.store.Deployment(ctx, desired.ActiveDeploymentID)
+			if loadErr != nil {
+				return loadErr
+			}
+			if source.ImageReference != "" && source.ImageRevisionID != "" {
+				imageReference = source.ImageReference
+				imageRevisionID = source.ImageRevisionID
+				sourceRevision = source.SourceRevision
+				commitMessage = source.CommitMessage
+			}
 		}
-		active, loadErr := controller.store.Deployment(ctx, desired.ActiveDeploymentID)
-		if loadErr != nil {
-			return loadErr
+		if imageReference == "" || imageRevisionID == "" {
+			source, loadErr := controller.store.LatestUploadedDeployment(ctx, serviceID)
+			if loadErr == nil {
+				imageReference = source.ImageReference
+				imageRevisionID = source.ImageRevisionID
+				sourceRevision = source.SourceRevision
+				commitMessage = source.CommitMessage
+			} else if !errors.Is(loadErr, state.ErrDeploymentNotFound) {
+				return loadErr
+			}
 		}
-		imageReference = active.ImageReference
-		imageRevisionID = active.ImageRevisionID
-		sourceRevision = active.SourceRevision
+		if imageReference == "" || imageRevisionID == "" {
+			revision, loadErr := controller.store.LatestReusableProductionRevision(ctx, serviceID)
+			if errors.Is(loadErr, state.ErrImageRevisionNotFound) {
+				return ErrImageUploadRequired
+			}
+			if loadErr != nil {
+				return loadErr
+			}
+			imageReference = "oci-archive:" + revision.ArchivePath
+			imageRevisionID = revision.ID
+			sourceRevision = revision.Identity.SHA
+		}
 		if imageReference == "" || imageRevisionID == "" {
 			return ErrImageUploadRequired
 		}

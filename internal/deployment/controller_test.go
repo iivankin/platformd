@@ -19,14 +19,17 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
 type fakeStore struct {
-	service     state.ServiceDesired
-	deployments map[string]state.BeginDeployment
-	failed      map[string]bool
-	initialized map[string]int64
+	service        state.ServiceDesired
+	deployments    map[string]state.BeginDeployment
+	failed         map[string]bool
+	initialized    map[string]int64
+	latestUploaded *state.DeploymentRecord
+	latestRevision *state.ImageRevision
 }
 
 func (store *fakeStore) DesiredService(context.Context, string) (state.ServiceDesired, error) {
@@ -82,7 +85,24 @@ func (store *fakeStore) LatestFailedDeployment(_ context.Context, _, configHash,
 	return store.failed[configHash+":"+imageDigest], nil
 }
 
+func (store *fakeStore) LatestUploadedDeployment(_ context.Context, _ string) (state.DeploymentRecord, error) {
+	if store.latestUploaded == nil {
+		return state.DeploymentRecord{}, state.ErrDeploymentNotFound
+	}
+	return *store.latestUploaded, nil
+}
+
+func (store *fakeStore) LatestReusableProductionRevision(_ context.Context, _ string) (state.ImageRevision, error) {
+	if store.latestRevision == nil {
+		return state.ImageRevision{}, state.ErrImageRevisionNotFound
+	}
+	return *store.latestRevision, nil
+}
+
 func (store *fakeStore) Deployment(_ context.Context, deploymentID string) (state.DeploymentRecord, error) {
+	if store.latestUploaded != nil && store.latestUploaded.ID == deploymentID {
+		return *store.latestUploaded, nil
+	}
 	deployment, ok := store.deployments[deploymentID]
 	if !ok {
 		return state.DeploymentRecord{}, errors.New("deployment not found")
@@ -93,7 +113,8 @@ func (store *fakeStore) Deployment(_ context.Context, deploymentID string) (stat
 	}
 	return state.DeploymentRecord{
 		ID: deployment.ID, ServiceID: deployment.ServiceID, ImageDigest: deployment.ImageDigest,
-		ImageReference: deployment.ImageReference, SourceRevision: deployment.SourceRevision,
+		ImageReference: deployment.ImageReference, ImageRevisionID: deployment.ImageRevisionID,
+		SourceRevision: deployment.SourceRevision,
 		CommitMessage: deployment.CommitMessage, ConfigHash: deployment.ConfigHash,
 		Snapshot: snapshot, Status: "succeeded",
 	}, nil
@@ -582,4 +603,146 @@ func orderedSubset(values, wanted []string) bool {
 		}
 	}
 	return index == len(wanted)
+}
+
+func TestDeployOverridesUploadedImageWithCurrentConfigWhenNoActive(t *testing.T) {
+	digest := "sha256:uploaded"
+	snapshot := serviceconfig.Snapshot{
+		Source: servicesource.Source{
+			Type: servicesource.DockerImageUpload,
+			DockerUpload: &servicesource.DockerUpload{
+				Repository: "acme/backend", Branch: "main", Workflows: []string{"deploy.yml"},
+			},
+		},
+		Environment: map[string]string{"FIXED": "1"},
+		HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
+	}
+	normalized, _, _, err := serviceconfig.Canonical(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: normalized,
+		},
+		deployments: make(map[string]state.BeginDeployment),
+		failed:      make(map[string]bool),
+		latestUploaded: &state.DeploymentRecord{
+			ID: "previous-failed", ServiceID: "service", ImageDigest: digest,
+			ImageReference: "oci-archive:/images/revision.oci", ImageRevisionID: "revision",
+			SourceRevision: "abc123", Status: "failed",
+		},
+	}
+	engine := &fakeEngine{
+		containers: make(map[string]containerengine.Container),
+		images: map[string]containerengine.Image{
+			digest:                          {ID: "uploaded-image", Digest: digest},
+			"oci-archive:/images/revision.oci": {ID: "uploaded-image", Digest: digest},
+		},
+		pullImage: &containerengine.Image{ID: "uploaded-image", Digest: digest},
+	}
+	publisher := &fakePublisher{}
+	ids := []string{"redeploy", "attempt"}
+	idIndex := 0
+	controller, err := New(Config{
+		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth, Admission: admission.New(),
+		Placement: func(state.ServiceDesired) (Placement, error) {
+			return Placement{
+				NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
+				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
+			}, nil
+		},
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2,
+		NewID: func() (string, error) {
+			value := ids[idIndex]
+			idIndex++
+			return value, nil
+		},
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatal(err)
+	}
+	if store.service.ActiveDeploymentID != "redeploy" {
+		t.Fatalf("active deployment = %q", store.service.ActiveDeploymentID)
+	}
+	if got := store.deployments["redeploy"]; got.ImageRevisionID != "revision" || got.ImageDigest != digest {
+		t.Fatalf("redeployed from previous upload = %+v", got)
+	}
+}
+
+func TestDeployOverridesFromReusableRevisionWhenNoDeploymentRow(t *testing.T) {
+	digest := "sha256:uploaded"
+	snapshot := serviceconfig.Snapshot{
+		Source: servicesource.Source{
+			Type: servicesource.DockerImageUpload,
+			DockerUpload: &servicesource.DockerUpload{
+				Repository: "acme/backend", Branch: "main", Workflows: []string{"deploy.yml"},
+			},
+		},
+		Environment: map[string]string{"FIXED": "1"},
+		HealthCheck: &serviceconfig.HealthCheck{Port: 8080, Path: "/healthz", TimeoutSeconds: 1},
+	}
+	normalized, _, _, err := serviceconfig.Canonical(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeStore{
+		service: state.ServiceDesired{
+			ID: "service", ProjectID: "project", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: normalized,
+		},
+		deployments: make(map[string]state.BeginDeployment),
+		failed:      make(map[string]bool),
+		latestRevision: &state.ImageRevision{
+			ID: "revision", ServiceID: "service", ArchivePath: "/images/revision.oci",
+			ImageDigest: digest, Status: "retired",
+			Identity: state.ImageUploadIdentity{SHA: "abc123"},
+		},
+	}
+	engine := &fakeEngine{
+		containers: make(map[string]containerengine.Container),
+		images: map[string]containerengine.Image{
+			digest:                            {ID: "uploaded-image", Digest: digest},
+			"oci-archive:/images/revision.oci": {ID: "uploaded-image", Digest: digest},
+		},
+		pullImage: &containerengine.Image{ID: "uploaded-image", Digest: digest},
+	}
+	ids := []string{"redeploy", "attempt"}
+	idIndex := 0
+	controller, err := New(Config{
+		Store: store, Engine: engine, Publisher: &fakePublisher{}, Growth: allowGrowth, Admission: admission.New(),
+		Placement: func(state.ServiceDesired) (Placement, error) {
+			return Placement{
+				NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1"),
+				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
+			}, nil
+		},
+		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		LogSizeBytes: 1024, LogMaxFiles: 2,
+		NewID: func() (string, error) {
+			value := ids[idIndex]
+			idIndex++
+			return value, nil
+		},
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Deploy(context.Background(), "service", false); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.deployments["redeploy"]; got.ImageRevisionID != "revision" || got.SourceRevision != "abc123" {
+		t.Fatalf("redeployed from retired revision = %+v", got)
+	}
 }

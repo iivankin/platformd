@@ -149,7 +149,10 @@ func (stack *runtimeStack) ReconcileService(ctx context.Context, serviceID strin
 func (stack *runtimeStack) hasServiceFailure(serviceID string) bool {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
-	return stack.serviceFailures[serviceID] != nil
+	err := stack.serviceFailures[serviceID]
+	return err != nil &&
+		!errors.Is(err, deployment.ErrImageUploadRequired) &&
+		!errors.Is(err, state.ErrServiceChanged)
 }
 
 func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, force bool) error {
@@ -291,6 +294,12 @@ func (stack *runtimeStack) ServiceStatus(serviceID string, enabled bool) (string
 
 func classifyServiceStatus(runtimeReady bool, runtimeStatus deployment.RuntimeStatus, active bool, inspectErr, failure error) (string, string) {
 	if !runtimeReady {
+		if errors.Is(failure, deployment.ErrImageUploadRequired) {
+			return "pending", "Waiting for an image upload"
+		}
+		if errors.Is(failure, state.ErrServiceChanged) {
+			return "pending", "Applying updated configuration"
+		}
 		if failure != nil {
 			return "failed", failure.Error()
 		}
@@ -304,6 +313,12 @@ func classifyServiceStatus(runtimeReady bool, runtimeStatus deployment.RuntimeSt
 	}
 	if active && runtimeStatus.State == "running" {
 		if failure != nil {
+			if errors.Is(failure, deployment.ErrImageUploadRequired) {
+				return "degraded", "Waiting for an image upload"
+			}
+			if errors.Is(failure, state.ErrServiceChanged) {
+				return "degraded", "Applying updated configuration"
+			}
 			return "degraded", failure.Error()
 		}
 		return "running", ""
@@ -313,6 +328,12 @@ func classifyServiceStatus(runtimeReady bool, runtimeStatus deployment.RuntimeSt
 			return "failed", failure.Error()
 		}
 		return "failed", fmt.Sprintf("Container is %s (exit code %d)", runtimeStatus.State, runtimeStatus.ExitCode)
+	}
+	if errors.Is(failure, deployment.ErrImageUploadRequired) {
+		return "pending", "Waiting for an image upload"
+	}
+	if errors.Is(failure, state.ErrServiceChanged) {
+		return "pending", "Applying updated configuration"
 	}
 	if failure != nil {
 		return "failed", failure.Error()
@@ -496,11 +517,22 @@ func (stack *runtimeStack) recordServiceFailure(serviceID string, err error) {
 }
 
 func (stack *runtimeStack) recordServiceResult(serviceID string, err error) {
+	if errors.Is(err, deployment.ErrBlockedPair) {
+		return
+	}
+	waitingForUpload := errors.Is(err, deployment.ErrImageUploadRequired)
+	configOverride := errors.Is(err, state.ErrServiceChanged)
 	stack.mu.Lock()
 	previous := stack.serviceFailures[serviceID]
-	if err == nil {
+	switch {
+	case err == nil:
 		delete(stack.serviceFailures, serviceID)
-	} else {
+	case configOverride:
+		// Keep a real failure visible while the override deploy is in flight.
+		if previous == nil || errors.Is(previous, state.ErrServiceChanged) || errors.Is(previous, deployment.ErrImageUploadRequired) {
+			stack.serviceFailures[serviceID] = err
+		}
+	default:
 		stack.serviceFailures[serviceID] = err
 	}
 	stack.mu.Unlock()
@@ -512,7 +544,7 @@ func (stack *runtimeStack) recordServiceResult(serviceID string, err error) {
 		)
 		return
 	}
-	if err != nil && (previous == nil || previous.Error() != err.Error()) {
+	if err != nil && !waitingForUpload && !configOverride && (previous == nil || previous.Error() != err.Error()) {
 		systemevent.Failure(
 			"service_failure_recorded",
 			err,

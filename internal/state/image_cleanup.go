@@ -117,7 +117,8 @@ WHERE status IN ('uploading', 'importing', 'deploying') AND `+condition, updateA
 			return err
 		}
 		_, err = transaction.ExecContext(ctx, `
-UPDATE service_image_revisions SET status = 'failed', retired_at = ?
+UPDATE service_image_revisions
+SET status = CASE WHEN IFNULL(image_digest, '') != '' THEN 'retired' ELSE 'failed' END, retired_at = ?
 WHERE status = 'importing' AND id IN (
   SELECT image_revision_id FROM service_image_uploads WHERE status = 'failed' AND error_code = 'upload_cancelled'
 )`, nowMillis)

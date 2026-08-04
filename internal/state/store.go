@@ -123,9 +123,9 @@ func (store *Store) MarkInterrupted(ctx context.Context, timestampMillis int64) 
 			"UPDATE deployments SET status = 'interrupted', finished_at = ? WHERE status = 'running' AND id NOT IN (SELECT active_deployment_id FROM services WHERE active_deployment_id IS NOT NULL)",
 			"UPDATE preview_deployments SET status = 'interrupted', finished_at = ?, updated_at = ? WHERE status = 'deploying'",
 			"UPDATE service_image_uploads SET status = 'failed', error_code = 'daemon_restarted', error_message = 'Upload interrupted by daemon restart', updated_at = ?, expires_at = ? WHERE status IN ('uploading', 'importing', 'deploying')",
-			// Importing revisions outlive their upload after restart unless failed here;
-			// GC intentionally never deletes status=importing rows.
-			"UPDATE service_image_revisions SET status = 'failed', retired_at = ? WHERE status = 'importing'",
+			// Imported archives (digest set) stay reusable after restart; only fail
+			// revisions that never finished import. GC deletes failed immediately.
+			"UPDATE service_image_revisions SET status = CASE WHEN IFNULL(image_digest, '') != '' THEN 'retired' ELSE 'failed' END, retired_at = ? WHERE status = 'importing'",
 		}
 		for _, statement := range statements {
 			arguments := []any{timestampMillis}

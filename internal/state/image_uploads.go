@@ -318,8 +318,13 @@ func (store *Store) FailImageUpload(ctx context.Context, uploadID, code, message
 		return errors.New("fail image upload input is incomplete")
 	}
 	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		// An imported archive (digest set) remains reusable after deploy failure.
+		// Mark it retired so env changes / redeploy can override without waiting for
+		// another upload; only mark failed when import never completed.
 		if _, err := transaction.ExecContext(ctx, `
-UPDATE service_image_revisions SET status = 'failed', retired_at = ?
+UPDATE service_image_revisions
+SET status = CASE WHEN IFNULL(image_digest, '') != '' THEN 'retired' ELSE 'failed' END,
+    retired_at = ?
 WHERE id = (SELECT image_revision_id FROM service_image_uploads WHERE id = ?) AND status = 'importing'`, failedAtMillis, uploadID); err != nil {
 			return err
 		}
@@ -346,6 +351,26 @@ func (store *Store) ImageRevision(ctx context.Context, revisionID string) (Image
 
 func (store *Store) ActiveProductionImageRevision(ctx context.Context, serviceID string) (ImageRevision, error) {
 	revision, err := scanImageRevision(store.database.QueryRowContext(ctx, imageRevisionSelect+` WHERE service_id = ? AND tag = 'latest' AND status = 'active'`, serviceID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ImageRevision{}, ErrImageRevisionNotFound
+	}
+	return revision, err
+}
+
+// LatestReusableProductionRevision returns the newest imported production archive
+// even when no deployment row exists yet (deploy failed or daemon restarted after
+// import). Used so env/reconcile can override without requiring another upload.
+func (store *Store) LatestReusableProductionRevision(ctx context.Context, serviceID string) (ImageRevision, error) {
+	if serviceID == "" {
+		return ImageRevision{}, errors.New("service ID is required")
+	}
+	revision, err := scanImageRevision(store.database.QueryRowContext(ctx, imageRevisionSelect+`
+WHERE service_id = ? AND kind = 'production'
+  AND IFNULL(image_digest, '') != ''
+  AND IFNULL(archive_path, '') != ''
+  AND status IN ('importing', 'active', 'retired', 'failed')
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, serviceID))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ImageRevision{}, ErrImageRevisionNotFound
 	}

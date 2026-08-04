@@ -128,10 +128,15 @@ WHERE service_id = ? AND kind = 'production' AND status = 'active' AND id IS NOT
 			return fmt.Errorf("retire previous uploaded image: %w", err)
 		}
 		if imageRevisionID.Valid {
+			// failed is included because older deploys marked imported archives as
+			// failed; a later deploy must still be able to publish that image.
+			// Require a digest so import failures without a usable archive stay blocked.
 			result, err := transaction.ExecContext(ctx, `
 UPDATE service_image_revisions
 SET status = 'active', deployment_id = ?, activated_at = ?, retired_at = NULL, expires_at = NULL
-				WHERE id = ? AND service_id = ? AND kind = 'production' AND status IN ('importing', 'active', 'retired')`,
+				WHERE id = ? AND service_id = ? AND kind = 'production'
+  AND status IN ('importing', 'active', 'retired', 'failed')
+  AND IFNULL(image_digest, '') != ''`,
 				deploymentID, finishedAtMillis, imageRevisionID.String, serviceID)
 			if err != nil {
 				return fmt.Errorf("activate uploaded image revision: %w", err)
@@ -263,6 +268,34 @@ SELECT EXISTS(
 		return false, fmt.Errorf("check failed deployment pair: %w", err)
 	}
 	return exists == 1, nil
+}
+
+// LatestUploadedDeployment returns the newest deployment that already resolved an
+// uploaded image. Used when desired state has no active deployment yet (first
+// upload failed after import, or env changed before publish) so reconcile can
+// override with current config instead of blocking on another push.
+func (store *Store) LatestUploadedDeployment(ctx context.Context, serviceID string) (DeploymentRecord, error) {
+	if serviceID == "" {
+		return DeploymentRecord{}, errors.New("service ID is required")
+	}
+	deployment, err := scanDeploymentRecord(store.database.QueryRowContext(ctx, `
+		SELECT id, service_id, image_digest, image_reference, image_revision_id, source_revision,
+		       source_commit_message, service_config_hash, snapshot_json, status,
+       error_code, error_message, created_at, finished_at
+FROM deployments
+WHERE service_id = ?
+  AND IFNULL(image_revision_id, '') != ''
+  AND IFNULL(image_reference, '') != ''
+  AND IFNULL(image_digest, '') != ''
+ORDER BY created_at DESC, id DESC
+LIMIT 1`, serviceID))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DeploymentRecord{}, ErrDeploymentNotFound
+		}
+		return DeploymentRecord{}, err
+	}
+	return deployment, nil
 }
 
 func (store *Store) Deployment(ctx context.Context, deploymentID string) (DeploymentRecord, error) {

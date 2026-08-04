@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
@@ -244,5 +245,60 @@ VALUES ('service', 'project', 'api', '{"type":"public_image","autoUpdate":true,"
 	if deployment.ImageDigest != "sha256:image" || deployment.CommitMessage != "build it" ||
 		deployment.Status != "skipped" || deployment.ErrorCode != "source_checks_failed" {
 		t.Fatalf("deployment = %+v", deployment)
+	}
+}
+
+func TestActivateDeploymentAcceptsFailedUploadedRevision(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.database.Exec(`
+INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
+INSERT INTO services(id, project_id, name, source_json, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
+VALUES ('service', 'project', 'api', '{"type":"docker_image_upload","dockerUpload":{"repository":"acme/backend","branch":"main","workflows":[]}}', '{}', 60, 1, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_, snapshotJSON, hash, err := serviceconfig.Canonical(serviceconfig.Snapshot{Source: servicesource.Source{
+		Type: servicesource.DockerImageUpload,
+		DockerUpload: &servicesource.DockerUpload{
+			Repository: "acme/backend", Branch: "main",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.database.ExecContext(ctx, `
+INSERT INTO service_image_revisions(
+  id, service_id, tag, kind, archive_path, archive_sha256, image_digest,
+  oidc_metadata_json, status, created_at, retired_at
+) VALUES (
+  'revision', 'service', 'latest', 'production', '/images/revision.oci', ?, 'sha256:image',
+  '{}', 'failed', 2, 3
+)`, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginDeployment(ctx, BeginDeployment{
+		ID: "deployment", ServiceID: "service", ImageDigest: "sha256:image",
+		ImageReference: "oci-archive:/images/revision.oci", ImageRevisionID: "revision",
+		ConfigHash: hash, SnapshotJSON: snapshotJSON, CreatedAtMillis: 4,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ActivateDeployment(ctx, "service", "deployment", "", 5); err != nil {
+		t.Fatal(err)
+	}
+	revision, err := store.ImageRevision(ctx, "revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Status != "active" || revision.DeploymentID != "deployment" {
+		t.Fatalf("activated failed revision = %+v", revision)
+	}
+	previous, err := store.LatestUploadedDeployment(ctx, "service")
+	if err != nil || previous.ID != "deployment" {
+		t.Fatalf("latest uploaded deployment = %+v, error = %v", previous, err)
 	}
 }

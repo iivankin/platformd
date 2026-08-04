@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/state"
 )
 
 func TestClassifyServiceStatusKeepsHealthyRuntimeVisibleDuringPullFailure(t *testing.T) {
@@ -29,6 +30,77 @@ func TestClassifyServiceStatusReportsFirstDeploymentFailure(t *testing.T) {
 		errors.New("image pull failed"),
 	)
 	if status != "failed" || message != "image pull failed" {
+		t.Fatalf("status/message = %q/%q", status, message)
+	}
+}
+
+func TestClassifyServiceStatusTreatsMissingUploadAsPending(t *testing.T) {
+	status, message := classifyServiceStatus(
+		true,
+		deployment.RuntimeStatus{},
+		false,
+		nil,
+		deployment.ErrImageUploadRequired,
+	)
+	if status != "pending" || message != "Waiting for an image upload" {
+		t.Fatalf("status/message = %q/%q", status, message)
+	}
+}
+
+func TestClassifyServiceStatusKeepsHealthyRuntimeVisibleWhileWaitingForUpload(t *testing.T) {
+	status, message := classifyServiceStatus(
+		true,
+		deployment.RuntimeStatus{DeploymentID: "deployment", State: "running"},
+		true,
+		nil,
+		deployment.ErrImageUploadRequired,
+	)
+	if status != "degraded" || message != "Waiting for an image upload" {
+		t.Fatalf("status/message = %q/%q", status, message)
+	}
+}
+
+func TestRecordServiceResultIgnoresWaitingForUpload(t *testing.T) {
+	stack := &runtimeStack{serviceFailures: map[string]error{}}
+	stack.recordServiceResult("service", deployment.ErrImageUploadRequired)
+	if !errors.Is(stack.serviceFailures["service"], deployment.ErrImageUploadRequired) {
+		t.Fatal("waiting for upload was not retained for status messaging")
+	}
+	if stack.hasServiceFailure("service") {
+		t.Fatal("waiting for upload counted as a service failure")
+	}
+	status, message := classifyServiceStatus(true, deployment.RuntimeStatus{}, false, nil, stack.serviceFailures["service"])
+	if status != "pending" || message != "Waiting for an image upload" {
+		t.Fatalf("status/message = %q/%q", status, message)
+	}
+	stack.recordServiceResult("service", errors.New("readiness failed"))
+	stack.recordServiceResult("service", deployment.ErrBlockedPair)
+	stack.recordServiceResult("service", state.ErrServiceChanged)
+	if stack.serviceFailures["service"] == nil || stack.serviceFailures["service"].Error() != "readiness failed" {
+		t.Fatalf("control-plane transitions cleared real failure: %v", stack.serviceFailures["service"])
+	}
+	if stack.hasServiceFailure("service") != true {
+		t.Fatal("real failure was not counted")
+	}
+
+	stack.recordServiceResult("fresh", state.ErrServiceChanged)
+	if !errors.Is(stack.serviceFailures["fresh"], state.ErrServiceChanged) {
+		t.Fatal("config override was not retained for status messaging")
+	}
+	if stack.hasServiceFailure("fresh") {
+		t.Fatal("config override counted as a service failure")
+	}
+}
+
+func TestClassifyServiceStatusTreatsConfigOverrideAsPending(t *testing.T) {
+	status, message := classifyServiceStatus(
+		true,
+		deployment.RuntimeStatus{},
+		false,
+		nil,
+		state.ErrServiceChanged,
+	)
+	if status != "pending" || message != "Applying updated configuration" {
 		t.Fatalf("status/message = %q/%q", status, message)
 	}
 }

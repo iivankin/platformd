@@ -122,7 +122,9 @@ WHERE service_id = ? AND tag = ? AND kind = 'preview' AND status = 'active' AND 
 		result, err = transaction.ExecContext(ctx, `
 UPDATE service_image_revisions
 SET status = 'active', preview_id = ?, activated_at = ?, retired_at = NULL, expires_at = ?
-WHERE id = ? AND service_id = ? AND tag = ? AND kind = 'preview' AND status IN ('importing', 'active', 'retired')`,
+WHERE id = ? AND service_id = ? AND tag = ? AND kind = 'preview'
+  AND status IN ('importing', 'active', 'retired', 'failed')
+  AND IFNULL(image_digest, '') != ''`,
 			previewID, activatedAtMillis, activatedAtMillis+PreviewRetentionMillis,
 			imageRevisionID, serviceID, tag)
 		if err != nil {
