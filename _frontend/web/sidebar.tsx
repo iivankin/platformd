@@ -42,6 +42,32 @@ interface SidebarProperties {
   updateAvailable?: boolean;
 }
 
+const ProjectNavIcon = ({
+  labelsCollapsed,
+  project,
+}: {
+  labelsCollapsed: boolean;
+  project: Project;
+}) => {
+  if (project.hasIcon) {
+    return (
+      <img
+        alt=""
+        className="size-3.5 object-cover"
+        src={projectIconURL(project)}
+      />
+    );
+  }
+  if (labelsCollapsed) {
+    return (
+      <span className="grid size-3.5 place-items-center text-[9px] leading-none font-medium">
+        {project.name.slice(0, 1).toUpperCase()}
+      </span>
+    );
+  }
+  return <Box className="size-3.5" />;
+};
+
 const navClassName = ({ isActive }: { isActive: boolean }) =>
   cn(
     "group flex items-center overflow-hidden px-2.5 py-2 text-xs transition-all duration-150",
@@ -324,19 +350,10 @@ export const Sidebar = ({
                   to={`/projects/${project.id}`}
                 >
                   <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
-                    {project.hasIcon ? (
-                      <img
-                        alt=""
-                        className="size-3.5 object-cover"
-                        src={projectIconURL(project)}
-                      />
-                    ) : labelsCollapsed ? (
-                      <span className="grid size-3.5 place-items-center text-[9px] font-medium leading-none">
-                        {project.name.slice(0, 1).toUpperCase()}
-                      </span>
-                    ) : (
-                      <Box className="size-3.5" />
-                    )}
+                    <ProjectNavIcon
+                      labelsCollapsed={labelsCollapsed}
+                      project={project}
+                    />
                   </span>
                   <span
                     className={sidebarLabelClassName(
