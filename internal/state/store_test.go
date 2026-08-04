@@ -57,7 +57,20 @@ func TestOpenMigratesSchemaVersionOneWithoutLosingMetricRows(t *testing.T) {
 	if _, err := database.Exec(`
 CREATE TABLE resource_metric_samples (marker TEXT NOT NULL) STRICT;
 CREATE TABLE aggregate_metric_samples (marker TEXT NOT NULL) STRICT;
-CREATE TABLE installation (singleton INTEGER PRIMARY KEY, registry_hostname TEXT NOT NULL) STRICT;
+CREATE TABLE backup_targets (id TEXT PRIMARY KEY) STRICT;
+CREATE TABLE installation (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  id TEXT NOT NULL UNIQUE,
+  admin_hostname TEXT NOT NULL UNIQUE,
+  registry_hostname TEXT UNIQUE,
+  access_team_domain TEXT NOT NULL,
+  access_audience TEXT NOT NULL,
+  console_passphrase_phc TEXT NOT NULL,
+  recovery_mode INTEGER NOT NULL DEFAULT 0 CHECK (recovery_mode IN (0, 1)),
+  backup_control_target_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
 CREATE TABLE services (id TEXT PRIMARY KEY, active_deployment_id TEXT, enabled INTEGER NOT NULL, source_json TEXT NOT NULL, build_environment_json TEXT NOT NULL) STRICT;
 CREATE TABLE deployments (id TEXT PRIMARY KEY, service_id TEXT NOT NULL) STRICT;
 CREATE TABLE preview_deployments (id TEXT PRIMARY KEY) STRICT;
@@ -77,6 +90,13 @@ CREATE INDEX backups_resource_started_idx ON backups(target_id, resource_kind, r
 CREATE UNIQUE INDEX backups_scheduled_occurrence_idx ON backups(resource_kind, resource_id, scheduled_occurrence) WHERE scheduled_occurrence IS NOT NULL;
 INSERT INTO resource_metric_samples(marker) VALUES ('resource');
 INSERT INTO aggregate_metric_samples(marker) VALUES ('aggregate');
+INSERT INTO installation(
+  singleton, id, admin_hostname, registry_hostname, access_team_domain, access_audience,
+  console_passphrase_phc, recovery_mode, created_at, updated_at
+) VALUES (
+  1, 'install', 'admin.example.com', 'registry.example.com', 'example.cloudflareaccess.com',
+  'audience', 'phc', 0, 1, 1
+);
 INSERT INTO services(id, active_deployment_id, enabled, source_json, build_environment_json)
 VALUES
   ('github-service', 'github-deployment', 1, '{"type":"github"}', '{"TOKEN":"secret"}'),
@@ -160,6 +180,22 @@ SELECT count(*) FROM deployments WHERE id IN ('github-deployment', 'registry-dep
 	}
 	if removedDeployments != 0 {
 		t.Fatalf("obsolete deployment count = %d, want 0", removedDeployments)
+	}
+	var registryHostnameColumns int
+	if err := store.QueryRowContext(context.Background(),
+		"SELECT count(*) FROM pragma_table_info('installation') WHERE name = 'registry_hostname'",
+	).Scan(&registryHostnameColumns); err != nil {
+		t.Fatal(err)
+	}
+	if registryHostnameColumns != 0 {
+		t.Fatalf("registry_hostname column count = %d, want 0", registryHostnameColumns)
+	}
+	var installationID string
+	if err := store.QueryRowContext(context.Background(), "SELECT id FROM installation WHERE singleton = 1").Scan(&installationID); err != nil {
+		t.Fatal(err)
+	}
+	if installationID != "install" {
+		t.Fatalf("preserved installation id = %s", installationID)
 	}
 }
 

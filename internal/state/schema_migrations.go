@@ -40,7 +40,29 @@ WHERE json_extract(source_json, '$.type') IN ('github', 'platformd_registry')`,
 		`DELETE FROM preview_deployments`,
 		`DELETE FROM deployments
 WHERE service_id IN (SELECT id FROM services WHERE json_extract(source_json, '$.type') = 'unconfigured')`,
-		`ALTER TABLE installation DROP COLUMN registry_hostname`,
+		// SQLite rejects DROP COLUMN for UNIQUE columns, so rebuild installation.
+		`ALTER TABLE installation RENAME TO installation_drop_registry_hostname`,
+		`CREATE TABLE installation (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  id TEXT NOT NULL UNIQUE,
+  admin_hostname TEXT NOT NULL UNIQUE,
+  access_team_domain TEXT NOT NULL,
+  access_audience TEXT NOT NULL,
+  console_passphrase_phc TEXT NOT NULL,
+  recovery_mode INTEGER NOT NULL DEFAULT 0 CHECK (recovery_mode IN (0, 1)),
+  backup_control_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT`,
+		`INSERT INTO installation (
+  singleton, id, admin_hostname, access_team_domain, access_audience,
+  console_passphrase_phc, recovery_mode, backup_control_target_id, created_at, updated_at
+)
+SELECT
+  singleton, id, admin_hostname, access_team_domain, access_audience,
+  console_passphrase_phc, recovery_mode, backup_control_target_id, created_at, updated_at
+FROM installation_drop_registry_hostname`,
+		`DROP TABLE installation_drop_registry_hostname`,
 		`ALTER TABLE services DROP COLUMN build_environment_json`,
 		`ALTER TABLE deployments ADD COLUMN image_revision_id TEXT`,
 		`DROP TABLE registry_uploads`,
