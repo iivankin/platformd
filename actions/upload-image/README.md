@@ -63,7 +63,7 @@ Default environment names: `production` for `latest`, `preview-<tag>` for everyt
 ## Development
 
 Node.js 24 is required. Sources are TypeScript; committed `dist/` is the
-CommonJS bundle GitHub Actions executes.
+ESM bundle GitHub Actions executes.
 
 ```bash
 npm ci

@@ -105,12 +105,16 @@ jobs:
           bun --cwd=_frontend run build:web
 
       - name: Verify image upload action
-        run: node --check actions/upload-image/dist/index.js
+        run: |
+          npm --prefix actions/upload-image ci
+          npm --prefix actions/upload-image run check
+          ! grep -R --include='*.js' -nE '\brequire\s*\(' actions/upload-image/dist
 
       - name: Verify port forward action
         run: |
-          node --check actions/port-forward/dist/index.js
-          node --check actions/port-forward/dist/cleanup/index.js
+          npm --prefix actions/port-forward ci
+          npm --prefix actions/port-forward run check
+          ! grep -R --include='*.js' -nE '\brequire\s*\(' actions/port-forward/dist
 
       - name: Verify Go code
         run: |
