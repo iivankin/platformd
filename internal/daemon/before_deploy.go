@@ -11,7 +11,6 @@ import (
 	"github.com/iivankin/platformd/internal/buildlog"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
-	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -28,10 +27,6 @@ type beforeDeployEngine interface {
 	RemoveContainer(context.Context, string, bool) error
 }
 
-type beforeDeployGitHub interface {
-	DispatchWorkflowAndWait(context.Context, int64, string, string, map[string]any) (githubapp.WorkflowRun, error)
-}
-
 type beforeDeployCloudflare interface {
 	PurgeHostnames(context.Context, []string) error
 }
@@ -40,7 +35,6 @@ type beforeDeployExecutor struct {
 	engine       beforeDeployEngine
 	environment  deployment.EnvironmentResolver
 	placement    func(state.ServiceDesired) (deployment.Placement, error)
-	github       beforeDeployGitHub
 	cloudflare   beforeDeployCloudflare
 	logSizeBytes int64
 	logMaxFiles  uint
@@ -54,11 +48,6 @@ func (executor beforeDeployExecutor) Execute(ctx context.Context, request deploy
 	if configuration.Command != "" {
 		if err := executor.runCommand(ctx, request, configuration.Command); err != nil {
 			return fmt.Errorf("run before-deploy command: %w", err)
-		}
-	}
-	if workflow := configuration.GitHubWorkflow; workflow != nil {
-		if err := executor.runWorkflow(ctx, request, workflow.Path, workflow.Name, workflow.Inputs); err != nil {
-			return fmt.Errorf("run before-deploy GitHub workflow: %w", err)
 		}
 	}
 	if len(configuration.CloudflareHostnames) > 0 {
@@ -144,35 +133,6 @@ func (executor beforeDeployExecutor) runCommand(
 		return fmt.Errorf("command exited with code %d", exitCode)
 	}
 	return appendBeforeDeployLog(request.BuildLogPath, "Before-deploy command completed")
-}
-
-func (executor beforeDeployExecutor) runWorkflow(
-	ctx context.Context,
-	request deployment.BeforeDeployRequest,
-	workflowPath string,
-	workflowName string,
-	inputs map[string]any,
-) error {
-	githubSource := request.Desired.Snapshot.Source.GitHub
-	if executor.github == nil || githubSource == nil {
-		return errors.New("GitHub workflow executor is unavailable")
-	}
-	if err := appendBeforeDeployLog(request.BuildLogPath, "Dispatching GitHub workflow: "+workflowName); err != nil {
-		return err
-	}
-	workflowContext, cancel := context.WithTimeout(ctx, beforeDeployActionTimeout)
-	defer cancel()
-	run, err := executor.github.DispatchWorkflowAndWait(
-		workflowContext, githubSource.RepositoryID, workflowPath, githubSource.Branch, inputs,
-	)
-	if err != nil {
-		return err
-	}
-	message := "GitHub workflow completed: " + workflowName
-	if run.HTMLURL != "" {
-		message += " (" + run.HTMLURL + ")"
-	}
-	return appendBeforeDeployLog(request.BuildLogPath, message)
 }
 
 func appendBeforeDeployLog(logPath, message string) error {

@@ -10,6 +10,7 @@ export const demoCanvasPresets = [
     value: "microservices",
   },
   { group: "examples", label: "Pipeline", value: "data-pipeline" },
+  { group: "examples", label: "Marketplace", value: "marketplace" },
   { group: "stress", label: "Fan-out", value: "fan-out" },
   { group: "stress", label: "Diamond", value: "diamond" },
   { group: "stress", label: "Dense", value: "dense" },
@@ -197,6 +198,34 @@ const dense: DemoPresetDefinition = {
   ],
 };
 
+// Shared-deps topology: services fan into postgres/redis plus dedicated
+// object stores, with a couple of isolated apps parked above the cluster.
+const marketplace: DemoPresetDefinition = {
+  connections: [
+    ["demo-console", "demo-primary"],
+    ["demo-console", "demo-cache"],
+    ["demo-console", "demo-media"],
+    ["demo-ops-board", "demo-cache"],
+    ["demo-crawler", "demo-primary"],
+    ["demo-crawler", "demo-cache"],
+    ["demo-crawler", "demo-documents"],
+    ["demo-notify-worker", "demo-primary"],
+    ["demo-notify-worker", "demo-cache"],
+  ],
+  resources: [
+    { id: "demo-documents", kind: "object_store", name: "documents" },
+    { id: "demo-media", kind: "object_store", name: "media" },
+    { id: "demo-primary", kind: "postgres", name: "primary" },
+    { id: "demo-cache", kind: "redis", name: "cache" },
+    { id: "demo-console", kind: "service", name: "console" },
+    { id: "demo-help", kind: "service", name: "help" },
+    { id: "demo-marketing", kind: "service", name: "marketing" },
+    { id: "demo-ops-board", kind: "service", name: "ops-board" },
+    { id: "demo-crawler", kind: "service", name: "crawler" },
+    { id: "demo-notify-worker", kind: "service", name: "notify-worker" },
+  ],
+};
+
 const definitions: Record<
   Exclude<DemoCanvasPreset, "default">,
   DemoPresetDefinition
@@ -205,6 +234,7 @@ const definitions: Record<
   dense,
   diamond,
   "fan-out": fanOut,
+  marketplace,
   microservices,
   saas,
   "web-app": webApp,
@@ -215,7 +245,7 @@ const imageReference = (
   name: string
 ): string | undefined => {
   if (kind === "service") {
-    return `registry.mock.local/demo/${name}:latest`;
+    return `ghcr.io/platformd-demo/${name}:latest`;
   }
   if (kind === "postgres") {
     return "postgres:17.5";

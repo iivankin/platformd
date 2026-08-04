@@ -17,15 +17,14 @@ import { ProjectChangesProvider } from "@/project-changes";
 import { ProjectCreatePage } from "@/project-create-page";
 import { ProjectsPage } from "@/projects-page";
 import { RecoveryPage } from "@/recovery-page";
-import { RegistryPage } from "@/registry-page";
 import { SettingsPage } from "@/settings-page";
 import { globalNavigation, Sidebar } from "@/sidebar";
 import type { NavigationItem } from "@/sidebar";
 import { useLastProject } from "@/use-last-project";
+import { useMediaQuery } from "@/use-media-query";
 
 const pageDescriptions: Record<string, string> = {
   "/monitoring": "Server health, maintenance, and platform activity.",
-  "/registry": "Private images used by your services.",
   "/settings": "Installation access and secure hostnames.",
 };
 
@@ -129,9 +128,23 @@ const Overview = ({
 
 export const App = () => {
   const location = useLocation();
-  const [collapsed, setCollapsed] = useState(false);
+  const mobile = useMediaQuery("(max-width: 767px)");
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false);
+  const [mobileOpenedAtPath, setMobileOpenedAtPath] = useState<string | null>(
+    null
+  );
+  const mobileMenuOpen = mobile && mobileOpenedAtPath === location.pathname;
+  const collapsed = mobile ? !mobileMenuOpen : desktopCollapsed;
+  const setCollapsed = (next: boolean) => {
+    if (mobile) {
+      setMobileOpenedAtPath(next ? null : location.pathname);
+      return;
+    }
+    setDesktopCollapsed(next);
+  };
   const data = useAppData();
   useLastProject(data.projects, data.projectsLoading);
+
   const activeLabel = useMemo(() => {
     if (data.meta?.status === "recovery") {
       return "Recovery";
@@ -174,11 +187,20 @@ export const App = () => {
   return (
     <ProjectChangesProvider>
       <div className="flex h-full bg-background text-foreground">
+        {mobile && !collapsed ? (
+          <button
+            aria-label="Close navigation"
+            className="fixed inset-0 z-30 bg-black/45 backdrop-blur-[1px]"
+            onClick={() => setCollapsed(true)}
+            type="button"
+          />
+        ) : null}
         <Sidebar
           collapsed={collapsed}
           identity={data.identity}
           identityError={data.identityError}
           identityLoading={data.identityLoading}
+          mobile={mobile}
           onCollapsedChange={setCollapsed}
           projects={data.projects}
           recovery={recovering}
@@ -187,12 +209,12 @@ export const App = () => {
 
         <main className="relative flex min-w-0 flex-1 flex-col">
           {projectCanvasVisible ? null : (
-            <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-5">
-              <h1 className="truncate text-xs font-semibold tracking-[0.15em] uppercase">
+            <header className="flex h-12 shrink-0 items-center justify-between gap-3 border-b border-border px-4 sm:px-5">
+              <h1 className="min-w-0 truncate text-xs font-semibold tracking-[0.15em] uppercase">
                 {activeLabel}
               </h1>
               {controlPlaneReady ? null : (
-                <div className="flex items-center gap-2 text-[10px] text-muted-foreground">
+                <div className="flex shrink-0 items-center gap-2 text-[10px] text-muted-foreground">
                   <span className="size-1.5 bg-amber-500" />
                   {controlPlaneStatus}
                 </div>
@@ -265,7 +287,6 @@ export const App = () => {
                   element={<InfrastructurePage update={data.update} />}
                   path="/monitoring/*"
                 />
-                <Route element={<RegistryPage />} path="/registry/*" />
                 <Route
                   element={<SettingsPage projects={data.projects} />}
                   path="/settings/*"
@@ -273,9 +294,7 @@ export const App = () => {
                 {globalNavigation
                   .filter(
                     (item) =>
-                      item.path !== "/registry" &&
-                      item.path !== "/monitoring" &&
-                      item.path !== "/settings"
+                      item.path !== "/monitoring" && item.path !== "/settings"
                   )
                   .map((item) => (
                     <Route

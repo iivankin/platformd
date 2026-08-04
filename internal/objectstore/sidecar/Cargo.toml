@@ -18,6 +18,7 @@ hyper-util = { version = "=0.1.20", features = ["tokio"] }
 rustfs-ecstore = { git = "https://github.com/rustfs/rustfs.git", rev = "2e5cef513fb31e25940f1c77e208f28b302561bb", default-features = false }
 rustfs-heal = { git = "https://github.com/rustfs/rustfs.git", rev = "2e5cef513fb31e25940f1c77e208f28b302561bb" }
 rustfs-rio = { git = "https://github.com/rustfs/rustfs.git", rev = "2e5cef513fb31e25940f1c77e208f28b302561bb" }
+rustfs-scanner = { git = "https://github.com/rustfs/rustfs.git", rev = "2e5cef513fb31e25940f1c77e208f28b302561bb" }
 rustfs-storage-api = { git = "https://github.com/rustfs/rustfs.git", rev = "2e5cef513fb31e25940f1c77e208f28b302561bb" }
 s3s = { git = "https://github.com/cxymds/s3s.git", rev = "fe3941d91fa1c69956f209a9145995c9f0235bff", features = ["minio"] }
 serde = { version = "=1.0.229", features = ["derive"] }

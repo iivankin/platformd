@@ -5,9 +5,7 @@ import {
   createBackupTarget,
   configureCloudflareMesh,
   createNetworkGateway,
-  configureGitHubApp,
   createProject,
-  createRegistryRepository,
   deleteNetworkGateway,
   deleteProject,
   deleteService,
@@ -24,8 +22,6 @@ import {
   fetchCloudflareMeshSettings,
   fetchDiskPressure,
   fetchIdentity,
-  fetchGitHubAppSettings,
-  fetchGitHubRepositories,
   fetchInfrastructureLogs,
   fetchInstallationSettings,
   fetchManagedPostgres,
@@ -38,10 +34,6 @@ import {
   fetchObjectStore,
   fetchProjectCanvas,
   fetchProjects,
-  fetchRegistryImage,
-  fetchRegistryImages,
-  fetchRegistryRepositories,
-  fetchRegistrySettings,
   fetchResourceLogs,
   fetchResourceUsage,
   fetchResourceUsageHistory,
@@ -57,7 +49,6 @@ import {
   scanManagedRedisKeys,
   setAdminHostname,
   setCloudflareAccessConfiguration,
-  setRegistryHostname,
   setManagedPostgresExtension,
   uploadContainerFile,
 } from "../web/api";
@@ -204,32 +195,24 @@ describe("mock API", () => {
     const [
       meta,
       identity,
-      githubSettings,
-      githubRepositories,
       projects,
       backupTargets,
       backupPolicies,
       pressure,
       infrastructureLogs,
       audit,
-      registry,
-      repositories,
       tokens,
       settings,
       updateStatus,
     ] = await Promise.all([
       fetchMeta(undefined, mockFetch),
       fetchIdentity(undefined, mockFetch),
-      fetchGitHubAppSettings(undefined, mockFetch),
-      fetchGitHubRepositories(undefined, mockFetch),
       fetchProjects(undefined, mockFetch),
       fetchBackupTargets(undefined, mockFetch),
       fetchBackupPolicies(undefined, mockFetch),
       fetchDiskPressure(undefined, mockFetch),
       fetchInfrastructureLogs({ limit: 500 }, undefined, mockFetch),
       fetchAuditEvents({}, undefined, mockFetch),
-      fetchRegistrySettings(undefined, mockFetch),
-      fetchRegistryRepositories(undefined, mockFetch),
       fetchAPITokens(undefined, mockFetch),
       fetchInstallationSettings(undefined, mockFetch),
       fetchSelfUpdateStatus(undefined, mockFetch),
@@ -237,8 +220,6 @@ describe("mock API", () => {
 
     expect(meta.status).toBe("ready");
     expect(identity.email).toBe("developer@mock.local");
-    expect(githubSettings.configured).toBe(true);
-    expect(githubRepositories).toHaveLength(1);
     expect(projects).toHaveLength(1);
     const [firstProject] = projects;
     expect(firstProject).toBeDefined();
@@ -249,12 +230,10 @@ describe("mock API", () => {
     );
     expect(canvas).toBeDefined();
     expect(backupTargets.targets).toHaveLength(1);
-    expect(backupPolicies).toHaveLength(4);
+    expect(backupPolicies).toHaveLength(3);
     expect(pressure.level).toBe("normal");
     expect(infrastructureLogs.records).not.toHaveLength(0);
     expect(audit.events).not.toHaveLength(0);
-    expect(registry.hostname).toBe("registry.mock.local");
-    expect(repositories).toHaveLength(1);
     expect(tokens).toHaveLength(2);
     expect(settings.certificates).toHaveLength(1);
     expect(updateStatus.updateAvailable).toBe(true);
@@ -276,7 +255,6 @@ describe("mock API", () => {
       backupPolicy,
       backupHistory,
       backupGenerations,
-      registryImages,
       redisLogs,
       postgresLogs,
       objectStoreLogs,
@@ -331,7 +309,6 @@ describe("mock API", () => {
         undefined,
         mockFetch
       ),
-      fetchRegistryImages("repository-api", {}, undefined, mockFetch),
       fetchResourceLogs(
         "project-demo",
         "redis",
@@ -385,7 +362,6 @@ describe("mock API", () => {
     expect(backupPolicy.enabled).toBe(true);
     expect(backupHistory).not.toHaveLength(0);
     expect(backupGenerations).not.toHaveLength(0);
-    expect(registryImages.images).toHaveLength(1);
     expect(redisLogs.records).not.toHaveLength(0);
     expect(postgresLogs.records).not.toHaveLength(0);
     expect(objectStoreLogs.records).not.toHaveLength(0);
@@ -417,14 +393,6 @@ describe("mock API", () => {
     expect(selectedDeploymentLogs.records[0]?.deploymentId).toBe(
       selectedDeployment.id
     );
-
-    const image = await fetchRegistryImage(
-      "repository-api",
-      registryImages.images[0]?.digest ?? "missing-digest",
-      undefined,
-      mockFetch
-    );
-    expect(image.tags).toContain("stable");
   });
 
   test("mock PostgreSQL extensions can be installed and uninstalled", async () => {
@@ -496,16 +464,6 @@ describe("mock API", () => {
       },
       mockFetch
     );
-    await setRegistryHostname("registry.preview.local", mockFetch);
-    const repository = await createRegistryRepository(
-      {
-        credentialName: "deployer",
-        credentialPermission: "pull_push",
-        name: "preview/api",
-        publicPull: false,
-      },
-      mockFetch
-    );
     await setAdminHostname("admin.preview.local", mockFetch);
     await setCloudflareAccessConfiguration(
       {
@@ -514,29 +472,15 @@ describe("mock API", () => {
       },
       mockFetch
     );
-    const githubSettings = await configureGitHubApp(
-      {
-        appId: 42,
-        privateKeyPem: "mock-private-key",
-        webhookSecret: "mock-webhook-secret",
-      },
-      mockFetch
-    );
-
     const projects = await fetchProjects(undefined, mockFetch);
     const backupTargets = await fetchBackupTargets(undefined, mockFetch);
-    const registrySettings = await fetchRegistrySettings(undefined, mockFetch);
-    const repositories = await fetchRegistryRepositories(undefined, mockFetch);
     const settings = await fetchInstallationSettings(undefined, mockFetch);
     expect(projects).toEqual([project]);
     expect(token.token).toBe("mock-only-token-do-not-use");
     expect(backupTargets.targets[0]?.bucket).toBe("mock-backups");
-    expect(registrySettings.hostname).toBe("registry.preview.local");
-    expect(repositories[0]?.id).toBe(repository.id);
     expect(settings.adminHostname).toBe("admin.preview.local");
     expect(settings.accessAudience).toBe("preview-audience");
     expect(settings.accessTeamDomain).toBe("preview.cloudflareaccess.com");
-    expect(githubSettings).toMatchObject({ appId: 42, configured: true });
   });
 
   test("deletes a project and all of its mock-owned resources", async () => {
@@ -557,8 +501,7 @@ describe("mock API", () => {
     expect(Object.keys(state.postgres)).toEqual([]);
     expect(Object.keys(state.redis)).toEqual([]);
     expect(Object.keys(state.objectStores)).toEqual([]);
-    expect(state.backupPolicies).toHaveLength(1);
-    expect(state.backupPolicies[0]?.resourceKind).toBe("registry");
+    expect(state.backupPolicies).toHaveLength(0);
   });
 
   test("mock container resources expose shells and mutable file trees", async () => {

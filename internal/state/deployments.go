@@ -17,6 +17,7 @@ type DeploymentRecord struct {
 	ServiceID        string
 	ImageDigest      string
 	ImageReference   string
+	ImageRevisionID  string
 	SourceRevision   string
 	CommitMessage    string
 	ConfigHash       string
@@ -33,6 +34,7 @@ type BeginDeployment struct {
 	ServiceID        string
 	ImageDigest      string
 	ImageReference   string
+	ImageRevisionID  string
 	SourceRevision   string
 	CommitMessage    string
 	ConfigHash       string
@@ -83,10 +85,11 @@ func (store *Store) BeginDeployment(ctx context.Context, input BeginDeployment) 
 		}
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO deployments(
-		  id, service_id, image_digest, image_reference, source_revision,
+		  id, service_id, image_digest, image_reference, image_revision_id, source_revision,
 		  source_commit_message, service_config_hash, snapshot_json, status, created_at, finished_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			input.ID, input.ServiceID, input.ImageDigest, input.ImageReference,
+			nullableString(input.ImageRevisionID),
 			nullableString(input.SourceRevision), nullableString(input.CommitMessage),
 			input.ConfigHash, string(input.SnapshotJSON), status, input.CreatedAtMillis,
 			finishedAt,
@@ -103,11 +106,12 @@ func (store *Store) ActivateDeployment(ctx context.Context, serviceID, deploymen
 	}
 	return store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var activeDeploymentID sql.NullString
+		var imageRevisionID sql.NullString
 		var status string
 		err := transaction.QueryRowContext(ctx, `
-SELECT s.active_deployment_id, d.status
+SELECT s.active_deployment_id, d.status, d.image_revision_id
 FROM services s JOIN deployments d ON d.id = ? AND d.service_id = s.id
-WHERE s.id = ? AND s.enabled = 1`, deploymentID, serviceID).Scan(&activeDeploymentID, &status)
+WHERE s.id = ? AND s.enabled = 1`, deploymentID, serviceID).Scan(&activeDeploymentID, &status, &imageRevisionID)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrServiceChanged
 		}
@@ -116,6 +120,30 @@ WHERE s.id = ? AND s.enabled = 1`, deploymentID, serviceID).Scan(&activeDeployme
 		}
 		if status != "running" || activeDeploymentID.String != expectedActiveDeploymentID {
 			return ErrServiceChanged
+		}
+		if _, err := transaction.ExecContext(ctx, `
+UPDATE service_image_revisions SET status = 'retired', retired_at = ?
+WHERE service_id = ? AND kind = 'production' AND status = 'active' AND id IS NOT ?`,
+			finishedAtMillis, serviceID, nullableString(imageRevisionID.String)); err != nil {
+			return fmt.Errorf("retire previous uploaded image: %w", err)
+		}
+		if imageRevisionID.Valid {
+			result, err := transaction.ExecContext(ctx, `
+UPDATE service_image_revisions
+SET status = 'active', deployment_id = ?, activated_at = ?, retired_at = NULL, expires_at = NULL
+				WHERE id = ? AND service_id = ? AND kind = 'production' AND status IN ('importing', 'active', 'retired')`,
+				deploymentID, finishedAtMillis, imageRevisionID.String, serviceID)
+			if err != nil {
+				return fmt.Errorf("activate uploaded image revision: %w", err)
+			}
+			if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+				return ErrServiceChanged
+			}
+			if _, err := transaction.ExecContext(ctx, `
+UPDATE service_image_uploads SET deployment_id = ?
+WHERE image_revision_id = ? AND status = 'deploying'`, deploymentID, imageRevisionID.String); err != nil {
+				return fmt.Errorf("link uploaded image deployment: %w", err)
+			}
 		}
 		if _, err := transaction.ExecContext(ctx, `
 UPDATE services SET active_deployment_id = ?, updated_at = ? WHERE id = ?`,
@@ -239,7 +267,7 @@ SELECT EXISTS(
 
 func (store *Store) Deployment(ctx context.Context, deploymentID string) (DeploymentRecord, error) {
 	deployment, err := scanDeploymentRecord(store.database.QueryRowContext(ctx, `
-		SELECT id, service_id, image_digest, image_reference, source_revision,
+		SELECT id, service_id, image_digest, image_reference, image_revision_id, source_revision,
 		       source_commit_message, service_config_hash, snapshot_json, status,
        error_code, error_message, created_at, finished_at
 FROM deployments WHERE id = ?`, deploymentID))

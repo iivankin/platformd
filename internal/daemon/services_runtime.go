@@ -7,18 +7,15 @@ import (
 	"net/netip"
 	"path"
 	"slices"
-	"strings"
 
 	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/firewall"
-	"github.com/iivankin/platformd/internal/githubapp"
-	"github.com/iivankin/platformd/internal/imagecredential"
+	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/preview"
 	"github.com/iivankin/platformd/internal/projectwebhook"
-	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/servicerestart"
 	"github.com/iivankin/platformd/internal/servicewatcher"
 	"github.com/iivankin/platformd/internal/state"
@@ -41,27 +38,15 @@ type serviceBackendSnapshot struct {
 	services map[string]publishedBackend
 }
 
-func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, registryApplication *registry.Application, githubApplication *githubapp.Application, cloudflareApplication *cloudflaredns.Application, webhooks *projectwebhook.Application, adminHostname string) error {
-	var imageSources deployment.ImageSourceResolver
-	if registryApplication != nil {
-		imageSources = embeddedImageSourceResolver{
-			runtime: stack, application: registryApplication, generatedRoot: stack.paths.GeneratedRoot,
-		}
-	}
+func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, cloudflareApplication *cloudflaredns.Application, webhooks *projectwebhook.Application) error {
 	controller, err := deployment.New(deployment.Config{
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
-		Environment:  resourceVariableResolver{store: store, master: master},
-		ImageSources: imageSources, Growth: stack.growth, Admission: stack.admission,
+		Environment: resourceVariableResolver{store: store, master: master},
+		Growth:      stack.growth, Admission: stack.admission,
 		Webhooks: webhooks,
-		Sources: githubSourceResolver{
-			github: githubApplication, engine: stack.engine, generatedRoot: stack.paths.GeneratedRoot,
-			buildNetwork: stack.buildNetwork.Name,
-			variables:    resourceVariableResolver{store: store, master: master},
-		},
-		Reporter: githubDeploymentReporter{github: githubApplication, adminHostname: adminHostname},
 		BeforeDeploy: beforeDeployExecutor{
 			engine: stack.engine, environment: resourceVariableResolver{store: store, master: master},
-			placement: stack.servicePlacement, github: githubApplication, cloudflare: cloudflareApplication,
+			placement: stack.servicePlacement, cloudflare: cloudflareApplication,
 			logSizeBytes: serviceLogSegmentBytes, logMaxFiles: serviceLogMaxFiles,
 		},
 		Placement: stack.servicePlacement,
@@ -121,13 +106,9 @@ func (stack *runtimeStack) ReconcileDeployments(ctx context.Context, store *stat
 	return nil
 }
 
-func (stack *runtimeStack) ConfigureServiceWatcher(ctx context.Context, store *state.Store, embeddedRegistryHost string) error {
-	stack.mu.Lock()
-	stack.embeddedRegistryHost = embeddedRegistryHost
-	stack.mu.Unlock()
+func (stack *runtimeStack) ConfigureServiceWatcher(ctx context.Context, store *state.Store) error {
 	watcher, err := servicewatcher.New(servicewatcher.Config{
 		Store: store, Deployer: stack,
-		IsEmbedded: stack.isEmbeddedReference,
 	})
 	if err != nil {
 		return err
@@ -143,37 +124,6 @@ func (stack *runtimeStack) ConfigureServiceWatcher(ctx context.Context, store *s
 	stack.serviceWatcher = watcher
 	stack.mu.Unlock()
 	return nil
-}
-
-func (stack *runtimeStack) SetEmbeddedRegistryHost(hostname string) {
-	stack.mu.Lock()
-	stack.embeddedRegistryHost = hostname
-	watcher := stack.serviceWatcher
-	stack.mu.Unlock()
-	if watcher != nil {
-		watcher.Reclassify()
-	}
-}
-
-func (stack *runtimeStack) isEmbeddedReference(reference string) bool {
-	host, err := imagecredential.HostForReference(reference)
-	if err != nil {
-		return false
-	}
-	stack.mu.Lock()
-	embedded := stack.embeddedRegistryHost
-	stack.mu.Unlock()
-	return embedded != "" && host == embedded
-}
-
-func (stack *runtimeStack) RegistryTagPublished(repository, tag string) {
-	stack.mu.Lock()
-	hostname := stack.embeddedRegistryHost
-	watcher := stack.serviceWatcher
-	stack.mu.Unlock()
-	if hostname != "" && watcher != nil {
-		watcher.NotifyEmbedded(hostname + "/" + repository + ":" + tag)
-	}
 }
 
 func (stack *runtimeStack) TrackService(ctx context.Context, serviceID string, retry bool) error {
@@ -196,94 +146,6 @@ func (stack *runtimeStack) ReconcileService(ctx context.Context, serviceID strin
 	return watcher.Reconcile(ctx, serviceID)
 }
 
-func (stack *runtimeStack) NotifyEmbeddedImage(imageReference string) {
-	stack.mu.Lock()
-	watcher := stack.serviceWatcher
-	stack.mu.Unlock()
-	if watcher != nil {
-		watcher.NotifyEmbedded(imageReference)
-	}
-}
-
-func (stack *runtimeStack) NotifyGitHubPush(
-	ctx context.Context,
-	store *state.Store,
-	application *githubapp.Application,
-	event githubapp.PushEvent,
-) {
-	serviceIDs, err := store.EnabledServiceIDs(ctx)
-	if err != nil {
-		systemevent.Failure("github_push_service_list_failed", err)
-		return
-	}
-	for _, serviceID := range serviceIDs {
-		desired, err := store.DesiredService(ctx, serviceID)
-		if err != nil {
-			stack.recordServiceFailure(serviceID, err)
-			continue
-		}
-		if desired.Snapshot.Source.GitHub == nil {
-			continue
-		}
-		source := desired.Snapshot.Source.GitHub
-		if source.RepositoryID != event.RepositoryID || source.Branch != event.Branch {
-			continue
-		}
-		// Waiting services are driven by check webhooks, while ordinary services
-		// are driven by pushes. This avoids racing a push against check creation.
-		if source.WaitForCI != event.ChecksEvent {
-			continue
-		}
-		changedPaths := event.ChangedPaths
-		if event.ChecksEvent && len(source.TriggerPaths) > 0 {
-			commit, err := application.Commit(ctx, event.RepositoryID, event.Revision)
-			if err != nil {
-				stack.recordServiceFailure(serviceID, err)
-				continue
-			}
-			changedPaths = commit.ChangedPaths
-		}
-		if !githubPathsMatch(source.TriggerPaths, changedPaths) {
-			continue
-		}
-		go func(serviceID string) {
-			stack.mu.Lock()
-			controller := stack.deployments
-			stack.mu.Unlock()
-			if controller == nil {
-				stack.recordServiceFailure(serviceID, errors.New("service deployment runtime is not configured"))
-				return
-			}
-			stack.recordGitHubDeploymentResult(
-				serviceID,
-				controller.DeployRevision(ctx, serviceID, event.Revision, false),
-			)
-		}(serviceID)
-	}
-}
-
-func (stack *runtimeStack) recordGitHubDeploymentResult(serviceID string, err error) {
-	if errors.Is(err, deployment.ErrSourceChecksPending) || errors.Is(err, deployment.ErrBlockedPair) {
-		return
-	}
-	stack.recordServiceResult(serviceID, err)
-}
-
-func githubPathsMatch(filters, changed []string) bool {
-	if len(filters) == 0 || len(changed) == 0 {
-		return true
-	}
-	for _, filter := range filters {
-		prefix := strings.TrimSuffix(filter, "/")
-		for _, path := range changed {
-			if path == prefix || strings.HasPrefix(path, prefix+"/") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 func (stack *runtimeStack) hasServiceFailure(serviceID string) bool {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
@@ -296,10 +158,33 @@ func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, 
 	})
 }
 
-func (stack *runtimeStack) DeployServiceRevision(ctx context.Context, serviceID, revision string, force bool) error {
+func (stack *runtimeStack) DeployUploadedProduction(
+	ctx context.Context,
+	serviceID, deploymentID, imageRevisionID, imageReference string,
+	image containerengine.Image,
+	identity state.ImageUploadIdentity,
+) error {
 	return stack.deployService(ctx, serviceID, func(controller *deployment.Controller) error {
-		return controller.DeployRevision(ctx, serviceID, revision, force)
+		return controller.DeployUploadedImage(ctx, serviceID, deploymentID, imageRevisionID, imageReference, image, identity)
 	})
+}
+
+func (stack *runtimeStack) DeployServiceImage(ctx context.Context, serviceID string, previous state.DeploymentRecord) error {
+	image, err := stack.engine.InspectImage(ctx, previous.ImageDigest)
+	if err != nil {
+		image, err = stack.engine.Pull(ctx, containerengine.PullRequest{Reference: previous.ImageReference})
+	}
+	if err != nil {
+		return fmt.Errorf("load historical uploaded image: %w", err)
+	}
+	if image.Digest != previous.ImageDigest {
+		return fmt.Errorf("historical uploaded image digest = %s, want %s", image.Digest, previous.ImageDigest)
+	}
+	deploymentID, err := id.New()
+	if err != nil {
+		return err
+	}
+	return stack.DeployUploadedProduction(ctx, serviceID, deploymentID, previous.ImageRevisionID, previous.ImageReference, image, state.ImageUploadIdentity{SHA: previous.SourceRevision})
 }
 
 func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, deploy func(*deployment.Controller) error) error {

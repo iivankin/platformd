@@ -38,7 +38,7 @@ func (repository *liveRecoveryRepository) RecoveryStatus(ctx context.Context) (s
 			status.Resources = append(status.Resources, resource)
 		}
 	}
-	appendResources("registry", resources.RegistryRepositories)
+	appendResources("image", resources.Images)
 	appendResources("object_store", resources.ObjectStores)
 	appendResources("postgres", resources.Postgres)
 	appendResources("redis", resources.Redis)

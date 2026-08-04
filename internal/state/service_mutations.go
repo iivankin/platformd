@@ -19,7 +19,7 @@ var (
 	ErrDeploymentNotSuccess   = errors.New("deployment did not succeed")
 	ErrDeploymentIsActive     = errors.New("deployment is active")
 	ErrServiceReconcileFailed = errors.New("service reconcile failed")
-	ErrPreviewDomainCount     = errors.New("PR previews require exactly one HTTP domain")
+	ErrPreviewDomainCount     = errors.New("image upload previews require exactly one HTTP domain")
 )
 
 type UpdateServiceInput struct {
@@ -81,8 +81,9 @@ type DeleteServiceInput struct {
 }
 
 type DeleteServiceResult struct {
-	Service ServiceDesired
-	Volumes []Volume
+	Service    ServiceDesired
+	Volumes    []Volume
+	ImagePaths []string
 }
 
 func (store *Store) DeleteService(ctx context.Context, input DeleteServiceInput) (DeleteServiceResult, error) {
@@ -96,7 +97,7 @@ func (store *Store) DeleteService(ctx context.Context, input DeleteServiceInput)
 	if err != nil {
 		return DeleteServiceResult{}, err
 	}
-	result := DeleteServiceResult{Service: service, Volumes: make([]Volume, 0)}
+	result := DeleteServiceResult{Service: service, Volumes: make([]Volume, 0), ImagePaths: make([]string, 0)}
 	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		if err := validateServiceVersion(ctx, transaction, input.ID, input.ProjectID, input.ExpectedUpdatedMillis); err != nil {
 			return err
@@ -124,6 +125,25 @@ FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY id`, input.Project
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("iterate service volumes for deletion: %w", err)
 		}
+		rows, err = transaction.QueryContext(ctx, `
+SELECT archive_path FROM service_image_revisions WHERE service_id = ?
+UNION ALL
+SELECT temporary_path FROM service_image_uploads WHERE service_id = ?
+ORDER BY 1`, input.ID, input.ID)
+		if err != nil {
+			return fmt.Errorf("list service image files for deletion: %w", err)
+		}
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err != nil {
+				rows.Close()
+				return fmt.Errorf("scan service image file for deletion: %w", err)
+			}
+			result.ImagePaths = append(result.ImagePaths, path)
+		}
+		if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+			return fmt.Errorf("iterate service image files for deletion: %w", err)
+		}
 		statements := []struct {
 			query string
 			args  []any
@@ -143,7 +163,10 @@ FROM volumes WHERE project_id = ? AND service_id = ? ORDER BY id`, input.Project
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
 			ProjectID: input.ProjectID, Action: "service.delete", ServiceID: input.ID,
 			CorrelationID: input.RequestCorrelationID, CreatedAtMillis: input.DeletedAtMillis,
-			Metadata: map[string]string{"name": service.Name, "volumeCount": fmt.Sprintf("%d", len(result.Volumes))},
+			Metadata: map[string]string{
+				"name": service.Name, "volumeCount": fmt.Sprintf("%d", len(result.Volumes)),
+				"imageFileCount": fmt.Sprintf("%d", len(result.ImagePaths)),
+			},
 		})
 	})
 	if err != nil {
@@ -208,14 +231,15 @@ func (store *Store) DeployServiceVersion(ctx context.Context, input DeployServic
 		var snapshotJSON string
 		var status string
 		var sourceRevision sql.NullString
+		var currentSourceJSON string
 		var enabled int
 		var currentUpdated int64
 		err := transaction.QueryRowContext(ctx, `
-SELECT d.image_digest, d.source_revision, d.snapshot_json, d.status, s.enabled, s.updated_at
+SELECT d.image_digest, d.source_revision, d.snapshot_json, d.status, s.enabled, s.updated_at, s.source_json
 FROM services s
 JOIN deployments d ON d.service_id = s.id
 WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, input.DeploymentID).Scan(
-			&imageDigest, &sourceRevision, &snapshotJSON, &status, &enabled, &currentUpdated,
+			&imageDigest, &sourceRevision, &snapshotJSON, &status, &enabled, &currentUpdated, &currentSourceJSON,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrDeploymentNotFound
@@ -229,6 +253,18 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 		if status != "succeeded" && status != "failed" && status != "skipped" {
 			return ErrDeploymentNotSuccess
 		}
+		var currentSource servicesource.Source
+		if err := json.Unmarshal([]byte(currentSourceJSON), &currentSource); err != nil {
+			return fmt.Errorf("decode current service source: %w", err)
+		}
+		if currentSource.Type == servicesource.DockerImageUpload {
+			return insertServiceAudit(ctx, transaction, serviceAudit{
+				ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID, ActorEmail: input.ActorEmail,
+				ProjectID: input.ProjectID, Action: "service.deploy_version", ServiceID: input.ID,
+				CorrelationID: input.RequestCorrelationID, CreatedAtMillis: updatedAt,
+				Metadata: map[string]string{"deploymentId": input.DeploymentID},
+			})
+		}
 		var snapshot serviceconfig.Snapshot
 		if err := json.Unmarshal([]byte(snapshotJSON), &snapshot); err != nil {
 			return fmt.Errorf("decode deployment version snapshot: %w", err)
@@ -240,10 +276,6 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 			}
 			snapshot.Source.Image.Reference = pinned
 			snapshot.Source.AutoUpdate = false
-		} else if snapshot.Source.Type == servicesource.GitHubImage {
-			if !sourceRevision.Valid {
-				return errors.New("GitHub deployment has no source revision")
-			}
 		}
 		snapshot, err = serviceconfig.Normalize(snapshot)
 		if err != nil {

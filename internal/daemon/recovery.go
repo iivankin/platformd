@@ -12,7 +12,6 @@ import (
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/objectstore"
-	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/remotes3"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -36,7 +35,6 @@ type recoveryConfig struct {
 	Master       cryptobox.MasterKey
 	Installation state.Installation
 	Runtime      *runtimeStack
-	Registry     *registry.Application
 	ObjectStore  *objectstore.Application
 	Progress     *recoveryProgress
 	Remote       func(remotes3.Config) (backup.ControlRemote, error)
@@ -70,8 +68,8 @@ func (plan recoveryPlan) run(ctx context.Context) error {
 		kind string
 		ids  []string
 	}{
+		{kind: "image", ids: resources.Images},
 		{kind: "volume", ids: resources.Volumes},
-		{kind: "registry", ids: resources.RegistryRepositories},
 		{kind: "object_store", ids: resources.ObjectStores},
 		{kind: "postgres", ids: resources.Postgres},
 		{kind: "redis", ids: resources.Redis},
@@ -88,7 +86,7 @@ func (plan recoveryPlan) run(ctx context.Context) error {
 
 func newRecoveryAttempt(config recoveryConfig) (recoveryAttempt, error) {
 	if config.Store == nil || config.Target == nil || config.TargetGate == nil || config.Admission == nil ||
-		config.Installation.ID == "" || config.Runtime == nil || config.Registry == nil ||
+		config.Installation.ID == "" || config.Runtime == nil ||
 		config.ObjectStore == nil || config.Progress == nil {
 		return recoveryAttempt{}, errors.New("recovery dependencies are incomplete")
 	}
@@ -136,21 +134,24 @@ func newRecoveryAttempt(config recoveryConfig) (recoveryAttempt, error) {
 				if err != nil {
 					return err
 				}
-				policyStore, ok := config.Store.(recoveryPolicyStore)
-				if !ok {
-					return errors.New("recovery backup policy store is unavailable")
-				}
-				policy, err := policyStore.BackupPolicy(ctx, kind, resourceID)
-				if err != nil {
-					return err
-				}
-				if policy.TargetID == "" {
-					config.Progress.markLatest(kind, resourceID, backup.ResourceCompletion{}, false)
-					return nil
-				}
-				resourceTarget, err := config.Target.RuntimeTarget(ctx, policy.TargetID)
-				if err != nil {
-					return err
+				resourceTarget := target
+				if kind != "image" {
+					policyStore, ok := config.Store.(recoveryPolicyStore)
+					if !ok {
+						return errors.New("recovery backup policy store is unavailable")
+					}
+					policy, err := policyStore.BackupPolicy(ctx, kind, resourceID)
+					if err != nil {
+						return err
+					}
+					if policy.TargetID == "" {
+						config.Progress.markLatest(kind, resourceID, backup.ResourceCompletion{}, false)
+						return nil
+					}
+					resourceTarget, err = config.Target.RuntimeTarget(ctx, policy.TargetID)
+					if err != nil {
+						return err
+					}
 				}
 				remote, err := config.Remote(remotes3.Config{
 					Endpoint: resourceTarget.Endpoint, Region: resourceTarget.Region,
@@ -193,7 +194,8 @@ func recoveryRestorer(config recoveryConfig, kind string) (backup.ResourceRestor
 	if store, ok := config.Store.(ordinaryVolumeRepository); ok {
 		volumeConfig = append(volumeConfig, ordinaryVolumeBackupConfig{Store: store, Root: config.Runtime.paths.VolumesRoot})
 	}
-	restorer := resourceRestorers(config.Runtime, config.Registry, config.ObjectStore, volumeConfig...)[kind]
+	images, _ := config.Store.(imageRevisionRepository)
+	restorer := resourceRestorers(config.Runtime, images, config.ObjectStore, volumeConfig...)[kind]
 	if restorer == nil {
 		return nil, errors.New("recovery resource kind is unsupported")
 	}

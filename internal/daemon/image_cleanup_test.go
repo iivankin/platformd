@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/diskpressure"
 )
 
 type imageCacheReferencesStub struct{}
@@ -74,20 +75,29 @@ func TestDiskPressureImageCleanupHasCooldown(t *testing.T) {
 	collector := newImageGarbageCollector(imageCacheReferencesStub{}, cleaner)
 	collector.now = func() time.Time { return now }
 
-	if err := collector.CleanupDiskPressure(context.Background()); err != nil {
+	if err := collector.CleanupDiskPressure(context.Background(), diskpressure.Low); err != nil {
 		t.Fatal(err)
 	}
-	if err := collector.CleanupDiskPressure(context.Background()); err != nil {
+	if err := collector.CleanupDiskPressure(context.Background(), diskpressure.Low); err != nil {
 		t.Fatal(err)
 	}
 	if len(cleaner.requests) != 1 {
 		t.Fatalf("cleanup requests during cooldown = %d", len(cleaner.requests))
 	}
-	now = now.Add(diskPressureImageCleanupInterval)
-	if err := collector.CleanupDiskPressure(context.Background()); err != nil {
+	if err := collector.CleanupDiskPressure(context.Background(), diskpressure.Critical); err != nil {
 		t.Fatal(err)
 	}
-	if len(cleaner.requests) != 2 {
+	if err := collector.CleanupDiskPressure(context.Background(), diskpressure.Emergency); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaner.requests) != 3 {
+		t.Fatalf("cleanup requests after pressure escalation = %d", len(cleaner.requests))
+	}
+	now = now.Add(diskPressureImageCleanupInterval)
+	if err := collector.CleanupDiskPressure(context.Background(), diskpressure.Low); err != nil {
+		t.Fatal(err)
+	}
+	if len(cleaner.requests) != 4 {
 		t.Fatalf("cleanup requests after cooldown = %d", len(cleaner.requests))
 	}
 }

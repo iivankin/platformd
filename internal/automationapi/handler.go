@@ -28,26 +28,24 @@ type ManagedImageCatalog interface {
 }
 
 type Config struct {
-	Hostname         string
-	Repository       Repository
-	Projects         *automation.ProjectApplication
-	Services         *automation.ServiceApplication
-	Domains          *automation.DomainApplication
-	Logs             *automation.LogApplication
-	Images           ManagedImageCatalog
-	Redis            *automation.ManagedRedisApplication
-	RedisStore       managedRedisRepository
-	Postgres         *automation.ManagedPostgresApplication
-	PostgresStore    managedPostgresRepository
-	ObjectStores     objectStoreApplication
-	Managed          *automation.ManagedResourceApplication
-	Versions         *databaseversion.Service
-	ServerExec       *automation.ServerExecApplication
-	Volumes          *automation.VolumeApplication
-	PortForwards     *portforward.Application
-	Registry         registryApplication
-	RegistrySettings registrySettings
-	Admission        *admission.Gate
+	Hostname      string
+	Repository    Repository
+	Projects      *automation.ProjectApplication
+	Services      *automation.ServiceApplication
+	Domains       *automation.DomainApplication
+	Logs          *automation.LogApplication
+	Images        ManagedImageCatalog
+	Redis         *automation.ManagedRedisApplication
+	RedisStore    managedRedisRepository
+	Postgres      *automation.ManagedPostgresApplication
+	PostgresStore managedPostgresRepository
+	ObjectStores  objectStoreApplication
+	Managed       *automation.ManagedResourceApplication
+	Versions      *databaseversion.Service
+	ServerExec    *automation.ServerExecApplication
+	Volumes       *automation.VolumeApplication
+	PortForwards  *portforward.Application
+	Admission     *admission.Gate
 }
 
 func Handler(config Config) (http.Handler, error) {
@@ -59,7 +57,7 @@ func Handler(config Config) (http.Handler, error) {
 		serverExec: config.ServerExec != nil, managedResources: config.Managed != nil,
 		databaseVersions: config.Versions != nil, volumes: config.Volumes != nil,
 		projects: config.Projects != nil, objectStores: config.ObjectStores != nil,
-		domains: config.Domains != nil, registry: config.Registry != nil && config.RegistrySettings != nil,
+		domains:      config.Domains != nil,
 		portForwards: config.PortForwards != nil,
 	}))
 	mux.HandleFunc("GET /public/api/v1/me", serveIdentity)
@@ -86,15 +84,6 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/volumes", listVolumes(config.Volumes))
 		mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services/{serviceID}/volumes", createVolume(config.Volumes))
 		mux.HandleFunc("DELETE /public/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}", deleteVolume(config.Volumes))
-	}
-	if config.PortForwards != nil {
-		mux.HandleFunc(
-			"POST /public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards",
-			createPortForward(config.Hostname, config.PortForwards),
-		)
-	}
-	if config.Registry != nil && config.RegistrySettings != nil {
-		registerRegistryRoutes(mux, config.Registry, config.RegistrySettings)
 	}
 	mux.HandleFunc("GET /public/api/v1/managed-images/{engine}/tags", listManagedImageTags(config.Images))
 	if config.Redis != nil && config.RedisStore != nil {

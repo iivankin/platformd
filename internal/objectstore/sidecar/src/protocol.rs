@@ -2,6 +2,8 @@ use crate::{
     bucket::{is_managed_bucket, physical_bucket_name},
     buffer_pool::{PooledReaderStream, SizeLimitedStream},
     data_plane::{DataPlane, MaintenanceMode, ProjectConfig},
+    largest_objects::LargestObjectSearches,
+    usage,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
@@ -72,9 +74,10 @@ struct ErrorResponse<'a> {
 pub async fn handle(
     store: Arc<ECStore>,
     data_plane: DataPlane,
+    largest_objects: LargestObjectSearches,
     request: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
-    let response = match dispatch(store, data_plane, request).await {
+    let response = match dispatch(store, data_plane, largest_objects, request).await {
         Ok(response) => response,
         Err(error) => error_response(error),
     };
@@ -84,6 +87,7 @@ pub async fn handle(
 async fn dispatch(
     store: Arc<ECStore>,
     data_plane: DataPlane,
+    largest_objects: LargestObjectSearches,
     request: Request<Incoming>,
 ) -> Result<Response<Body>, ApiError> {
     let method = request.method().clone();
@@ -122,6 +126,8 @@ async fn dispatch(
     }
     if method == Method::POST && path == "/v1/data-plane/store/restore/begin" {
         let store_id = required_header(request.headers(), "x-platformd-store")?;
+        let bucket = physical_bucket_name(&store_id).map_err(|error| ApiError::invalid(&error))?;
+        largest_objects.cancel(&bucket).await;
         data_plane
             .begin_store_maintenance(&store_id, MaintenanceMode::Restore)
             .await
@@ -152,7 +158,7 @@ async fn dispatch(
     }
     if method == Method::POST && path == "/v1/buckets/reconcile" {
         let input: ReconcileBucketsInput = json_body(request.into_body()).await?;
-        reconcile_buckets(store, input.store_ids).await?;
+        reconcile_buckets(store, &largest_objects, input.store_ids).await?;
         return Ok(empty(StatusCode::NO_CONTENT));
     }
     let bucket = physical_bucket(request.headers())?;
@@ -162,15 +168,37 @@ async fn dispatch(
                 .make_bucket(&bucket, &MakeBucketOptions::default())
                 .await
             {
-                Ok(()) | Err(StorageError::BucketExists(_)) => Ok(empty(StatusCode::NO_CONTENT)),
+                Ok(()) | Err(StorageError::BucketExists(_)) => {
+                    usage::record_dirty(&bucket);
+                    Ok(empty(StatusCode::NO_CONTENT))
+                }
                 Err(error) => Err(error.into()),
             }
         }
+        (Method::GET, "/v1/bucket/stats") => {
+            let stats = usage::bucket_stats(store, &bucket).await?;
+            json_response(StatusCode::OK, &stats)
+        }
+        (Method::GET, "/v1/bucket/largest-objects") => {
+            let search = largest_objects.status(&bucket).await;
+            json_response(StatusCode::OK, &search)
+        }
+        (Method::POST, "/v1/bucket/largest-objects") => {
+            let search = largest_objects.start(store, bucket).await;
+            json_response(StatusCode::ACCEPTED, &search)
+        }
+        (Method::DELETE, "/v1/bucket/largest-objects") => {
+            let search = largest_objects.cancel(&bucket).await;
+            json_response(StatusCode::OK, &search)
+        }
         (Method::POST, "/v1/bucket/clear") => {
+            largest_objects.cancel(&bucket).await;
             clear_bucket(store, &bucket).await?;
+            usage::record_dirty(&bucket);
             Ok(empty(StatusCode::NO_CONTENT))
         }
         (Method::DELETE, "/v1/bucket") => {
+            largest_objects.cancel(&bucket).await;
             match clear_bucket(store.clone(), &bucket).await {
                 Ok(()) => {}
                 Err(StorageError::BucketNotFound(_)) => return Ok(empty(StatusCode::NO_CONTENT)),
@@ -202,9 +230,10 @@ async fn dispatch(
         (Method::PUT, "/v1/object") => put_object(store, &bucket, request).await,
         (Method::DELETE, "/v1/object") => {
             let key = decoded_header(request.headers(), "x-platformd-key")?;
-            store
+            let info = store
                 .delete_object(&bucket, &key, ObjectOptions::default())
                 .await?;
+            usage::record_delete(&bucket, &info).await;
             Ok(empty(StatusCode::NO_CONTENT))
         }
         (Method::GET, "/v1/objects") => list_objects(store, &bucket, request.headers()).await,
@@ -216,7 +245,11 @@ async fn dispatch(
     }
 }
 
-async fn reconcile_buckets(store: Arc<ECStore>, store_ids: Vec<String>) -> Result<(), ApiError> {
+async fn reconcile_buckets(
+    store: Arc<ECStore>,
+    largest_objects: &LargestObjectSearches,
+    store_ids: Vec<String>,
+) -> Result<(), ApiError> {
     let mut desired = HashSet::with_capacity(store_ids.len());
     for store_id in store_ids {
         let bucket = physical_bucket_name(&store_id).map_err(|error| ApiError::invalid(&error))?;
@@ -247,6 +280,7 @@ async fn reconcile_buckets(store: Arc<ECStore>, store_ids: Vec<String>) -> Resul
         .difference(&desired)
         .filter(|bucket| is_managed_bucket(bucket))
     {
+        largest_objects.cancel(bucket).await;
         clear_bucket(store.clone(), bucket).await?;
         store
             .delete_bucket(
@@ -365,9 +399,10 @@ async fn put_object(
     let hash_reader =
         HashReader::from_stream(reader, size, size, None, nonempty(expected_sha), false)?;
     let mut put_reader = PutObjReader::new(hash_reader);
-    let info = store
-        .put_object(bucket, &key, &mut put_reader, &options)
+    let (info, previous) = store
+        .put_object_with_old_current_size(bucket, &key, &mut put_reader, &options)
         .await?;
+    usage::record_write(bucket, &info, previous).await;
     object_response(StatusCode::OK, &info)
 }
 

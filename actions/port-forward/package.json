@@ -1,0 +1,23 @@
+{
+  "name": "platformd-port-forward",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Action for short-lived platformd TCP port forwards",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --minify-whitespace --outfile=dist/index.js && esbuild src/cleanup-entry.ts --bundle --platform=node --target=node24 --format=cjs --minify-whitespace --outfile=dist/cleanup/index.js",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test src/**/*.test.ts",
+    "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "esbuild": "0.28.1",
+    "tsx": "4.21.0",
+    "typescript": "5.9.3"
+  }
+}

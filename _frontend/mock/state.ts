@@ -10,8 +10,6 @@ import type {
   CloudflareMeshSettings,
   Deployment,
   DiskPressure,
-  GitHubAppSettings,
-  GitHubRepository,
   Identity,
   InfrastructureLogWindow,
   InstallationSettings,
@@ -28,9 +26,6 @@ import type {
   ProjectCanvas,
   ProjectWebhook,
   PreviewDeployment,
-  RegistryCredential,
-  RegistryImage,
-  RegistryRepository,
   RuntimeDeployment,
   Service,
   ServiceDomain,
@@ -57,8 +52,6 @@ export interface MockState {
   deployments: Record<string, Deployment[]>;
   diskPressure: DiskPressure;
   domains: Record<string, ServiceDomain[]>;
-  githubAppSettings: GitHubAppSettings;
-  githubRepositories: GitHubRepository[];
   listeners: Record<string, ServiceListener[]>;
   identity: Identity;
   infrastructureLogs: InfrastructureLogWindow;
@@ -75,10 +68,6 @@ export interface MockState {
   previews: Record<string, PreviewDeployment[]>;
   redis: Record<string, ManagedRedis>;
   runtimeDeployments: Record<string, RuntimeDeployment[]>;
-  registryCredentials: Record<string, RegistryCredential[]>;
-  registryHostname: string;
-  registryImages: Record<string, RegistryImage[]>;
-  registryRepositories: RegistryRepository[];
   scenario: MockScenario;
   sequence: number;
   services: Record<string, Service>;
@@ -116,7 +105,6 @@ const service: Service = {
   activeConfigHash: "config-demo",
   activeDeploymentId: "deployment-demo",
   activeImageDigest: "sha256:service-demo",
-  buildEnvironment: {},
   cpuMillicores: 500,
   createdAt: project.createdAt,
   enabled: true,
@@ -133,8 +121,8 @@ const service: Service = {
   secretReferences: [],
   source: {
     autoUpdate: true,
-    image: { reference: "registry.mock.local/storefront/api:stable" },
-    type: "platformd_registry",
+    image: { reference: "ghcr.io/storefront/api:stable" },
+    type: "public_image",
   },
   updatedAt: now - 90_000,
   volumeMounts: [],
@@ -259,46 +247,10 @@ const canvas: ProjectCanvas = {
   ],
 };
 
-const repository: RegistryRepository = {
-  backupCron: "0 4 * * *",
-  backupEnabled: true,
-  backupRetentionCount: 5,
-  blobCount: 6,
-  createdAt: now - 30 * 86_400_000,
-  id: "repository-api",
-  lastPushedAt: now - 45 * 60_000,
-  manifestCount: 2,
-  name: "storefront/api",
-  publicPull: false,
-  referencedBlobBytes: 188_743_680,
-  tagCount: 3,
-  totalBlobBytes: 201_326_592,
-  updatedAt: now - 45 * 60_000,
-};
-
-const registryImage: RegistryImage = {
-  blobDigests: ["sha256:config-demo", "sha256:layer-demo"],
-  digest: "sha256:image-demo",
-  manifest: {
-    config: {
-      digest: "sha256:config-demo",
-      mediaType: "application/vnd.oci.image.config.v1+json",
-    },
-    schemaVersion: 2,
-  },
-  manifestSize: 1432,
-  mediaType: "application/vnd.oci.image.manifest.v1+json",
-  platforms: [{ architecture: "amd64", os: "linux" }],
-  pushedAt: now - 45 * 60_000,
-  referencedBlobBytes: 94_371_840,
-  tags: ["stable", "2026.07.14"],
-};
-
 const policies: BackupPolicy[] = [
   ["postgres", postgres.id, "0 2 * * *", 7],
   ["redis", redis.id, "30 2 * * *", 5],
   ["object_store", objectStore.id, "0 3 * * *", 5],
-  ["registry", repository.id, "0 4 * * *", 5],
 ].map(([resourceKind, resourceId, cron, retentionCount], index) => ({
   cron: String(cron),
   enabled: true,
@@ -346,7 +298,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     components: [
       { bytes: 17_179_869_184, id: "container_images" },
       { bytes: 12_884_901_888, id: "volumes" },
-      { bytes: 8_589_934_592, id: "registry" },
+      { bytes: 8_589_934_592, id: "images" },
       { bytes: 6_442_450_944, id: "object_storage" },
       { bytes: 2_147_483_648, id: "logs" },
       { bytes: 1_073_741_824, id: "emergency_reserve" },
@@ -360,14 +312,6 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     totalInodes: 9_500_000,
   },
   domains: {},
-  githubAppSettings: {
-    appId: 0,
-    appSlug: "",
-    configured: false,
-    updatedAt: 0,
-    webhookPath: "/public/api/v1/integrations/github/webhook",
-  },
-  githubRepositories: [],
   identity: {
     email: "developer@mock.local",
     name: "Mock Developer",
@@ -392,10 +336,6 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   projectWebhooks: {},
   projects: [],
   redis: {},
-  registryCredentials: {},
-  registryHostname: "",
-  registryImages: {},
-  registryRepositories: [],
   runtimeDeployments: {},
   scenario,
   sequence: 100,
@@ -436,21 +376,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
     status: "connected",
     updatedAt: now - 3_600_000,
   };
-  state.githubAppSettings = {
-    appId: 1_234_567,
-    appSlug: "platformd-mock",
-    configured: true,
-    updatedAt: now - 3_600_000,
-    webhookPath: "/public/api/v1/integrations/github/webhook",
-  };
-  state.githubRepositories = [
-    {
-      defaultBranch: "main",
-      fullName: "platformd/demo-service",
-      id: 98_765_432,
-      installationId: 12_345_678,
-    },
-  ];
   state.canvases[project.id] = canvas;
   state.services[service.id] = service;
   state.previews[service.id] = [];
@@ -519,7 +444,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
       serviceConfigHash: "config-demo",
       serviceId: service.id,
       snapshot: {
-        buildEnvironment: service.buildEnvironment,
         cpuMillicores: service.cpuMillicores,
         environment: service.environment,
         healthCheck: service.healthCheck,
@@ -540,7 +464,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
       serviceConfigHash: "config-failed",
       serviceId: service.id,
       snapshot: {
-        buildEnvironment: service.buildEnvironment,
         cpuMillicores: service.cpuMillicores,
         environment: service.environment,
         healthCheck: service.healthCheck,
@@ -548,8 +471,8 @@ export const createMockState = (scenario: MockScenario): MockState => {
         secretReferences: [],
         source: {
           autoUpdate: true,
-          image: { reference: "registry.mock.local/storefront/api:candidate" },
-          type: "platformd_registry",
+          image: { reference: "ghcr.io/storefront/api:candidate" },
+          type: "public_image",
         },
         volumeMounts: [],
       },
@@ -563,7 +486,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
       serviceConfigHash: "config-previous",
       serviceId: service.id,
       snapshot: {
-        buildEnvironment: service.buildEnvironment,
         cpuMillicores: 400,
         environment: { LOG_LEVEL: "warn" },
         healthCheck: service.healthCheck,
@@ -571,8 +493,8 @@ export const createMockState = (scenario: MockScenario): MockState => {
         secretReferences: [],
         source: {
           autoUpdate: true,
-          image: { reference: "registry.mock.local/storefront/api:previous" },
-          type: "platformd_registry",
+          image: { reference: "ghcr.io/storefront/api:previous" },
+          type: "public_image",
         },
         volumeMounts: [],
       },
@@ -778,20 +700,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
       },
     ];
   }
-  state.registryHostname = "registry.mock.local";
-  state.registryRepositories = [repository];
-  state.registryImages[repository.id] = [registryImage];
-  state.registryCredentials[repository.id] = [
-    {
-      createdAt: now - 20 * 86_400_000,
-      id: "registry-credential-demo",
-      lastUsedAt: now - 45 * 60_000,
-      name: "deployer",
-      permission: "pull_push",
-      secretAvailable: false,
-      username: "prg_legacy_mock_credential",
-    },
-  ];
   state.tokens = [
     {
       createdAt: now - 14 * 86_400_000,

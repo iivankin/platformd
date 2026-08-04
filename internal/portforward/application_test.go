@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
 type resourceRepositoryStub struct {
 	kind        string
+	portForward *serviceconfig.PortForward
 	projectErr  error
 	resourceErr error
 }
@@ -25,7 +27,9 @@ func (repository resourceRepositoryStub) ResolveResource(_ context.Context, _ st
 	if kind == "" {
 		kind = "postgres"
 	}
-	return ResolvedResource{ID: "resource-id", Kind: kind, Name: name}, repository.resourceErr
+	return ResolvedResource{
+		ID: "resource-id", Kind: kind, Name: name, PortForward: repository.portForward,
+	}, repository.resourceErr
 }
 
 type resolverStub struct {
@@ -127,5 +131,103 @@ func TestTicketCreationRequiresBoundAdminAndAudit(t *testing.T) {
 	grant, err := application.Create(context.Background(), automation.Identity{TokenID: "admin", Role: "admin"}, input)
 	if err == nil || grant.Ticket != "" {
 		t.Fatalf("audit failure created grant: %+v / %v", grant, err)
+	}
+}
+
+type oidcVerifierStub struct {
+	identity OIDCIdentity
+	err      error
+	calls    int
+}
+
+func (verifier *oidcVerifierStub) Verify(context.Context, string, string, string, []string) (OIDCIdentity, error) {
+	verifier.calls++
+	return verifier.identity, verifier.err
+}
+
+func TestCreateOIDCAllowsServicePostgresRedisAndObjectStore(t *testing.T) {
+	for _, kind := range []string{"service", "postgres", "redis", "object_store"} {
+		t.Run(kind, func(t *testing.T) {
+			port := 8080
+			address := "10.42.0.8:8080"
+			if kind == "postgres" {
+				port = 5432
+				address = "10.42.0.8:5432"
+			}
+			if kind == "redis" {
+				port = 6379
+				address = "10.42.0.8:6379"
+			}
+			if kind == "object_store" {
+				port = 9000
+				address = "10.42.0.1:9000"
+			}
+			resolver := &resolverStub{address: address}
+			audit := &auditStub{}
+			oidc := &oidcVerifierStub{identity: OIDCIdentity{Repository: "acme/app", RunID: "123"}}
+			application, err := New(Config{
+				Repository: resourceRepositoryStub{
+					kind: kind,
+					portForward: &serviceconfig.PortForward{
+						Repository: "acme/app",
+						Workflows:  []string{"ci.yml"},
+					},
+				},
+				Resolver: resolver, Audit: audit, OIDC: oidc,
+				NewID: func() (string, error) { return "ticket-id", nil },
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			grant, err := application.CreateOIDC(context.Background(), CreateInput{
+				Project: "shop", Resource: "target", Port: port, LifetimeSeconds: 60,
+			}, "oidc-token", "https://admin.example.com/public/api/v1/projects/shop/resources/target/port-forwards")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if grant.ResourceKind != kind || audit.record.ActorTokenID != "oidc:123" || oidc.calls != 1 {
+				t.Fatalf("grant/audit = %+v / %+v / calls=%d", grant, audit.record, oidc.calls)
+			}
+		})
+	}
+}
+
+func TestCreateOIDCRejectsMissingAllowlist(t *testing.T) {
+	application, err := New(Config{
+		Repository: resourceRepositoryStub{kind: "postgres"},
+		Resolver:   &resolverStub{address: "10.42.0.8:5432"},
+		Audit:      &auditStub{},
+		OIDC:       &oidcVerifierStub{identity: OIDCIdentity{Repository: "acme/app", RunID: "123"}},
+		NewID:      func() (string, error) { return "ticket-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.CreateOIDC(context.Background(), CreateInput{
+		Project: "shop", Resource: "database", Port: 5432,
+	}, "oidc-token", "https://admin.example.com/audience"); !errors.Is(err, ErrOIDCUnauthorized) {
+		t.Fatalf("missing allowlist error = %v", err)
+	}
+}
+
+func TestCreateAllowsObjectStore(t *testing.T) {
+	resolver := &resolverStub{address: "10.42.0.1:9000"}
+	audit := &auditStub{}
+	application, err := New(Config{
+		Repository: resourceRepositoryStub{kind: "object_store"},
+		Resolver:   resolver, Audit: audit,
+		NewID: func() (string, error) { return "ticket-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := application.Create(context.Background(), automation.Identity{TokenID: "admin", Role: "admin"}, CreateInput{
+		Project: "shop", Resource: "assets", Port: 9000, LifetimeSeconds: 60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.ResourceKind != "object_store" {
+		t.Fatalf("resource kind = %s", grant.ResourceKind)
 	}
 }

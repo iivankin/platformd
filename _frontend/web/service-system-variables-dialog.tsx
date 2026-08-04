@@ -1,152 +1,71 @@
 import { Dialog } from "@base-ui/react/dialog";
-import { Braces, Check, Minus, X } from "lucide-react";
+import { Braces, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
 interface SystemVariableDefinition {
-  build: "arg" | "env" | false;
   condition: string;
   name: string;
-  runtime: boolean;
   value: string;
 }
 
 const systemVariables: SystemVariableDefinition[] = [
   {
-    build: "env",
-    condition: "GitHub builds; can be overridden",
-    name: "CI",
-    runtime: false,
-    value: "1",
-  },
-  {
-    build: "env",
-    condition: "Can be overridden in the matching variables section",
+    condition: "Can be overridden by a service variable",
     name: "NODE_ENV",
-    runtime: true,
     value: "production",
   },
   {
-    build: "env",
     condition: "Always",
     name: "PLATFORMD_ENVIRONMENT",
-    runtime: true,
     value: "production or preview",
   },
   {
-    build: "env",
     condition: "Always",
     name: "PLATFORMD_PROJECT_ID",
-    runtime: true,
     value: "Current project ID",
   },
   {
-    build: "env",
     condition: "Always",
     name: "PLATFORMD_PROJECT_NAME",
-    runtime: true,
     value: "Current project name",
   },
   {
-    build: "env",
     condition: "Always",
     name: "PLATFORMD_SERVICE_ID",
-    runtime: true,
     value: "Current service ID",
   },
   {
-    build: "env",
     condition: "Always",
     name: "PLATFORMD_SERVICE_NAME",
-    runtime: true,
     value: "Current service name",
   },
   {
-    build: "env",
     condition: "Always",
     name: "PLATFORMD_PRIVATE_DOMAIN",
-    runtime: true,
     value: "Internal service hostname",
   },
   {
-    build: "env",
-    condition: "PR previews only",
+    condition: "Image previews only",
     name: "PLATFORMD_PREVIEW",
-    runtime: true,
     value: "true",
   },
   {
-    build: "arg",
-    condition: "Declare ARG; every GitHub deployment",
+    condition: "Always",
     name: "PLATFORMD_DEPLOYMENT_ID",
-    runtime: true,
     value: "Current deployment ID",
   },
   {
-    build: "arg",
-    condition: "Declare ARG; every GitHub deployment",
+    condition: "Always",
     name: "PLATFORMD_PUBLIC_URLS",
-    runtime: true,
-    value: "Public URLs; preview URL for PR previews",
+    value: "Production URLs or the preview URL",
   },
   {
-    build: "arg",
-    condition: "Declare ARG; GitHub services",
-    name: "PLATFORMD_GIT_REPOSITORY",
-    runtime: true,
-    value: "owner/repository",
-  },
-  {
-    build: "arg",
-    condition: "Declare ARG; GitHub deployments",
-    name: "PLATFORMD_GIT_COMMIT_SHA",
-    runtime: true,
-    value: "Resolved commit SHA",
-  },
-  {
-    build: "arg",
-    condition: "Declare ARG; GitHub deployments",
-    name: "PLATFORMD_GIT_COMMIT_MESSAGE",
-    runtime: true,
-    value: "Resolved commit message",
-  },
-  {
-    build: "arg",
-    condition: "Declare ARG; PR previews only",
+    condition: "Image previews only",
     name: "PLATFORMD_PREVIEW_URL",
-    runtime: true,
     value: "Public preview URL",
   },
-  {
-    build: "arg",
-    condition: "Declare ARG; PR previews only",
-    name: "PLATFORMD_GIT_PULL_REQUEST_NUMBER",
-    runtime: true,
-    value: "Pull request number",
-  },
 ];
-
-const ScopeCell = ({ enabled }: { enabled: boolean }) => (
-  <span className="inline-flex w-full justify-center">
-    {enabled ? (
-      <Check className="size-3.5 text-emerald-500" />
-    ) : (
-      <Minus className="size-3.5 text-muted-foreground/50" />
-    )}
-  </span>
-);
-
-const BuildCell = ({ input }: { input: SystemVariableDefinition["build"] }) => (
-  <span className="inline-flex w-full justify-center">
-    {input ? (
-      <code className="border border-border bg-muted/30 px-1.5 py-0.5 text-[8px] tracking-[0.08em] uppercase">
-        {input}
-      </code>
-    ) : (
-      <Minus className="size-3.5 text-muted-foreground/50" />
-    )}
-  </span>
-);
 
 export const ServiceSystemVariablesDialog = () => (
   <Dialog.Root>
@@ -168,8 +87,7 @@ export const ServiceSystemVariablesDialog = () => (
               </Dialog.Title>
               <Dialog.Description className="mt-1.5 max-w-3xl text-[10px] leading-4 text-muted-foreground">
                 platformd injects these values without adding rows to your
-                configuration. Build ENV values are automatic; build ARG values
-                become available where the Dockerfile declares them.
+                service configuration.
               </Dialog.Description>
             </div>
             <Dialog.Close
@@ -181,24 +99,20 @@ export const ServiceSystemVariablesDialog = () => (
           </header>
 
           <div className="overflow-auto">
-            <div className="min-w-[52rem]">
-              <div className="grid grid-cols-[minmax(17rem,1.2fr)_4.5rem_4.5rem_minmax(13rem,1fr)_minmax(13rem,1fr)] border-b border-border bg-muted/20 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+            <div className="min-w-[42rem]">
+              <div className="grid grid-cols-[minmax(17rem,1.2fr)_minmax(13rem,1fr)_minmax(13rem,1fr)] border-b border-border bg-muted/20 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
                 <span>Variable</span>
-                <span className="text-center">Build input</span>
-                <span className="text-center">Runtime</span>
                 <span>Value</span>
                 <span>When</span>
               </div>
               {systemVariables.map((variable) => (
                 <div
-                  className="grid min-h-11 grid-cols-[minmax(17rem,1.2fr)_4.5rem_4.5rem_minmax(13rem,1fr)_minmax(13rem,1fr)] items-center border-b border-border px-5 text-[10px] last:border-b-0 hover:bg-muted/15"
+                  className="grid min-h-11 grid-cols-[minmax(17rem,1.2fr)_minmax(13rem,1fr)_minmax(13rem,1fr)] items-center border-b border-border px-5 text-[10px] last:border-b-0 hover:bg-muted/15"
                   key={variable.name}
                 >
                   <code className="text-[10px] font-medium text-foreground">
                     {variable.name}
                   </code>
-                  <BuildCell input={variable.build} />
-                  <ScopeCell enabled={variable.runtime} />
                   <span className="text-muted-foreground">
                     {variable.value}
                   </span>
@@ -212,12 +126,8 @@ export const ServiceSystemVariablesDialog = () => (
 
           <footer className="border-t border-border bg-muted/15 px-5 py-3 text-[9px] leading-4 text-muted-foreground">
             <code>PLATFORMD_*</code> names are reserved and always win over
-            configured values. <code>CI</code> and <code>NODE_ENV</code> are
-            defaults: defining them explicitly in Build time variables or
-            Service variables overrides the matching default. An ARG value
-            affects the layer cache only after its matching{" "}
-            <code>ARG NAME</code>
-            instruction.
+            configured values. <code>NODE_ENV</code> is a default: defining it
+            as a service variable overrides that default.
           </footer>
         </Dialog.Popup>
       </Dialog.Viewport>

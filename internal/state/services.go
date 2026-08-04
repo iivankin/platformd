@@ -64,11 +64,6 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	if snapshot.BeforeDeploy != nil && len(snapshot.BeforeDeploy.CloudflareHostnames) > 0 {
 		return ServiceDesired{}, fmt.Errorf("%w: before-deploy Cloudflare hostnames require an existing service domain", ErrDependencyMissing)
 	}
-	// Initial setup may stage a disabled preview service before attaching its
-	// domain. UpdateService validates the exact domain count before enabling it.
-	if input.Enabled && snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil {
-		return ServiceDesired{}, ErrPreviewDomainCount
-	}
 	if snapshot.Source.Type == servicesource.PrivateImage {
 		if input.ImageCredential == nil {
 			return ServiceDesired{}, ErrImageCredentialNotFound
@@ -96,13 +91,13 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 	if err != nil {
 		return ServiceDesired{}, fmt.Errorf("encode service environment: %w", err)
 	}
-	buildEnvironmentJSON, err := json.Marshal(snapshot.BuildEnvironment)
-	if err != nil {
-		return ServiceDesired{}, fmt.Errorf("encode service build environment: %w", err)
-	}
 	beforeDeployJSON, err := optionalJSON(snapshot.BeforeDeploy)
 	if err != nil {
 		return ServiceDesired{}, fmt.Errorf("encode service before-deploy settings: %w", err)
+	}
+	portForwardJSON, err := optionalJSON(snapshot.PortForward)
+	if err != nil {
+		return ServiceDesired{}, fmt.Errorf("encode service port-forward settings: %w", err)
 	}
 	sourceJSON, err := json.Marshal(snapshot.Source)
 	if err != nil {
@@ -165,11 +160,11 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		if _, err := transaction.ExecContext(ctx, `
 INSERT INTO services(
 	  id, project_id, name, source_json,
-	  command_json, args_json, environment_json, build_environment_json, before_deploy_json, health_port, health_path,
+	  command_json, args_json, environment_json, before_deploy_json, port_forward_json, health_port, health_path,
 	  health_timeout_seconds, cpu_millis, memory_bytes, enabled, created_at, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			input.ID, input.ProjectID, input.Name, string(sourceJSON),
-			commandJSON, argsJSON, string(environmentJSON), string(buildEnvironmentJSON), beforeDeployJSON, healthPort, healthPath,
+			commandJSON, argsJSON, string(environmentJSON), beforeDeployJSON, portForwardJSON, healthPort, healthPath,
 			healthTimeout, cpuMillis, memoryBytes, enabled,
 			input.CreatedAtMillis, input.CreatedAtMillis,
 		); err != nil {
@@ -222,8 +217,8 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var commandJSON sql.NullString
 	var argsJSON sql.NullString
 	var environmentJSON string
-	var buildEnvironmentJSON string
 	var beforeDeployJSON sql.NullString
+	var portForwardJSON sql.NullString
 	var healthPort sql.NullInt64
 	var healthPath sql.NullString
 	var healthTimeout int
@@ -233,7 +228,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
 	   d.image_digest, d.service_config_hash, d.source_revision,
 	       s.source_json, s.command_json, s.args_json,
-	       s.environment_json, s.build_environment_json, s.before_deploy_json, s.health_port, s.health_path, s.health_timeout_seconds,
+	       s.environment_json, s.before_deploy_json, s.port_forward_json, s.health_port, s.health_path, s.health_timeout_seconds,
        s.cpu_millis, s.memory_bytes, s.created_at, s.updated_at
 FROM services s
 JOIN projects p ON p.id = s.project_id
@@ -242,7 +237,7 @@ WHERE s.id = ?`, serviceID).Scan(
 		&service.ID, &service.ProjectID, &service.ProjectName, &service.Name, &enabled,
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash, &activeSourceRevision,
 		&sourceJSON, &commandJSON, &argsJSON,
-		&environmentJSON, &buildEnvironmentJSON, &beforeDeployJSON, &healthPort, &healthPath, &healthTimeout,
+		&environmentJSON, &beforeDeployJSON, &portForwardJSON, &healthPort, &healthPath, &healthTimeout,
 		&cpuMillis, &memoryBytes, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -279,12 +274,14 @@ WHERE s.id = ?`, serviceID).Scan(
 	if err := json.Unmarshal([]byte(environmentJSON), &service.Snapshot.Environment); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service environment: %w", err)
 	}
-	if err := json.Unmarshal([]byte(buildEnvironmentJSON), &service.Snapshot.BuildEnvironment); err != nil {
-		return ServiceDesired{}, fmt.Errorf("decode service build environment: %w", err)
-	}
 	if beforeDeployJSON.Valid {
 		if err := json.Unmarshal([]byte(beforeDeployJSON.String), &service.Snapshot.BeforeDeploy); err != nil {
 			return ServiceDesired{}, fmt.Errorf("decode service before-deploy settings: %w", err)
+		}
+	}
+	if portForwardJSON.Valid {
+		if err := json.Unmarshal([]byte(portForwardJSON.String), &service.Snapshot.PortForward); err != nil {
+			return ServiceDesired{}, fmt.Errorf("decode service port-forward settings: %w", err)
 		}
 	}
 	secretRows, err := store.database.QueryContext(ctx, `

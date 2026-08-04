@@ -41,6 +41,21 @@ func (store *postgresStoreStub) ManagedPostgresByProject(context.Context, string
 	return []state.ManagedPostgres{store.resource}, nil
 }
 
+func (store *postgresStoreStub) UpdateManagedPostgresPortForward(
+	_ context.Context,
+	input state.UpdateManagedPostgresPortForwardInput,
+) (state.ManagedPostgres, error) {
+	if input.ID != store.resource.ID || input.ProjectID != store.resource.ProjectID {
+		return state.ManagedPostgres{}, state.ErrManagedPostgresNotFound
+	}
+	if input.ExpectedUpdatedMillis != store.resource.UpdatedAtMillis {
+		return state.ManagedPostgres{}, state.ErrManagedPostgresChanged
+	}
+	store.resource.PortForward = input.PortForward
+	store.resource.UpdatedAtMillis = input.UpdatedAtMillis
+	return store.resource, nil
+}
+
 func (store *postgresStoreStub) RecordManagedPostgresQuery(_ context.Context, audit state.RecordManagedPostgresQuery) error {
 	store.queryAudit = audit
 	return nil

@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/jackc/pgx/v5/pgconn"
 )
@@ -16,29 +17,31 @@ import (
 const maximumManagedPostgresRequestBytes = 2*managedpostgres.MaximumSQLBytes + 4096
 
 type managedPostgresResponse struct {
-	ID                   string `json:"id"`
-	ProjectID            string `json:"projectId"`
-	Name                 string `json:"name"`
-	Hostname             string `json:"hostname"`
-	Port                 int    `json:"port"`
-	ImageTag             string `json:"imageTag"`
-	ImageDigest          string `json:"imageDigest"`
-	DatabaseName         string `json:"databaseName"`
-	OwnerUsername        string `json:"ownerUsername"`
-	OwnerPassword        string `json:"ownerPassword,omitempty"`
-	CPUMillicores        int64  `json:"cpuMillicores,omitempty"`
-	MemoryBytes          int64  `json:"memoryBytes,omitempty"`
-	BackupEnabled        bool   `json:"backupEnabled"`
-	BackupCron           string `json:"backupCron,omitempty"`
-	BackupRetentionCount int    `json:"backupRetentionCount"`
-	CreatedAt            int64  `json:"createdAt"`
-	UpdatedAt            int64  `json:"updatedAt"`
+	ID                   string                     `json:"id"`
+	ProjectID            string                     `json:"projectId"`
+	Name                 string                     `json:"name"`
+	Hostname             string                     `json:"hostname"`
+	Port                 int                        `json:"port"`
+	ImageTag             string                     `json:"imageTag"`
+	ImageDigest          string                     `json:"imageDigest"`
+	DatabaseName         string                     `json:"databaseName"`
+	OwnerUsername        string                     `json:"ownerUsername"`
+	OwnerPassword        string                     `json:"ownerPassword,omitempty"`
+	CPUMillicores        int64                      `json:"cpuMillicores,omitempty"`
+	MemoryBytes          int64                      `json:"memoryBytes,omitempty"`
+	PortForward          *serviceconfig.PortForward `json:"portForward,omitempty"`
+	BackupEnabled        bool                       `json:"backupEnabled"`
+	BackupCron           string                     `json:"backupCron,omitempty"`
+	BackupRetentionCount int                        `json:"backupRetentionCount"`
+	CreatedAt            int64                      `json:"createdAt"`
+	UpdatedAt            int64                      `json:"updatedAt"`
 }
 
 func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostgres.Application) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(application))
+	mux.HandleFunc("PUT /api/v1/projects/{projectID}/postgres/{postgresID}/port-forward", updateManagedPostgresPortForward(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}/extensions", listManagedPostgresExtensions(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, true))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, false))
@@ -70,6 +73,43 @@ func getManagedPostgres(application *managedpostgres.Application) http.HandlerFu
 			return
 		}
 		resource, err := application.Resource(request.Context(), request.PathValue("projectID"), request.PathValue("postgresID"))
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		password, err := application.OwnerPassword(request.Context(), request.PathValue("projectID"), request.PathValue("postgresID"))
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicManagedPostgres(resource, password))
+	}
+}
+
+func updateManagedPostgresPortForward(application *managedpostgres.Application) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64                     `json:"expectedUpdatedAt"`
+		PortForward       *serviceconfig.PortForward `json:"portForward"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		var body requestBody
+		if !decodeManagedPostgresJSON(response, request, &body) {
+			return
+		}
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_port_forward", "expectedUpdatedAt is required")
+			return
+		}
+		resource, err := application.UpdatePortForward(
+			request.Context(),
+			request.PathValue("projectID"),
+			request.PathValue("postgresID"),
+			body.PortForward,
+			body.ExpectedUpdatedAt,
+		)
 		if err != nil {
 			writeManagedPostgresError(response, err)
 			return
@@ -211,6 +251,7 @@ func publicManagedPostgres(resource state.ManagedPostgres, password string) mana
 		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest,
 		DatabaseName: resource.DatabaseName, OwnerUsername: resource.OwnerUsername, OwnerPassword: password,
 		CPUMillicores: resource.CPUMillicores, MemoryBytes: resource.MemoryMaxBytes,
+		PortForward: resource.PortForward,
 		BackupEnabled: resource.BackupEnabled, BackupCron: resource.BackupCron,
 		BackupRetentionCount: resource.BackupRetentionCount,
 		CreatedAt:            resource.CreatedAtMillis, UpdatedAt: resource.UpdatedAtMillis,
@@ -224,6 +265,8 @@ func writeManagedPostgresError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
 	case errors.Is(err, state.ErrManagedPostgresNotFound):
 		writeAPIError(response, http.StatusNotFound, "postgres_not_found", "Managed PostgreSQL resource not found")
+	case errors.Is(err, state.ErrManagedPostgresChanged):
+		writeAPIError(response, http.StatusConflict, "postgres_changed", "Managed PostgreSQL resource changed")
 	case errors.Is(err, state.ErrResourceNameConflict):
 		writeAPIError(response, http.StatusConflict, "resource_name_conflict", "A project resource with this name already exists")
 	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):

@@ -5,24 +5,21 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
-	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type fakeServiceRuntime struct {
-	deployErr       error
-	deployForce     []bool
-	deployRevisions []string
-	reconciled      []string
-	trackRetry      []bool
-	failures        []error
-	deleted         []string
-	logsDeleted     []string
+	deployErr   error
+	deployForce []bool
+	reconciled  []string
+	trackRetry  []bool
+	failures    []error
+	deleted     []string
+	logsDeleted []string
 }
 
 func (runtime *fakeServiceRuntime) DeployService(_ context.Context, _ string, force bool) error {
@@ -30,9 +27,8 @@ func (runtime *fakeServiceRuntime) DeployService(_ context.Context, _ string, fo
 	return runtime.deployErr
 }
 
-func (runtime *fakeServiceRuntime) DeployServiceRevision(_ context.Context, _, revision string, force bool) error {
-	runtime.deployRevisions = append(runtime.deployRevisions, revision)
-	runtime.deployForce = append(runtime.deployForce, force)
+func (runtime *fakeServiceRuntime) DeployServiceImage(_ context.Context, _ string, _ state.DeploymentRecord) error {
+	runtime.deployForce = append(runtime.deployForce, true)
 	return runtime.deployErr
 }
 
@@ -147,65 +143,5 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	}
 	if _, exists := traffic.Snapshot()[created.ID]; exists {
 		t.Fatal("deleted service traffic counters were retained")
-	}
-}
-
-func TestLiveServiceRepositoryDeploysGitHubVersionWithTransientRevision(t *testing.T) {
-	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.CreateProject(context.Background(), state.CreateProject{
-		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	snapshot := serviceconfig.Snapshot{Source: servicesource.Source{
-		Type: servicesource.GitHubImage,
-		GitHub: &servicesource.GitHub{
-			RepositoryID: 42, Repository: "owner/repository", Branch: "main",
-			DockerfilePath: "Dockerfile", ContextPath: ".", WaitForCI: true,
-		},
-	}}
-	service, err := store.CreateService(context.Background(), state.CreateService{
-		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot: snapshot, AuditEventID: "service-audit", ActorKind: "access",
-		ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, snapshotJSON, hash, err := serviceconfig.Canonical(service.Snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := strings.Repeat("a", 40)
-	if err := store.BeginDeployment(context.Background(), state.BeginDeployment{
-		ID: "skipped", ServiceID: service.ID, SourceRevision: revision,
-		ConfigHash: hash, SnapshotJSON: snapshotJSON, Status: "skipped",
-		CreatedAtMillis: 3, FinishedAtMillis: 4,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	runtime := &fakeServiceRuntime{}
-	updated, err := (liveServiceRepository{store: store, runtime: runtime}).DeployServiceVersion(
-		context.Background(), state.DeployServiceVersionInput{
-			ID: service.ID, ProjectID: service.ProjectID, DeploymentID: "skipped",
-			ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "deploy-audit",
-			ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 5,
-		},
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(runtime.deployRevisions) != 1 || runtime.deployRevisions[0] != revision ||
-		len(runtime.deployForce) != 1 || !runtime.deployForce[0] {
-		t.Fatalf("GitHub deployment calls = revisions %v force %v", runtime.deployRevisions, runtime.deployForce)
-	}
-	if updated.Snapshot.Source.GitHub == nil || updated.Snapshot.Source.GitHub.Revision != "" ||
-		!updated.Snapshot.Source.GitHub.WaitForCI {
-		t.Fatalf("updated GitHub source = %+v", updated.Snapshot.Source.GitHub)
 	}
 }

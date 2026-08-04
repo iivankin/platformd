@@ -104,6 +104,14 @@ jobs:
           bun --cwd=_frontend test
           bun --cwd=_frontend run build:web
 
+      - name: Verify image upload action
+        run: node --check actions/upload-image/dist/index.js
+
+      - name: Verify port forward action
+        run: |
+          node --check actions/port-forward/dist/index.js
+          node --check actions/port-forward/dist/cleanup/index.js
+
       - name: Verify Go code
         run: |
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
@@ -114,7 +122,6 @@ jobs:
 
       - name: Fuzz public protocol boundaries
         run: |
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/registry -run '^$' -fuzz '^FuzzRegistryInputs$' -fuzztime 10s
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/internaldns -run '^$' -fuzz '^FuzzDNSInputs$' -fuzztime 10s
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/ingress -run '^$' -fuzz '^FuzzProxyInputs$' -fuzztime 10s
 
@@ -199,7 +206,7 @@ jobs:
           trap 'sudo rm -rf /var/lib/platformd/releases/current' EXIT
 
           integration_tags="containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration"
-          for package in managedpostgres managedredis daemon registry rootexec hostterminal portproxy; do
+          for package in managedpostgres managedredis daemon rootexec hostterminal portproxy; do
             go test -c \
               -tags "$integration_tags" \
               -o "dist/$package-integration.test" \
@@ -263,15 +270,6 @@ jobs:
             dist/portproxy-integration.test \
               -test.run='^TestNamespaceSocketsStayInsideTargetNamespace$' \
               -test.timeout=1m \
-              -test.v
-
-          sudo /usr/bin/env \
-            HOME=/root \
-            PATH=/nonexistent \
-            PLATFORMD_REGISTRY_LOCAL_PULL_INTEGRATION=1 \
-            PLATFORMD_RUNTIME_ASSET_ROOT="$PWD/dist/runtime" \
-            dist/registry-integration.test \
-              -test.timeout=3m \
               -test.v
 
       - name: Build self-contained release

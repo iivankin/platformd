@@ -15,7 +15,6 @@ import (
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/objectstore"
-	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/remotes3"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -41,10 +40,10 @@ func TestRecoveryPlanRestoresEveryResourceInCanonicalOrderBeforeCompletion(t *te
 	plan := recoveryPlan{
 		resources: func(context.Context) (state.ControlResourceIDs, error) {
 			return state.ControlResourceIDs{
-				RegistryRepositories: []string{"registry-a", "registry-b"},
-				ObjectStores:         []string{"objects"},
-				Postgres:             []string{"postgres"},
-				Redis:                []string{"redis"},
+				Images:       []string{"image-a", "image-b"},
+				ObjectStores: []string{"objects"},
+				Postgres:     []string{"postgres"},
+				Redis:        []string{"redis"},
 			}, nil
 		},
 		restore: func(_ context.Context, kind, resourceID string) error {
@@ -60,7 +59,7 @@ func TestRecoveryPlanRestoresEveryResourceInCanonicalOrderBeforeCompletion(t *te
 		t.Fatal(err)
 	}
 	want := []string{
-		"registry:registry-a", "registry:registry-b", "object_store:objects",
+		"image:image-a", "image:image-b", "object_store:objects",
 		"postgres:postgres", "redis:redis", "complete",
 	}
 	if !reflect.DeepEqual(events, want) {
@@ -100,7 +99,7 @@ func TestRecoveryRejectsAttachmentsForNonObjectResources(t *testing.T) {
 
 func TestDestructiveResourceRestoreRequiresExactConfirmation(t *testing.T) {
 	valid := backup.ResourceRestoreOptions{Mode: "replace", DestructiveConfirmed: true}
-	if err := requireConfirmedResourceReplacement(valid, "Registry"); err != nil {
+	if err := requireConfirmedResourceReplacement(valid, "Image"); err != nil {
 		t.Fatal(err)
 	}
 	for _, invalid := range []backup.ResourceRestoreOptions{
@@ -109,7 +108,7 @@ func TestDestructiveResourceRestoreRequiresExactConfirmation(t *testing.T) {
 		{Mode: "replace", DestructiveConfirmed: true, NewResourceName: "copy"},
 		{Mode: "new", DestructiveConfirmed: true},
 	} {
-		if err := requireConfirmedResourceReplacement(invalid, "Registry"); err == nil {
+		if err := requireConfirmedResourceReplacement(invalid, "Image"); err == nil {
 			t.Fatalf("invalid restore options were accepted: %+v", invalid)
 		}
 	}
@@ -173,8 +172,8 @@ func TestRecoveryAttemptCompletesEmptyInstallationAndReleasesGates(t *testing.T)
 	attempt, err := newRecoveryAttempt(recoveryConfig{
 		Store: store, Target: target, TargetGate: targetGate, Admission: mutationGate,
 		Master: master, Installation: installation, Runtime: &runtimeStack{},
-		Registry: &registry.Application{}, ObjectStore: &objectstore.Application{},
-		Progress: newRecoveryProgress(),
+		ObjectStore: &objectstore.Application{},
+		Progress:    newRecoveryProgress(),
 		Remote: func(remotes3.Config) (backup.ControlRemote, error) {
 			remoteCreated = true
 			return emptyRecoveryRemote{}, nil
@@ -211,14 +210,14 @@ func TestRecoveryProgressAcceptsSuccessfulManualReplacementWithoutDurableState(t
 		Options: backup.ResourceRestoreOptions{Mode: "replace", DestructiveConfirmed: true},
 		Source:  backup.ResourceRestoreSource{Completion: backup.ResourceCompletion{CompletedAtMillis: 42}},
 	})
-	progress.markLatest("registry", "registry-1", backup.ResourceCompletion{}, false)
-	if !progress.satisfied("redis", "redis-1") || !progress.satisfied("registry", "registry-1") {
+	progress.markLatest("image", "image-1", backup.ResourceCompletion{}, false)
+	if !progress.satisfied("redis", "redis-1") || !progress.satisfied("image", "image-1") {
 		t.Fatal("successful or empty resources were not marked complete")
 	}
 	results := progress.results()
-	if len(results) != 2 || results[0].ResourceKind != "redis" ||
-		results[0].GenerationID != "older-generation" || results[0].SourceCompletedAt != 42 ||
-		results[1].ResourceKind != "registry" || !results[1].Empty {
+	if len(results) != 2 || results[0].ResourceKind != "image" || !results[0].Empty ||
+		results[1].ResourceKind != "redis" || results[1].GenerationID != "older-generation" ||
+		results[1].SourceCompletedAt != 42 {
 		t.Fatalf("recovery progress = %+v", results)
 	}
 	progress.markManual(backup.ResourceRestoreRequest{

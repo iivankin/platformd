@@ -1,7 +1,6 @@
 import { variableReferences } from "@/variable-expression";
 
 export interface ProjectApplyOperation {
-  buildEnvironment?: Readonly<Record<string, string>>;
   environment?: Readonly<Record<string, string>>;
   id: string;
   label: string;
@@ -51,10 +50,7 @@ const projectApplyWaves = <Operation extends ProjectApplyOperation>(
   const dependents = new Map<string, Set<string>>();
   for (const operation of operations) {
     const operationDependencies = new Set<string>();
-    for (const environment of [
-      operation.environment,
-      operation.buildEnvironment,
-    ]) {
+    for (const environment of [operation.environment]) {
       for (const value of Object.values(environment ?? {})) {
         for (const reference of variableReferences(value)) {
           if (!knownResourceNames.has(reference.resource)) {

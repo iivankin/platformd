@@ -69,14 +69,14 @@ func TestRestoreLatestResourceRejectsPartialConsumption(t *testing.T) {
 	master := cryptobox.MasterKey{5, 6, 7, 8}
 	remote := newMemoryControlRemote()
 	built := resourcePublicationBuild(
-		t, master, "registry", "repository", "generation", []byte("complete"), time.Unix(20, 0),
+		t, master, "image", "service", "generation", []byte("complete"), time.Unix(20, 0),
 	)
 	if err := PublishResource(ctx, remote, master, built); err != nil {
 		t.Fatal(err)
 	}
 	_ = os.RemoveAll(built.WorkDirectory)
 	_, _, err := RestoreLatestResource(ctx, LatestResourceRestore{
-		Remote: remote, Master: master, ResourceKind: "registry", ResourceID: "repository",
+		Remote: remote, Master: master, ResourceKind: "image", ResourceID: "service",
 		Restorer: ResourceRestorerFunc(func(_ context.Context, request ResourceRestoreRequest) error {
 			buffer := make([]byte, 1)
 			_, readErr := request.Source.Reader.Read(buffer)

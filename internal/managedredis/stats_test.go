@@ -16,7 +16,8 @@ func TestParseStatsIncludesCommandsAndKeyspaces(t *testing.T) {
 		"total_connections_received:80", "rejected_connections:2", "keyspace_hits:900",
 		"keyspace_misses:100", "expired_keys:20", "evicted_keys:0",
 		"cmdstat_get:calls=3000,usec=9000,usec_per_call=3.00",
-		"# Keyspace", "db0:keys=40,expires=5,avg_ttl=60000", "",
+		"# Keyspace", "db0:keys=40,expires=5,avg_ttl=60000",
+		"db0_distrib_lists_items:1=1,2=3", "db0_distrib_sets_items:1=2", "",
 	}
 	stats, err := parseStats([]byte(strings.Join(lines, "\r\n")))
 	if err != nil {

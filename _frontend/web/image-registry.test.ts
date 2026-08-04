@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import {
-  imageRegistryHost,
-  isEmbeddedRegistryReference,
-} from "@/image-registry";
+import { imageRegistryHost } from "@/image-registry";
 
 describe("image registry access", () => {
   test("derives the registry host using Docker reference rules", () => {
@@ -13,14 +10,5 @@ describe("image registry access", () => {
     );
     expect(imageRegistryHost("alpine:3.22")).toBe("docker.io");
     expect(imageRegistryHost("https://ghcr.io/acme/api")).toBeUndefined();
-  });
-
-  test("recognizes the built-in registry", () => {
-    expect(
-      isEmbeddedRegistryReference(
-        "registry.example.com/acme/api",
-        "registry.example.com"
-      )
-    ).toBe(true);
   });
 });

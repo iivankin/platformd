@@ -55,7 +55,7 @@ const deploymentStatusClass = (status: Deployment["status"]) => {
 
 const confirmationMessage = (confirmation: Confirmation, active: boolean) => {
   if (confirmation.action === "deploy") {
-    return "A new deployment will be created from this exact image digest or GitHub revision and configuration snapshot. Volume contents stay current.";
+    return "A new deployment will be created from this exact image digest and configuration snapshot. Volume contents stay current.";
   }
   if (active) {
     return "This stops the active deployment. Service volumes and deployment logs are preserved.";

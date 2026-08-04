@@ -19,13 +19,16 @@ interface ProjectChangesStorage {
   setItem: (key: string, value: string) => void;
 }
 
-const storageKey = "platformd.project-changes:v1";
+const storageKey = "platformd.project-changes:v2";
 const environmentSchema = z.record(z.string(), z.string());
 const sourceSchema = z.union([
   z.object({
-    autoUpdate: z.boolean(),
-    image: z.object({ reference: z.string() }),
-    type: z.literal("platformd_registry"),
+    dockerUpload: z.object({
+      branch: z.string(),
+      repository: z.string(),
+      workflows: z.array(z.string()),
+    }),
+    type: z.literal("docker_image_upload"),
   }),
   z.object({
     autoUpdate: z.boolean(),
@@ -33,44 +36,30 @@ const sourceSchema = z.union([
     minimumReleaseAgeDays: z.number().int().positive().max(36_500).optional(),
     type: z.enum(["public_image", "private_image"]),
   }),
-  z.object({
-    github: z.object({
-      branch: z.string(),
-      contextPath: z.string(),
-      dockerfilePath: z.string(),
-      pullRequestPreview: z.object({ hostnameTemplate: z.string() }).optional(),
-      repository: z.string(),
-      repositoryId: z.number(),
-      revision: z.string().optional(),
-      triggerPaths: z.array(z.string()),
-      waitForCi: z.boolean(),
-    }),
-    type: z.literal("github"),
-  }),
+  z.object({ type: z.literal("unconfigured") }),
 ]);
 const healthCheckSchema = z.object({
   path: z.string(),
   port: z.number(),
   timeoutSeconds: z.number(),
 });
-const githubWorkflowSchema = z.object({
-  inputs: z.record(z.string(), z.unknown()),
-  name: z.string(),
-  path: z.string(),
-});
 const beforeDeploySchema = z.object({
   cloudflareHostnames: z.array(z.string()),
   command: z.string().optional(),
-  githubWorkflow: githubWorkflowSchema.optional(),
 });
 const beforeDeployDraftSchema = z.object({
   cloudflareEnabled: z.boolean(),
   cloudflareHostnames: z.array(z.string()),
   command: z.string(),
   commandEnabled: z.boolean(),
-  githubInputs: z.string(),
-  githubWorkflow: githubWorkflowSchema.optional(),
-  githubWorkflowEnabled: z.boolean(),
+});
+const portForwardSchema = z.object({
+  repository: z.string(),
+  workflows: z.array(z.string()),
+});
+const portForwardDraftSchema = z.object({
+  repository: z.string(),
+  workflows: z.array(z.string()),
 });
 const registryCredentialSchema = z.object({
   password: z.string(),
@@ -94,7 +83,6 @@ const serviceSchema = z.object({
   activeImageDigest: z.string().optional(),
   args: z.array(z.string()).optional(),
   beforeDeploy: beforeDeploySchema.optional(),
-  buildEnvironment: environmentSchema,
   command: z.array(z.string()).optional(),
   cpuMillicores: z.number().optional(),
   createdAt: z.number(),
@@ -104,6 +92,7 @@ const serviceSchema = z.object({
   id: z.string(),
   memoryMaxBytes: z.number().optional(),
   name: z.string(),
+  portForward: portForwardSchema.optional(),
   projectId: z.string(),
   registryCredential: registryCredentialSchema.optional(),
   secretReferences: z.array(
@@ -141,6 +130,7 @@ const serviceSettingsDraftSchema = z.object({
   configuration: configurationDraftSchema,
   domains: z.array(domainDraftSchema),
   listeners: z.array(listenerDraftSchema),
+  portForward: portForwardDraftSchema,
   volumeMounts: z.array(volumeMountSchema),
   volumes: z.array(volumeDraftSchema),
 });
@@ -151,7 +141,6 @@ const pendingServiceSettingsSchema = z.object({
     service: serviceSchema,
     volumes: z.array(volumeSchema),
   }),
-  buildEnvironment: environmentSchema,
   draft: serviceSettingsDraftSchema,
   environment: environmentSchema,
   serviceID: z.string(),
@@ -201,12 +190,12 @@ const networkGatewayInputSchema = z.object({
 });
 const createServiceInputSchema = z.object({
   beforeDeploy: beforeDeploySchema.optional(),
-  buildEnvironment: environmentSchema,
   domains: z.array(domainDraftSchema).optional(),
   environment: environmentSchema,
   healthCheck: healthCheckSchema.optional(),
   listeners: z.array(listenerDraftSchema).optional(),
   name: z.string(),
+  portForward: portForwardSchema.optional(),
   registryCredential: z
     .object({ password: z.string(), username: z.string() })
     .optional(),

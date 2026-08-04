@@ -8,8 +8,6 @@ import (
 const (
 	RemoteInterval       = time.Minute
 	RemoteMaximumBackoff = 15 * time.Minute
-	EmbeddedRetry        = 10 * time.Second
-	EmbeddedMaximumRetry = time.Minute
 )
 
 func exponentialDelay(base, maximum time.Duration, failures int) time.Duration {

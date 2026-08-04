@@ -19,6 +19,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/state"
@@ -379,6 +380,41 @@ type sdkContractFixture struct {
 	projectID   string
 	application *Application
 	storage     *SidecarClient
+}
+
+func TestLargestObjectsSearch(t *testing.T) {
+	fixture := startSDKContractServer(t)
+	ctx := context.Background()
+	for size := 1; size <= 12; size++ {
+		body := bytes.Repeat([]byte{byte(size)}, size)
+		if _, err := fixture.application.Put(ctx, PutInput{
+			StoreID: fixture.storeID, ObjectKey: "object-" + strconv.Itoa(size),
+			Body: bytes.NewReader(body), BodySize: int64(len(body)), BodySizeKnown: true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	search, err := fixture.application.StartLargestObjects(ctx, fixture.projectID, fixture.storeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(30 * time.Second)
+	for search.Status == LargestObjectsRunning || search.Status == LargestObjectsCancelling {
+		if time.Now().After(deadline) {
+			t.Fatalf("largest object search timed out: %+v", search)
+		}
+		time.Sleep(20 * time.Millisecond)
+		search, err = fixture.application.LargestObjects(ctx, fixture.projectID, fixture.storeID)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if search.Status != LargestObjectsComplete || search.ScannedObjects != 12 || len(search.Objects) != 10 {
+		t.Fatalf("largest object search = %+v", search)
+	}
+	if search.Objects[0].Size != 12 || search.Objects[9].Size != 3 {
+		t.Fatalf("largest object ordering = %+v", search.Objects)
+	}
 }
 
 var sidecarBuild struct {

@@ -10,10 +10,14 @@ import (
 
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/opencontainers/go-digest"
 )
 
-var ErrManagedPostgresNotFound = errors.New("managed PostgreSQL resource not found")
+var (
+	ErrManagedPostgresNotFound  = errors.New("managed PostgreSQL resource not found")
+	ErrManagedPostgresChanged   = errors.New("managed PostgreSQL resource changed")
+)
 
 type ManagedPostgres struct {
 	ID                         string
@@ -29,6 +33,7 @@ type ManagedPostgres struct {
 	BootstrapPasswordEncrypted []byte
 	CPUMillicores              int64
 	MemoryMaxBytes             int64
+	PortForward                *serviceconfig.PortForward
 	BackupEnabled              bool
 	BackupCron                 string
 	BackupRetentionCount       int
@@ -159,11 +164,12 @@ func (store *Store) managedPostgres(ctx context.Context, resourceID, projectID s
 	var cpuMillis, memoryBytes sql.NullInt64
 	var backupEnabled int
 	var backupCron sql.NullString
+	var portForwardJSON sql.NullString
 	query := `
 SELECT r.id, r.project_id, p.name, r.name, r.image_tag, r.image_digest,
        r.volume_id, r.database_name, r.owner_username,
        r.owner_password_encrypted, r.bootstrap_password_encrypted,
-       r.cpu_millis, r.memory_bytes, r.backup_enabled, r.backup_cron,
+       r.cpu_millis, r.memory_bytes, r.port_forward_json, r.backup_enabled, r.backup_cron,
        r.backup_retention_count, r.created_at, r.updated_at
 FROM managed_postgres r
 JOIN projects p ON p.id = r.project_id
@@ -177,7 +183,7 @@ WHERE r.id = ?`
 		&resource.ID, &resource.ProjectID, &resource.ProjectName, &resource.Name,
 		&resource.ImageTag, &resource.ImageDigest, &resource.VolumeID,
 		&resource.DatabaseName, &resource.OwnerUsername, &resource.OwnerPasswordEncrypted,
-		&resource.BootstrapPasswordEncrypted, &cpuMillis, &memoryBytes, &backupEnabled,
+		&resource.BootstrapPasswordEncrypted, &cpuMillis, &memoryBytes, &portForwardJSON, &backupEnabled,
 		&backupCron, &resource.BackupRetentionCount, &resource.CreatedAtMillis, &resource.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -190,7 +196,56 @@ WHERE r.id = ?`
 	resource.MemoryMaxBytes = memoryBytes.Int64
 	resource.BackupEnabled = backupEnabled == 1
 	resource.BackupCron = backupCron.String
+	if portForwardJSON.Valid {
+		if err := json.Unmarshal([]byte(portForwardJSON.String), &resource.PortForward); err != nil {
+			return ManagedPostgres{}, fmt.Errorf("decode managed PostgreSQL port-forward settings: %w", err)
+		}
+	}
 	return resource, nil
+}
+
+type UpdateManagedPostgresPortForwardInput struct {
+	ID                    string
+	ProjectID             string
+	PortForward           *serviceconfig.PortForward
+	ExpectedUpdatedMillis int64
+	UpdatedAtMillis       int64
+}
+
+func (store *Store) UpdateManagedPostgresPortForward(ctx context.Context, input UpdateManagedPostgresPortForwardInput) (ManagedPostgres, error) {
+	if input.ID == "" || input.ProjectID == "" || input.ExpectedUpdatedMillis <= 0 || input.UpdatedAtMillis <= 0 {
+		return ManagedPostgres{}, errors.New("update managed PostgreSQL port-forward input is incomplete")
+	}
+	normalized, err := serviceconfig.NormalizePortForward(input.PortForward)
+	if err != nil {
+		return ManagedPostgres{}, err
+	}
+	portForwardJSON, err := optionalJSON(normalized)
+	if err != nil {
+		return ManagedPostgres{}, fmt.Errorf("encode managed PostgreSQL port-forward settings: %w", err)
+	}
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		result, execErr := transaction.ExecContext(ctx, `
+UPDATE managed_postgres SET port_forward_json = ?, updated_at = ?
+WHERE id = ? AND project_id = ? AND updated_at = ?`,
+			portForwardJSON, input.UpdatedAtMillis, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+		)
+		if execErr != nil {
+			return fmt.Errorf("update managed PostgreSQL port-forward settings: %w", execErr)
+		}
+		changed, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("count managed PostgreSQL port-forward update: %w", rowsErr)
+		}
+		if changed != 1 {
+			return ErrManagedPostgresChanged
+		}
+		return nil
+	})
+	if err != nil {
+		return ManagedPostgres{}, err
+	}
+	return store.ManagedPostgresInProject(ctx, input.ProjectID, input.ID)
 }
 
 func (store *Store) ManagedPostgresByProject(ctx context.Context, projectID string) ([]ManagedPostgres, error) {

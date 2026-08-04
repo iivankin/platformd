@@ -5,10 +5,12 @@ import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
 import { ServiceBeforeDeploy } from "@/service-before-deploy";
 import { ServiceConfiguration } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
 import { ServiceListeners } from "@/service-listeners";
+import { ServicePortForwardSettings } from "@/service-port-forward";
 import {
   createPendingServiceSettings,
   createServiceSettingsDraft,
@@ -24,7 +26,6 @@ interface ServiceSettingsProperties {
   actionError: string | null;
   busy: boolean;
   domains: ServiceDomain[];
-  embeddedRegistryHost: string;
   internalHostname: string;
   listeners: ServiceListener[];
   onDelete: () => Promise<boolean>;
@@ -41,7 +42,6 @@ export const ServiceSettings = ({
   actionError,
   busy,
   domains,
-  embeddedRegistryHost,
   internalHostname,
   listeners,
   onDelete,
@@ -66,14 +66,6 @@ export const ServiceSettings = ({
     const domainHostnames = new Set(
       next.domains.map(({ hostname }) => hostname)
     );
-    const previousRepositoryID =
-      draft.configuration.source.type === "github"
-        ? draft.configuration.source.github.repositoryId
-        : undefined;
-    const nextRepositoryID =
-      next.configuration.source.type === "github"
-        ? next.configuration.source.github.repositoryId
-        : undefined;
     const normalized = {
       ...next,
       beforeDeploy: {
@@ -81,13 +73,6 @@ export const ServiceSettings = ({
         cloudflareHostnames: next.beforeDeploy.cloudflareHostnames.filter(
           (hostname) => domainHostnames.has(hostname)
         ),
-        githubWorkflow:
-          nextRepositoryID && nextRepositoryID === previousRepositoryID
-            ? next.beforeDeploy.githubWorkflow
-            : undefined,
-        githubWorkflowEnabled: nextRepositoryID
-          ? next.beforeDeploy.githubWorkflowEnabled
-          : false,
       },
     };
     setDraft(normalized);
@@ -107,17 +92,27 @@ export const ServiceSettings = ({
     <div className="grid gap-3">
       <ServiceConfiguration
         draft={draft.configuration}
-        embeddedRegistryHost={embeddedRegistryHost}
         onDraftChange={(configuration) =>
           updateDraft({ ...draft, configuration })
         }
         httpDomainCount={draft.domains.length}
+        projectID={projectID}
+        serviceID={serviceID}
       />
       <ServiceBeforeDeploy
         domains={draft.domains}
         draft={draft.beforeDeploy}
         onChange={(beforeDeploy) => updateDraft({ ...draft, beforeDeploy })}
-        source={draft.configuration.source}
+      />
+      <ServicePortForwardSettings
+        draft={draft.portForward}
+        example={{
+          kind: "service",
+          port: 8080,
+          projectName: projectNameFromInternalHostname(internalHostname),
+          resourceName: service.name,
+        }}
+        onDraftChange={(portForward) => updateDraft({ ...draft, portForward })}
       />
       <ServiceVolumes
         mounts={draft.volumeMounts}

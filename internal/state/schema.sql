@@ -2,7 +2,6 @@ CREATE TABLE installation (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   id TEXT NOT NULL UNIQUE,
   admin_hostname TEXT NOT NULL UNIQUE,
-  registry_hostname TEXT UNIQUE,
   access_team_domain TEXT NOT NULL,
   access_audience TEXT NOT NULL,
   console_passphrase_phc TEXT NOT NULL,
@@ -17,16 +16,6 @@ CREATE TABLE origin_certificates (
   certificate_pem TEXT NOT NULL,
   private_key_encrypted BLOB NOT NULL,
   created_at INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE github_app_settings (
-  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-  app_id INTEGER NOT NULL CHECK (app_id > 0),
-  app_slug TEXT NOT NULL,
-  private_key_encrypted BLOB NOT NULL,
-  webhook_secret_encrypted BLOB NOT NULL,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
 ) STRICT;
 
 CREATE TABLE cloudflare_dns_settings (
@@ -64,64 +53,6 @@ CREATE TABLE project_webhooks (
 
 CREATE INDEX project_webhooks_project_idx ON project_webhooks(project_id, created_at, id);
 
-CREATE TABLE registry_repositories (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  public_pull INTEGER NOT NULL DEFAULT 0 CHECK (public_pull IN (0, 1)),
-  backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
-  backup_cron TEXT,
-  backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
-  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE registry_credentials (
-  id TEXT PRIMARY KEY,
-  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  permission TEXT NOT NULL CHECK (permission IN ('pull', 'pull_push')),
-  secret_hmac BLOB NOT NULL,
-  secret_encrypted BLOB,
-  created_at INTEGER NOT NULL,
-  last_used_at INTEGER,
-  UNIQUE (repository_id, name)
-) STRICT;
-
-CREATE TABLE registry_manifests (
-  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE,
-  digest TEXT NOT NULL,
-  media_type TEXT NOT NULL,
-  body BLOB NOT NULL,
-  pushed_at INTEGER NOT NULL,
-  PRIMARY KEY (repository_id, digest)
-) WITHOUT ROWID, STRICT;
-
-CREATE TABLE registry_tags (
-  repository_id TEXT NOT NULL,
-  name TEXT NOT NULL,
-  manifest_digest TEXT NOT NULL,
-  updated_at INTEGER NOT NULL,
-  PRIMARY KEY (repository_id, name),
-  FOREIGN KEY (repository_id, manifest_digest)
-    REFERENCES registry_manifests(repository_id, digest) ON DELETE CASCADE
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX registry_tags_manifest_idx ON registry_tags(repository_id, manifest_digest);
-
-CREATE TABLE registry_uploads (
-  id TEXT PRIMARY KEY,
-  repository_id TEXT NOT NULL REFERENCES registry_repositories(id) ON DELETE CASCADE,
-  credential_id TEXT NOT NULL REFERENCES registry_credentials(id) ON DELETE CASCADE,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL
-) STRICT;
-
-CREATE INDEX registry_uploads_repository_idx ON registry_uploads(repository_id, created_at);
-CREATE INDEX registry_uploads_credential_idx ON registry_uploads(credential_id, created_at);
-CREATE INDEX registry_uploads_expiry_idx ON registry_uploads(expires_at, id);
-
 CREATE TABLE secrets (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -139,8 +70,8 @@ CREATE TABLE services (
   command_json TEXT CHECK (command_json IS NULL OR json_valid(command_json)),
   args_json TEXT CHECK (args_json IS NULL OR json_valid(args_json)),
   environment_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(environment_json)),
-  build_environment_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(build_environment_json)),
   before_deploy_json TEXT CHECK (before_deploy_json IS NULL OR json_valid(before_deploy_json)),
+  port_forward_json TEXT CHECK (port_forward_json IS NULL OR json_valid(port_forward_json)),
   health_port INTEGER CHECK (health_port BETWEEN 1 AND 65535),
   health_path TEXT,
   health_timeout_seconds INTEGER NOT NULL DEFAULT 60 CHECK (health_timeout_seconds BETWEEN 1 AND 3600),
@@ -201,6 +132,7 @@ CREATE TABLE deployments (
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
   image_digest TEXT NOT NULL,
   image_reference TEXT NOT NULL,
+  image_revision_id TEXT,
   source_revision TEXT,
   source_commit_message TEXT,
   service_config_hash TEXT NOT NULL,
@@ -215,25 +147,76 @@ CREATE TABLE deployments (
 CREATE INDEX deployments_service_created_idx ON deployments(service_id, created_at DESC);
 CREATE INDEX deployments_retry_pair_idx ON deployments(service_id, service_config_hash, image_digest, created_at DESC);
 
+CREATE TABLE service_image_revisions (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('production', 'preview')),
+  archive_path TEXT NOT NULL UNIQUE,
+  archive_sha256 TEXT NOT NULL,
+  image_digest TEXT,
+  deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  preview_id TEXT,
+  oidc_metadata_json TEXT NOT NULL CHECK (json_valid(oidc_metadata_json)),
+  status TEXT NOT NULL CHECK (status IN ('importing', 'active', 'retired', 'failed')),
+  created_at INTEGER NOT NULL,
+  activated_at INTEGER,
+  retired_at INTEGER,
+  expires_at INTEGER
+) STRICT;
+
+CREATE INDEX service_image_revisions_service_created_idx
+  ON service_image_revisions(service_id, created_at DESC);
+CREATE INDEX service_image_revisions_gc_idx
+  ON service_image_revisions(status, retired_at, expires_at);
+CREATE UNIQUE INDEX service_image_revisions_active_tag_idx
+  ON service_image_revisions(service_id, tag) WHERE status = 'active';
+
+CREATE TABLE service_image_uploads (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  tag TEXT NOT NULL,
+  expected_length INTEGER NOT NULL CHECK (expected_length > 0),
+  received_length INTEGER NOT NULL DEFAULT 0 CHECK (received_length >= 0 AND received_length <= expected_length),
+  expected_sha256 TEXT NOT NULL,
+  temporary_path TEXT NOT NULL UNIQUE,
+  oidc_metadata_json TEXT NOT NULL CHECK (json_valid(oidc_metadata_json)),
+  status TEXT NOT NULL CHECK (status IN ('uploading', 'importing', 'deploying', 'succeeded', 'failed', 'superseded')),
+  image_revision_id TEXT REFERENCES service_image_revisions(id) ON DELETE SET NULL,
+  deployment_id TEXT REFERENCES deployments(id) ON DELETE SET NULL,
+  preview_id TEXT,
+  preview_url TEXT,
+  image_digest TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX service_image_uploads_expiry_idx ON service_image_uploads(expires_at, id);
+CREATE INDEX service_image_uploads_service_tag_idx ON service_image_uploads(service_id, tag, created_at DESC);
+CREATE UNIQUE INDEX service_image_uploads_active_tag_idx
+  ON service_image_uploads(service_id, tag)
+  WHERE status IN ('uploading', 'importing', 'deploying');
+
 CREATE TABLE preview_deployments (
   id TEXT PRIMARY KEY,
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
-  pull_request_number INTEGER NOT NULL CHECK (pull_request_number > 0),
-  source_revision TEXT NOT NULL,
-  source_commit_message TEXT,
+  tag TEXT NOT NULL,
+  image_revision_id TEXT REFERENCES service_image_revisions(id) ON DELETE SET NULL,
   hostname TEXT NOT NULL,
   target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
   image_digest TEXT NOT NULL,
   image_reference TEXT NOT NULL,
   service_config_hash TEXT NOT NULL,
   snapshot_json TEXT NOT NULL CHECK (json_valid(snapshot_json)),
-  status TEXT NOT NULL CHECK (status IN ('building', 'active', 'failed', 'skipped', 'stopped', 'interrupted')),
+  status TEXT NOT NULL CHECK (status IN ('deploying', 'active', 'failed', 'stopped', 'interrupted')),
   error_code TEXT,
   error_message TEXT,
-  github_deployment_id INTEGER CHECK (github_deployment_id IS NULL OR github_deployment_id > 0),
-  github_comment_id INTEGER CHECK (github_comment_id IS NULL OR github_comment_id > 0),
   cloudflare_records_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(cloudflare_records_json)),
   created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
   finished_at INTEGER,
   expires_at INTEGER NOT NULL
 ) STRICT;
@@ -242,8 +225,8 @@ CREATE INDEX preview_deployments_service_created_idx
   ON preview_deployments(service_id, created_at DESC);
 CREATE INDEX preview_deployments_expiry_idx
   ON preview_deployments(expires_at, id);
-CREATE UNIQUE INDEX preview_deployments_active_pr_idx
-  ON preview_deployments(service_id, pull_request_number) WHERE status = 'active';
+CREATE UNIQUE INDEX preview_deployments_active_tag_idx
+  ON preview_deployments(service_id, tag) WHERE status = 'active';
 CREATE UNIQUE INDEX preview_deployments_active_hostname_idx
   ON preview_deployments(hostname) WHERE status = 'active';
 
@@ -335,6 +318,7 @@ CREATE TABLE object_stores (
   bucket_name TEXT NOT NULL,
   public_hostname TEXT UNIQUE,
   cors_origins_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(cors_origins_json)),
+  port_forward_json TEXT CHECK (port_forward_json IS NULL OR json_valid(port_forward_json)),
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
@@ -369,6 +353,7 @@ CREATE TABLE managed_postgres (
   bootstrap_password_encrypted BLOB NOT NULL,
   cpu_millis INTEGER CHECK (cpu_millis > 0),
   memory_bytes INTEGER CHECK (memory_bytes > 0),
+  port_forward_json TEXT CHECK (port_forward_json IS NULL OR json_valid(port_forward_json)),
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
@@ -398,6 +383,7 @@ CREATE TABLE managed_redis (
   password_encrypted BLOB NOT NULL,
   cpu_millis INTEGER CHECK (cpu_millis > 0),
   memory_bytes INTEGER CHECK (memory_bytes > 0),
+  port_forward_json TEXT CHECK (port_forward_json IS NULL OR json_valid(port_forward_json)),
   backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
   backup_cron TEXT,
   backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
@@ -424,7 +410,7 @@ CREATE TABLE backup_targets (
 CREATE TABLE backups (
   id TEXT PRIMARY KEY,
   target_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'registry', 'object_store', 'postgres', 'redis', 'volume')),
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'image', 'object_store', 'postgres', 'redis', 'volume')),
   resource_id TEXT NOT NULL,
   scheduled_occurrence INTEGER,
   generation_id TEXT,
@@ -494,6 +480,7 @@ CREATE TABLE resource_metric_samples (
   cpu_peak_millicores INTEGER CHECK (cpu_peak_millicores IS NULL OR cpu_peak_millicores >= 0),
   memory_bytes INTEGER NOT NULL CHECK (memory_bytes >= 0),
   memory_peak_bytes INTEGER NOT NULL CHECK (memory_peak_bytes >= memory_bytes),
+  disk_bytes INTEGER CHECK (disk_bytes IS NULL OR disk_bytes >= 0),
   network_ingress_bytes_per_second INTEGER CHECK (network_ingress_bytes_per_second IS NULL OR network_ingress_bytes_per_second >= 0),
   network_ingress_peak_bytes_per_second INTEGER CHECK (network_ingress_peak_bytes_per_second IS NULL OR network_ingress_peak_bytes_per_second >= 0),
   network_egress_bytes_per_second INTEGER CHECK (network_egress_bytes_per_second IS NULL OR network_egress_bytes_per_second >= 0),
@@ -527,6 +514,7 @@ CREATE TABLE aggregate_metric_samples (
   cpu_peak_millicores INTEGER CHECK (cpu_peak_millicores IS NULL OR cpu_peak_millicores >= 0),
   memory_bytes INTEGER NOT NULL CHECK (memory_bytes >= 0),
   memory_peak_bytes INTEGER NOT NULL CHECK (memory_peak_bytes >= memory_bytes),
+  disk_bytes INTEGER CHECK (disk_bytes IS NULL OR disk_bytes >= 0),
   network_ingress_bytes_per_second INTEGER CHECK (network_ingress_bytes_per_second IS NULL OR network_ingress_bytes_per_second >= 0),
   network_ingress_peak_bytes_per_second INTEGER CHECK (network_ingress_peak_bytes_per_second IS NULL OR network_ingress_peak_bytes_per_second >= 0),
   network_egress_bytes_per_second INTEGER CHECK (network_egress_bytes_per_second IS NULL OR network_egress_bytes_per_second >= 0),
@@ -549,4 +537,4 @@ CREATE TABLE aggregate_metric_samples (
 CREATE INDEX aggregate_metric_samples_retention_idx
   ON aggregate_metric_samples(observed_at);
 
-PRAGMA user_version = 1;
+PRAGMA user_version = 6;

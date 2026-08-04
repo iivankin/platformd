@@ -225,12 +225,11 @@ func (store *Store) DeleteBackupTarget(ctx context.Context, input DeleteBackupTa
 		if err := transaction.QueryRowContext(ctx, `
 SELECT
   (SELECT count(*) FROM installation WHERE backup_control_target_id = ?) +
-  (SELECT count(*) FROM registry_repositories WHERE backup_target_id = ?) +
   (SELECT count(*) FROM object_stores WHERE backup_target_id = ?) +
   (SELECT count(*) FROM managed_postgres WHERE backup_target_id = ?) +
   (SELECT count(*) FROM managed_redis WHERE backup_target_id = ?) +
   (SELECT count(*) FROM volumes WHERE backup_target_id = ?)`,
-			input.TargetID, input.TargetID, input.TargetID, input.TargetID, input.TargetID, input.TargetID,
+			input.TargetID, input.TargetID, input.TargetID, input.TargetID, input.TargetID,
 		).Scan(&uses); err != nil {
 			return err
 		}

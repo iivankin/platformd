@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/cgroupstats"
+	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/hostmetrics"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
@@ -29,6 +30,8 @@ type Store interface {
 	RecordMetricBatch(context.Context, state.MetricBatch) error
 	ResourceMetricSamples(context.Context, string, string, int64, int64) ([]state.ResourceMetricSample, error)
 	AggregateMetricSamples(context.Context, string, string, int64, int64) ([]state.AggregateMetricSample, error)
+	ResourceMetricSeriesByProject(context.Context, string, int64, int64) ([]state.ResourceMetricSeries, error)
+	ProjectAggregateMetricSeries(context.Context, int64, int64) ([]state.AggregateMetricSeries, error)
 }
 
 type UsageReader interface {
@@ -39,6 +42,10 @@ type UsageReader interface {
 // one nftables netlink dump plus a lock-free snapshot of proxy counters.
 type NetworkReader interface {
 	PublicNetworkCounters() (PublicNetworkSnapshot, error)
+}
+
+type DiskReader interface {
+	Resources(context.Context) (diskusage.ResourceSnapshot, error)
 }
 
 // PublicNetworkSnapshot keeps proxy counters usable when the independent
@@ -53,6 +60,12 @@ type ProxyMetrics struct {
 	HTTP HTTPMetrics
 	TCP  TCPMetrics
 	UDP  UDPMetrics
+}
+
+type TrafficRoutes struct {
+	HTTP bool
+	TCP  bool
+	UDP  bool
 }
 
 type HTTPMetrics struct {
@@ -111,6 +124,7 @@ type Current struct {
 	CPUMillicores                    *int64
 	CPUPeakMillicores                *int64
 	MemoryPeakBytes                  uint64
+	DiskBytes                        *uint64
 	NetworkIngressBytesPerSecond     *int64
 	NetworkIngressPeakBytesPerSecond *int64
 	NetworkEgressBytesPerSecond      *int64
@@ -118,6 +132,7 @@ type Current struct {
 	RunningResources                 int
 	TotalResources                   int
 	Proxy                            *ProxyMetrics
+	TrafficRoutes                    TrafficRoutes
 	Host                             *HostCurrent
 	httpDurationBuckets              [trafficmetrics.HTTPDurationBucketCount]uint64
 	interval                         metricInterval
@@ -130,6 +145,7 @@ type Point struct {
 	CPUPeakMillicores                *int64
 	MemoryBytes                      uint64
 	MemoryPeakBytes                  uint64
+	DiskBytes                        *uint64
 	NetworkIngressBytesPerSecond     *int64
 	NetworkIngressPeakBytesPerSecond *int64
 	NetworkEgressBytesPerSecond      *int64
@@ -143,6 +159,14 @@ type History struct {
 	To         int64
 	StepMillis int64
 	Points     []Point
+	Series     []HistorySeries
+}
+
+type HistorySeries struct {
+	ID     string
+	Kind   string
+	Name   string
+	Points []Point
 }
 
 type Config struct {
@@ -200,6 +224,7 @@ type Application struct {
 	store           Store
 	usage           UsageReader
 	network         NetworkReader
+	disk            DiskReader
 	host            hostmetrics.Reader
 	liveInterval    time.Duration
 	persistInterval time.Duration

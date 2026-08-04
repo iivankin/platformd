@@ -194,7 +194,7 @@ func validControlFile(file ControlFile) bool {
 }
 
 func validControlResourceIDs(resources state.ControlResourceIDs) bool {
-	groups := [][]string{resources.RegistryRepositories, resources.ObjectStores, resources.Postgres, resources.Redis, resources.Volumes}
+	groups := [][]string{resources.Images, resources.ObjectStores, resources.Postgres, resources.Redis, resources.Volumes}
 	for _, group := range groups {
 		if !sort.StringsAreSorted(group) {
 			return false

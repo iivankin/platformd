@@ -11,6 +11,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/server"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -32,6 +33,23 @@ func (repository *managedRedisRepository) Resource(_ context.Context, projectID,
 	if projectID != repository.resource.ProjectID || resourceID != repository.resource.ID {
 		return state.ManagedRedis{}, state.ErrManagedRedisNotFound
 	}
+	return repository.resource, nil
+}
+
+func (repository *managedRedisRepository) UpdatePortForward(
+	_ context.Context,
+	projectID, resourceID string,
+	portForward *serviceconfig.PortForward,
+	expectedUpdatedAt int64,
+) (state.ManagedRedis, error) {
+	if projectID != repository.resource.ProjectID || resourceID != repository.resource.ID {
+		return state.ManagedRedis{}, state.ErrManagedRedisNotFound
+	}
+	if expectedUpdatedAt != repository.resource.UpdatedAtMillis {
+		return state.ManagedRedis{}, state.ErrManagedRedisChanged
+	}
+	repository.resource.PortForward = portForward
+	repository.resource.UpdatedAtMillis++
 	return repository.resource, nil
 }
 

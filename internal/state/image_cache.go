@@ -24,7 +24,7 @@ func (store *Store) KnownContainerImageDigests(ctx context.Context) (map[string]
 	return store.containerImageDigests(ctx, `
 SELECT image_digest FROM deployments
 UNION
-SELECT image_digest FROM preview_deployments
+SELECT image_digest FROM preview_deployments WHERE image_revision_id IS NOT NULL
 UNION
 SELECT image_digest FROM runtime_deployments
 UNION

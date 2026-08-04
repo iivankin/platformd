@@ -25,7 +25,47 @@ type Storage interface {
 	Object(context.Context, string, string) (ObjectMetadata, error)
 	ReadRange(context.Context, string, string, int64, int64, io.Writer) error
 	ListEntries(context.Context, string, string, string, string, int) ([]ObjectListEntry, bool, error)
+	Stats(context.Context, string) (ObjectStoreStats, error)
+	LargestObjects(context.Context, string) (LargestObjectsSearch, error)
+	StartLargestObjects(context.Context, string) (LargestObjectsSearch, error)
+	CancelLargestObjects(context.Context, string) (LargestObjectsSearch, error)
 	Delete(context.Context, string, string) error
+}
+
+type ObjectStoreStats struct {
+	Ready               bool                        `json:"ready"`
+	ObjectCount         uint64                      `json:"objectCount"`
+	TotalBytes          uint64                      `json:"totalBytes"`
+	ObservedAtMillis    int64                       `json:"observedAt,omitempty"`
+	ObjectSizeHistogram []ObjectSizeHistogramBucket `json:"objectSizeHistogram"`
+}
+
+type ObjectSizeHistogramBucket struct {
+	Label string `json:"label"`
+	Count uint64 `json:"count"`
+}
+
+type LargestObjectsSearchStatus string
+
+const (
+	LargestObjectsIdle       LargestObjectsSearchStatus = "idle"
+	LargestObjectsRunning    LargestObjectsSearchStatus = "running"
+	LargestObjectsCancelling LargestObjectsSearchStatus = "cancelling"
+	LargestObjectsComplete   LargestObjectsSearchStatus = "complete"
+	LargestObjectsCancelled  LargestObjectsSearchStatus = "cancelled"
+	LargestObjectsFailed     LargestObjectsSearchStatus = "failed"
+)
+
+type LargestObjectsSearch struct {
+	Status         LargestObjectsSearchStatus `json:"status"`
+	ScannedObjects uint64                     `json:"scannedObjects"`
+	Objects        []LargestObject            `json:"objects"`
+	Error          string                     `json:"error,omitempty"`
+}
+
+type LargestObject struct {
+	Key  string `json:"key"`
+	Size uint64 `json:"size"`
 }
 
 type SidecarClient struct {
@@ -237,6 +277,44 @@ func (client *SidecarClient) ListEntries(ctx context.Context, storeID, prefix, d
 	}
 	sortObjectEntries(entries)
 	return entries, result.More, nil
+}
+
+func (client *SidecarClient) Stats(ctx context.Context, storeID string) (ObjectStoreStats, error) {
+	response, err := client.request(ctx, http.MethodGet, "/v1/bucket/stats", storeID, nil, nil)
+	if err != nil {
+		return ObjectStoreStats{}, err
+	}
+	defer response.Body.Close()
+	var result ObjectStoreStats
+	if err := decodeJSON(response.Body, &result); err != nil {
+		return ObjectStoreStats{}, err
+	}
+	return result, nil
+}
+
+func (client *SidecarClient) LargestObjects(ctx context.Context, storeID string) (LargestObjectsSearch, error) {
+	return client.largestObjectsRequest(ctx, http.MethodGet, storeID)
+}
+
+func (client *SidecarClient) StartLargestObjects(ctx context.Context, storeID string) (LargestObjectsSearch, error) {
+	return client.largestObjectsRequest(ctx, http.MethodPost, storeID)
+}
+
+func (client *SidecarClient) CancelLargestObjects(ctx context.Context, storeID string) (LargestObjectsSearch, error) {
+	return client.largestObjectsRequest(ctx, http.MethodDelete, storeID)
+}
+
+func (client *SidecarClient) largestObjectsRequest(ctx context.Context, method, storeID string) (LargestObjectsSearch, error) {
+	response, err := client.request(ctx, method, "/v1/bucket/largest-objects", storeID, nil, nil)
+	if err != nil {
+		return LargestObjectsSearch{}, err
+	}
+	defer response.Body.Close()
+	var result LargestObjectsSearch
+	if err := decodeJSON(response.Body, &result); err != nil {
+		return LargestObjectsSearch{}, err
+	}
+	return result, nil
 }
 
 func (client *SidecarClient) Delete(ctx context.Context, storeID, objectKey string) error {

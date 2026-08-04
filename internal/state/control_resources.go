@@ -6,11 +6,11 @@ import (
 )
 
 type ControlResourceIDs struct {
-	RegistryRepositories []string `json:"registryRepositories"`
-	ObjectStores         []string `json:"objectStores"`
-	Postgres             []string `json:"postgres"`
-	Redis                []string `json:"redis"`
-	Volumes              []string `json:"volumes"`
+	Images       []string `json:"images"`
+	ObjectStores []string `json:"objectStores"`
+	Postgres     []string `json:"postgres"`
+	Redis        []string `json:"redis"`
+	Volumes      []string `json:"volumes"`
 }
 
 func (store *Store) ControlResources(ctx context.Context) (ControlResourceIDs, error) {
@@ -19,7 +19,15 @@ func (store *Store) ControlResources(ctx context.Context) (ControlResourceIDs, e
 		target *[]string
 		query  string
 	}{
-		{&result.RegistryRepositories, "SELECT id FROM registry_repositories ORDER BY id"},
+		{&result.Images, `SELECT r.id FROM service_image_revisions r
+WHERE r.status = 'active' AND (
+  (r.kind = 'production' AND EXISTS(
+    SELECT 1 FROM services s WHERE s.id = r.service_id AND s.enabled = 1 AND s.active_deployment_id = r.deployment_id
+  )) OR
+  (r.kind = 'preview' AND EXISTS(
+    SELECT 1 FROM preview_deployments p WHERE p.id = r.preview_id AND p.status = 'active'
+  ))
+) ORDER BY r.id`},
 		{&result.ObjectStores, "SELECT id FROM object_stores ORDER BY id"},
 		{&result.Postgres, "SELECT id FROM managed_postgres ORDER BY id"},
 		{&result.Redis, "SELECT id FROM managed_redis ORDER BY id"},

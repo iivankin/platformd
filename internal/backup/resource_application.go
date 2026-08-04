@@ -106,7 +106,7 @@ func (application *ResourceApplication) Restore(
 	options ResourceRestoreOptions,
 	actor Actor,
 ) (state.Operation, error) {
-	if _, err := application.store.BackupPolicy(ctx, kind, resourceID); err != nil {
+	if err := application.requireBackupResource(ctx, kind, resourceID); err != nil {
 		return state.Operation{}, err
 	}
 	if application.restores == nil {
@@ -123,7 +123,7 @@ func (application *ResourceApplication) Generations(
 	ctx context.Context,
 	kind, resourceID, targetID string,
 ) ([]ResourceCompletion, error) {
-	if _, err := application.store.BackupPolicy(ctx, kind, resourceID); err != nil {
+	if err := application.requireBackupResource(ctx, kind, resourceID); err != nil {
 		return nil, err
 	}
 	if application.target == nil || application.targetGate == nil {
@@ -210,6 +210,9 @@ func (application *ResourceApplication) Policies(ctx context.Context) ([]PolicyS
 }
 
 func (application *ResourceApplication) Policy(ctx context.Context, kind, resourceID string) (PolicyStatus, error) {
+	if kind == "image" {
+		return application.imageBackupPolicy(ctx, resourceID)
+	}
 	policy, err := application.store.BackupPolicy(ctx, kind, resourceID)
 	if err != nil {
 		return PolicyStatus{}, err
@@ -219,6 +222,9 @@ func (application *ResourceApplication) Policy(ctx context.Context, kind, resour
 }
 
 func (application *ResourceApplication) SetPolicy(ctx context.Context, input PolicyInput) (PolicyResult, error) {
+	if input.ResourceKind == "image" {
+		return PolicyResult{}, state.ErrInvalidBackupPolicy
+	}
 	if err := validateActor(input.Actor); err != nil {
 		return PolicyResult{}, err
 	}
@@ -278,6 +284,9 @@ func nextPolicyRun(policy state.BackupPolicy, now time.Time) (int64, error) {
 }
 
 func (application *ResourceApplication) RunNow(ctx context.Context, kind, resourceID, targetID string) (state.BackupRecord, error) {
+	if kind == "image" {
+		return state.BackupRecord{}, state.ErrInvalidBackupPolicy
+	}
 	if application.worker == nil {
 		return state.BackupRecord{}, ErrResourceRunner
 	}
@@ -294,10 +303,36 @@ func (application *ResourceApplication) History(
 	beforeMillis int64,
 	limit int,
 ) ([]state.BackupRecord, error) {
-	if _, err := application.store.BackupPolicy(ctx, kind, resourceID); err != nil {
+	if err := application.requireBackupResource(ctx, kind, resourceID); err != nil {
 		return nil, err
 	}
 	return application.store.BackupHistory(ctx, state.BackupHistoryQuery{
 		TargetID: targetID, ResourceKind: kind, ResourceID: resourceID, BeforeMillis: beforeMillis, Limit: limit,
 	})
+}
+
+// Uploaded images are backed up with the control snapshot on the control
+// target, so they have no per-resource backup policy row.
+func (application *ResourceApplication) requireBackupResource(ctx context.Context, kind, resourceID string) error {
+	if kind == "image" {
+		if resourceID == "" {
+			return state.ErrBackupResourceNotFound
+		}
+		return nil
+	}
+	_, err := application.store.BackupPolicy(ctx, kind, resourceID)
+	return err
+}
+
+func (application *ResourceApplication) imageBackupPolicy(ctx context.Context, resourceID string) (PolicyStatus, error) {
+	if resourceID == "" || application.target == nil {
+		return PolicyStatus{}, state.ErrBackupResourceNotFound
+	}
+	targetID, err := application.target.ControlTargetID(ctx)
+	if err != nil {
+		return PolicyStatus{}, err
+	}
+	return PolicyStatus{Policy: state.BackupPolicy{
+		ResourceKind: "image", ResourceID: resourceID, TargetID: targetID, RetentionCount: 1,
+	}}, nil
 }

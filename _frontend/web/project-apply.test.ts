@@ -9,10 +9,8 @@ const reference = (resource: string, output: string) =>
 const operation = (
   resourceName: string,
   environment: Record<string, string>,
-  run: () => Promise<unknown>,
-  buildEnvironment: Record<string, string> = {}
+  run: () => Promise<unknown>
 ): ProjectApplyOperation => ({
-  buildEnvironment,
   environment,
   id: resourceName,
   label: resourceName,
@@ -20,7 +18,7 @@ const operation = (
   run,
 });
 
-test("orders build variable references after pending resources", async () => {
+test("orders variable references after pending resources", async () => {
   const started: string[] = [];
   const outcomes = await applyProjectOperations(
     [
@@ -30,12 +28,11 @@ test("orders build variable references after pending resources", async () => {
       }),
       operation(
         "web",
-        {},
+        { DATABASE_URL: reference("database", "DATABASE_URL") },
         () => {
           started.push("web");
           return Promise.resolve();
-        },
-        { DATABASE_URL: reference("database", "DATABASE_URL") }
+        }
       ),
     ],
     new Set()

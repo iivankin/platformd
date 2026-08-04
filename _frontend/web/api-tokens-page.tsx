@@ -284,69 +284,71 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
       ) : null}
 
       <SectionCard>
-        <div className="grid grid-cols-[minmax(180px,1.2fr)_90px_minmax(140px,1fr)_150px_100px_44px] border-b border-border bg-muted/30 px-5 py-2 text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
-          <span>Name</span>
-          <span>Role</span>
-          <span>Boundary</span>
-          <span>Last used</span>
-          <span>Status</span>
-          <span />
-        </div>
-        {tokens.length === 0 ? (
-          <div className="grid min-h-64 place-items-center px-8 py-16 text-center">
-            <div>
-              <KeyRound className="mx-auto size-6 text-muted-foreground" />
-              <p className="mt-4 text-xs font-medium">No API tokens</p>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                Create one for REST clients or MCP agents.
-              </p>
-            </div>
+        <div className="min-w-0 overflow-x-auto">
+          <div className="grid min-w-[48rem] grid-cols-[minmax(180px,1.2fr)_90px_minmax(140px,1fr)_150px_100px_44px] border-b border-border bg-muted/30 px-5 py-2 text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
+            <span>Name</span>
+            <span>Role</span>
+            <span>Boundary</span>
+            <span>Last used</span>
+            <span>Status</span>
+            <span />
           </div>
-        ) : (
-          tokens.map((token) => {
-            const project = projects.find(
-              (item) => item.id === token.projectId
-            );
-            return (
-              <div
-                className="grid min-h-14 grid-cols-[minmax(180px,1.2fr)_90px_minmax(140px,1fr)_150px_100px_44px] items-center border-b border-border px-5 py-2 last:border-b-0"
-                key={token.id}
-              >
-                <div className="min-w-0">
-                  <p className="truncate text-xs font-medium">{token.name}</p>
-                  <p className="mt-1 truncate text-[9px] text-muted-foreground">
-                    {token.id}
-                  </p>
-                </div>
-                <span className="text-[10px] uppercase">{token.role}</span>
-                <span className="truncate text-[10px] text-muted-foreground">
-                  {project?.name ?? token.projectId ?? "All projects"}
-                </span>
-                <span className="text-[10px] text-muted-foreground">
-                  {formatTime(token.lastUsedAt)}
-                </span>
-                <span
-                  className={
-                    token.revokedAt
-                      ? "text-[10px] text-muted-foreground"
-                      : "text-[10px] text-emerald-600"
-                  }
-                >
-                  {token.revokedAt ? "Revoked" : "Active"}
-                </span>
-                <Button
-                  aria-label={`Revoke ${token.name}`}
-                  disabled={Boolean(token.revokedAt) || Boolean(busy)}
-                  onClick={() => void revoke(token)}
-                  size="icon"
-                  variant="ghost"
-                >
-                  <Trash2 />
-                </Button>
+          {tokens.length === 0 ? (
+            <div className="grid min-h-64 place-items-center px-8 py-16 text-center">
+              <div>
+                <KeyRound className="mx-auto size-6 text-muted-foreground" />
+                <p className="mt-4 text-xs font-medium">No API tokens</p>
+                <p className="mt-2 text-[10px] text-muted-foreground">
+                  Create one for REST clients or MCP agents.
+                </p>
               </div>
-            );
-          })
-        )}
+            </div>
+          ) : (
+            tokens.map((token) => {
+              const project = projects.find(
+                (item) => item.id === token.projectId
+              );
+              return (
+                <div
+                  className="grid min-h-14 min-w-[48rem] grid-cols-[minmax(180px,1.2fr)_90px_minmax(140px,1fr)_150px_100px_44px] items-center border-b border-border px-5 py-2 last:border-b-0"
+                  key={token.id}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-xs font-medium">{token.name}</p>
+                    <p className="mt-1 truncate text-[9px] text-muted-foreground">
+                      {token.id}
+                    </p>
+                  </div>
+                  <span className="text-[10px] uppercase">{token.role}</span>
+                  <span className="truncate text-[10px] text-muted-foreground">
+                    {project?.name ?? token.projectId ?? "All projects"}
+                  </span>
+                  <span className="text-[10px] text-muted-foreground">
+                    {formatTime(token.lastUsedAt)}
+                  </span>
+                  <span
+                    className={
+                      token.revokedAt
+                        ? "text-[10px] text-muted-foreground"
+                        : "text-[10px] text-emerald-600"
+                    }
+                  >
+                    {token.revokedAt ? "Revoked" : "Active"}
+                  </span>
+                  <Button
+                    aria-label={`Revoke ${token.name}`}
+                    disabled={Boolean(token.revokedAt) || Boolean(busy)}
+                    onClick={() => void revoke(token)}
+                    size="icon"
+                    variant="ghost"
+                  >
+                    <Trash2 />
+                  </Button>
+                </div>
+              );
+            })
+          )}
+        </div>
       </SectionCard>
     </PageStack>
   );

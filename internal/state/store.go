@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	schemaVersion   = 1
+	schemaVersion   = 6
 	writerQueueSize = 128
 )
 
@@ -121,10 +121,21 @@ func (store *Store) MarkInterrupted(ctx context.Context, timestampMillis int64) 
 			"UPDATE operations SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
 			"UPDATE backups SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
 			"UPDATE deployments SET status = 'interrupted', finished_at = ? WHERE status = 'running' AND id NOT IN (SELECT active_deployment_id FROM services WHERE active_deployment_id IS NOT NULL)",
-			"UPDATE preview_deployments SET status = 'interrupted', finished_at = ? WHERE status = 'building'",
+			"UPDATE preview_deployments SET status = 'interrupted', finished_at = ?, updated_at = ? WHERE status = 'deploying'",
+			"UPDATE service_image_uploads SET status = 'failed', error_code = 'daemon_restarted', error_message = 'Upload interrupted by daemon restart', updated_at = ?, expires_at = ? WHERE status IN ('uploading', 'importing', 'deploying')",
+			// Importing revisions outlive their upload after restart unless failed here;
+			// GC intentionally never deletes status=importing rows.
+			"UPDATE service_image_revisions SET status = 'failed', retired_at = ? WHERE status = 'importing'",
 		}
 		for _, statement := range statements {
-			if _, err := transaction.ExecContext(ctx, statement, timestampMillis); err != nil {
+			arguments := []any{timestampMillis}
+			if strings.Contains(statement, "updated_at = ?") {
+				arguments = []any{timestampMillis, timestampMillis}
+			}
+			if strings.Contains(statement, "expires_at = ?") {
+				arguments = []any{timestampMillis, timestampMillis}
+			}
+			if _, err := transaction.ExecContext(ctx, statement, arguments...); err != nil {
 				return fmt.Errorf("mark interrupted state: %w", err)
 			}
 		}
@@ -247,8 +258,53 @@ func initializeSchema(ctx context.Context, database *sql.DB) error {
 	if err := database.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
 		return fmt.Errorf("read SQLite schema format: %w", err)
 	}
-	if version != 0 {
+	switch version {
+	case schemaVersion:
 		return nil
+	case 1:
+		if err := migrateSchemaVersionOne(ctx, database); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersionTwo(ctx, database); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersionThree(ctx, database); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersionFour(ctx, database); err != nil {
+			return err
+		}
+		return migrateSchemaVersionFive(ctx, database)
+	case 2:
+		if err := migrateSchemaVersionTwo(ctx, database); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersionThree(ctx, database); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersionFour(ctx, database); err != nil {
+			return err
+		}
+		return migrateSchemaVersionFive(ctx, database)
+	case 3:
+		if err := migrateSchemaVersionThree(ctx, database); err != nil {
+			return err
+		}
+		if err := migrateSchemaVersionFour(ctx, database); err != nil {
+			return err
+		}
+		return migrateSchemaVersionFive(ctx, database)
+	case 4:
+		if err := migrateSchemaVersionFour(ctx, database); err != nil {
+			return err
+		}
+		return migrateSchemaVersionFive(ctx, database)
+	case 5:
+		return migrateSchemaVersionFive(ctx, database)
+	case 0:
+		// Continue with first-time schema initialization below.
+	default:
+		return fmt.Errorf("SQLite schema version = %d, want %d", version, schemaVersion)
 	}
 
 	transaction, err := database.BeginTx(ctx, nil)

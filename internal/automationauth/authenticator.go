@@ -49,7 +49,7 @@ func (authenticator *Authenticator) Protect(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Cache-Control", "private, no-store")
 		response.Header().Set("Cloudflare-CDN-Cache-Control", "no-store")
-		identity, retryAfter, err := authenticator.authenticate(request)
+		identity, retryAfter, err := authenticator.Authenticate(request)
 		if retryAfter > 0 {
 			seconds := max(1, int((retryAfter+time.Second-1)/time.Second))
 			response.Header().Set("Retry-After", strconv.Itoa(seconds))
@@ -63,6 +63,10 @@ func (authenticator *Authenticator) Protect(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(response, request.WithContext(automation.WithIdentity(request.Context(), identity)))
 	})
+}
+
+func (authenticator *Authenticator) Authenticate(request *http.Request) (automation.Identity, time.Duration, error) {
+	return authenticator.authenticate(request)
 }
 
 func (authenticator *Authenticator) authenticate(request *http.Request) (automation.Identity, time.Duration, error) {

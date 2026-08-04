@@ -235,6 +235,18 @@ func (daemonObjectStorageStub) ReadRange(context.Context, string, string, int64,
 func (daemonObjectStorageStub) ListEntries(context.Context, string, string, string, string, int) ([]objectstore.ObjectListEntry, bool, error) {
 	return nil, false, errDaemonObjectStorageUnused
 }
+func (daemonObjectStorageStub) Stats(context.Context, string) (objectstore.ObjectStoreStats, error) {
+	return objectstore.ObjectStoreStats{}, errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) LargestObjects(context.Context, string) (objectstore.LargestObjectsSearch, error) {
+	return objectstore.LargestObjectsSearch{}, errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) StartLargestObjects(context.Context, string) (objectstore.LargestObjectsSearch, error) {
+	return objectstore.LargestObjectsSearch{}, errDaemonObjectStorageUnused
+}
+func (daemonObjectStorageStub) CancelLargestObjects(context.Context, string) (objectstore.LargestObjectsSearch, error) {
+	return objectstore.LargestObjectsSearch{}, errDaemonObjectStorageUnused
+}
 func (daemonObjectStorageStub) Delete(context.Context, string, string) error {
 	return errDaemonObjectStorageUnused
 }

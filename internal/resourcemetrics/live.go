@@ -197,6 +197,7 @@ func (builder *aggregateBuilder) add(current Current, publicService bool) {
 	builder.current.TotalResources++
 	if publicService {
 		builder.publicServices++
+		builder.addTrafficRoutes(current.TrafficRoutes)
 		builder.addProxy(current)
 		builder.current.NetworkRXBytes += current.NetworkRXBytes
 		builder.current.NetworkTXBytes += current.NetworkTXBytes
@@ -222,15 +223,22 @@ func (builder *aggregateBuilder) add(current Current, publicService bool) {
 	}
 }
 
-func (builder *aggregateBuilder) missing(publicService bool) {
+func (builder *aggregateBuilder) missing(publicService bool, routes TrafficRoutes) {
 	builder.current.TotalResources++
 	builder.missingResources++
 	builder.cpuComplete = false
 	if publicService {
 		builder.publicServices++
+		builder.addTrafficRoutes(routes)
 		builder.networkComplete = false
 		builder.proxyComplete = false
 	}
+}
+
+func (builder *aggregateBuilder) addTrafficRoutes(routes TrafficRoutes) {
+	builder.current.TrafficRoutes.HTTP = builder.current.TrafficRoutes.HTTP || routes.HTTP
+	builder.current.TrafficRoutes.TCP = builder.current.TrafficRoutes.TCP || routes.TCP
+	builder.current.TrafficRoutes.UDP = builder.current.TrafficRoutes.UDP || routes.UDP
 }
 
 func (builder *aggregateBuilder) finish() Current {

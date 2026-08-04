@@ -1,11 +1,9 @@
 import { handleCloudflareAPI } from "./cloudflare";
 import { handleContainerResourcesAPI } from "./container-resources";
 import { handleCoreAPI } from "./core";
-import { handleGitHubAPI } from "./github";
 import { mockError } from "./http";
 import { handleNetworkGatewaysAPI } from "./network-gateways";
 import { handleProjectsAPI } from "./projects";
-import { handleRegistryAPI } from "./registry";
 import type { MockState } from "./state";
 
 export const handleMockAPI = async (
@@ -47,18 +45,6 @@ export const handleMockAPI = async (
   );
   if (networkGatewayResponse) {
     return networkGatewayResponse;
-  }
-  const registryResponse = await handleRegistryAPI(
-    request,
-    state,
-    url.pathname
-  );
-  if (registryResponse) {
-    return registryResponse;
-  }
-  const githubResponse = await handleGitHubAPI(request, state, url.pathname);
-  if (githubResponse) {
-    return githubResponse;
   }
   const cloudflareResponse = await handleCloudflareAPI(
     request,

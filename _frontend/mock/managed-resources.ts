@@ -1,3 +1,4 @@
+import type { ManagedPostgres, ManagedRedis, ObjectStore } from "../web/api";
 import { json, mockError, noContent } from "./http";
 import { handlePostgresQuery } from "./postgres-query";
 import type { MockState } from "./state";
@@ -40,6 +41,145 @@ const handleManagedResource = (
   return resource
     ? json(resource)
     : mockError("not_found", "Managed resource not found", 404);
+};
+
+const supportsPortForward = (
+  collection: string
+): collection is ManagedCollection =>
+  collection === "postgres" ||
+  collection === "object-stores" ||
+  collection === "redis";
+
+const portForwardChangedCode = (collection: ManagedCollection) => {
+  if (collection === "postgres") {
+    return "postgres_changed";
+  }
+  if (collection === "redis") {
+    return "redis_changed";
+  }
+  return "object_store_changed";
+};
+
+const parsedPortForward = (value: unknown) => {
+  if (typeof value !== "object" || value === null) {
+    return;
+  }
+  const body = value as { repository?: string; workflows?: string[] };
+  if (typeof body.repository !== "string") {
+    return;
+  }
+  return {
+    repository: body.repository.trim().toLowerCase(),
+    workflows: Array.isArray(body.workflows)
+      ? body.workflows.filter(
+          (entry): entry is string => typeof entry === "string"
+        )
+      : [],
+  };
+};
+
+const handleManagedPortForward = async (
+  request: Request,
+  state: MockState,
+  collection: string,
+  resourceID: string,
+  rest: string[]
+): Promise<Response | undefined> => {
+  if (
+    request.method !== "PUT" ||
+    rest.length !== 1 ||
+    rest[0] !== "port-forward" ||
+    !supportsPortForward(collection)
+  ) {
+    return undefined;
+  }
+  const resource = managedResource(state, collection, resourceID);
+  if (!resource) {
+    return mockError("not_found", "Managed resource not found", 404);
+  }
+  const body = (await request.json()) as {
+    expectedUpdatedAt?: unknown;
+    portForward?: unknown;
+  };
+  if (
+    typeof body.expectedUpdatedAt !== "number" ||
+    body.expectedUpdatedAt !== resource.updatedAt
+  ) {
+    return mockError(
+      portForwardChangedCode(collection),
+      "Managed resource changed",
+      409
+    );
+  }
+  const next = parsedPortForward(body.portForward);
+  const portForward = next?.repository ? next : undefined;
+  const updatedAt = mockNow();
+  if (collection === "postgres") {
+    const updated = {
+      ...(resource as ManagedPostgres),
+      portForward,
+      updatedAt,
+    };
+    state.postgres[resourceID] = updated;
+    return json(updated);
+  }
+  if (collection === "redis") {
+    const updated = { ...(resource as ManagedRedis), portForward, updatedAt };
+    state.redis[resourceID] = updated;
+    return json(updated);
+  }
+  const updated = { ...(resource as ObjectStore), portForward, updatedAt };
+  state.objectStores[resourceID] = updated;
+  return json(updated);
+};
+
+const handleObjectStorePublicAccess = async (
+  request: Request,
+  state: MockState,
+  collection: string,
+  resourceID: string,
+  rest: string[]
+): Promise<Response | undefined> => {
+  if (
+    request.method !== "PUT" ||
+    collection !== "object-stores" ||
+    rest.length !== 1 ||
+    rest[0] !== "public-access"
+  ) {
+    return undefined;
+  }
+  const resource = managedResource(state, collection, resourceID) as
+    | ObjectStore
+    | undefined;
+  if (!resource) {
+    return mockError("not_found", "Managed resource not found", 404);
+  }
+  const body = (await request.json()) as {
+    corsOrigins?: unknown;
+    expectedUpdatedAt?: unknown;
+    publicHostname?: unknown;
+  };
+  if (
+    typeof body.expectedUpdatedAt !== "number" ||
+    body.expectedUpdatedAt !== resource.updatedAt
+  ) {
+    return mockError("object_store_changed", "Object store changed", 409);
+  }
+  const corsOrigins = Array.isArray(body.corsOrigins)
+    ? body.corsOrigins.filter(
+        (entry): entry is string => typeof entry === "string"
+      )
+    : [];
+  const publicHostname =
+    typeof body.publicHostname === "string" ? body.publicHostname.trim() : "";
+  const updated: ObjectStore = {
+    ...resource,
+    corsOrigins,
+    publicHostname: publicHostname || undefined,
+    updatedAt: mockNow(),
+  };
+  state.objectStores[resourceID] = updated;
+  return json(updated);
 };
 
 const handleManagedLogs = (
@@ -339,6 +479,84 @@ const handleObjects = (
   return json(metadata);
 };
 
+const objectSizeHistogram = (sizes: number[]) => {
+  const upperBounds = [
+    1024,
+    1024 ** 2,
+    10 * 1024 ** 2,
+    64 * 1024 ** 2,
+    128 * 1024 ** 2,
+    512 * 1024 ** 2,
+    Number.POSITIVE_INFINITY,
+  ];
+  const buckets = [
+    { count: 0, label: "0–1 KiB" },
+    { count: 0, label: "1 KiB–1 MiB" },
+    { count: 0, label: "1–10 MiB" },
+    { count: 0, label: "10–64 MiB" },
+    { count: 0, label: "64–128 MiB" },
+    { count: 0, label: "128–512 MiB" },
+    { count: 0, label: "512 MiB+" },
+  ];
+  for (const size of sizes) {
+    const index = upperBounds.findIndex((upperBound) => size < upperBound);
+    const bucket = buckets[index];
+    if (bucket) {
+      bucket.count += 1;
+    }
+  }
+  return buckets;
+};
+
+const handleObjectStoreStatistics = (
+  request: Request,
+  state: MockState,
+  storeID: string,
+  rest: string[]
+): Response | undefined => {
+  const [resource, ...tail] = rest;
+  if (tail.length > 0) {
+    return undefined;
+  }
+  const objects = state.objectMetadata[storeID] ?? [];
+  if (request.method === "GET" && resource === "stats") {
+    const sizes = objects.map((object) => object.size);
+    return json({
+      objectCount: objects.length,
+      objectSizeHistogram: objectSizeHistogram(sizes),
+      observedAt: mockNow(),
+      ready: true,
+      totalBytes: sizes.reduce((total, size) => total + size, 0),
+    });
+  }
+  if (resource !== "largest-objects") {
+    return undefined;
+  }
+  if (request.method === "GET") {
+    return json({ objects: [], scannedObjects: 0, status: "idle" });
+  }
+  if (request.method === "DELETE") {
+    return json({ objects: [], scannedObjects: 0, status: "cancelled" });
+  }
+  if (request.method === "POST") {
+    return json(
+      {
+        objects: objects
+          .map((object) => ({ key: object.objectKey, size: object.size }))
+          .toSorted(
+            (left, right) =>
+              right.size - left.size || left.key.localeCompare(right.key)
+          )
+          .slice(0, 10),
+        scannedObjects: objects.length,
+        status: "complete",
+      },
+      202
+    );
+  }
+  return undefined;
+};
+
 const handleManagedImageTags = (
   request: Request,
   segments: string[]
@@ -391,13 +609,28 @@ export const handleManagedResourcesAPI = async (
   }
   return (
     handleManagedResource(request, state, collection, resourceID, rest) ??
+    (await handleManagedPortForward(
+      request,
+      state,
+      collection,
+      resourceID,
+      rest
+    )) ??
+    (await handleObjectStorePublicAccess(
+      request,
+      state,
+      collection,
+      resourceID,
+      rest
+    )) ??
     handleManagedDeployments(request, state, collection, resourceID, rest) ??
     handleManagedLogs(request, state, collection, resourceID, rest) ??
     handleRedisData(request, collection, rest) ??
     handlePostgresExtensions(request, state, collection, resourceID, rest) ??
     (await handlePostgresQuery(request, collection, rest)) ??
     (collection === "object-stores"
-      ? handleObjects(request, state, resourceID, rest, url)
+      ? (handleObjectStoreStatistics(request, state, resourceID, rest) ??
+        handleObjects(request, state, resourceID, rest, url))
       : undefined)
   );
 };

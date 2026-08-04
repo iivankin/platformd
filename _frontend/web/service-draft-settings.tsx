@@ -13,13 +13,11 @@ type ServiceDraft = Extract<PendingResourceCreation, { kind: "service" }>;
 
 export const ServiceDraftSettings = ({
   draft,
-  embeddedRegistryHost,
   internalHostname,
   onChange,
   projectID,
 }: {
   draft: ServiceDraft;
-  embeddedRegistryHost: string;
   internalHostname: string;
   onChange: (draft: ServiceDraft) => void;
   projectID: string;
@@ -28,14 +26,6 @@ export const ServiceDraftSettings = ({
     const domainHostnames = new Set(
       settings.domains.map(({ hostname }) => hostname)
     );
-    const previousRepositoryID =
-      draft.settings.configuration.source.type === "github"
-        ? draft.settings.configuration.source.github.repositoryId
-        : undefined;
-    const nextRepositoryID =
-      settings.configuration.source.type === "github"
-        ? settings.configuration.source.github.repositoryId
-        : undefined;
     onChange({
       ...draft,
       settings: {
@@ -45,13 +35,6 @@ export const ServiceDraftSettings = ({
           cloudflareHostnames: settings.beforeDeploy.cloudflareHostnames.filter(
             (hostname) => domainHostnames.has(hostname)
           ),
-          githubWorkflow:
-            nextRepositoryID && nextRepositoryID === previousRepositoryID
-              ? settings.beforeDeploy.githubWorkflow
-              : undefined,
-          githubWorkflowEnabled: nextRepositoryID
-            ? settings.beforeDeploy.githubWorkflowEnabled
-            : false,
         },
       },
     });
@@ -94,7 +77,6 @@ export const ServiceDraftSettings = ({
 
       <ServiceConfiguration
         draft={draft.settings.configuration}
-        embeddedRegistryHost={embeddedRegistryHost}
         httpDomainCount={draft.settings.domains.length}
         onDraftChange={(configuration) =>
           updateSettings({ ...draft.settings, configuration })
@@ -107,7 +89,6 @@ export const ServiceDraftSettings = ({
         onChange={(beforeDeploy) =>
           updateSettings({ ...draft.settings, beforeDeploy })
         }
-        source={draft.settings.configuration.source}
       />
 
       <ServiceVolumes

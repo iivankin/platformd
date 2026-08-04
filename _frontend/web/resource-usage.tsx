@@ -84,6 +84,65 @@ const networkSeries: MetricSeries[] = [
   },
 ];
 
+const diskSeries: MetricSeries[] = [
+  {
+    color: "#34d399",
+    label: "Volumes",
+    value: (point) => point.diskBytes,
+  },
+];
+
+const breakdownColors = [
+  "#38bdf8",
+  "#34d399",
+  "#fbbf24",
+  "#fb7185",
+  "#a78bfa",
+  "#22d3ee",
+  "#f97316",
+  "#84cc16",
+] as const;
+
+type UsagePoint = ResourceUsageHistory["points"][number];
+
+const breakdownSeriesFor = (
+  history: ResourceUsageHistory | null,
+  value: (point: UsagePoint) => number | undefined
+): MetricSeries[] =>
+  (history?.series ?? [])
+    .filter((item) => item.points.some((point) => value(point) !== undefined))
+    .map((item, index) => ({
+      color:
+        breakdownColors[index % breakdownColors.length] ?? chartColors.primary,
+      label: item.name,
+      points: item.points,
+      value,
+    }));
+
+const cpuBreakdownValue = (point: UsagePoint) => point.cpuMillicores;
+const memoryBreakdownValue = (point: UsagePoint) => point.memoryBytes;
+const diskBreakdownValue = (point: UsagePoint) => point.diskBytes;
+const networkBreakdownValue = (point: UsagePoint) => {
+  const ingress = point.networkIngressBytesPerSecond;
+  const egress = point.networkEgressBytesPerSecond;
+  return ingress === undefined || egress === undefined
+    ? undefined
+    : ingress + egress;
+};
+const httpRequestBreakdownValue = (point: UsagePoint) =>
+  point.proxy?.http.requestsPerSecond;
+const httpLatencyBreakdownValue = (point: UsagePoint) =>
+  point.proxy?.http.latencyP95Millis;
+const tcpBreakdownValue = (point: UsagePoint) =>
+  point.proxy?.tcp.connectionsPerSecond;
+const udpBreakdownValue = (point: UsagePoint) => {
+  const ingress = point.proxy?.udp.ingressPacketsPerSecond;
+  const egress = point.proxy?.udp.egressPacketsPerSecond;
+  return ingress === undefined || egress === undefined
+    ? undefined
+    : ingress + egress;
+};
+
 const httpRequestSeries: MetricSeries[] = [
   {
     color: chartColors.primary,
@@ -228,7 +287,13 @@ const historyStatusFor = (
   if (error) {
     return error;
   }
-  return history ? `${history.points.length} samples` : "Loading…";
+  const samples = history
+    ? Math.max(
+        history.points.length,
+        ...history.series.map((item) => item.points.length)
+      )
+    : 0;
+  return history ? `${samples} samples` : "Loading…";
 };
 
 const Metric = ({
@@ -289,12 +354,14 @@ const UsageSummary = ({
   showHostCapacity?: boolean;
 }) => {
   const actualMemory = usage?.running ? formatBytes(usage.memoryBytes) : "—";
+  const actualDisk =
+    usage?.diskBytes === undefined ? "Scanning…" : formatBytes(usage.diskBytes);
   const resourceDetail = usage
     ? `${usage.runningResources.toLocaleString()} / ${usage.totalResources.toLocaleString()} resources running`
     : "Reading resources…";
   return (
     <div
-      className={`grid sm:grid-cols-2 ${showHostCapacity ? "lg:grid-cols-4" : "lg:grid-cols-3"}`}
+      className={`grid sm:grid-cols-2 ${showHostCapacity ? "lg:grid-cols-5" : "lg:grid-cols-4"}`}
     >
       <Metric
         detail={
@@ -314,6 +381,7 @@ const UsageSummary = ({
         label="Memory now"
         value={actualMemory}
       />
+      <Metric detail="Persistent volumes" label="Disk now" value={actualDisk} />
       <Metric
         detail="Public ingress ↓  egress ↑"
         label="Network now"
@@ -374,9 +442,11 @@ const RangeSelector = ({
 );
 
 const UsageCharts = ({
+  aggregate = false,
   history,
   historyError,
 }: {
+  aggregate?: boolean;
   history: ResourceUsageHistory | null;
   historyError?: string;
 }) => {
@@ -384,6 +454,22 @@ const UsageCharts = ({
   const emptyLabel = emptyLabelFor(history, historyError);
   const from = history?.from ?? 0;
   const to = history?.to ?? 0;
+  const cpu = useMemo(
+    () => breakdownSeriesFor(history, cpuBreakdownValue),
+    [history]
+  );
+  const memory = useMemo(
+    () => breakdownSeriesFor(history, memoryBreakdownValue),
+    [history]
+  );
+  const disk = useMemo(
+    () => breakdownSeriesFor(history, diskBreakdownValue),
+    [history]
+  );
+  const network = useMemo(
+    () => breakdownSeriesFor(history, networkBreakdownValue),
+    [history]
+  );
   return (
     <div className="grid border-t border-border lg:grid-cols-2">
       <div className="min-w-0 lg:border-r lg:border-border">
@@ -393,7 +479,7 @@ const UsageCharts = ({
           from={from}
           minimumMaximum={100}
           points={points}
-          series={cpuSeries}
+          series={aggregate ? cpu : cpuSeries}
           title="CPU"
           to={to}
         />
@@ -405,20 +491,34 @@ const UsageCharts = ({
           from={from}
           minimumMaximum={1024 ** 2}
           points={points}
-          series={memorySeries}
+          series={aggregate ? memory : memorySeries}
           title="Memory"
           to={to}
         />
       </div>
-      <div className="min-w-0 border-t border-border lg:col-span-2">
+      <div className="min-w-0 border-t border-border lg:border-r lg:border-border">
+        <MetricChart
+          emptyLabel={emptyLabel}
+          formatValue={formatBytes}
+          from={from}
+          minimumMaximum={1024 ** 2}
+          points={points}
+          series={aggregate ? disk : diskSeries}
+          title="Disk usage"
+          to={to}
+        />
+      </div>
+      <div className="min-w-0 border-t border-border">
         <MetricChart
           emptyLabel={emptyLabel}
           formatValue={formatRate}
           from={from}
           minimumMaximum={1024}
           points={points}
-          series={networkSeries}
-          title="Network traffic"
+          series={aggregate ? network : networkSeries}
+          title={
+            aggregate ? "Network traffic · ingress + egress" : "Network traffic"
+          }
           to={to}
         />
       </div>
@@ -433,6 +533,7 @@ const latencyValue = (value?: number) =>
   value === undefined ? "—" : formatMilliseconds(value);
 
 interface ProtocolUsageProps {
+  aggregate?: boolean;
   history: ResourceUsageHistory | null;
   historyError?: string;
   usage: Usage | null;
@@ -463,12 +564,25 @@ const ProtocolHeader = ({
   />
 );
 
-const HTTPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
+const HTTPUsage = ({
+  aggregate = false,
+  history,
+  historyError,
+  usage,
+}: ProtocolUsageProps) => {
   const http = usage?.proxy?.http ?? emptyHTTPMetrics;
   const points = history?.points ?? emptyPoints;
   const emptyLabel = emptyLabelFor(history, historyError);
   const from = history?.from ?? 0;
   const to = history?.to ?? 0;
+  const requests = useMemo(
+    () => breakdownSeriesFor(history, httpRequestBreakdownValue),
+    [history]
+  );
+  const latency = useMemo(
+    () => breakdownSeriesFor(history, httpLatencyBreakdownValue),
+    [history]
+  );
   return (
     <section className="border border-border bg-card">
       <ProtocolHeader title="HTTP traffic" usage={usage} />
@@ -526,7 +640,7 @@ const HTTPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
             from={from}
             minimumMaximum={1}
             points={points}
-            series={httpRequestSeries}
+            series={aggregate ? requests : httpRequestSeries}
             title="HTTP request rate"
             to={to}
           />
@@ -538,8 +652,8 @@ const HTTPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
             from={from}
             minimumMaximum={10}
             points={points}
-            series={httpLatencySeries}
-            title="HTTP latency"
+            series={aggregate ? latency : httpLatencySeries}
+            title={aggregate ? "HTTP latency · p95" : "HTTP latency"}
             to={to}
           />
         </div>
@@ -548,9 +662,18 @@ const HTTPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
   );
 };
 
-const TCPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
+const TCPUsage = ({
+  aggregate = false,
+  history,
+  historyError,
+  usage,
+}: ProtocolUsageProps) => {
   const proxy = usage?.proxy;
   const points = history?.points ?? emptyPoints;
+  const connections = useMemo(
+    () => breakdownSeriesFor(history, tcpBreakdownValue),
+    [history]
+  );
   return (
     <section className="border border-border bg-card">
       <ProtocolHeader title="TCP traffic" usage={usage} />
@@ -578,7 +701,7 @@ const TCPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
           from={history?.from ?? 0}
           minimumMaximum={1}
           points={points}
-          series={tcpSeries}
+          series={aggregate ? connections : tcpSeries}
           title="TCP connection rate"
           to={history?.to ?? 0}
         />
@@ -587,9 +710,18 @@ const TCPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
   );
 };
 
-const UDPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
+const UDPUsage = ({
+  aggregate = false,
+  history,
+  historyError,
+  usage,
+}: ProtocolUsageProps) => {
   const proxy = usage?.proxy;
   const points = history?.points ?? emptyPoints;
+  const packets = useMemo(
+    () => breakdownSeriesFor(history, udpBreakdownValue),
+    [history]
+  );
   return (
     <section className="border border-border bg-card">
       <ProtocolHeader title="UDP traffic" usage={usage} />
@@ -622,8 +754,10 @@ const UDPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
           from={history?.from ?? 0}
           minimumMaximum={1}
           points={points}
-          series={udpSeries}
-          title="UDP packet rate"
+          series={aggregate ? packets : udpSeries}
+          title={
+            aggregate ? "UDP packet rate · ingress + egress" : "UDP packet rate"
+          }
           to={history?.to ?? 0}
         />
       </div>
@@ -633,9 +767,9 @@ const UDPUsage = ({ history, historyError, usage }: ProtocolUsageProps) => {
 
 const ProtocolUsage = (props: ProtocolUsageProps) => (
   <>
-    <HTTPUsage {...props} />
-    <TCPUsage {...props} />
-    <UDPUsage {...props} />
+    {props.usage?.trafficRoutes.http ? <HTTPUsage {...props} /> : null}
+    {props.usage?.trafficRoutes.tcp ? <TCPUsage {...props} /> : null}
+    {props.usage?.trafficRoutes.udp ? <UDPUsage {...props} /> : null}
   </>
 );
 
@@ -861,7 +995,11 @@ const UsageContent = ({
         range={range}
       />
     ) : null}
-    <UsageCharts history={history} historyError={historyError} />
+    <UsageCharts
+      aggregate={aggregate}
+      history={history}
+      historyError={historyError}
+    />
   </section>
 );
 
@@ -923,7 +1061,7 @@ export const ProjectUsage = ({ projectID }: { projectID: string }) => {
       <header className="border-b border-border px-6 py-5">
         <h3 className="text-sm font-medium">Usage</h3>
         <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">
-          Combined CPU, memory, and public traffic for this project.
+          CPU, memory, persistent disk, and public traffic split by workload.
         </p>
       </header>
       <div className="space-y-4 p-4 lg:p-6">
@@ -940,6 +1078,7 @@ export const ProjectUsage = ({ projectID }: { projectID: string }) => {
           usage={metrics.usage}
         />
         <ProtocolUsage
+          aggregate
           history={metrics.history}
           historyError={metrics.historyError}
           usage={metrics.usage}
@@ -981,6 +1120,7 @@ export const InstallationUsage = () => {
         usage={metrics.usage}
       />
       <ProtocolUsage
+        aggregate
         history={metrics.history}
         historyError={metrics.historyError}
         usage={metrics.usage}

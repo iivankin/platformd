@@ -6,6 +6,7 @@ import {
   mutateManagedRedis,
   previewManagedRedisKey,
   scanManagedRedisKeys,
+  updateManagedRedisPortForward,
 } from "@/api";
 import type {
   ManagedRedis,
@@ -19,6 +20,7 @@ import { Input } from "@/components/ui/input";
 import { ConnectionDetails } from "@/connection-details";
 import { redisConnectionURL } from "@/connection-values";
 import { DatabaseVersionChange } from "@/database-version-change";
+import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
 import { cn } from "@/lib/utils";
 import { ManagedDeploymentHistory } from "@/managed-deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
@@ -31,6 +33,7 @@ import { ResourceBackupPanel } from "@/resource-backup-panel";
 import { ResourceConsole } from "@/resource-console";
 import { ResourceUsage } from "@/resource-usage";
 import { ResourceVariables } from "@/resource-variables";
+import { ResourcePortForwardSettings } from "@/service-port-forward";
 import { WorkspaceView } from "@/workspace-view";
 
 export type RedisWorkspaceView =
@@ -96,11 +99,13 @@ const RedisResourceUsage = ({
 const RedisOverview = ({
   data,
   onVersionChanged,
+  onResourceChange,
   projectID,
   redisID,
   resource,
 }: {
   data: ResourceNodeData;
+  onResourceChange: (resource: ManagedRedis) => void;
   onVersionChanged: () => Promise<void>;
   projectID: string;
   redisID: string;
@@ -143,6 +148,31 @@ const RedisOverview = ({
         </p>
       </div>
     </SectionCard>
+
+    {resource ? (
+      <ResourcePortForwardSettings
+        example={{
+          kind: "redis",
+          localPort: 16_379,
+          port: 6379,
+          projectName: projectNameFromInternalHostname(
+            resource.hostname ?? data.internalHostname
+          ),
+          resourceName: resource.name,
+        }}
+        idPrefix="redis"
+        onSave={async (portForward, expectedUpdatedAt) => {
+          onResourceChange(
+            await updateManagedRedisPortForward(projectID, redisID, {
+              expectedUpdatedAt,
+              portForward,
+            })
+          );
+        }}
+        updatedAt={resource.updatedAt}
+        value={resource.portForward}
+      />
+    ) : null}
 
     {resource ? (
       <ConnectionDetails
@@ -480,6 +510,7 @@ export const RedisDetailPanel = ({
           settings: (
             <RedisOverview
               data={data}
+              onResourceChange={setResource}
               onVersionChanged={refreshAfterVersionChange}
               projectID={projectID}
               redisID={redisID}

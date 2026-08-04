@@ -17,6 +17,9 @@ type ResourceMetricTarget struct {
 	Kind       string
 	ResourceID string
 	ProjectID  string
+	HTTPRoute  bool
+	TCPRoute   bool
+	UDPRoute   bool
 }
 
 type ResourceMetricSample struct {
@@ -71,6 +74,7 @@ type MetricValues struct {
 	CPUPeakMillicores                *int64
 	MemoryBytes                      uint64
 	MemoryPeakBytes                  uint64
+	DiskBytes                        *uint64
 	NetworkIngressBytesPerSecond     *int64
 	NetworkIngressPeakBytesPerSecond *int64
 	NetworkEgressBytesPerSecond      *int64
@@ -87,9 +91,16 @@ type MetricBatch struct {
 
 func (store *Store) ResourceMetricTargets(ctx context.Context) ([]ResourceMetricTarget, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT 'service', id, project_id FROM services WHERE enabled = 1
-UNION ALL SELECT 'postgres', id, project_id FROM managed_postgres
-UNION ALL SELECT 'redis', id, project_id FROM managed_redis
+SELECT 'service', s.id, s.project_id,
+  EXISTS (SELECT 1 FROM service_domains d WHERE d.service_id = s.id)
+    OR EXISTS (SELECT 1 FROM preview_deployments p WHERE p.service_id = s.id AND p.status = 'active'),
+  EXISTS (SELECT 1 FROM service_listeners l WHERE l.service_id = s.id AND l.protocol = 'tcp')
+    OR EXISTS (SELECT 1 FROM network_gateways g WHERE g.target_service_id = s.id AND g.mode = 'export' AND g.protocol = 'tcp'),
+  EXISTS (SELECT 1 FROM service_listeners l WHERE l.service_id = s.id AND l.protocol = 'udp')
+    OR EXISTS (SELECT 1 FROM network_gateways g WHERE g.target_service_id = s.id AND g.mode = 'export' AND g.protocol = 'udp')
+FROM services s WHERE s.enabled = 1
+UNION ALL SELECT 'postgres', id, project_id, 0, 0, 0 FROM managed_postgres
+UNION ALL SELECT 'redis', id, project_id, 0, 0, 0 FROM managed_redis
 ORDER BY 1, 2`)
 	if err != nil {
 		return nil, fmt.Errorf("list metric targets: %w", err)
@@ -98,7 +109,10 @@ ORDER BY 1, 2`)
 	targets := make([]ResourceMetricTarget, 0)
 	for rows.Next() {
 		var target ResourceMetricTarget
-		if err := rows.Scan(&target.Kind, &target.ResourceID, &target.ProjectID); err != nil {
+		if err := rows.Scan(
+			&target.Kind, &target.ResourceID, &target.ProjectID,
+			&target.HTTPRoute, &target.TCPRoute, &target.UDPRoute,
+		); err != nil {
 			return nil, fmt.Errorf("scan metric target: %w", err)
 		}
 		targets = append(targets, target)
@@ -168,11 +182,11 @@ func recordResourceMetricSamples(ctx context.Context, transaction *sql.Tx, sampl
 INSERT INTO resource_metric_samples(
   resource_kind, resource_id, observed_at, duration_millis,
   cpu_duration_millis, network_duration_millis, proxy_duration_millis,
-  cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes,
+  cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes, disk_bytes,
   network_ingress_bytes_per_second, network_ingress_peak_bytes_per_second,
   network_egress_bytes_per_second, network_egress_peak_bytes_per_second,
   running, proxy_metrics_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(resource_kind, resource_id, observed_at) DO UPDATE SET
   duration_millis = excluded.duration_millis,
   cpu_duration_millis = excluded.cpu_duration_millis,
@@ -182,6 +196,7 @@ ON CONFLICT(resource_kind, resource_id, observed_at) DO UPDATE SET
   cpu_peak_millicores = excluded.cpu_peak_millicores,
   memory_bytes = excluded.memory_bytes,
   memory_peak_bytes = excluded.memory_peak_bytes,
+  disk_bytes = excluded.disk_bytes,
   network_ingress_bytes_per_second = excluded.network_ingress_bytes_per_second,
   network_ingress_peak_bytes_per_second = excluded.network_ingress_peak_bytes_per_second,
   network_egress_bytes_per_second = excluded.network_egress_bytes_per_second,
@@ -201,7 +216,7 @@ ON CONFLICT(resource_kind, resource_id, observed_at) DO UPDATE SET
 			sample.Kind, sample.ResourceID, sample.ObservedAt, sample.DurationMillis,
 			sample.CPUDurationMillis, sample.NetworkDurationMillis, sample.ProxyDurationMillis,
 			nullableInt64(sample.CPUMillicores), nullableInt64(sample.CPUPeakMillicores),
-			int64(sample.MemoryBytes), int64(sample.MemoryPeakBytes),
+			int64(sample.MemoryBytes), int64(sample.MemoryPeakBytes), nullableUint64(sample.DiskBytes),
 			nullableInt64(sample.NetworkIngressBytesPerSecond), nullableInt64(sample.NetworkIngressPeakBytesPerSecond),
 			nullableInt64(sample.NetworkEgressBytesPerSecond), nullableInt64(sample.NetworkEgressPeakBytesPerSecond),
 			boolInteger(sample.Running), proxyJSON,
@@ -217,11 +232,11 @@ func recordAggregateMetricSamples(ctx context.Context, transaction *sql.Tx, samp
 INSERT INTO aggregate_metric_samples(
   scope_kind, scope_id, observed_at, duration_millis,
   cpu_duration_millis, network_duration_millis, proxy_duration_millis,
-  cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes,
+  cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes, disk_bytes,
   network_ingress_bytes_per_second, network_ingress_peak_bytes_per_second,
   network_egress_bytes_per_second, network_egress_peak_bytes_per_second,
   running_resources, total_resources, proxy_metrics_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(scope_kind, scope_id, observed_at) DO UPDATE SET
   duration_millis = excluded.duration_millis,
   cpu_duration_millis = excluded.cpu_duration_millis,
@@ -231,6 +246,7 @@ ON CONFLICT(scope_kind, scope_id, observed_at) DO UPDATE SET
   cpu_peak_millicores = excluded.cpu_peak_millicores,
   memory_bytes = excluded.memory_bytes,
   memory_peak_bytes = excluded.memory_peak_bytes,
+  disk_bytes = excluded.disk_bytes,
   network_ingress_bytes_per_second = excluded.network_ingress_bytes_per_second,
   network_ingress_peak_bytes_per_second = excluded.network_ingress_peak_bytes_per_second,
   network_egress_bytes_per_second = excluded.network_egress_bytes_per_second,
@@ -251,7 +267,7 @@ ON CONFLICT(scope_kind, scope_id, observed_at) DO UPDATE SET
 			sample.ScopeKind, sample.ScopeID, sample.ObservedAt, sample.DurationMillis,
 			sample.CPUDurationMillis, sample.NetworkDurationMillis, sample.ProxyDurationMillis,
 			nullableInt64(sample.CPUMillicores), nullableInt64(sample.CPUPeakMillicores),
-			int64(sample.MemoryBytes), int64(sample.MemoryPeakBytes),
+			int64(sample.MemoryBytes), int64(sample.MemoryPeakBytes), nullableUint64(sample.DiskBytes),
 			nullableInt64(sample.NetworkIngressBytesPerSecond), nullableInt64(sample.NetworkIngressPeakBytesPerSecond),
 			nullableInt64(sample.NetworkEgressBytesPerSecond), nullableInt64(sample.NetworkEgressPeakBytesPerSecond),
 			sample.RunningResources, sample.TotalResources, proxyJSON,
@@ -269,7 +285,7 @@ func (store *Store) AggregateMetricSamples(ctx context.Context, scopeKind, scope
 	rows, err := store.database.QueryContext(ctx, `
 SELECT observed_at, cpu_millicores, memory_bytes,
        duration_millis, cpu_duration_millis, network_duration_millis, proxy_duration_millis,
-       cpu_peak_millicores, memory_peak_bytes,
+       cpu_peak_millicores, memory_peak_bytes, disk_bytes,
        network_ingress_bytes_per_second, network_ingress_peak_bytes_per_second,
        network_egress_bytes_per_second, network_egress_peak_bytes_per_second,
        running_resources, total_resources, proxy_metrics_json
@@ -282,34 +298,41 @@ ORDER BY observed_at`, scopeKind, scopeID, from, to)
 	defer rows.Close()
 	result := make([]AggregateMetricSample, 0)
 	for rows.Next() {
-		sample := AggregateMetricSample{ScopeKind: scopeKind, ScopeID: scopeID}
-		var cpu, cpuPeak, ingress, ingressPeak, egress, egressPeak sql.NullInt64
-		var proxyJSON sql.NullString
-		var memory, memoryPeak int64
-		if err := rows.Scan(
-			&sample.ObservedAt, &cpu, &memory, &sample.DurationMillis,
-			&sample.CPUDurationMillis, &sample.NetworkDurationMillis, &sample.ProxyDurationMillis,
-			&cpuPeak, &memoryPeak,
-			&ingress, &ingressPeak, &egress, &egressPeak,
-			&sample.RunningResources, &sample.TotalResources, &proxyJSON,
-		); err != nil {
-			return nil, fmt.Errorf("scan aggregate metric sample: %w", err)
-		}
-		sample.MemoryBytes = uint64(memory)
-		sample.MemoryPeakBytes = uint64(memoryPeak)
-		sample.CPUMillicores = nullInt64Pointer(cpu)
-		sample.CPUPeakMillicores = nullInt64Pointer(cpuPeak)
-		sample.NetworkIngressBytesPerSecond = nullInt64Pointer(ingress)
-		sample.NetworkIngressPeakBytesPerSecond = nullInt64Pointer(ingressPeak)
-		sample.NetworkEgressBytesPerSecond = nullInt64Pointer(egress)
-		sample.NetworkEgressPeakBytesPerSecond = nullInt64Pointer(egressPeak)
-		sample.Proxy, err = decodeProxyMetricSample(proxyJSON)
+		sample, err := scanAggregateMetricSample(rows, scopeKind, scopeID)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("scan aggregate metric sample: %w", err)
 		}
 		result = append(result, sample)
 	}
 	return result, rows.Err()
+}
+
+func scanAggregateMetricSample(scanner metricScanner, scopeKind, scopeID string, trailing ...any) (AggregateMetricSample, error) {
+	sample := AggregateMetricSample{ScopeKind: scopeKind, ScopeID: scopeID}
+	var cpu, cpuPeak, disk, ingress, ingressPeak, egress, egressPeak sql.NullInt64
+	var proxyJSON sql.NullString
+	var memory, memoryPeak int64
+	destinations := []any{
+		&sample.ObservedAt, &cpu, &memory, &sample.DurationMillis,
+		&sample.CPUDurationMillis, &sample.NetworkDurationMillis, &sample.ProxyDurationMillis,
+		&cpuPeak, &memoryPeak, &disk,
+		&ingress, &ingressPeak, &egress, &egressPeak,
+		&sample.RunningResources, &sample.TotalResources, &proxyJSON,
+	}
+	if err := scanner.Scan(append(destinations, trailing...)...); err != nil {
+		return AggregateMetricSample{}, err
+	}
+	sample.MemoryBytes, sample.MemoryPeakBytes = uint64(memory), uint64(memoryPeak)
+	sample.DiskBytes = nullUint64Pointer(disk)
+	sample.CPUMillicores = nullInt64Pointer(cpu)
+	sample.CPUPeakMillicores = nullInt64Pointer(cpuPeak)
+	sample.NetworkIngressBytesPerSecond = nullInt64Pointer(ingress)
+	sample.NetworkIngressPeakBytesPerSecond = nullInt64Pointer(ingressPeak)
+	sample.NetworkEgressBytesPerSecond = nullInt64Pointer(egress)
+	sample.NetworkEgressPeakBytesPerSecond = nullInt64Pointer(egressPeak)
+	var err error
+	sample.Proxy, err = decodeProxyMetricSample(proxyJSON)
+	return sample, err
 }
 
 func validateAggregateMetricSample(sample AggregateMetricSample) error {
@@ -333,11 +356,26 @@ func nullableInt64(value *int64) any {
 	return *value
 }
 
+func nullableUint64(value *uint64) any {
+	if value == nil {
+		return nil
+	}
+	return int64(*value)
+}
+
 func nullInt64Pointer(value sql.NullInt64) *int64 {
 	if !value.Valid {
 		return nil
 	}
 	return &value.Int64
+}
+
+func nullUint64Pointer(value sql.NullInt64) *uint64 {
+	if !value.Valid {
+		return nil
+	}
+	converted := uint64(value.Int64)
+	return &converted
 }
 
 func (store *Store) ResourceMetricSamples(ctx context.Context, kind, resourceID string, from, to int64) ([]ResourceMetricSample, error) {
@@ -348,7 +386,7 @@ func (store *Store) ResourceMetricSamples(ctx context.Context, kind, resourceID 
 	rows, err := store.database.QueryContext(ctx, `
 SELECT observed_at, duration_millis, cpu_duration_millis, network_duration_millis, proxy_duration_millis,
        cpu_millicores, cpu_peak_millicores,
-       memory_bytes, memory_peak_bytes,
+       memory_bytes, memory_peak_bytes, disk_bytes,
        network_ingress_bytes_per_second, network_ingress_peak_bytes_per_second,
        network_egress_bytes_per_second, network_egress_peak_bytes_per_second,
        running, proxy_metrics_json
@@ -373,24 +411,26 @@ type metricScanner interface {
 	Scan(...any) error
 }
 
-func scanResourceMetricSample(scanner metricScanner, kind, resourceID string) (ResourceMetricSample, error) {
+func scanResourceMetricSample(scanner metricScanner, kind, resourceID string, trailing ...any) (ResourceMetricSample, error) {
 	var sample ResourceMetricSample
-	var cpu, cpuPeak, ingress, ingressPeak, egress, egressPeak sql.NullInt64
+	var cpu, cpuPeak, disk, ingress, ingressPeak, egress, egressPeak sql.NullInt64
 	var memory, memoryPeak int64
 	var proxyJSON sql.NullString
 	var running int
-	if err := scanner.Scan(
+	destinations := []any{
 		&sample.ObservedAt, &sample.DurationMillis,
 		&sample.CPUDurationMillis, &sample.NetworkDurationMillis, &sample.ProxyDurationMillis,
-		&cpu, &cpuPeak, &memory, &memoryPeak,
+		&cpu, &cpuPeak, &memory, &memoryPeak, &disk,
 		&ingress, &ingressPeak, &egress, &egressPeak, &running, &proxyJSON,
-	); err != nil {
+	}
+	if err := scanner.Scan(append(destinations, trailing...)...); err != nil {
 		return ResourceMetricSample{}, err
 	}
 	sample.Kind, sample.ResourceID = kind, resourceID
 	sample.CPUMillicores = nullInt64Pointer(cpu)
 	sample.CPUPeakMillicores = nullInt64Pointer(cpuPeak)
 	sample.MemoryBytes, sample.MemoryPeakBytes = uint64(memory), uint64(memoryPeak)
+	sample.DiskBytes = nullUint64Pointer(disk)
 	sample.NetworkIngressBytesPerSecond = nullInt64Pointer(ingress)
 	sample.NetworkIngressPeakBytesPerSecond = nullInt64Pointer(ingressPeak)
 	sample.NetworkEgressBytesPerSecond = nullInt64Pointer(egress)
@@ -479,6 +519,7 @@ func validProxyMetricSample(sample *ProxyMetricSample) bool {
 func validateMetricValues(values MetricValues) error {
 	if values.DurationMillis <= 0 || values.MemoryBytes > maximumMetricCounter ||
 		values.MemoryPeakBytes > maximumMetricCounter || values.MemoryPeakBytes < values.MemoryBytes ||
+		(values.DiskBytes != nil && *values.DiskBytes > maximumMetricCounter) ||
 		!validMetricCoverage(values.CPUDurationMillis, values.DurationMillis, values.CPUMillicores != nil) ||
 		!validMetricCoverage(values.NetworkDurationMillis, values.DurationMillis, values.NetworkIngressBytesPerSecond != nil) ||
 		values.ProxyDurationMillis < 0 || values.ProxyDurationMillis > values.DurationMillis ||

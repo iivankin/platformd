@@ -2,15 +2,19 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/objectstore"
-	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -25,13 +29,56 @@ type ordinaryVolumeBackupConfig struct {
 	Root  string
 }
 
+type imageRevisionRepository interface {
+	ImageRevision(context.Context, string) (state.ImageRevision, error)
+}
+
 func resourceRestorers(
 	runtime *runtimeStack,
-	registryApplication *registry.Application,
+	images imageRevisionRepository,
 	objectStoreApplication *objectstore.Application,
 	volumeConfigs ...ordinaryVolumeBackupConfig,
 ) map[string]backup.ResourceRestorer {
 	result := map[string]backup.ResourceRestorer{
+		"image": backup.ResourceRestorerFunc(func(ctx context.Context, request backup.ResourceRestoreRequest) error {
+			if err := requireConfirmedResourceReplacement(request.Options, "Image"); err != nil {
+				return err
+			}
+			if err := requireNoResourceAttachments(request.Source.Envelope); err != nil {
+				return err
+			}
+			if images == nil {
+				return errors.New("image revision store is unavailable")
+			}
+			revision, err := images.ImageRevision(ctx, request.ResourceID)
+			if err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(revision.ArchivePath), 0o700); err != nil {
+				return err
+			}
+			temporary := revision.ArchivePath + ".restore"
+			file, err := os.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+			if err != nil {
+				return err
+			}
+			hash := sha256.New()
+			_, copyErr := io.Copy(io.MultiWriter(file, hash), request.Source.Reader)
+			closeErr := errors.Join(file.Sync(), file.Close())
+			if err := errors.Join(copyErr, closeErr); err != nil {
+				_ = os.Remove(temporary)
+				return err
+			}
+			if hex.EncodeToString(hash.Sum(nil)) != revision.ArchiveSHA256 {
+				_ = os.Remove(temporary)
+				return errors.New("restored image archive SHA-256 mismatch")
+			}
+			if err := os.Rename(temporary, revision.ArchivePath); err != nil {
+				_ = os.Remove(temporary)
+				return err
+			}
+			return nil
+		}),
 		"postgres": backup.ResourceRestorerFunc(func(
 			ctx context.Context,
 			request backup.ResourceRestoreRequest,
@@ -63,25 +110,6 @@ func resourceRestorers(
 				managedredis.Actor{
 					Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
 				})
-		}),
-		"registry": backup.ResourceRestorerFunc(func(
-			ctx context.Context,
-			request backup.ResourceRestoreRequest,
-		) error {
-			if err := requireConfirmedResourceReplacement(request.Options, "Registry"); err != nil {
-				return err
-			}
-			if err := requireNoResourceAttachments(request.Source.Envelope); err != nil {
-				return err
-			}
-			_, err := registryApplication.RestoreSnapshot(ctx, registry.RestoreInput{
-				RepositoryID: request.ResourceID, Archive: request.Source.Reader,
-				PolicyMode: registry.RestoreApplySnapshotPolicy,
-				Actor: registry.Actor{
-					Kind: request.Actor.Kind, ID: request.Actor.ID, Email: request.Actor.Email,
-				},
-			})
-			return err
 		}),
 		"object_store": backup.ResourceRestorerFunc(func(
 			ctx context.Context,

@@ -1,4 +1,9 @@
-import type { ProjectCanvas, Service, ServiceDomain } from "@/api";
+import type {
+  ProjectCanvas,
+  Service,
+  ServiceDomain,
+  ServiceSource,
+} from "@/api";
 import { newID } from "@/id";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
 import type { PendingServiceSettings } from "@/service-settings-model";
@@ -204,6 +209,15 @@ const staticOutputs: Record<
   redis: ["REDIS_URL", "REDISHOST", "REDISPORT", "REDISPASSWORD"],
 };
 
+const staticServiceOutputs = [
+  "PLATFORMD_PROJECT_ID",
+  "PLATFORMD_PROJECT_NAME",
+  "PLATFORMD_SERVICE_ID",
+  "PLATFORMD_SERVICE_NAME",
+  "PLATFORMD_PRIVATE_DOMAIN",
+  "PLATFORMD_PUBLIC_URLS",
+] as const;
+
 export const serviceVariableRows = (
   service: Pick<Service, "environment">
 ): VariableRow[] =>
@@ -215,6 +229,7 @@ const suggestionsForService = (
   resource: ProjectCanvas["resources"][number],
   environment: Record<string, string>,
   resourceDomains: ServiceDomain[],
+  source: ServiceSource | undefined,
   currentServiceID: string
 ): VariableSuggestion[] => {
   const suggestions: VariableSuggestion[] = [];
@@ -226,6 +241,14 @@ const suggestionsForService = (
         variableName: output,
       });
     }
+  }
+  const automaticOutputs = staticServiceOutputs;
+  for (const output of automaticOutputs) {
+    suggestions.push({
+      expression: `\${{${resource.name}.${output}}}`,
+      source: resource.name,
+      variableName: output,
+    });
   }
   const seenDomainOutputs = new Set<string>();
   const duplicateDomainOutputs = new Set<string>();
@@ -269,16 +292,23 @@ export const variableSuggestions = (
   for (const resource of resources) {
     if (resource.kind === "service") {
       const service = services.get(resource.id);
+      const draftService = draftServices.get(resource.id);
+      const change = changes[resource.id];
       const environment =
-        draftServices.get(resource.id)?.input.environment ??
-        changes[resource.id]?.environment ??
+        draftService?.input.environment ??
+        change?.environment ??
         service?.environment ??
         {};
+      const source =
+        draftService?.settings.configuration.source ??
+        change?.draft.configuration.source ??
+        service?.source;
       suggestions.push(
         ...suggestionsForService(
           resource,
           environment,
           domains.get(resource.id) ?? [],
+          source,
           currentServiceID
         ).map((suggestion) => ({ sourceOrder: 1, suggestion }))
       );

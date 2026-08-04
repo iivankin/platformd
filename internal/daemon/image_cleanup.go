@@ -2,11 +2,13 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log"
 	"sync"
 	"time"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/diskpressure"
 )
 
 const inactiveFinalImageRetention = 14 * 24 * time.Hour
@@ -30,6 +32,9 @@ type imageGarbageCollector struct {
 	cleanupMu           sync.Mutex
 	pressureMu          sync.Mutex
 	lastPressureCleanup time.Time
+	lastPressureLevel   diskpressure.Level
+	archiveMu           sync.RWMutex
+	archive             *imageArchiveGarbageCollector
 }
 
 func newImageGarbageCollector(references imageCacheReferences, cleaner imageCacheCleaner) *imageGarbageCollector {
@@ -50,24 +55,37 @@ func runImageCacheCleanup(ctx context.Context, collector *imageGarbageCollector)
 }
 
 func (collector *imageGarbageCollector) ForceGarbageCollect(ctx context.Context) (containerengine.ImageGarbageCollectResult, error) {
-	result, err := collector.cleanup(ctx, true)
+	var err error
+	if archive := collector.archiveCollector(); archive != nil {
+		err = archive.Cleanup(ctx, diskpressure.Low)
+	}
+	result, cacheErr := collector.cleanup(ctx, true)
+	err = errors.Join(err, cacheErr)
 	logImageGarbageCollection(result, err)
 	return result, err
 }
 
-func (collector *imageGarbageCollector) CleanupDiskPressure(ctx context.Context) error {
+func (collector *imageGarbageCollector) CleanupDiskPressure(ctx context.Context, level diskpressure.Level) error {
 	now := collector.now()
 	collector.pressureMu.Lock()
-	if !collector.lastPressureCleanup.IsZero() && now.Sub(collector.lastPressureCleanup) < diskPressureImageCleanupInterval {
+	if !collector.lastPressureCleanup.IsZero() && now.Sub(collector.lastPressureCleanup) < diskPressureImageCleanupInterval &&
+		imageCleanupPressureRank(level) <= imageCleanupPressureRank(collector.lastPressureLevel) {
 		collector.pressureMu.Unlock()
 		return nil
 	}
 	collector.lastPressureCleanup = now
+	collector.lastPressureLevel = level
 	collector.pressureMu.Unlock()
-	result, err := collector.cleanup(ctx, true)
+	var err error
+	if archive := collector.archiveCollector(); archive != nil {
+		err = archive.Cleanup(ctx, level)
+	}
+	result, cacheErr := collector.cleanup(ctx, true)
+	err = errors.Join(err, cacheErr)
 	if err != nil {
 		collector.pressureMu.Lock()
 		collector.lastPressureCleanup = time.Time{}
+		collector.lastPressureLevel = ""
 		collector.pressureMu.Unlock()
 	}
 	if ctx.Err() == nil {
@@ -77,10 +95,40 @@ func (collector *imageGarbageCollector) CleanupDiskPressure(ctx context.Context)
 }
 
 func (collector *imageGarbageCollector) cleanupAndLog(ctx context.Context, aggressiveBuildCache bool) {
-	result, err := collector.cleanup(ctx, aggressiveBuildCache)
+	var err error
+	if archive := collector.archiveCollector(); archive != nil {
+		err = archive.Cleanup(ctx, diskpressure.Low)
+	}
+	result, cacheErr := collector.cleanup(ctx, aggressiveBuildCache)
+	err = errors.Join(err, cacheErr)
 	if ctx.Err() == nil {
 		logImageGarbageCollection(result, err)
 	}
+}
+
+func imageCleanupPressureRank(level diskpressure.Level) int {
+	switch level {
+	case diskpressure.Emergency:
+		return 3
+	case diskpressure.Critical:
+		return 2
+	case diskpressure.Low:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func (collector *imageGarbageCollector) setArchiveCollector(archive *imageArchiveGarbageCollector) {
+	collector.archiveMu.Lock()
+	collector.archive = archive
+	collector.archiveMu.Unlock()
+}
+
+func (collector *imageGarbageCollector) archiveCollector() *imageArchiveGarbageCollector {
+	collector.archiveMu.RLock()
+	defer collector.archiveMu.RUnlock()
+	return collector.archive
 }
 
 func (collector *imageGarbageCollector) cleanup(

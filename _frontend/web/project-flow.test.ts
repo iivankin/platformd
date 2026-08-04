@@ -93,12 +93,22 @@ test("assigns a separate pair of ports to every connection", async () => {
   };
 
   const flow = await projectFlowElements(canvas);
-  expect(
-    flow.nodes.find((node) => node.id === "api")?.data.outgoingHandleIDs
-  ).toEqual(["source:api:a", "source:api:b"]);
-  expect(
-    flow.nodes.find((node) => node.id === "b")?.data.incomingHandleIDs
-  ).toEqual(["target:api:b", "target:worker:b"]);
+  const api = flow.nodes.find((node) => node.id === "api");
+  expect([
+    ...(api?.data.leftHandles ?? []),
+    ...(api?.data.rightHandles ?? []),
+  ]).toEqual(
+    expect.arrayContaining([
+      { id: "source:api:a", type: "source" },
+      { id: "source:api:b", type: "source" },
+    ])
+  );
+  expect(flow.nodes.find((node) => node.id === "b")?.data.leftHandles).toEqual(
+    expect.arrayContaining([
+      { id: "target:api:b", type: "target" },
+      { id: "target:worker:b", type: "target" },
+    ])
+  );
   expect(new Set(flow.edges.map((edge) => edge.sourceHandle)).size).toBe(3);
   expect(new Set(flow.edges.map((edge) => edge.targetHandle)).size).toBe(3);
   expect(flow.edges.every((edge) => edge.data?.points.length)).toBe(true);
@@ -180,7 +190,14 @@ test("keeps fan-out and diamond layouts visually centered", async () => {
   const fanOutPositions = new Map(
     fanOut.nodes.map((node) => [node.id, node.position])
   );
-  expect(fanOutPositions.get("demo-api")?.y).toBe(436);
+  expect(fanOutPositions.get("demo-api")?.x).toBe(472);
+  expect(fanOutPositions.get("demo-api")?.y).toBe(284);
+  expect(fanOutPositions.get("demo-assets")?.x).toBeLessThan(
+    fanOutPositions.get("demo-api")?.x ?? 0
+  );
+  expect(fanOutPositions.get("demo-primary")?.x).toBeGreaterThan(
+    fanOutPositions.get("demo-api")?.x ?? 0
+  );
 
   const diamond = await projectFlowElements(
     projectCanvasForDemoPreset(emptyCanvas, "diamond")
@@ -195,6 +212,64 @@ test("keeps fan-out and diamond layouts visually centered", async () => {
       (diamondPositions.get("demo-worker")?.y ?? 0)) /
       2
   ).toBe(132);
+});
+
+test("surrounds marketplace services with dedicated stores and shared hubs", async () => {
+  const flow = await projectFlowElements(
+    projectCanvasForDemoPreset(emptyCanvas, "marketplace")
+  );
+  const positions = new Map(flow.nodes.map((node) => [node.id, node.position]));
+  const serviceX = positions.get("demo-console")?.x ?? 0;
+  expect(positions.get("demo-media")?.x).toBeLessThan(serviceX);
+  expect(positions.get("demo-documents")?.x).toBeLessThan(serviceX);
+  expect(positions.get("demo-primary")?.x).toBeGreaterThan(serviceX);
+  expect(positions.get("demo-cache")?.x).toBeGreaterThan(serviceX);
+  expect(positions.get("demo-console")?.y).toBe(positions.get("demo-media")?.y);
+  expect(positions.get("demo-crawler")?.y).toBe(
+    positions.get("demo-documents")?.y
+  );
+  expect(positions.get("demo-console")?.y).toBe(
+    positions.get("demo-primary")?.y
+  );
+  expect(positions.get("demo-crawler")?.y).toBe(positions.get("demo-cache")?.y);
+
+  expect(
+    flow.nodes.find((node) => node.id === "demo-console")?.data.leftHandles
+  ).toEqual([{ id: "source:demo-console:demo-media", type: "source" }]);
+  expect(
+    flow.nodes.find((node) => node.id === "demo-media")?.data.rightHandles
+  ).toEqual([{ id: "target:demo-console:demo-media", type: "target" }]);
+  expect(
+    flow.nodes
+      .find((node) => node.id === "demo-primary")
+      ?.data.leftHandles?.map((handle) => handle.id)
+  ).toEqual([
+    "target:demo-notify-worker:demo-primary",
+    "target:demo-console:demo-primary",
+    "target:demo-crawler:demo-primary",
+  ]);
+});
+
+test("parks isolated resources in a row above the connected cluster", async () => {
+  const flow = await projectFlowElements(
+    projectCanvasForDemoPreset(emptyCanvas, "marketplace")
+  );
+  const isolatedIDs = new Set(["demo-help", "demo-marketing"]);
+  const isolates = flow.nodes
+    .filter((node) => isolatedIDs.has(node.id))
+    .toSorted((left, right) => left.position.x - right.position.x);
+  const connectedTop = Math.min(
+    ...flow.nodes
+      .filter((node) => !isolatedIDs.has(node.id))
+      .map((node) => node.position.y)
+  );
+  expect(isolates).toHaveLength(2);
+  const [left, right] = isolates;
+  expect(left?.position.y).toBe(right?.position.y);
+  expect(
+    connectedTop - ((left?.position.y ?? 0) + (left?.data.layoutHeight ?? 0))
+  ).toBe(36);
+  expect((right?.position.x ?? 0) - (left?.position.x ?? 0)).toBe(292);
 });
 
 test("refreshes status data without resetting dragged node positions", () => {
@@ -277,12 +352,19 @@ test("centers a service between its dependency resources", async () => {
 
   const flow = await projectFlowElements(canvas);
   const positions = new Map(flow.nodes.map((node) => [node.id, node.position]));
-  expect(positions.get("api")).toEqual({ x: 72, y: 208 });
-  expect([positions.get("a"), positions.get("b"), positions.get("c")]).toEqual([
-    { x: 472, y: 56 },
-    { x: 472, y: 208 },
-    { x: 472, y: 360 },
+  const apiX = positions.get("api")?.x ?? 0;
+  expect(apiX).toBe(472);
+  expect(positions.get("a")?.x).toBeLessThan(apiX);
+  expect(positions.get("b")?.x).toBeGreaterThan(apiX);
+  expect(positions.get("c")?.x).toBeGreaterThan(apiX);
+  expect(positions.get("api")?.y).toBe(positions.get("a")?.y);
+  const api = flow.nodes.find((node) => node.id === "api");
+  expect(api?.data.leftHandles).toEqual([
+    { id: "source:api:a", type: "source" },
   ]);
+  expect(api?.data.rightHandles?.map((handle) => handle.id).toSorted()).toEqual(
+    ["source:api:b", "source:api:c"]
+  );
 });
 
 test("moves layout-managed nodes when their calculated position changes", () => {

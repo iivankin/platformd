@@ -192,6 +192,45 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 	}
 }
 
+func TestMCPSupportsCodexProtocolVersion(t *testing.T) {
+	handler := newTestHandler(t, &repositoryStub{})
+
+	initialize := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"codex","version":"0.146.0-alpha.9.2"}}}`)
+	initialize.Header.Set("MCP-Protocol-Version", protocolVersion2025June18)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, initialize)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"protocolVersion":"2025-06-18"`) {
+		t.Fatalf("Codex initialize response = %d/%s", response.Code, response.Body)
+	}
+
+	initialized := mcpRequest(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
+	initialized.Header.Set("MCP-Protocol-Version", protocolVersion2025June18)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, initialized)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("Codex initialized notification = %d/%s", response.Code, response.Body)
+	}
+
+	list := mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`)
+	list.Header.Set("MCP-Protocol-Version", protocolVersion2025June18)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) {
+		t.Fatalf("Codex tools/list response = %d/%s", response.Code, response.Body)
+	}
+}
+
+func TestMCPInitializeNegotiatesLatestSupportedProtocolVersion(t *testing.T) {
+	handler := newTestHandler(t, &repositoryStub{})
+	initialize := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2099-01-01","capabilities":{},"clientInfo":{"name":"future-client","version":"1"}}}`)
+	initialize.Header.Del("MCP-Protocol-Version")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, initialize)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"protocolVersion":"2025-11-25"`) {
+		t.Fatalf("negotiated initialize response = %d/%s", response.Code, response.Body)
+	}
+}
+
 func TestMCPVolumeToolsUseReadAndAdminBoundaries(t *testing.T) {
 	repository := &repositoryStub{}
 	handler := newTestHandler(t, repository)
@@ -262,6 +301,14 @@ func TestMCPRejectsInvalidTransportHeaders(t *testing.T) {
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("missing token identity status = %d", response.Code)
+	}
+
+	request = mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`)
+	request.Header.Set("MCP-Protocol-Version", "2099-01-01")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("unsupported protocol header status = %d", response.Code)
 	}
 }
 

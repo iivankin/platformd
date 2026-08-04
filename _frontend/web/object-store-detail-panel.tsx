@@ -7,6 +7,8 @@ import {
   fetchObjects,
   fetchObjectStore,
   previewObject,
+  updateObjectStorePortForward,
+  updateObjectStorePublicAccess,
   uploadObject,
 } from "@/api";
 import type {
@@ -24,21 +26,26 @@ import {
   objectStoreConfiguration,
   objectStoreEndpoint,
 } from "@/connection-values";
+import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
 import {
   ObjectStorePreviewPane,
   ObjectStoreTable,
   ObjectStoreUploadBar,
 } from "@/object-store-browser";
+import { ObjectStorePublicAccessSettings } from "@/object-store-public-access";
+import { ObjectStoreStats } from "@/object-store-stats";
 import type { ResourceNodeData } from "@/project-flow";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
 import { ResourceLogs } from "@/resource-logs";
 import { ResourceVariables } from "@/resource-variables";
+import { ResourcePortForwardSettings } from "@/service-port-forward";
 
 export type ObjectStoreWorkspaceView =
   | "backups"
   | "logs"
   | "objects"
   | "settings"
+  | "stats"
   | "variables";
 
 interface ObjectStoreDetailPanelProperties {
@@ -73,17 +80,9 @@ export const ObjectStoreDetailPanel = ({
     const controller = new AbortController();
     const load = async () => {
       try {
-        const [loadedResource, loadedPage] = await Promise.all([
-          fetchObjectStore(projectID, storeID, controller.signal),
-          fetchObjects(
-            projectID,
-            storeID,
-            { continuationToken, prefix },
-            controller.signal
-          ),
-        ]);
-        setResource(loadedResource);
-        setPage(loadedPage);
+        setResource(
+          await fetchObjectStore(projectID, storeID, controller.signal)
+        );
         setError(null);
       } catch (loadError) {
         if (
@@ -97,7 +96,37 @@ export const ObjectStoreDetailPanel = ({
     };
     void load();
     return () => controller.abort();
-  }, [continuationToken, prefix, projectID, refreshVersion, storeID]);
+  }, [projectID, storeID]);
+
+  useEffect(() => {
+    if (view !== "objects") {
+      return;
+    }
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        setPage(
+          await fetchObjects(
+            projectID,
+            storeID,
+            { continuationToken, prefix },
+            controller.signal
+          )
+        );
+        setError(null);
+      } catch (loadError) {
+        if (
+          loadError instanceof DOMException &&
+          loadError.name === "AbortError"
+        ) {
+          return;
+        }
+        setError(errorText(loadError, "Unable to load object storage"));
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [continuationToken, prefix, projectID, refreshVersion, storeID, view]);
 
   useEffect(() => {
     if (!selected) {
@@ -231,6 +260,47 @@ export const ObjectStoreDetailPanel = ({
             </div>
           </SectionCard>
           {resource ? (
+            <ObjectStorePublicAccessSettings
+              onSave={async (draft, expectedUpdatedAt) => {
+                setResource(
+                  await updateObjectStorePublicAccess(projectID, storeID, {
+                    corsOrigins: draft.corsOrigins,
+                    expectedUpdatedAt,
+                    publicHostname: draft.publicHostname || undefined,
+                  })
+                );
+              }}
+              updatedAt={resource.updatedAt}
+              value={{
+                corsOrigins: resource.corsOrigins,
+                publicHostname: resource.publicHostname,
+              }}
+            />
+          ) : null}
+          {resource ? (
+            <ResourcePortForwardSettings
+              example={{
+                kind: "object_store",
+                port: 9000,
+                projectName: projectNameFromInternalHostname(
+                  resource.internalHostname
+                ),
+                resourceName: resource.name,
+              }}
+              idPrefix="object-store"
+              onSave={async (portForward, expectedUpdatedAt) => {
+                setResource(
+                  await updateObjectStorePortForward(projectID, storeID, {
+                    expectedUpdatedAt,
+                    portForward,
+                  })
+                );
+              }}
+              updatedAt={resource.updatedAt}
+              value={resource.portForward}
+            />
+          ) : null}
+          {resource ? (
             <ConnectionDetails
               description="S3 configuration remains available in this storage workspace."
               rows={[
@@ -263,6 +333,10 @@ export const ObjectStoreDetailPanel = ({
 
       {view === "backups" ? (
         <ResourceBackupPanel resourceID={storeID} resourceKind="object_store" />
+      ) : null}
+
+      {view === "stats" ? (
+        <ObjectStoreStats projectID={projectID} storeID={storeID} />
       ) : null}
 
       {view === "objects" ? (

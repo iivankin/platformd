@@ -13,7 +13,6 @@ type openAPIFeatures struct {
 	managedResources bool
 	databaseVersions bool
 	volumes          bool
-	registry         bool
 	portForwards     bool
 }
 
@@ -63,12 +62,6 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/volumes"] = volumeCollectionOperation()
 		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/volumes/{volumeID}"] = volumeDeleteOperation()
 	}
-	if features.registry {
-		addRegistryPaths(paths)
-		for name, schema := range registryMutationSchemas() {
-			schemas[name] = schema
-		}
-	}
 	if features.portForwards {
 		paths["/public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards"] = portForwardOperation()
 		schemas["PortForwardRequest"] = map[string]any{
@@ -103,7 +96,7 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 
 func portForwardOperation() map[string]any {
 	return map[string]any{"post": map[string]any{
-		"summary": "Create a short-lived WSS-to-TCP port forward ticket (admin token)",
+		"summary": "Create a short-lived WSS-to-TCP port forward ticket (admin token or GitHub Actions OIDC)",
 		"parameters": []map[string]any{
 			{"name": "projectName", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
 			{"name": "resourceName", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
@@ -390,7 +383,7 @@ func serviceMutationSchemas() map[string]any {
 		"type": "object", "additionalProperties": false,
 		"required": []string{"type"},
 		"properties": map[string]any{
-			"type":                  map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
+			"type":                  map[string]any{"type": "string", "enum": []string{"docker_image_upload", "public_image", "private_image"}},
 			"autoUpdate":            map[string]string{"type": "boolean"},
 			"minimumReleaseAgeDays": map[string]any{"type": "integer", "minimum": 1, "maximum": 36_500},
 			"image": map[string]any{
@@ -400,17 +393,13 @@ func serviceMutationSchemas() map[string]any {
 					"reference": map[string]string{"type": "string"},
 				},
 			},
-			"github": map[string]any{
+			"dockerUpload": map[string]any{
 				"type": "object", "additionalProperties": false,
-				"required": []string{"repositoryId", "repository", "branch", "dockerfilePath", "contextPath", "triggerPaths", "waitForCi"},
+				"required": []string{"repository", "branch", "workflows"},
 				"properties": map[string]any{
-					"repositoryId":   map[string]string{"type": "integer"},
-					"repository":     map[string]string{"type": "string"},
-					"branch":         map[string]string{"type": "string"},
-					"dockerfilePath": map[string]string{"type": "string"},
-					"contextPath":    map[string]string{"type": "string"},
-					"triggerPaths":   map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-					"waitForCi":      map[string]string{"type": "boolean"},
+					"repository": map[string]string{"type": "string"},
+					"branch":     map[string]string{"type": "string"},
+					"workflows":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 				},
 			},
 		},
@@ -427,20 +416,11 @@ func serviceMutationSchemas() map[string]any {
 					"cloudflareHostnames": map[string]any{
 						"type": "array", "maxItems": 30, "items": map[string]string{"type": "string"},
 					},
-					"githubWorkflow": map[string]any{
-						"type": "object", "additionalProperties": false,
-						"required": []string{"path", "name"},
-						"properties": map[string]any{
-							"path": map[string]string{"type": "string"}, "name": map[string]string{"type": "string"},
-							"inputs": map[string]any{"type": "object", "maxProperties": 25},
-						},
-					},
 				},
 			},
-			"command":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"args":             map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-			"environment":      map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
-			"buildEnvironment": map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
+			"command":     map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"args":        map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+			"environment": map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
 			"secretReferences": map[string]any{"type": "array", "items": map[string]any{
 				"type": "object", "required": []string{"environmentName", "secretId"},
 				"properties": map[string]any{"environmentName": map[string]string{"type": "string"}, "secretId": map[string]string{"type": "string"}},

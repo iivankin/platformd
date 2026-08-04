@@ -27,7 +27,7 @@ func (store *Store) RecordPortForwardTicket(ctx context.Context, input RecordPor
 		return errors.New("port forward ticket audit input is incomplete")
 	}
 	switch input.ResourceKind {
-	case "service", "postgres", "redis":
+	case "service", "postgres", "redis", "object_store":
 	default:
 		return errors.New("port forward ticket audit resource kind is invalid")
 	}

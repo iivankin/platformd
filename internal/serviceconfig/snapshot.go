@@ -26,7 +26,6 @@ const (
 	maximumEnvironmentVariables = 1024
 	maximumProcessArguments     = 1024
 	maximumProcessBytes         = 256 << 10
-	maximumWorkflowInputs       = 25
 )
 
 var environmentName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -47,25 +46,26 @@ type HealthCheck struct {
 	TimeoutSeconds int    `json:"timeoutSeconds"`
 }
 
-type GitHubWorkflow struct {
-	Path   string         `json:"path"`
-	Name   string         `json:"name"`
-	Inputs map[string]any `json:"inputs"`
+type BeforeDeploy struct {
+	Command             string   `json:"command,omitempty"`
+	CloudflareHostnames []string `json:"cloudflareHostnames"`
 }
 
-type BeforeDeploy struct {
-	Command             string          `json:"command,omitempty"`
-	GitHubWorkflow      *GitHubWorkflow `json:"githubWorkflow,omitempty"`
-	CloudflareHostnames []string        `json:"cloudflareHostnames"`
+// PortForward is GitHub Actions OIDC allowlist for creating short-lived
+// tunnels to this service. It is stored on the service row but excluded from
+// the deployment config hash so allowlist edits do not force a redeploy.
+type PortForward struct {
+	Repository string   `json:"repository"`
+	Workflows  []string `json:"workflows"`
 }
 
 type Snapshot struct {
 	Source           servicesource.Source `json:"source"`
 	BeforeDeploy     *BeforeDeploy        `json:"beforeDeploy,omitempty"`
+	PortForward      *PortForward         `json:"portForward,omitempty"`
 	Command          []string             `json:"command,omitempty"`
 	Args             []string             `json:"args,omitempty"`
 	Environment      map[string]string    `json:"environment"`
-	BuildEnvironment map[string]string    `json:"buildEnvironment"`
 	SecretReferences []SecretReference    `json:"secretReferences"`
 	HealthCheck      *HealthCheck         `json:"healthCheck,omitempty"`
 	CPUMillicores    int64                `json:"cpuMillicores,omitempty"`
@@ -75,13 +75,6 @@ type Snapshot struct {
 
 // Source helpers keep programmatic callers on the same explicit source model
 // as JSON clients without duplicating source literals throughout the daemon.
-func PlatformRegistrySource(reference string) servicesource.Source {
-	return servicesource.Source{
-		Type: servicesource.RegistryImage, AutoUpdate: true,
-		Image: &servicesource.Image{Reference: reference},
-	}
-}
-
 func PublicImageSource(reference string) servicesource.Source {
 	return servicesource.Source{
 		Type: servicesource.PublicImage, AutoUpdate: true,
@@ -108,6 +101,11 @@ func Normalize(input Snapshot) (Snapshot, error) {
 		return Snapshot{}, err
 	}
 	normalized.BeforeDeploy = beforeDeploy
+	portForward, err := normalizePortForward(input.PortForward)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	normalized.PortForward = portForward
 	if input.HealthCheck != nil {
 		healthCheck := *input.HealthCheck
 		if healthCheck.TimeoutSeconds == 0 {
@@ -122,7 +120,6 @@ func Normalize(input Snapshot) (Snapshot, error) {
 	normalized.Command = cloneSlice(input.Command)
 	normalized.Args = cloneSlice(input.Args)
 	normalized.Environment = cloneMap(input.Environment)
-	normalized.BuildEnvironment = cloneMap(input.BuildEnvironment)
 	normalized.SecretReferences = append([]SecretReference(nil), input.SecretReferences...)
 	normalized.VolumeMounts = append([]VolumeMount(nil), input.VolumeMounts...)
 	sort.Slice(normalized.SecretReferences, func(left, right int) bool {
@@ -140,9 +137,6 @@ func Normalize(input Snapshot) (Snapshot, error) {
 	if normalized.Environment == nil {
 		normalized.Environment = make(map[string]string)
 	}
-	if normalized.BuildEnvironment == nil {
-		normalized.BuildEnvironment = make(map[string]string)
-	}
 	if normalized.SecretReferences == nil {
 		normalized.SecretReferences = make([]SecretReference, 0)
 	}
@@ -157,7 +151,9 @@ func Canonical(input Snapshot) (Snapshot, []byte, string, error) {
 	if err != nil {
 		return Snapshot{}, nil, "", err
 	}
-	encoded, err := json.Marshal(normalized)
+	forHash := normalized
+	forHash.PortForward = nil
+	encoded, err := json.Marshal(forHash)
 	if err != nil {
 		return Snapshot{}, nil, "", fmt.Errorf("encode service snapshot: %w", err)
 	}
@@ -201,16 +197,10 @@ func validateSnapshot(snapshot Snapshot) error {
 	if err := validateEnvironment(snapshot.Environment, snapshot.SecretReferences); err != nil {
 		return err
 	}
-	if len(snapshot.BuildEnvironment) > 0 && snapshot.Source.Type != servicesource.GitHubImage {
-		return errors.New("build environment is only valid for GitHub sources")
-	}
-	if err := validateEnvironment(snapshot.BuildEnvironment, nil); err != nil {
-		return fmt.Errorf("build environment: %w", err)
-	}
-	if len(snapshot.Environment)+len(snapshot.SecretReferences)+len(snapshot.BuildEnvironment) > maximumEnvironmentVariables {
+	if len(snapshot.Environment)+len(snapshot.SecretReferences) > maximumEnvironmentVariables {
 		return errors.New("service contains too many variables")
 	}
-	if environmentBytes(snapshot.Environment, snapshot.SecretReferences)+environmentBytes(snapshot.BuildEnvironment, nil) > maximumEnvironmentBytes {
+	if environmentBytes(snapshot.Environment, snapshot.SecretReferences) > maximumEnvironmentBytes {
 		return errors.New("service variables exceed 256 KiB")
 	}
 	if snapshot.HealthCheck != nil {
@@ -231,7 +221,38 @@ func validateSnapshot(snapshot Snapshot) error {
 	return validateVolumeMounts(snapshot.VolumeMounts)
 }
 
-func normalizeBeforeDeploy(input *BeforeDeploy, source servicesource.Source) (*BeforeDeploy, error) {
+func NormalizePortForward(input *PortForward) (*PortForward, error) {
+	return normalizePortForward(input)
+}
+
+func normalizePortForward(input *PortForward) (*PortForward, error) {
+	if input == nil {
+		return nil, nil
+	}
+	repository := strings.ToLower(strings.TrimSpace(input.Repository))
+	if repository == "" && len(input.Workflows) == 0 {
+		return nil, nil
+	}
+	if !servicesource.ValidUploadRepository(repository) {
+		return nil, errors.New("port-forward repository must be a lowercase owner/name")
+	}
+	seen := make(map[string]struct{}, len(input.Workflows))
+	workflows := make([]string, 0, len(input.Workflows))
+	for _, value := range input.Workflows {
+		name := strings.TrimSpace(value)
+		if !servicesource.ValidWorkflowName(name) {
+			return nil, errors.New("port-forward workflows must be simple .yml or .yaml filenames")
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		workflows = append(workflows, name)
+	}
+	return &PortForward{Repository: repository, Workflows: workflows}, nil
+}
+
+func normalizeBeforeDeploy(input *BeforeDeploy, _ servicesource.Source) (*BeforeDeploy, error) {
 	if input == nil {
 		return nil, nil
 	}
@@ -258,44 +279,10 @@ func normalizeBeforeDeploy(input *BeforeDeploy, source servicesource.Source) (*B
 		return nil, fmt.Errorf("before-deploy Cloudflare purge supports at most %d hostnames", maximumCloudflareHostnames)
 	}
 	sort.Strings(result.CloudflareHostnames)
-	if input.GitHubWorkflow != nil {
-		if source.Type != servicesource.GitHubImage {
-			return nil, errors.New("before-deploy GitHub workflow requires a GitHub source")
-		}
-		workflow := &GitHubWorkflow{
-			Path: strings.TrimSpace(input.GitHubWorkflow.Path),
-			Name: strings.TrimSpace(input.GitHubWorkflow.Name),
-		}
-		if !validWorkflowPath(workflow.Path) || workflow.Name == "" || len(workflow.Name) > 512 || strings.ContainsRune(workflow.Name, '\x00') {
-			return nil, errors.New("before-deploy GitHub workflow is invalid")
-		}
-		if len(input.GitHubWorkflow.Inputs) > maximumWorkflowInputs {
-			return nil, fmt.Errorf("before-deploy GitHub workflow supports at most %d inputs", maximumWorkflowInputs)
-		}
-		encoded, err := json.Marshal(input.GitHubWorkflow.Inputs)
-		if err != nil || len(encoded) > maximumBeforeDeployBytes {
-			return nil, errors.New("before-deploy GitHub inputs are invalid or exceed 256 KiB")
-		}
-		if input.GitHubWorkflow.Inputs == nil {
-			workflow.Inputs = make(map[string]any)
-		} else if err := json.Unmarshal(encoded, &workflow.Inputs); err != nil {
-			return nil, errors.New("before-deploy GitHub inputs are invalid")
-		}
-		result.GitHubWorkflow = workflow
-	}
-	if result.Command == "" && result.GitHubWorkflow == nil && len(result.CloudflareHostnames) == 0 {
+	if result.Command == "" && len(result.CloudflareHostnames) == 0 {
 		return nil, nil
 	}
 	return result, nil
-}
-
-func validWorkflowPath(value string) bool {
-	if !strings.HasPrefix(value, ".github/workflows/") || path.Clean(value) != value {
-		return false
-	}
-	name := strings.TrimPrefix(value, ".github/workflows/")
-	return name != "" && !strings.Contains(name, "/") &&
-		(strings.HasSuffix(strings.ToLower(name), ".yml") || strings.HasSuffix(strings.ToLower(name), ".yaml"))
 }
 
 func validateProcess(command, arguments []string) error {

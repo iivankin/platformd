@@ -6,39 +6,34 @@ import {
   serviceConfigurationDraftFromCreateInput,
 } from "@/service-configuration";
 
-const previewDraft = () => ({
+const uploadDraft = () => ({
   ...emptyServiceConfigurationDraft(),
   source: {
-    github: {
+    dockerUpload: {
       branch: "main",
-      contextPath: ".",
-      dockerfilePath: "Dockerfile",
-      pullRequestPreview: {
-        hostnameTemplate: "preview-{{hash}}.example.com",
-      },
       repository: "acme/api",
-      repositoryId: 42,
-      triggerPaths: [],
-      waitForCi: true,
+      workflows: ["deploy.yml"],
     },
-    type: "github" as const,
+    type: "docker_image_upload" as const,
   },
 });
 
-test("requires exactly one HTTP domain for pull request previews", () => {
-  expect(() => parseServiceConfiguration(previewDraft(), 0)).toThrow(
-    "PR previews require exactly one HTTP domain"
+test("requires exactly one HTTP domain for uploaded images", () => {
+  expect(() => parseServiceConfiguration(uploadDraft(), 0)).toThrow(
+    "Image upload services require exactly one HTTP domain"
   );
-  expect(() => parseServiceConfiguration(previewDraft(), 2)).toThrow(
-    "PR previews require exactly one HTTP domain"
+  expect(() => parseServiceConfiguration(uploadDraft(), 2)).toThrow(
+    "Image upload services require exactly one HTTP domain"
   );
-  expect(parseServiceConfiguration(previewDraft(), 1).source.type).toBe(
-    "github"
+  expect(parseServiceConfiguration(uploadDraft(), 1).source.type).toBe(
+    "docker_image_upload"
   );
 });
 
-test("allows an incomplete preview domain while a service is still a draft", () => {
-  expect(parseServiceConfiguration(previewDraft()).source.type).toBe("github");
+test("allows an incomplete upload domain while a service is still a draft", () => {
+  expect(parseServiceConfiguration(uploadDraft()).source.type).toBe(
+    "docker_image_upload"
+  );
 });
 
 test("keeps private registry credentials in the service configuration", () => {
@@ -87,7 +82,6 @@ test("restores editable settings from a pending service creation", () => {
 
   expect(
     serviceConfigurationDraftFromCreateInput({
-      buildEnvironment: {},
       environment: { LOG_LEVEL: "info" },
       healthCheck: { path: "/ready", port: 9090, timeoutSeconds: 15 },
       name: "api",

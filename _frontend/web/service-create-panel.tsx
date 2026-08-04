@@ -13,13 +13,11 @@ import {
 } from "@/service-configuration";
 
 interface ServiceCreatePanelProperties {
-  embeddedRegistryHost: string;
   onClose: () => void;
   onDrafted: (input: CreateServiceInput) => void;
 }
 
 export const ServiceCreatePanel = ({
-  embeddedRegistryHost,
   onClose,
   onDrafted,
 }: ServiceCreatePanelProperties) => {
@@ -35,7 +33,6 @@ export const ServiceCreatePanel = ({
     try {
       const parsed = parseServiceConfiguration(configuration);
       onDrafted({
-        buildEnvironment: {},
         environment: {},
         healthCheck: parsed.healthCheck,
         name,
@@ -85,7 +82,6 @@ export const ServiceCreatePanel = ({
 
         <ServiceConfiguration
           draft={configuration}
-          embeddedRegistryHost={embeddedRegistryHost}
           onDraftChange={setConfiguration}
           httpDomainCount={0}
         />

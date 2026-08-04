@@ -74,7 +74,7 @@ func TestResourceGenerationsAreNewestFirstAndRetentionKeepsIncompletePrefix(t *t
 	remote := newMemoryControlRemote()
 	for index, generation := range []string{"generation-1", "generation-2", "generation-3"} {
 		built := resourcePublicationBuild(
-			t, master, "registry", "registry-1", generation, []byte(generation), time.Unix(int64(40+index), 0),
+			t, master, "image", "service-1", generation, []byte(generation), time.Unix(int64(40+index), 0),
 		)
 		if err := PublishResource(ctx, remote, master, built); err != nil {
 			os.RemoveAll(built.WorkDirectory)
@@ -82,17 +82,17 @@ func TestResourceGenerationsAreNewestFirstAndRetentionKeepsIncompletePrefix(t *t
 		}
 		os.RemoveAll(built.WorkDirectory)
 	}
-	incompleteKey := remote.Key(ResourceChunkKey("registry", "registry-1", "incomplete", 0))
+	incompleteKey := remote.Key(ResourceChunkKey("image", "service-1", "incomplete", 0))
 	remote.objects[incompleteKey] = []byte("partial")
 
-	generations, err := ListResourceGenerations(ctx, remote, "registry", "registry-1")
+	generations, err := ListResourceGenerations(ctx, remote, "image", "service-1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(generations) != 3 || generations[0].GenerationID != "generation-3" || generations[2].GenerationID != "generation-1" {
 		t.Fatalf("generation order = %+v", generations)
 	}
-	if err := ApplyResourceRetention(ctx, remote, "registry", "registry-1", 2); err != nil {
+	if err := ApplyResourceRetention(ctx, remote, "image", "service-1", 2); err != nil {
 		t.Fatal(err)
 	}
 	if _, exists := remote.objects[incompleteKey]; !exists {

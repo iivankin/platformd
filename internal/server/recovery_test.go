@@ -18,7 +18,7 @@ func (*recoveryRepositoryStub) RecoveryStatus(context.Context) (server.RecoveryS
 			ResourceKind: "redis", ResourceID: "redis-1", Status: "restored",
 			GenerationID: "generation-1", SourceCompletedAt: 42,
 		}},
-		LastError: "registry restore failed",
+		LastError: "image restore failed",
 	}, nil
 }
 
@@ -31,7 +31,7 @@ func TestRecoveryStatusAndRetryRoutes(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/recovery", nil))
 	if response.Code != http.StatusOK ||
 		!strings.Contains(response.Body.String(), `"generationId":"generation-1"`) ||
-		!strings.Contains(response.Body.String(), `"lastError":"registry restore failed"`) {
+		!strings.Contains(response.Body.String(), `"lastError":"image restore failed"`) {
 		t.Fatalf("recovery status = %d/%s", response.Code, response.Body.String())
 	}
 

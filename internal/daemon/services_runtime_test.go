@@ -33,14 +33,14 @@ func TestClassifyServiceStatusReportsFirstDeploymentFailure(t *testing.T) {
 	}
 }
 
-func TestSuccessfulGitHubDeploymentClearsPreviousFailure(t *testing.T) {
+func TestSuccessfulDeploymentClearsPreviousFailure(t *testing.T) {
 	stack := &runtimeStack{
 		serviceFailures: map[string]error{
 			"service": errors.New("previous build failed"),
 		},
 	}
 
-	stack.recordGitHubDeploymentResult("service", nil)
+	stack.recordServiceResult("service", nil)
 
 	status, message := classifyServiceStatus(
 		true,

@@ -33,8 +33,8 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
-	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/hostmetrics"
+	"github.com/iivankin/platformd/internal/imageupload"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/journallogs"
@@ -49,7 +49,6 @@ import (
 	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/portproxy"
 	"github.com/iivankin/platformd/internal/projectwebhook"
-	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/releaseconfig"
 	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/sdnotify"
@@ -123,8 +122,18 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	defer store.Close()
+	if err := removeLegacyRegistryData(paths.DataRoot); err != nil {
+		return fmt.Errorf("remove legacy embedded registry data: %w", err)
+	}
 	if err := store.MarkInterrupted(ctx, time.Now().UnixMilli()); err != nil {
 		return err
+	}
+	imageCleanup, err := reconcileImageStorage(ctx, store, paths.ImageUploadsRoot, paths.ImagesRoot)
+	if err != nil {
+		return fmt.Errorf("reconcile uploaded image storage: %w", err)
+	}
+	if imageCleanup.Removed != 0 {
+		log.Printf("uploaded image startup reconcile: removed=%d", imageCleanup.Removed)
 	}
 	volumeReferences, err := store.PersistentVolumeReferences(ctx)
 	if err != nil {
@@ -152,7 +161,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	var imageCollector *imageGarbageCollector
-	pressure, err := diskpressure.New(diskpressure.Config{
+	var pressure *diskpressure.Manager
+	pressure, err = diskpressure.New(diskpressure.Config{
 		DataRoot: paths.DataRoot, ReservePath: paths.ReserveFile,
 		Collector: diskpressure.StatfsCollector{}, Reserve: reserve, Freezer: cgroups,
 		Transitions: diskPressureAuditSink{store: store, installationID: installation.ID},
@@ -160,7 +170,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			if imageCollector == nil {
 				return nil
 			}
-			return imageCollector.CleanupDiskPressure(cleanupContext)
+			level := diskpressure.Low
+			if snapshot, ready := pressure.Snapshot(); ready {
+				level = snapshot.Level
+			}
+			return imageCollector.CleanupDiskPressure(cleanupContext, level)
 		},
 	})
 	if err != nil {
@@ -169,7 +183,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	diskComponents, err := diskusage.NewScanner([]diskusage.Path{
 		{ID: containerImagesDiskComponent, Path: paths.ContainerCache},
 		{ID: "volumes", Path: paths.VolumesRoot},
-		{ID: "registry", Path: paths.RegistryRoot},
+		{ID: "images", Path: paths.ImagesRoot},
+		{ID: "image_uploads", Path: paths.ImageUploadsRoot},
 		{ID: "object_storage", Path: paths.ObjectsRoot},
 		{ID: "logs", Path: paths.LogsRoot},
 		{ID: "backup_work", Path: paths.BackupWorkRoot},
@@ -181,6 +196,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}, diskusage.DefaultRefreshInterval)
 	if err != nil {
 		return fmt.Errorf("configure disk component usage: %w", err)
+	}
+	resourceDiskUsage, err := diskusage.NewResourceScanner(
+		resourceMetricDiskPaths{store: store, root: paths.VolumesRoot},
+		diskusage.DefaultResourceRefreshInterval,
+	)
+	if err != nil {
+		return fmt.Errorf("configure resource disk usage: %w", err)
 	}
 	capacity := infrastructureCapacity{pressure: pressure, components: diskComponents}
 	projects, err := store.RuntimeProjects(ctx)
@@ -204,15 +226,24 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}()
 	diskUsageContext, cancelDiskUsage := context.WithCancel(ctx)
 	diskUsageDone := make(chan struct{})
+	resourceDiskUsageDone := make(chan struct{})
 	defer func() {
 		cancelDiskUsage()
 		<-diskUsageDone
+		<-resourceDiskUsageDone
 	}()
 	go func() {
 		defer close(diskUsageDone)
 		err := diskComponents.Run(diskUsageContext, func(scanErr error) { log.Printf("disk component usage: %v", scanErr) })
 		if err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("disk component usage scanner stopped: %v", err)
+		}
+	}()
+	go func() {
+		defer close(resourceDiskUsageDone)
+		err := resourceDiskUsage.Run(diskUsageContext, func(scanErr error) { log.Printf("resource disk usage: %v", scanErr) })
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("resource disk usage scanner stopped: %v", err)
 		}
 	}()
 	imageCollector = newImageGarbageCollector(store, runtime.engine)
@@ -274,12 +305,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure self-update: %w", err)
 	}
 	imageCredentials := liveImageCredentialRepository{store: store, master: key}
-	githubApplication, err := githubapp.New(githubapp.Config{
-		Repository: store, Master: key, InstallationID: installation.ID,
-	})
-	if err != nil {
-		return fmt.Errorf("configure GitHub App integration: %w", err)
-	}
 	cloudflareDNS, err := cloudflaredns.New(cloudflaredns.Config{
 		Repository: store, Master: key, InstallationID: installation.ID,
 	})
@@ -303,23 +328,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure Cloudflare Mesh integration: %w", err)
 	}
-	registryHostname := ""
-	if installation.RegistryHostname != nil {
-		registryHostname = *installation.RegistryHostname
-	}
-	runtime.SetEmbeddedRegistryHost(registryHostname)
-	registryPayloads, err := registry.NewPayloadStore(paths.RegistryRoot)
-	if err != nil {
-		return fmt.Errorf("configure registry payload storage: %w", err)
-	}
-	registryApplication, err := registry.NewApplication(store, registryPayloads, key, runtime, nil, nil)
-	if err != nil {
-		return err
-	}
-	if _, err := registryApplication.CleanupExpiredUploads(ctx); err != nil {
-		return fmt.Errorf("clean expired registry uploads: %w", err)
-	}
-	startRegistryUploadCleanup(ctx, registryApplication, mutationAdmission)
 	backupTargetGate := backup.NewGate()
 	backupTargets, err := backup.NewTargetApplication(store, key, backupTargetGate, nil, nil, nil)
 	if err != nil {
@@ -356,7 +364,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure project webhooks: %w", err)
 	}
-	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, registryApplication, githubApplication, cloudflareDNS, projectWebhooks, installation.AdminHostname); err != nil {
+	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, cloudflareDNS, projectWebhooks); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
 	}
 	if !installation.RecoveryMode {
@@ -371,6 +379,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	resourceMetrics, err := resourcemetrics.NewApplication(
 		store, cgroupUsage,
 		publicNetwork,
+		resourceDiskUsage,
 		hostUsage,
 		resourcemetrics.Config{},
 	)
@@ -424,7 +433,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure ordinary volumes: %w", err)
 	}
 	if !installation.RecoveryMode {
-		if err := runtime.ConfigureServiceWatcher(ctx, store, registryHostname); err != nil {
+		if err := runtime.ConfigureServiceWatcher(ctx, store); err != nil {
 			return fmt.Errorf("configure service image watcher: %w", err)
 		}
 	}
@@ -467,7 +476,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
 		Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 		Admission: mutationAdmission, Master: key,
-		Restorers: resourceRestorers(runtime, registryApplication, objectStoreApplication,
+		Restorers: resourceRestorers(runtime, store, objectStoreApplication,
 			ordinaryVolumeBackupConfig{Store: store, Root: paths.VolumesRoot}),
 		OnError: func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
 		OnSuccess: func(request backup.ResourceRestoreRequest) {
@@ -485,6 +494,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 			Admission: mutationAdmission, Growth: pressure, Master: key, WorkRoot: paths.BackupWorkRoot,
 			Exporters: map[string]backup.ResourceExporter{
+				"image": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					revision, err := store.ImageRevision(exportContext, resourceID)
+					if err != nil {
+						return backup.ResourceExport{}, err
+					}
+					reader, err := os.Open(revision.ArchivePath)
+					return backup.ResourceExport{Reader: reader}, err
+				}),
 				"volume": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
 					stored, err := store.Volume(exportContext, resourceID)
 					if err != nil {
@@ -501,10 +518,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 					reader, err := runtime.OpenManagedRedisBackup(exportContext, resourceID)
 					return backup.ResourceExport{Reader: reader}, err
 				}),
-				"registry": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
-					export, err := registryApplication.BackupSnapshot(exportContext, resourceID)
-					return backup.ResourceExport{Reader: export.Reader, Release: export.Release}, err
-				}),
 				"object_store": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
 					export, err := objectStoreApplication.BackupSnapshot(exportContext, resourceID)
 					return backup.ResourceExport{
@@ -517,7 +530,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return fmt.Errorf("configure resource backup jobs: %w", err)
 		}
 		backupWorker, err := backup.NewScheduledWorker(backup.WorkerConfig{
-			Dirty: dirtyControl, Control: controlJob, Store: store, Resources: resourceJob,
+			Dirty:   dirtyControl,
+			Control: imageControlBackup{store: store, targets: backupTargets, resources: resourceJob, control: controlJob},
+			Store:   store, Resources: resourceJob,
 			StartedAt: daemonStartedAt,
 			OnError:   func(workerErr error) { log.Printf("backup worker: %v", workerErr) },
 		})
@@ -563,14 +578,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 	}
 	objectStoreHandler, err := newObjectStoreProxy(store, runtime)
-	if err != nil {
-		return err
-	}
-	registryHandler, err := registry.NewHTTPHandler(registryApplication, automationauth.NewInMemoryFailureLimiter(), mutationAdmission)
-	if err != nil {
-		return err
-	}
-	publicRegistryHandler, err := newAvailabilityHandler(registryHandler, !installation.RecoveryMode)
 	if err != nil {
 		return err
 	}
@@ -633,9 +640,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	hostTerminal, err := newHostTerminalApplication(cgroups, store, installation.ID)
 	if err != nil {
 		return fmt.Errorf("configure host terminal: %w", err)
-	}
-	registrySettings := &liveRegistrySettings{
-		store: store, runtime: runtime, certificates: certificates, publicMu: publicMutationMu,
 	}
 	domains := &liveDomainRepository{
 		store: store, certificates: certificates, publicMu: publicMutationMu,
@@ -716,21 +720,20 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	oidcVerifier := imageupload.NewOIDCVerifier(nil, nil)
 	portForwards, err := portforward.New(portforward.Config{
 		Repository: liveContainerResourceRepository{store: store}, Resolver: runtime,
 		Audit: livePortForwardAudit{store: store},
+		OIDC:  portForwardOIDCVerifier{inner: oidcVerifier},
 	})
 	if err != nil {
 		return err
 	}
-	onGitHubPush := func(_ context.Context, event githubapp.PushEvent) {
-		runtime.NotifyGitHubPush(ctx, store, githubApplication, event)
-	}
-	onGitHubPullRequest := func(_ context.Context, event githubapp.PullRequestEvent) {
-		runtime.NotifyGitHubPullRequest(ctx, store, githubApplication, event)
-	}
-	githubWebhook, err := server.NewGitHubWebhookHandler(server.GitHubWebhookConfig{
-		Verifier: githubApplication, OnPush: onGitHubPush, OnPullRequest: onGitHubPullRequest,
+	imageUploads, err := imageupload.New(imageupload.Config{
+		Context: ctx, Store: store, Engine: runtime.engine, Runtime: runtime, Growth: pressure,
+		Verifier: oidcVerifier, PublicHostname: installation.AdminHostname,
+		UploadRoot: paths.ImageUploadsRoot, ImageRoot: paths.ImagesRoot,
+		OnError: func(uploadErr error) { log.Printf("image upload: %v", uploadErr) },
 	})
 	if err != nil {
 		return err
@@ -740,14 +743,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
 		RedisStore: automationRepository, Postgres: postgresAutomation, PostgresStore: automationRepository,
 		ObjectStores: objectStoreApplication, Managed: managedResourceAutomation, Versions: databaseVersions,
-		Volumes: volumeAutomation, Registry: registryApplication, RegistrySettings: registrySettings,
+		Volumes:    volumeAutomation,
 		ServerExec: serverExecAutomation, PortForwards: portForwards, Admission: mutationAdmission,
 	}, mcp.Config{
 		Version: version.Version, Repository: automationRepository, Services: serviceAutomation,
 		Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, Postgres: postgresAutomation,
 		Managed: managedResourceAutomation, Versions: databaseVersions, ServerExec: serverExecAutomation,
 		Volumes: volumeAutomation, PortForwards: portForwards, Admission: mutationAdmission,
-	}, authenticator, portForwards, githubWebhook, !installation.RecoveryMode)
+	}, authenticator, portForwards, imageUploads.Handler(), !installation.RecoveryMode)
 	if err != nil {
 		return err
 	}
@@ -792,9 +795,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithManagedRedis(managedRedisApplication),
 		server.WithManagedPostgres(managedPostgresApplication),
 		server.WithObjectStores(objectStoreApplication),
-		server.WithRegistry(registryApplication, registrySettings),
 		server.WithInstallationSettings(installationSettings, cancelDaemon),
-		server.WithGitHubApp(githubApplication),
 		server.WithCloudflareDNS(cloudflareDNS),
 		server.WithCloudflareMesh(cloudflareMesh),
 		server.WithBackupTargets(backupTargets),
@@ -826,7 +827,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	adminHandler := adminHostnameHandler(adminAccessHandler, publicHandler)
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
-		RegistryHostname: registryHostname, RegistryHandler: publicRegistryHandler,
 		ObjectStoreHandler: publicObjectStoreHandler,
 		Backends:           runtime,
 		Traffic:            publicTraffic,
@@ -836,7 +836,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	domains.router = ingressRouter
 	objectStoreRepository.router = ingressRouter
-	registrySettings.router = ingressRouter
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
 	}
@@ -847,11 +846,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	cancelDNSReconcile()
 	if !installation.RecoveryMode {
 		if err := runtime.ConfigurePreviews(
-			ctx, store, key, githubApplication, cloudflareDNS, domains,
-			installation.AdminHostname, certificates.Covers,
+			ctx, store, key, cloudflareDNS, domains, certificates.Covers,
 		); err != nil {
-			return fmt.Errorf("configure PR previews: %w", err)
+			return fmt.Errorf("configure image previews: %w", err)
 		}
+		imageCollector.setArchiveCollector(newImageArchiveGarbageCollector(store, imageUploads, runtime))
 		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
 			return fmt.Errorf("load object store domains: %w", err)
 		}
@@ -861,7 +860,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		disasterRecovery, err = newRecoveryAttempt(recoveryConfig{
 			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 			Admission: mutationAdmission, Master: key,
-			Installation: installation, Runtime: runtime, Registry: registryApplication,
+			Installation: installation, Runtime: runtime,
 			ObjectStore: objectStoreApplication, Progress: disasterRecoveryProgress,
 		})
 		if err != nil {
@@ -888,9 +887,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return err
 		}
 		if !installation.RecoveryMode {
-			// Runtime reconciliation can pull or build third-party images. Keep all
-			// workload work outside the control-plane readiness path so a slow
-			// registry or Dockerfile cannot take the admin API down.
+			// Runtime reconciliation can pull third-party images. Keep all
+			// workload work outside readiness so a slow or unavailable remote
+			// registry cannot take the admin API down.
 			go logRuntimeReconcile(ctx, "managed PostgreSQL", func() error {
 				return runtime.ReconcileManagedPostgres(ctx, store)
 			})
@@ -915,28 +914,6 @@ func logRuntimeReconcile(ctx context.Context, component string, reconcile func()
 	if err := reconcile(); err != nil && ctx.Err() == nil {
 		log.Printf("reconcile %s: %v", component, err)
 	}
-}
-
-func startRegistryUploadCleanup(ctx context.Context, application *registry.Application, gate *admission.Gate) {
-	go func() {
-		ticker := time.NewTicker(15 * time.Minute)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				lease, admitErr := gate.Begin("registry_cleanup", "expired_uploads")
-				if admitErr != nil {
-					continue
-				}
-				if _, err := application.CleanupExpiredUploads(ctx); err != nil && ctx.Err() == nil {
-					log.Printf("registry upload cleanup failed: %v", err)
-				}
-				lease.Release()
-			}
-		}
-	}()
 }
 
 func status(recoveryMode bool) string {

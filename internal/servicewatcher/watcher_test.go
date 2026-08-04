@@ -46,43 +46,6 @@ func (deployer *blockingDeployer) DeployService(_ context.Context, serviceID str
 	return nil
 }
 
-func TestEmbeddedReferenceSleepsUntilExactCommitNotification(t *testing.T) {
-	store := &fakeStore{service: state.ServiceDesired{
-		ID: "service", Enabled: true,
-		Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PlatformRegistrySource("registry.example.com/team/api:latest")},
-	}}
-	deployer := &fakeDeployer{calls: make(chan string, 4)}
-	watcher, err := New(Config{
-		Store: store, Deployer: deployer,
-		IsEmbedded:             func(string) bool { return true },
-		RemoteInterval:         10 * time.Millisecond,
-		RemoteMaximumBackoff:   40 * time.Millisecond,
-		EmbeddedRetry:          10 * time.Millisecond,
-		EmbeddedMaximumBackoff: 40 * time.Millisecond,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	if err := watcher.Start(ctx, nil); err != nil {
-		t.Fatal(err)
-	}
-	assertNoCall(t, deployer.calls)
-	watcher.NotifyEmbedded("registry.example.com/team/other:latest")
-	assertNoCall(t, deployer.calls)
-	watcher.NotifyEmbedded("registry.example.com/team/api:latest")
-	select {
-	case serviceID := <-deployer.calls:
-		if serviceID != "service" {
-			t.Fatalf("service ID = %q", serviceID)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("embedded commit did not wake service")
-	}
-	assertNoCall(t, deployer.calls)
-}
-
 func TestRemoteTagPollsAndDigestReferenceDoesNot(t *testing.T) {
 	store := &fakeStore{service: state.ServiceDesired{
 		ID: "service", Enabled: true,
@@ -91,11 +54,7 @@ func TestRemoteTagPollsAndDigestReferenceDoesNot(t *testing.T) {
 	deployer := &fakeDeployer{calls: make(chan string, 4)}
 	watcher, err := New(Config{
 		Store: store, Deployer: deployer,
-		IsEmbedded:             func(string) bool { return false },
-		RemoteInterval:         10 * time.Millisecond,
-		RemoteMaximumBackoff:   40 * time.Millisecond,
-		EmbeddedRetry:          10 * time.Millisecond,
-		EmbeddedMaximumBackoff: 40 * time.Millisecond,
+		RemoteInterval: 10 * time.Millisecond, RemoteMaximumBackoff: 40 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,11 +79,7 @@ func TestRemoteTagPollsAndDigestReferenceDoesNot(t *testing.T) {
 	digestDeployer := &fakeDeployer{calls: make(chan string, 1)}
 	digestWatcher, err := New(Config{
 		Store: digestStore, Deployer: digestDeployer,
-		IsEmbedded:             func(string) bool { return false },
-		RemoteInterval:         10 * time.Millisecond,
-		RemoteMaximumBackoff:   40 * time.Millisecond,
-		EmbeddedRetry:          10 * time.Millisecond,
-		EmbeddedMaximumBackoff: 40 * time.Millisecond,
+		RemoteInterval: 10 * time.Millisecond, RemoteMaximumBackoff: 40 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -154,11 +109,7 @@ func TestTrackStopsWatcherAfterServicePinsDigest(t *testing.T) {
 	deployer := &fakeDeployer{calls: make(chan string, 1)}
 	watcher, err := New(Config{
 		Store: store, Deployer: deployer,
-		IsEmbedded:             func(string) bool { return false },
-		RemoteInterval:         time.Hour,
-		RemoteMaximumBackoff:   2 * time.Hour,
-		EmbeddedRetry:          time.Second,
-		EmbeddedMaximumBackoff: 2 * time.Second,
+		RemoteInterval: time.Hour, RemoteMaximumBackoff: 2 * time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -192,11 +143,7 @@ func TestReconcileImmediatelyRunsNonAutoUpdatingService(t *testing.T) {
 	deployer := &fakeDeployer{calls: make(chan string, 1)}
 	watcher, err := New(Config{
 		Store: store, Deployer: deployer,
-		IsEmbedded:             func(string) bool { return false },
-		RemoteInterval:         time.Hour,
-		RemoteMaximumBackoff:   2 * time.Hour,
-		EmbeddedRetry:          time.Second,
-		EmbeddedMaximumBackoff: 2 * time.Second,
+		RemoteInterval: time.Hour, RemoteMaximumBackoff: 2 * time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -228,11 +175,7 @@ func TestReconcileDoesNotLoseMutationWhileOneShotDeploymentRuns(t *testing.T) {
 	deployer := &blockingDeployer{calls: make(chan string, 2), release: make(chan struct{})}
 	watcher, err := New(Config{
 		Store: store, Deployer: deployer,
-		IsEmbedded:             func(string) bool { return false },
-		RemoteInterval:         time.Hour,
-		RemoteMaximumBackoff:   2 * time.Hour,
-		EmbeddedRetry:          time.Second,
-		EmbeddedMaximumBackoff: 2 * time.Second,
+		RemoteInterval: time.Hour, RemoteMaximumBackoff: 2 * time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)

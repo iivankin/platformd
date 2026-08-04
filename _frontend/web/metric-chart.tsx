@@ -8,6 +8,7 @@ type MetricPoint = ResourceUsageHistory["points"][number];
 export interface MetricSeries {
   color: string;
   label: string;
+  points?: MetricPoint[];
   strokeDasharray?: string;
   value: (point: MetricPoint) => number | undefined;
 }
@@ -227,7 +228,7 @@ const MetricChartComponent = ({
   formatValue,
   from,
   minimumMaximum,
-  points,
+  points: basePoints,
   series,
   title,
   to,
@@ -252,11 +253,46 @@ const MetricChartComponent = ({
 
   const duration = Math.max(0, to - from);
   const plotHeight = chartHeight - padding.top - padding.bottom;
+  const points = useMemo(() => {
+    const byTime = new Map(
+      basePoints.map((point) => [point.observedAt, point] as const)
+    );
+    for (const metric of series) {
+      for (const point of metric.points ?? []) {
+        if (!byTime.has(point.observedAt)) {
+          byTime.set(point.observedAt, point);
+        }
+      }
+    }
+    return [...byTime.values()].toSorted(
+      (first, second) => first.observedAt - second.observedAt
+    );
+  }, [basePoints, series]);
+  const chartSeries = useMemo<MetricSeries[]>(
+    () =>
+      series.map((metric) => {
+        if (!metric.points) {
+          return metric;
+        }
+        const byTime = new Map(
+          metric.points.map((point) => [point.observedAt, point] as const)
+        );
+        return {
+          ...metric,
+          points: undefined,
+          value: (timelinePoint) => {
+            const point = byTime.get(timelinePoint.observedAt);
+            return point ? metric.value(point) : undefined;
+          },
+        };
+      }),
+    [series]
+  );
   const { hasValues, maximum, yTicks } = useMemo(() => {
     let highest = 0;
     let nextHasValues = false;
     for (const point of points) {
-      for (const metric of series) {
+      for (const metric of chartSeries) {
         const value = metric.value(point);
         if (value !== undefined && Number.isFinite(value)) {
           highest = Math.max(highest, value);
@@ -274,7 +310,7 @@ const MetricChartComponent = ({
         (_, index) => (nextMaximum / tickCount) * index
       ),
     };
-  }, [minimumMaximum, points, series]);
+  }, [chartSeries, minimumMaximum, points]);
   const plotLeft = Math.max(
     minimumLeftPadding,
     Math.ceil(
@@ -286,7 +322,7 @@ const MetricChartComponent = ({
   const plotWidth = Math.max(0, width - plotLeft - padding.right);
   const geometry = useMemo(
     () =>
-      series
+      chartSeries
         .map((metric) =>
           geometryForSeries({
             maximum,
@@ -298,7 +334,7 @@ const MetricChartComponent = ({
           })
         )
         .toReversed(),
-    [maximum, plotHeight, plotLeft, plotWidth, points, series]
+    [chartSeries, maximum, plotHeight, plotLeft, plotWidth, points]
   );
   const pointX = useCallback(
     (pointIndex: number) => {
@@ -408,7 +444,7 @@ const MetricChartComponent = ({
         <h3 className="mr-auto text-xs font-medium tracking-[0.12em] uppercase">
           {title}
         </h3>
-        {series.map((metric) => {
+        {chartSeries.map((metric) => {
           const value = latestValue(points, metric);
           return (
             <span
@@ -478,7 +514,7 @@ const MetricChartComponent = ({
                       className="metric-chart-area"
                       d={area}
                       fill={metric.color}
-                      fillOpacity={metric === series[0] ? "0.12" : "0.08"}
+                      fillOpacity={metric === chartSeries[0] ? "0.12" : "0.08"}
                       key={`${metric.label}-area-${segmentIndex}`}
                     />
                   ))
@@ -590,7 +626,7 @@ const MetricChartComponent = ({
               {timelineLabel(hoveredPoint.observedAt, duration)}
             </div>
             <div className="grid gap-1">
-              {series.map((metric) => {
+              {chartSeries.map((metric) => {
                 const value = metric.value(hoveredPoint);
                 return (
                   <div

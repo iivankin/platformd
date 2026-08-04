@@ -121,7 +121,7 @@ func parseStats(payload []byte) (Stats, error) {
 			}
 			result.Commands = append(result.Commands, stat)
 		}
-		if strings.HasPrefix(name, "db") {
+		if isRedisDatabaseName(name) {
 			stat, parseErr := parseKeyspaceStat(name, value)
 			if parseErr != nil {
 				return Stats{}, parseErr
@@ -132,6 +132,18 @@ func parseStats(payload []byte) (Stats, error) {
 	sort.Slice(result.Commands, func(left, right int) bool { return result.Commands[left].Calls > result.Commands[right].Calls })
 	sort.Slice(result.Keyspaces, func(left, right int) bool { return result.Keyspaces[left].Database < result.Keyspaces[right].Database })
 	return result, nil
+}
+
+func isRedisDatabaseName(name string) bool {
+	if len(name) <= 2 || name[0] != 'd' || name[1] != 'b' {
+		return false
+	}
+	for index := 2; index < len(name); index++ {
+		if name[index] < '0' || name[index] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func parseCommandStat(name, value string) (CommandStat, error) {

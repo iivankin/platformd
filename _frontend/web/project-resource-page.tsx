@@ -46,6 +46,7 @@ const workspaces: Record<
     label: "Object storage",
     views: [
       { label: "Data", value: "objects" },
+      { label: "Stats", value: "stats" },
       { label: "Backups", value: "backups" },
       { label: "Variables", value: "variables" },
       { label: "Logs", value: "logs" },

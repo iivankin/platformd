@@ -39,8 +39,8 @@ Tunnel is not required. Before running the installer:
    an Allow policy. See [Create an Access application](https://developers.cloudflare.com/learning-paths/clientless-access/access-application/create-access-app/).
 4. Configure a **Bypass** for `admin.example.com/public/*`. REST and MCP
    requests under this path authenticate with platformd API tokens instead of
-   the interactive Cloudflare Access session. GitHub webhooks and port-forward
-   connections use their own scoped secrets and tickets.
+   the interactive Cloudflare Access session. Image uploads use GitHub Actions
+   OIDC, and port-forward connections use their own scoped tickets.
 5. Record the values required by `platformd init`:
    - **Team domain** — `<team>.cloudflareaccess.com`, shown under Zero Trust
      settings. Do not include `https://`. See Cloudflare's
@@ -85,8 +85,8 @@ temporary certificate files from `/root`; platformd keeps the private key
 encrypted in its state database.
 
 Open `https://admin.example.com` and authenticate through Cloudflare Access.
-Further certificates, public service domains, backup storage, GitHub, and
-Cloudflare API integration are configured in the admin UI.
+Further certificates, public service domains, backup storage, and Cloudflare
+API integration are configured in the admin UI.
 
 Keep interactive Access protection on the rest of the admin hostname. Only
 `/public/*` should bypass the Cloudflare login; platformd validates credentials
@@ -123,10 +123,10 @@ Run the frontend by itself with Bun's local server and an in-memory mock API:
 bun --cwd=_frontend run dev:mock
 ```
 
-The default `demo` scenario includes a project, managed resources, Registry
-images, backups, tokens, certificates, logs, and audit events. Mutations update
-the in-memory state until the server restarts. The browser UI hot reloads when
-frontend files change.
+The default `demo` scenario includes a project, managed resources, backups,
+tokens, certificates, logs, and audit events. Mutations update the in-memory
+state until the server restarts. The browser UI hot reloads when frontend files
+change.
 
 Two additional scenarios cover empty and failed states:
 

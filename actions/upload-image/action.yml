@@ -1,0 +1,52 @@
+name: Upload image to platformd
+description: Upload a final OCI image archive to a platformd service with GitHub Actions OIDC.
+inputs:
+  url:
+    description: HTTPS origin of the platformd admin hostname, for example https://admin.example.com.
+    required: true
+  project:
+    description: Project ID that owns the target service.
+    required: true
+  resource:
+    description: Service ID that receives the uploaded image.
+    required: true
+  archive:
+    description: Path to an OCI archive produced by Docker Buildx.
+    required: true
+  tag:
+    description: latest deploys production; every other tag creates a preview.
+    default: latest
+    required: false
+  chunk-size:
+    description: Bytes per HTTP request.
+    default: "8388608"
+    required: false
+  github-token:
+    description: Token used to register a GitHub Deployment. Defaults to GITHUB_TOKEN when present.
+    default: ${{ github.token }}
+    required: false
+  environment:
+    description: GitHub Environment name. Defaults to production for latest, preview-<tag> otherwise.
+    required: false
+  environment-url:
+    description: Public URL for production (latest). Preview uploads use previewUrl from platformd when unset.
+    required: false
+outputs:
+  upload-id:
+    description: Stable identifier of this upload.
+  deployment-id:
+    description: Production deployment or preview identifier.
+  digest:
+    description: Imported image digest.
+  preview-url:
+    description: Preview URL for non-latest tags.
+  environment-url:
+    description: URL suitable for jobs.<job>.environment.url when GitHub Deployments were not registered.
+  logs-url:
+    description: Admin UI link to platformd deploy logs for this production or preview deployment.
+runs:
+  using: node20
+  main: dist/index.js
+branding:
+  icon: upload-cloud
+  color: blue

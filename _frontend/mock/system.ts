@@ -57,84 +57,137 @@ const mockResourceUsageHistory = (
   const from = to - range.duration;
   const count = Math.floor(range.duration / range.step);
   const workload = mockWorkload(count, 19);
+  const points = Array.from({ length: count }, (_, index) => {
+    const load = workload[index] ?? 0;
+    const traffic = Math.max(
+      3000,
+      24_000 + load * 15_000 + stableNoise(index, 307) * 5500
+    );
+    const requests = Math.max(1, 18 + load * 8 + stableNoise(index, 353) * 2.5);
+    const latencyPenalty = Math.max(0, load * 12 + stableNoise(index, 401) * 2);
+    const cpuMillicores = Math.max(
+      2,
+      Math.round((34 + load * 13 + stableNoise(index, 101) * 2.8) * resources)
+    );
+    const memoryBytes = Math.round(
+      (126 + load * 4 + stableNoise(index, 211) * 1.4) * resources * 1024 ** 2
+    );
+    const networkEgressBytesPerSecond = Math.round(
+      traffic * 0.42 * publicServices
+    );
+    const networkIngressBytesPerSecond = Math.round(traffic * publicServices);
+    return {
+      cpuMillicores,
+      cpuPeakMillicores: Math.round(cpuMillicores * 1.35),
+      diskBytes: resources * 96 * 1024 ** 2,
+      durationMillis: range.step,
+      memoryBytes,
+      memoryPeakBytes: Math.round(memoryBytes * 1.08),
+      networkEgressBytesPerSecond,
+      networkEgressPeakBytesPerSecond: Math.round(
+        networkEgressBytesPerSecond * 1.5
+      ),
+      networkIngressBytesPerSecond,
+      networkIngressPeakBytesPerSecond: Math.round(
+        networkIngressBytesPerSecond * 1.5
+      ),
+      observedAt: from + (index + 1) * range.step,
+      proxy: includeProxy
+        ? {
+            http: {
+              activeRequests: Math.round(requests / 3),
+              activeRequestsPeak: Math.round(requests / 2),
+              latencyP50Millis: 24 + latencyPenalty,
+              latencyP95Millis: 86 + latencyPenalty * 3,
+              latencyP99Millis: 180 + latencyPenalty * 5,
+              requestsPeakPerSecond: requests * publicServices * 1.6,
+              requestsPerSecond: requests * publicServices,
+              requestsTotal: (index + 1) * 120 * publicServices,
+              responses2xxPerSecond: requests * 0.91 * publicServices,
+              responses3xxPerSecond: requests * 0.03 * publicServices,
+              responses4xxPerSecond: requests * 0.045 * publicServices,
+              responses5xxPerSecond: requests * 0.015 * publicServices,
+            },
+            tcp: {
+              activeConnections: 12 * publicServices,
+              activeConnectionsPeak: 18 * publicServices,
+              connectionsPeakPerSecond: 4.1 * publicServices,
+              connectionsPerSecond: 2.4 * publicServices,
+              connectionsTotal: (index + 1) * 18 * publicServices,
+            },
+            udp: {
+              egressPacketsPeakPerSecond: 68 * publicServices,
+              egressPacketsPerSecond: 44 * publicServices,
+              egressPacketsTotal: (index + 1) * 400 * publicServices,
+              ingressPacketsPeakPerSecond: 80 * publicServices,
+              ingressPacketsPerSecond: 52 * publicServices,
+              ingressPacketsTotal: (index + 1) * 470 * publicServices,
+            },
+          }
+        : undefined,
+      running: true,
+    };
+  });
+  const weightTotal = (resources * (resources + 1)) / 2;
   return {
     from,
-    points: Array.from({ length: count }, (_, index) => {
-      const load = workload[index] ?? 0;
-      const traffic = Math.max(
-        3000,
-        24_000 + load * 15_000 + stableNoise(index, 307) * 5500
-      );
-      const requests = Math.max(
-        1,
-        18 + load * 8 + stableNoise(index, 353) * 2.5
-      );
-      const latencyPenalty = Math.max(
-        0,
-        load * 12 + stableNoise(index, 401) * 2
-      );
-      const cpuMillicores = Math.max(
-        2,
-        Math.round((34 + load * 13 + stableNoise(index, 101) * 2.8) * resources)
-      );
-      const memoryBytes = Math.round(
-        (126 + load * 4 + stableNoise(index, 211) * 1.4) * resources * 1024 ** 2
-      );
-      const networkEgressBytesPerSecond = Math.round(
-        traffic * 0.42 * publicServices
-      );
-      const networkIngressBytesPerSecond = Math.round(traffic * publicServices);
-      return {
-        cpuMillicores,
-        cpuPeakMillicores: Math.round(cpuMillicores * 1.35),
-        durationMillis: range.step,
-        memoryBytes,
-        memoryPeakBytes: Math.round(memoryBytes * 1.08),
-        networkEgressBytesPerSecond,
-        networkEgressPeakBytesPerSecond: Math.round(
-          networkEgressBytesPerSecond * 1.5
-        ),
-        networkIngressBytesPerSecond,
-        networkIngressPeakBytesPerSecond: Math.round(
-          networkIngressBytesPerSecond * 1.5
-        ),
-        observedAt: from + (index + 1) * range.step,
-        proxy: includeProxy
-          ? {
-              http: {
-                activeRequests: Math.round(requests / 3),
-                activeRequestsPeak: Math.round(requests / 2),
-                latencyP50Millis: 24 + latencyPenalty,
-                latencyP95Millis: 86 + latencyPenalty * 3,
-                latencyP99Millis: 180 + latencyPenalty * 5,
-                requestsPeakPerSecond: requests * publicServices * 1.6,
-                requestsPerSecond: requests * publicServices,
-                requestsTotal: (index + 1) * 120 * publicServices,
-                responses2xxPerSecond: requests * 0.91 * publicServices,
-                responses3xxPerSecond: requests * 0.03 * publicServices,
-                responses4xxPerSecond: requests * 0.045 * publicServices,
-                responses5xxPerSecond: requests * 0.015 * publicServices,
-              },
-              tcp: {
-                activeConnections: 12 * publicServices,
-                activeConnectionsPeak: 18 * publicServices,
-                connectionsPeakPerSecond: 4.1 * publicServices,
-                connectionsPerSecond: 2.4 * publicServices,
-                connectionsTotal: (index + 1) * 18 * publicServices,
-              },
-              udp: {
-                egressPacketsPeakPerSecond: 68 * publicServices,
-                egressPacketsPerSecond: 44 * publicServices,
-                egressPacketsTotal: (index + 1) * 400 * publicServices,
-                ingressPacketsPeakPerSecond: 80 * publicServices,
-                ingressPacketsPerSecond: 52 * publicServices,
-                ingressPacketsTotal: (index + 1) * 470 * publicServices,
-              },
-            }
-          : undefined,
-        running: true,
-      };
-    }),
+    points,
+    series:
+      resources > 1
+        ? Array.from({ length: resources }, (_, resourceIndex) => {
+            const weight = (resourceIndex + 1) / weightTotal;
+            return {
+              id: `mock-resource-${resourceIndex + 1}`,
+              kind: "service",
+              name: `service-${resourceIndex + 1}`,
+              points: points.map((point) => ({
+                ...point,
+                cpuMillicores: Math.round(point.cpuMillicores * weight),
+                cpuPeakMillicores: Math.round(point.cpuPeakMillicores * weight),
+                diskBytes: Math.round(point.diskBytes * weight),
+                memoryBytes: Math.round(point.memoryBytes * weight),
+                memoryPeakBytes: Math.round(point.memoryPeakBytes * weight),
+                networkEgressBytesPerSecond: Math.round(
+                  point.networkEgressBytesPerSecond * weight
+                ),
+                networkEgressPeakBytesPerSecond: Math.round(
+                  point.networkEgressPeakBytesPerSecond * weight
+                ),
+                networkIngressBytesPerSecond: Math.round(
+                  point.networkIngressBytesPerSecond * weight
+                ),
+                networkIngressPeakBytesPerSecond: Math.round(
+                  point.networkIngressPeakBytesPerSecond * weight
+                ),
+                proxy: point.proxy
+                  ? {
+                      ...point.proxy,
+                      http: {
+                        ...point.proxy.http,
+                        latencyP95Millis:
+                          point.proxy.http.latencyP95Millis *
+                          (0.85 + resourceIndex * 0.1),
+                        requestsPerSecond:
+                          point.proxy.http.requestsPerSecond * weight,
+                      },
+                      tcp: {
+                        ...point.proxy.tcp,
+                        connectionsPerSecond:
+                          point.proxy.tcp.connectionsPerSecond * weight,
+                      },
+                      udp: {
+                        ...point.proxy.udp,
+                        egressPacketsPerSecond:
+                          point.proxy.udp.egressPacketsPerSecond * weight,
+                        ingressPacketsPerSecond:
+                          point.proxy.udp.ingressPacketsPerSecond * weight,
+                      },
+                    }
+                  : undefined,
+              })),
+            };
+          })
+        : [],
     stepMillis: range.step,
     to,
   };
@@ -148,6 +201,7 @@ const mockCurrentUsage = (
 ) => ({
   cpuMillicores: 84 * resources,
   cpuPeakMillicores: 84 * resources,
+  diskBytes: 96 * 1024 ** 2 * resources,
   host: includeHost
     ? {
         cpuCores: 8,
@@ -210,6 +264,11 @@ const mockCurrentUsage = (
   running: resources > 0,
   runningResources: resources,
   totalResources: resources,
+  trafficRoutes: {
+    http: publicServices > 0,
+    tcp: publicServices > 0,
+    udp: publicServices > 0,
+  },
 });
 
 const mockHostUsageHistory = (requestedRange: string | null) => {
@@ -258,6 +317,7 @@ const mockHostUsageHistory = (requestedRange: string | null) => {
         running: true,
       };
     }),
+    series: [],
     stepMillis: range.step,
     to,
   };

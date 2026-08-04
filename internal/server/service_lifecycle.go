@@ -36,18 +36,16 @@ type deploymentPageResponse struct {
 }
 
 type previewDeploymentResponse struct {
-	ID                string `json:"id"`
-	ServiceID         string `json:"serviceId"`
-	PullRequestNumber int    `json:"pullRequestNumber"`
-	SourceRevision    string `json:"sourceRevision"`
-	CommitMessage     string `json:"commitMessage,omitempty"`
-	Hostname          string `json:"hostname"`
-	TargetPort        int    `json:"targetPort"`
-	Status            string `json:"status"`
-	ErrorMessage      string `json:"errorMessage,omitempty"`
-	CreatedAt         int64  `json:"createdAt"`
-	FinishedAt        int64  `json:"finishedAt,omitempty"`
-	ExpiresAt         int64  `json:"expiresAt"`
+	ID           string `json:"id"`
+	ServiceID    string `json:"serviceId"`
+	Tag          string `json:"tag"`
+	Hostname     string `json:"hostname"`
+	TargetPort   int    `json:"targetPort"`
+	Status       string `json:"status"`
+	ErrorMessage string `json:"errorMessage,omitempty"`
+	CreatedAt    int64  `json:"createdAt"`
+	FinishedAt   int64  `json:"finishedAt,omitempty"`
+	ExpiresAt    int64  `json:"expiresAt"`
 }
 
 func registerServiceLifecycleRoutes(mux *http.ServeMux, config handlerConfig) {
@@ -81,14 +79,13 @@ func listServicePreviews(repository PreviewDeploymentRepository) http.HandlerFun
 			return
 		}
 		if err != nil {
-			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load PR preview history")
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load preview history")
 			return
 		}
 		result := make([]previewDeploymentResponse, 0, len(previews))
 		for _, item := range previews {
 			result = append(result, previewDeploymentResponse{
-				ID: item.ID, ServiceID: item.ServiceID, PullRequestNumber: item.PullRequestNumber,
-				SourceRevision: item.SourceRevision, CommitMessage: item.CommitMessage,
+				ID: item.ID, ServiceID: item.ServiceID, Tag: item.Tag,
 				Hostname: item.Hostname, TargetPort: item.TargetPort, Status: item.Status,
 				ErrorMessage: item.ErrorMessage, CreatedAt: item.CreatedAtMillis,
 				FinishedAt: item.FinishedAtMillis, ExpiresAt: item.ExpiresAtMillis,
@@ -430,6 +427,8 @@ func writeServiceMutationError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrServiceChanged):
 		writeAPIError(response, http.StatusConflict, "service_changed", "Service changed; reload it before applying this action")
+	case errors.Is(err, state.ErrPreviewDomainCount):
+		writeAPIError(response, http.StatusConflict, "preview_domain_count", err.Error())
 	case errors.Is(err, state.ErrDependencyMissing):
 		writeAPIError(response, http.StatusConflict, "dependency_missing", err.Error())
 	case errors.Is(err, state.ErrDeploymentNotFound):

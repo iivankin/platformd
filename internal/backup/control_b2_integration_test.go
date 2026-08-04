@@ -71,7 +71,7 @@ func TestControlB2Integration(t *testing.T) {
 		fetched.Manifest.GenerationID,
 		fetched.Manifest.PlatformVersion,
 		fetched.Manifest.SchemaVersion,
-		len(fetched.Manifest.Resources.RegistryRepositories),
+		len(fetched.Manifest.Resources.Images),
 		len(fetched.Manifest.Resources.ObjectStores),
 		len(fetched.Manifest.Resources.Postgres),
 		len(fetched.Manifest.Resources.Redis),

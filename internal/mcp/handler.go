@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	ProtocolVersion  = "2025-11-25"
-	maximumBodyBytes = 1 << 20
+	ProtocolVersion           = "2025-11-25"
+	protocolVersion2025June18 = "2025-06-18"
+	maximumBodyBytes          = 1 << 20
 )
 
 type Handler struct {
@@ -114,12 +115,12 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 	versionHeaders := request.Header.Values("MCP-Protocol-Version")
 	if message.Method == "initialize" {
-		if len(versionHeaders) > 1 || (len(versionHeaders) == 1 && versionHeaders[0] != ProtocolVersion) {
+		if len(versionHeaders) > 1 || (len(versionHeaders) == 1 && !supportsProtocolVersion(versionHeaders[0])) {
 			http.Error(response, "Unsupported MCP protocol version", http.StatusBadRequest)
 			return
 		}
-	} else if len(versionHeaders) != 1 || versionHeaders[0] != ProtocolVersion {
-		http.Error(response, "MCP-Protocol-Version must be "+ProtocolVersion, http.StatusBadRequest)
+	} else if len(versionHeaders) != 1 || !supportsProtocolVersion(versionHeaders[0]) {
+		http.Error(response, "Missing or unsupported MCP-Protocol-Version", http.StatusBadRequest)
 		return
 	}
 
@@ -152,6 +153,10 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		}
 		writeRPCError(response, message.ID, codeMethodNotFound, "Method not found")
 	}
+}
+
+func supportsProtocolVersion(version string) bool {
+	return version == ProtocolVersion || version == protocolVersion2025June18
 }
 
 func acceptsMCP(values []string) bool {

@@ -95,12 +95,12 @@ export const ServiceListeners = ({
       </header>
 
       {listeners.length ? (
-        <div className="border-t border-border">
+        <div className="min-w-0 overflow-x-auto border-t border-border">
           {listeners.map((listener) => {
             const key = serviceListenerDraftKey(listener);
             return (
               <div
-                className="grid min-h-12 grid-cols-[4rem_minmax(0,1fr)_8rem_2.5rem] items-center border-b border-border px-5 last:border-b-0"
+                className="grid min-h-12 min-w-[28rem] grid-cols-[4rem_minmax(0,1fr)_8rem_2.5rem] items-center border-b border-border px-5 last:border-b-0"
                 key={key}
               >
                 <span className="text-[9px] font-medium tracking-[0.1em] uppercase">
@@ -143,7 +143,7 @@ export const ServiceListeners = ({
         </p>
       )}
 
-      <div className="grid grid-cols-[6rem_8rem_8rem_auto] gap-2 bg-muted/10 px-5 py-3">
+      <div className="grid gap-2 bg-muted/10 px-5 py-3 sm:grid-cols-[6rem_8rem_8rem_auto]">
         <Select
           disabled={disabled}
           items={{ tcp: "TCP", udp: "UDP" }}

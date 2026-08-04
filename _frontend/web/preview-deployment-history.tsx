@@ -6,10 +6,9 @@ import { SectionCard } from "@/components/ui/card";
 
 const statusColor: Record<PreviewDeployment["status"], string> = {
   active: "bg-emerald-500",
-  building: "bg-sky-500",
+  deploying: "bg-sky-500",
   failed: "bg-destructive",
   interrupted: "bg-amber-500",
-  skipped: "bg-muted-foreground",
   stopped: "bg-muted-foreground",
 };
 
@@ -28,7 +27,7 @@ export const PreviewDeploymentHistory = ({
       <header className="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
           <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
-            Pull request previews
+            Image previews
           </h3>
           <p className="mt-1 text-[9px] text-muted-foreground">
             Isolated deployments are retained with their logs for 14 days.
@@ -49,15 +48,10 @@ export const PreviewDeploymentHistory = ({
             />
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2 text-[10px]">
-                <span className="font-medium">
-                  PR #{preview.pullRequestNumber}
-                </span>
+                <span className="font-medium">{preview.tag}</span>
                 <span className="text-muted-foreground capitalize">
                   {preview.status}
                 </span>
-                <code className="text-muted-foreground">
-                  {preview.sourceRevision.slice(0, 12)}
-                </code>
               </div>
               <p className="mt-1 truncate text-[9px] text-muted-foreground">
                 {preview.hostname} → :{preview.targetPort} ·{" "}
@@ -73,7 +67,7 @@ export const PreviewDeploymentHistory = ({
           <div className="flex items-center gap-1">
             {preview.status === "active" ? (
               <a
-                aria-label={`Open preview for pull request ${preview.pullRequestNumber}`}
+                aria-label={`Open preview ${preview.tag}`}
                 className="grid size-8 place-items-center text-muted-foreground hover:bg-muted hover:text-foreground [&_svg]:size-4"
                 href={`https://${preview.hostname}`}
                 rel="noreferrer"
@@ -83,7 +77,7 @@ export const PreviewDeploymentHistory = ({
               </a>
             ) : null}
             <Button
-              aria-label={`View logs for pull request ${preview.pullRequestNumber}`}
+              aria-label={`View logs for preview ${preview.tag}`}
               onClick={() => onViewLogs(preview)}
               size="icon"
               variant="ghost"

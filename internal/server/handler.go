@@ -18,12 +18,10 @@ import (
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
-	"github.com/iivankin/platformd/internal/githubapp"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/projectwebhook"
-	"github.com/iivankin/platformd/internal/registry"
 	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/ui"
 	"github.com/iivankin/platformd/internal/version"
@@ -55,11 +53,8 @@ type handlerConfig struct {
 	managedRedis            ManagedRedisRepository
 	managedPostgres         *managedpostgres.Application
 	objectStores            *objectstore.Application
-	registry                *registry.Application
-	registrySettings        RegistrySettings
 	installationSettings    *installationsettings.Application
 	afterInstallationChange func()
-	githubApp               *githubapp.Application
 	cloudflareDNS           *cloudflaredns.Application
 	cloudflareMesh          *cloudflaremesh.Application
 	backupTargets           *backup.TargetApplication
@@ -184,23 +179,10 @@ func WithObjectStores(application *objectstore.Application) Option {
 	}
 }
 
-func WithRegistry(application *registry.Application, settings RegistrySettings) Option {
-	return func(config *handlerConfig) {
-		config.registry = application
-		config.registrySettings = settings
-	}
-}
-
 func WithInstallationSettings(application *installationsettings.Application, afterInstallationChange func()) Option {
 	return func(config *handlerConfig) {
 		config.installationSettings = application
 		config.afterInstallationChange = afterInstallationChange
-	}
-}
-
-func WithGitHubApp(application *githubapp.Application) Option {
-	return func(config *handlerConfig) {
-		config.githubApp = application
 	}
 }
 
@@ -365,14 +347,8 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	if config.objectStores != nil {
 		registerObjectStoreRoutes(mux, config.objectStores)
 	}
-	if config.registry != nil && config.registrySettings != nil {
-		registerRegistryRoutes(mux, config)
-	}
 	if config.installationSettings != nil {
 		registerInstallationSettingsRoutes(mux, config)
-	}
-	if config.githubApp != nil {
-		registerGitHubAppRoutes(mux, config)
 	}
 	if config.cloudflareDNS != nil {
 		registerCloudflareDNSRoutes(mux, config)

@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
-	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 const testImageDigest = "sha256:5f70bf18a08660b3c3e431d73e3a1b13f1f4f9f365f22c4b155b87f12ee41a68"
@@ -143,50 +142,6 @@ func TestDeployVersionAcceptsFailedDeploymentForRetry(t *testing.T) {
 	}
 	if !strings.HasSuffix(retried.Snapshot.Source.Image.Reference, "@"+testImageDigest) || !retried.Enabled {
 		t.Fatalf("retried service = %+v", retried)
-	}
-}
-
-func TestDeploySkippedGitHubVersionPreservesWaitForCIPolicy(t *testing.T) {
-	store := serviceMutationStore(t)
-	defer store.Close()
-	snapshot := serviceconfig.Snapshot{Source: servicesource.Source{
-		Type: servicesource.GitHubImage,
-		GitHub: &servicesource.GitHub{
-			RepositoryID: 42, Repository: "owner/repository", Branch: "main",
-			DockerfilePath: "Dockerfile", ContextPath: ".", WaitForCI: true,
-		},
-	}}
-	service, err := store.CreateService(context.Background(), CreateService{
-		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
-		Snapshot: snapshot, AuditEventID: "service-audit", ActorKind: "access",
-		ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, snapshotJSON, hash, err := serviceconfig.Canonical(service.Snapshot)
-	if err != nil {
-		t.Fatal(err)
-	}
-	revision := strings.Repeat("a", 40)
-	if err := store.BeginDeployment(context.Background(), BeginDeployment{
-		ID: "skipped-deployment", ServiceID: service.ID, SourceRevision: revision,
-		ConfigHash: hash, SnapshotJSON: snapshotJSON, Status: "skipped",
-		CreatedAtMillis: 3, FinishedAtMillis: 4,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	deployed, err := store.DeployServiceVersion(context.Background(), DeployServiceVersionInput{
-		ID: service.ID, ProjectID: service.ProjectID, DeploymentID: "skipped-deployment",
-		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "deploy-audit",
-		ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 5,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if deployed.Snapshot.Source.GitHub == nil || !deployed.Snapshot.Source.GitHub.WaitForCI ||
-		deployed.Snapshot.Source.GitHub.Revision != "" {
-		t.Fatalf("deployed GitHub source = %+v", deployed.Snapshot.Source.GitHub)
 	}
 }
 

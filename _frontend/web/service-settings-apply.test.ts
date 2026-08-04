@@ -8,7 +8,6 @@ import {
 } from "@/service-settings-model";
 
 const service: Service = {
-  buildEnvironment: {},
   createdAt: 1,
   enabled: true,
   environment: {},

@@ -12,6 +12,7 @@ import (
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -24,6 +25,7 @@ type ApplicationStore interface {
 	CreateManagedRedis(context.Context, state.CreateManagedRedis) (state.ManagedRedis, error)
 	ManagedRedisInProject(context.Context, string, string) (state.ManagedRedis, error)
 	ManagedRedisByProject(context.Context, string) ([]state.ManagedRedis, error)
+	UpdateManagedRedisPortForward(context.Context, state.UpdateManagedRedisPortForwardInput) (state.ManagedRedis, error)
 	RecordManagedRedisDataMutation(context.Context, state.RecordManagedRedisDataMutation) error
 	RuntimeDeployments(context.Context, string, string, string, int) (state.RuntimeDeploymentPage, error)
 	RuntimeDeployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
@@ -160,6 +162,22 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 
 func (application *Application) Resource(ctx context.Context, projectID, resourceID string) (state.ManagedRedis, error) {
 	return application.store.ManagedRedisInProject(ctx, projectID, resourceID)
+}
+
+func (application *Application) UpdatePortForward(
+	ctx context.Context,
+	projectID, resourceID string,
+	portForward *serviceconfig.PortForward,
+	expectedUpdatedAt int64,
+) (state.ManagedRedis, error) {
+	normalized, err := serviceconfig.NormalizePortForward(portForward)
+	if err != nil {
+		return state.ManagedRedis{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return application.store.UpdateManagedRedisPortForward(ctx, state.UpdateManagedRedisPortForwardInput{
+		ID: resourceID, ProjectID: projectID, PortForward: normalized,
+		ExpectedUpdatedMillis: expectedUpdatedAt, UpdatedAtMillis: application.now().UnixMilli(),
+	})
 }
 
 func (application *Application) Password(ctx context.Context, projectID, resourceID string) (string, error) {

@@ -39,3 +39,23 @@ test("adds a Manhattan channel when a straight edge is dragged off-axis", () => 
     { x: 600, y: 260 },
   ]);
 });
+
+test("scales a leftward surround edge while keeping it orthogonal", () => {
+  expect(
+    resourceConnectionPoints(
+      [
+        { x: 472, y: 478 },
+        { x: 400, y: 478 },
+        { x: 400, y: 420 },
+        { x: 328, y: 420 },
+      ],
+      { x: 500, y: 500 },
+      { x: 200, y: 300 }
+    )
+  ).toEqual([
+    { x: 500, y: 500 },
+    { x: 350, y: 500 },
+    { x: 350, y: 300 },
+    { x: 200, y: 300 },
+  ]);
+});

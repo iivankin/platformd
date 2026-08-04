@@ -65,7 +65,7 @@ export const ObjectStoreUploadBar = ({
 
   return (
     <form
-      className="grid shrink-0 grid-cols-[minmax(10rem,1fr)_minmax(12rem,2fr)_auto] gap-2 border-b border-border px-4 py-3"
+      className="grid shrink-0 gap-2 border-b border-border px-4 py-3 sm:grid-cols-[minmax(10rem,1fr)_minmax(12rem,2fr)_auto]"
       onSubmit={(event) => void submit(event)}
     >
       <input

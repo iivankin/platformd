@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { fetchManagedPostgres } from "@/api";
+import { fetchManagedPostgres, updateManagedPostgresPortForward } from "@/api";
 import type { ManagedPostgres } from "@/api";
 import { ConnectionDetails } from "@/connection-details";
 import { postgresConnectionURL } from "@/connection-values";
 import { DatabaseVersionChange } from "@/database-version-change";
+import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
 import { ManagedDeploymentHistory } from "@/managed-deployment-history";
 import { PostgresDatabase } from "@/postgres-database";
 import type { ResourceNodeData } from "@/project-flow";
@@ -12,6 +13,7 @@ import { ResourceBackupPanel } from "@/resource-backup-panel";
 import { ResourceConsole } from "@/resource-console";
 import { ResourceUsage } from "@/resource-usage";
 import { ResourceVariables } from "@/resource-variables";
+import { ResourcePortForwardSettings } from "@/service-port-forward";
 import { WorkspaceView } from "@/workspace-view";
 
 export type PostgresWorkspaceView =
@@ -140,6 +142,31 @@ export const PostgresDetailPanel = ({
                   onSucceeded={refreshAfterVersionChange}
                   projectID={projectID}
                   resourceID={postgresID}
+                />
+              ) : null}
+              {resource ? (
+                <ResourcePortForwardSettings
+                  example={{
+                    kind: "postgres",
+                    localPort: 15_432,
+                    port: 5432,
+                    projectName: projectNameFromInternalHostname(
+                      resource.hostname
+                    ),
+                    resourceName: resource.name,
+                  }}
+                  idPrefix="postgres"
+                  onSave={async (portForward, expectedUpdatedAt) => {
+                    setResource(
+                      await updateManagedPostgresPortForward(
+                        projectID,
+                        postgresID,
+                        { expectedUpdatedAt, portForward }
+                      )
+                    );
+                  }}
+                  updatedAt={resource.updatedAt}
+                  value={resource.portForward}
                 />
               ) : null}
               {resource ? (

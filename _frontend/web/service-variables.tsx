@@ -12,7 +12,6 @@ import { useEffect, useMemo, useState } from "react";
 
 import {
   fetchProjectCanvas,
-  fetchResolvedServiceBuildEnvironment,
   fetchResolvedServiceEnvironment,
   fetchService,
   fetchServiceDomains,
@@ -36,11 +35,8 @@ import {
 import type { VariableRow, VariableSuggestion } from "@/service-variable-model";
 
 interface ServiceVariableUpdate {
-  buildEnvironment?: Record<string, string>;
   environment?: Record<string, string>;
 }
-
-type VariableScope = "build" | "runtime";
 
 const rawEnvironment = (environment: Record<string, string>) =>
   Object.entries(environment)
@@ -53,7 +49,6 @@ const VariableSection = ({
   environment,
   onSave,
   resolve,
-  scope,
   suggestions,
   suggestionsError,
 }: {
@@ -61,7 +56,6 @@ const VariableSection = ({
   environment: Record<string, string>;
   onSave: (environment: Record<string, string>) => Promise<boolean>;
   resolve?: () => Promise<Record<string, string>>;
-  scope: VariableScope;
   suggestions: VariableSuggestion[];
   suggestionsError?: string;
 }) => {
@@ -71,7 +65,6 @@ const VariableSection = ({
   const [raw, setRaw] = useState<string>();
   const [resolving, setResolving] = useState(false);
   const [error, setError] = useState<string>();
-  const build = scope === "build";
 
   const updateRow = (rowID: string, update: Partial<VariableRow>) => {
     setRows((current) =>
@@ -142,12 +135,11 @@ const VariableSection = ({
       <header className="flex min-h-16 items-center justify-between gap-4 bg-muted/25 px-5 py-3">
         <div>
           <h3 className="text-[10px] font-medium">
-            {rows.length} {build ? "build time" : "service"} variables
+            {rows.length} service variables
           </h3>
           <p className="mt-1 text-[9px] text-muted-foreground">
-            {build
-              ? "Stable build defaults and preview context are added automatically. Values are available to every Dockerfile step and remain in the built image environment."
-              : "Deployment, URL, Git, and preview context are added automatically. References resolve when a deployment starts."}
+            Deployment, URL, and preview context are added automatically.
+            References resolve when a deployment starts.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -173,8 +165,8 @@ const VariableSection = ({
       </header>
 
       {raw === undefined ? (
-        <>
-          <div className="grid grid-cols-[minmax(11rem,0.8fr)_minmax(16rem,1.2fr)_2.5rem] border-y border-border bg-muted/10 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+        <div className="min-w-0 overflow-x-auto">
+          <div className="grid min-w-[28rem] grid-cols-[minmax(11rem,0.8fr)_minmax(16rem,1.2fr)_2.5rem] border-y border-border bg-muted/10 px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
             <span>Name</span>
             <span>Value</span>
             <span />
@@ -183,7 +175,7 @@ const VariableSection = ({
           {rows.length ? (
             rows.map((row) => (
               <div
-                className="grid min-h-12 grid-cols-[minmax(11rem,0.8fr)_minmax(16rem,1.2fr)_2.5rem] border-b border-border last:border-b-0"
+                className="grid min-h-12 min-w-[28rem] grid-cols-[minmax(11rem,0.8fr)_minmax(16rem,1.2fr)_2.5rem] border-b border-border last:border-b-0"
                 key={row.id}
               >
                 <div className="min-w-0 border-r border-border">
@@ -244,14 +236,14 @@ const VariableSection = ({
             ))
           ) : (
             <p className="border-b border-dashed border-border px-5 py-6 text-[10px] text-muted-foreground">
-              No {build ? "build time " : ""}variables configured.
+              No variables configured.
             </p>
           )}
-        </>
+        </div>
       ) : (
         <div className="border-t border-border">
           <div className="flex min-h-10 items-center border-b border-border bg-muted/10 px-5 text-[9px] text-muted-foreground">
-            Resolved {build ? "build" : "deployment"} values
+            Resolved deployment values
             <Button
               aria-label="Copy resolved variables"
               className="ml-auto"
@@ -274,8 +266,7 @@ const VariableSection = ({
         ) : null}
         {raw === undefined ? (
           <Button disabled={busy} onClick={() => void save()}>
-            <Check />{" "}
-            {busy ? "Staging…" : `Stage ${build ? "build " : ""}variables`}
+            <Check /> {busy ? "Staging…" : "Stage variables"}
           </Button>
         ) : (
           <Button onClick={() => setRaw(undefined)} variant="outline">
@@ -298,7 +289,7 @@ export const ServiceVariables = ({
   onSave: (update: ServiceVariableUpdate) => Promise<boolean>;
   projectID: string;
   resolvedRaw?: boolean;
-  service: Pick<Service, "buildEnvironment" | "environment" | "id" | "source">;
+  service: Pick<Service, "environment" | "id" | "source">;
 }) => {
   const { resourceDrafts, serviceChanges } = useProjectChanges(projectID);
   const [resources, setResources] = useState<ProjectCanvas["resources"]>([]);
@@ -377,9 +368,6 @@ export const ServiceVariables = ({
   const runtimeResolver = resolvedRaw
     ? () => fetchResolvedServiceEnvironment(projectID, service.id)
     : undefined;
-  const buildResolver = resolvedRaw
-    ? () => fetchResolvedServiceBuildEnvironment(projectID, service.id)
-    : undefined;
 
   return (
     <div className="grid gap-3">
@@ -397,21 +385,9 @@ export const ServiceVariables = ({
         environment={service.environment}
         onSave={(environment) => onSave({ environment })}
         resolve={runtimeResolver}
-        scope="runtime"
         suggestions={suggestions}
         suggestionsError={suggestionsError}
       />
-      {service.source.type === "github" ? (
-        <VariableSection
-          busy={busy}
-          environment={service.buildEnvironment}
-          onSave={(buildEnvironment) => onSave({ buildEnvironment })}
-          resolve={buildResolver}
-          scope="build"
-          suggestions={suggestions}
-          suggestionsError={suggestionsError}
-        />
-      ) : null}
     </div>
   );
 };

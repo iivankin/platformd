@@ -35,28 +35,12 @@ INSERT INTO object_stores(
 INSERT INTO s3_credentials(
   id, object_store_id, name, permission, secret_encrypted, created_at
 ) VALUES ('s3-credential', 'store', 'robot', 'read_write', x'01', 1);
-INSERT INTO registry_repositories(
-  id, name, public_pull, created_at, updated_at
-) VALUES ('repository', 'acme/app', 1, 1, 1);
-INSERT INTO registry_credentials(
-  id, repository_id, name, permission, secret_hmac, created_at
-) VALUES ('registry-credential', 'repository', 'robot', 'pull_push', x'01', 1);
-INSERT INTO registry_manifests(
-  repository_id, digest, media_type, body, pushed_at
-) VALUES (
-  'repository',
-  'sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4',
-  'application/vnd.oci.image.manifest.v1+json', x'7b7d', 1
-);
-INSERT INTO registry_tags(
-  repository_id, name, manifest_digest, updated_at
-) VALUES (
-  'repository', 'latest',
-  'sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4', 1
-);
-INSERT INTO registry_uploads(
-  id, repository_id, credential_id, created_at, updated_at, expires_at
-) VALUES ('upload', 'repository', 'registry-credential', 1, 1, 2)`); err != nil {
+INSERT INTO service_image_uploads(
+  id, service_id, tag, expected_length, received_length, expected_sha256,
+  temporary_path, oidc_metadata_json, status, created_at, updated_at, expires_at
+) VALUES ('upload', 'service', 'latest', 10, 0,
+  '3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4',
+  '/tmp/upload', '{}', 'uploading', 1, 1, 2)`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SetBackupTarget(ctx, SetBackupTarget{
@@ -82,7 +66,7 @@ INSERT INTO registry_uploads(
 		t.Fatal(err)
 	}
 	for _, table := range []string{
-		"registry_uploads", "registry_tags", "registry_manifests",
+		"service_image_uploads",
 		"volume_initializations",
 	} {
 		var count int
@@ -94,7 +78,7 @@ INSERT INTO registry_uploads(
 		}
 	}
 	for _, table := range []string{
-		"registry_repositories", "registry_credentials", "object_stores", "s3_credentials", "volumes",
+		"object_stores", "s3_credentials", "volumes",
 	} {
 		var count int
 		if err := store.QueryRowContext(ctx, "SELECT count(*) FROM "+table).Scan(&count); err != nil {

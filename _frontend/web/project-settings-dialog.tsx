@@ -185,7 +185,7 @@ export const ProjectSettingsDialog = ({
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[1px] data-open:animate-in data-open:fade-in data-closed:animate-out data-closed:fade-out" />
         <Dialog.Viewport className="fixed inset-0 z-50 grid place-items-center overflow-y-auto p-4">
-          <Dialog.Popup className="flex h-[min(42rem,calc(100dvh-2rem))] w-full max-w-4xl flex-col border border-border bg-background text-foreground shadow-2xl data-open:animate-in data-open:zoom-in-95 data-open:fade-in data-closed:animate-out data-closed:zoom-out-95 data-closed:fade-out">
+          <Dialog.Popup className="flex h-[min(42rem,calc(100dvh-2rem))] w-full max-w-7xl flex-col border border-border bg-background text-foreground shadow-2xl data-open:animate-in data-open:zoom-in-95 data-open:fade-in data-closed:animate-out data-closed:zoom-out-95 data-closed:fade-out">
             <header className="flex min-h-14 items-center gap-4 border-b border-border px-5 py-3">
               <div className="min-w-0">
                 <Dialog.Title className="truncate text-sm font-medium">
@@ -203,17 +203,17 @@ export const ProjectSettingsDialog = ({
               </Dialog.Close>
             </header>
 
-            <div className="grid min-h-0 flex-1 grid-cols-[11rem_minmax(0,1fr)]">
+            <div className="grid min-h-0 flex-1 md:grid-cols-[11rem_minmax(0,1fr)]">
               <nav
                 aria-label="Project settings sections"
-                className="border-r border-border bg-muted/10 p-2"
+                className="flex gap-1 overflow-x-auto border-b border-border bg-muted/10 p-2 md:block md:overflow-visible md:border-r md:border-b-0"
               >
                 {projectSettingsSections.map((item) => {
                   const Icon = item.icon;
                   return (
                     <button
                       className={cn(
-                        "flex h-9 w-full items-center gap-2 border-l-2 px-3 text-left text-[10px] transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                        "flex h-9 shrink-0 items-center gap-2 border-b-2 px-3 text-left text-[10px] transition-colors outline-none focus-visible:ring-1 focus-visible:ring-ring md:w-full md:border-b-0 md:border-l-2",
                         section === item.value
                           ? "border-foreground bg-muted text-foreground"
                           : "border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground"

@@ -1,6 +1,7 @@
 use crate::{
     buffer_pool::{PooledReaderStream, SizeLimitedStream},
     data_plane::{ProjectState, RequestLease, ResolvedStore},
+    usage,
 };
 use async_trait::async_trait;
 use futures_util::TryStreamExt as _;
@@ -158,12 +159,12 @@ impl S3 for S3Backend {
             if_match,
             if_none_match,
         );
-        let info = self
+        let (info, previous) = self
             .store
-            .clone()
-            .put_object(&bucket, &key, &mut put_reader, &options)
+            .put_object_with_old_current_size(&bucket, &key, &mut put_reader, &options)
             .await
             .map_err(storage_error)?;
+        usage::record_write(&bucket, &info, previous).await;
         Ok(S3Response::new(PutObjectOutput {
             e_tag: object_etag(&info),
             size: Some(info.size),
@@ -343,10 +344,9 @@ impl S3 for S3Backend {
                 ..Default::default()
             }
         };
-        let info = self
+        let (info, previous) = self
             .store
-            .clone()
-            .put_object(
+            .put_object_with_old_current_size(
                 &bucket,
                 &req.input.key,
                 &mut put_reader,
@@ -354,6 +354,7 @@ impl S3 for S3Backend {
             )
             .await
             .map_err(storage_error)?;
+        usage::record_write(&bucket, &info, previous).await;
         Ok(S3Response::new(CopyObjectOutput {
             copy_object_result: Some(CopyObjectResult {
                 e_tag: object_etag(&info),
@@ -374,7 +375,11 @@ impl S3 for S3Backend {
             .delete_object(&bucket, &req.input.key, ObjectOptions::default())
             .await
         {
-            Ok(_) | Err(StorageError::ObjectNotFound(_, _)) => {
+            Ok(info) => {
+                usage::record_delete(&bucket, &info).await;
+                Ok(S3Response::new(DeleteObjectOutput::default()))
+            }
+            Err(StorageError::ObjectNotFound(_, _)) => {
                 Ok(S3Response::new(DeleteObjectOutput::default()))
             }
             Err(error) => Err(storage_error(error)),
@@ -398,6 +403,11 @@ impl S3 for S3Backend {
             .store
             .delete_objects(&bucket, objects, ObjectOptions::default())
             .await;
+        if failures.iter().any(Option::is_none) {
+            // The ECStore bulk-delete result does not expose deleted sizes, so
+            // the scanner reconciles the aggregate without extra HEAD requests.
+            usage::record_dirty(&bucket);
+        }
         let mut deleted = Vec::new();
         let mut errors = Vec::new();
         for (object, failure) in requested.into_iter().zip(failures) {
@@ -541,6 +551,9 @@ impl S3 for S3Backend {
         req: S3Request<CompleteMultipartUploadInput>,
     ) -> S3Result<S3Response<CompleteMultipartUploadOutput>> {
         let bucket = self.physical_bucket(&req, &req.input.bucket, true).await?;
+        let previous = usage::previous_size(self.store.as_ref(), &bucket, &req.input.key)
+            .await
+            .map_err(storage_error)?;
         let parts = req
             .input
             .multipart_upload
@@ -609,6 +622,7 @@ impl S3 for S3Backend {
             )
             .await
             .map_err(storage_error)?;
+        usage::record_write_with_previous(&bucket, &info, previous).await;
         Ok(S3Response::new(CompleteMultipartUploadOutput {
             bucket: Some(req.input.bucket),
             key: Some(req.input.key),

@@ -62,23 +62,31 @@ type diskComponentResponse struct {
 }
 
 type resourceUsageResponse struct {
-	ObservedAt                       int64               `json:"observedAt"`
-	MemoryBytes                      uint64              `json:"memoryBytes"`
-	HostCPUCores                     int                 `json:"hostCpuCores"`
-	HostMemoryBytes                  uint64              `json:"hostMemoryBytes"`
-	NetworkAvailable                 bool                `json:"networkAvailable"`
-	Running                          bool                `json:"running"`
-	CPUMillicores                    *int64              `json:"cpuMillicores,omitempty"`
-	CPUPeakMillicores                *int64              `json:"cpuPeakMillicores,omitempty"`
-	MemoryPeakBytes                  uint64              `json:"memoryPeakBytes"`
-	NetworkIngressBytesPerSecond     *int64              `json:"networkIngressBytesPerSecond,omitempty"`
-	NetworkIngressPeakBytesPerSecond *int64              `json:"networkIngressPeakBytesPerSecond,omitempty"`
-	NetworkEgressBytesPerSecond      *int64              `json:"networkEgressBytesPerSecond,omitempty"`
-	NetworkEgressPeakBytesPerSecond  *int64              `json:"networkEgressPeakBytesPerSecond,omitempty"`
-	RunningResources                 int                 `json:"runningResources"`
-	TotalResources                   int                 `json:"totalResources"`
-	Proxy                            *proxyUsageResponse `json:"proxy,omitempty"`
-	Host                             *hostUsageResponse  `json:"host,omitempty"`
+	ObservedAt                       int64                 `json:"observedAt"`
+	MemoryBytes                      uint64                `json:"memoryBytes"`
+	HostCPUCores                     int                   `json:"hostCpuCores"`
+	HostMemoryBytes                  uint64                `json:"hostMemoryBytes"`
+	NetworkAvailable                 bool                  `json:"networkAvailable"`
+	Running                          bool                  `json:"running"`
+	CPUMillicores                    *int64                `json:"cpuMillicores,omitempty"`
+	CPUPeakMillicores                *int64                `json:"cpuPeakMillicores,omitempty"`
+	MemoryPeakBytes                  uint64                `json:"memoryPeakBytes"`
+	DiskBytes                        *uint64               `json:"diskBytes,omitempty"`
+	NetworkIngressBytesPerSecond     *int64                `json:"networkIngressBytesPerSecond,omitempty"`
+	NetworkIngressPeakBytesPerSecond *int64                `json:"networkIngressPeakBytesPerSecond,omitempty"`
+	NetworkEgressBytesPerSecond      *int64                `json:"networkEgressBytesPerSecond,omitempty"`
+	NetworkEgressPeakBytesPerSecond  *int64                `json:"networkEgressPeakBytesPerSecond,omitempty"`
+	RunningResources                 int                   `json:"runningResources"`
+	TotalResources                   int                   `json:"totalResources"`
+	TrafficRoutes                    trafficRoutesResponse `json:"trafficRoutes"`
+	Proxy                            *proxyUsageResponse   `json:"proxy,omitempty"`
+	Host                             *hostUsageResponse    `json:"host,omitempty"`
+}
+
+type trafficRoutesResponse struct {
+	HTTP bool `json:"http"`
+	TCP  bool `json:"tcp"`
+	UDP  bool `json:"udp"`
 }
 
 type proxyUsageResponse struct {
@@ -141,6 +149,7 @@ type resourceUsageHistoryPointResponse struct {
 	CPUPeakMillicores                *int64              `json:"cpuPeakMillicores,omitempty"`
 	MemoryBytes                      uint64              `json:"memoryBytes"`
 	MemoryPeakBytes                  uint64              `json:"memoryPeakBytes"`
+	DiskBytes                        *uint64             `json:"diskBytes,omitempty"`
 	NetworkIngressBytesPerSecond     *int64              `json:"networkIngressBytesPerSecond,omitempty"`
 	NetworkIngressPeakBytesPerSecond *int64              `json:"networkIngressPeakBytesPerSecond,omitempty"`
 	NetworkEgressBytesPerSecond      *int64              `json:"networkEgressBytesPerSecond,omitempty"`
@@ -150,10 +159,18 @@ type resourceUsageHistoryPointResponse struct {
 }
 
 type resourceUsageHistoryResponse struct {
-	From       int64                               `json:"from"`
-	To         int64                               `json:"to"`
-	StepMillis int64                               `json:"stepMillis"`
-	Points     []resourceUsageHistoryPointResponse `json:"points"`
+	From       int64                                `json:"from"`
+	To         int64                                `json:"to"`
+	StepMillis int64                                `json:"stepMillis"`
+	Points     []resourceUsageHistoryPointResponse  `json:"points"`
+	Series     []resourceUsageHistorySeriesResponse `json:"series"`
+}
+
+type resourceUsageHistorySeriesResponse struct {
+	ID     string                              `json:"id"`
+	Kind   string                              `json:"kind"`
+	Name   string                              `json:"name"`
+	Points []resourceUsageHistoryPointResponse `json:"points"`
 }
 
 func registerInfrastructureRoutes(
@@ -293,11 +310,15 @@ func resourceUsageResponseFor(sample resourcemetrics.Current) resourceUsageRespo
 		HostMemoryBytes: sample.HostMemoryBytes, NetworkAvailable: sample.NetworkAvailable,
 		Running: sample.Running, CPUMillicores: sample.CPUMillicores, CPUPeakMillicores: sample.CPUPeakMillicores,
 		MemoryPeakBytes:                  sample.MemoryPeakBytes,
+		DiskBytes:                        sample.DiskBytes,
 		NetworkIngressBytesPerSecond:     sample.NetworkIngressBytesPerSecond,
 		NetworkIngressPeakBytesPerSecond: sample.NetworkIngressPeakBytesPerSecond,
 		NetworkEgressBytesPerSecond:      sample.NetworkEgressBytesPerSecond,
 		NetworkEgressPeakBytesPerSecond:  sample.NetworkEgressPeakBytesPerSecond,
 		RunningResources:                 sample.RunningResources, TotalResources: sample.TotalResources,
+		TrafficRoutes: trafficRoutesResponse{
+			HTTP: sample.TrafficRoutes.HTTP, TCP: sample.TrafficRoutes.TCP, UDP: sample.TrafficRoutes.UDP,
+		},
 		Proxy: proxyUsageResponseFor(sample.Proxy), Host: hostUsageResponseFor(sample.Host),
 	}
 }
@@ -370,23 +391,7 @@ func resourceUsageHistoryHandler(usage ResourceUsage) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "resource_usage_unavailable", "Resource usage is unavailable")
 			return
 		}
-		points := make([]resourceUsageHistoryPointResponse, 0, len(history.Points))
-		for _, point := range history.Points {
-			points = append(points, resourceUsageHistoryPointResponse{
-				ObservedAt: point.ObservedAt, DurationMillis: point.DurationMillis,
-				CPUMillicores: point.CPUMillicores, CPUPeakMillicores: point.CPUPeakMillicores,
-				MemoryBytes: point.MemoryBytes, MemoryPeakBytes: point.MemoryPeakBytes,
-				NetworkIngressBytesPerSecond:     point.NetworkIngressBytesPerSecond,
-				NetworkIngressPeakBytesPerSecond: point.NetworkIngressPeakBytesPerSecond,
-				NetworkEgressBytesPerSecond:      point.NetworkEgressBytesPerSecond,
-				NetworkEgressPeakBytesPerSecond:  point.NetworkEgressPeakBytesPerSecond,
-				Running:                          point.Running,
-				Proxy:                            proxyUsageResponseFor(point.Proxy),
-			})
-		}
-		writeJSON(response, http.StatusOK, resourceUsageHistoryResponse{
-			From: history.From, To: history.To, StepMillis: history.StepMillis, Points: points,
-		})
+		writeResourceUsageHistory(response, history)
 	}
 }
 
@@ -435,21 +440,34 @@ func usageHistoryHandler(read func(*http.Request, time.Duration) (resourcemetric
 func writeResourceUsageHistory(response http.ResponseWriter, history resourcemetrics.History) {
 	points := make([]resourceUsageHistoryPointResponse, 0, len(history.Points))
 	for _, point := range history.Points {
-		points = append(points, resourceUsageHistoryPointResponse{
-			ObservedAt: point.ObservedAt, DurationMillis: point.DurationMillis,
-			CPUMillicores: point.CPUMillicores, CPUPeakMillicores: point.CPUPeakMillicores,
-			MemoryBytes: point.MemoryBytes, MemoryPeakBytes: point.MemoryPeakBytes,
-			NetworkIngressBytesPerSecond:     point.NetworkIngressBytesPerSecond,
-			NetworkIngressPeakBytesPerSecond: point.NetworkIngressPeakBytesPerSecond,
-			NetworkEgressBytesPerSecond:      point.NetworkEgressBytesPerSecond,
-			NetworkEgressPeakBytesPerSecond:  point.NetworkEgressPeakBytesPerSecond,
-			Running:                          point.Running,
-			Proxy:                            proxyUsageResponseFor(point.Proxy),
+		points = append(points, resourceUsageHistoryPointResponseFor(point))
+	}
+	series := make([]resourceUsageHistorySeriesResponse, 0, len(history.Series))
+	for _, item := range history.Series {
+		seriesPoints := make([]resourceUsageHistoryPointResponse, 0, len(item.Points))
+		for _, point := range item.Points {
+			seriesPoints = append(seriesPoints, resourceUsageHistoryPointResponseFor(point))
+		}
+		series = append(series, resourceUsageHistorySeriesResponse{
+			ID: item.ID, Kind: item.Kind, Name: item.Name, Points: seriesPoints,
 		})
 	}
 	writeJSON(response, http.StatusOK, resourceUsageHistoryResponse{
-		From: history.From, To: history.To, StepMillis: history.StepMillis, Points: points,
+		From: history.From, To: history.To, StepMillis: history.StepMillis, Points: points, Series: series,
 	})
+}
+
+func resourceUsageHistoryPointResponseFor(point resourcemetrics.Point) resourceUsageHistoryPointResponse {
+	return resourceUsageHistoryPointResponse{
+		ObservedAt: point.ObservedAt, DurationMillis: point.DurationMillis,
+		CPUMillicores: point.CPUMillicores, CPUPeakMillicores: point.CPUPeakMillicores,
+		MemoryBytes: point.MemoryBytes, MemoryPeakBytes: point.MemoryPeakBytes, DiskBytes: point.DiskBytes,
+		NetworkIngressBytesPerSecond:     point.NetworkIngressBytesPerSecond,
+		NetworkIngressPeakBytesPerSecond: point.NetworkIngressPeakBytesPerSecond,
+		NetworkEgressBytesPerSecond:      point.NetworkEgressBytesPerSecond,
+		NetworkEgressPeakBytesPerSecond:  point.NetworkEgressPeakBytesPerSecond,
+		Running:                          point.Running, Proxy: proxyUsageResponseFor(point.Proxy),
+	}
 }
 
 var resourceMetricWindows = map[string]time.Duration{

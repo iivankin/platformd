@@ -12,10 +12,10 @@ import type { MockState } from "./state";
 import { mockBackupTargetKey, mockNow, nextMockID } from "./state";
 
 const backupKinds = new Set<RecoveryResourceKind>([
+  "image",
   "object_store",
   "postgres",
   "redis",
-  "registry",
   "volume",
 ]);
 

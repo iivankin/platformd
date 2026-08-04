@@ -22,6 +22,20 @@ INSERT INTO services(id, project_id, name, source_json, created_at, updated_at)
 INSERT INTO deployments(id, service_id, image_digest, image_reference, service_config_hash, snapshot_json, status, created_at) VALUES
  ('active', 'service', 'sha256:active', 'example/api:latest', 'active', '{}', 'succeeded', 1),
  ('old', 'service', 'sha256:old', 'example/api:old', 'old', '{}', 'succeeded', 0);
+INSERT INTO service_image_revisions(
+ id, service_id, tag, kind, archive_path, archive_sha256, image_digest,
+ oidc_metadata_json, status, created_at
+) VALUES ('preview-revision', 'service', 'preview', 'preview', '/images/preview.oci',
+          'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'sha256:retained-preview', '{}', 'retired', 1);
+INSERT INTO preview_deployments(
+ id, service_id, tag, image_revision_id, hostname, target_port, image_digest,
+ image_reference, service_config_hash, snapshot_json, status, created_at, updated_at, finished_at, expires_at
+) VALUES
+ ('retained-preview', 'service', 'preview', 'preview-revision', 'retained.example.com', 8080,
+  'sha256:retained-preview', 'oci-archive:/images/preview.oci', 'preview', '{}', 'stopped', 1, 1, 1, 1),
+ ('deleted-preview', 'service', 'deleted', NULL, 'deleted.example.com', 8080,
+  'sha256:deleted-preview', 'oci-archive:/images/deleted.oci', 'deleted', '{}', 'stopped', 1, 1, 1, 1);
 UPDATE services SET active_deployment_id = 'active' WHERE id = 'service';`)
 	if err != nil {
 		t.Fatal(err)
@@ -41,9 +55,12 @@ UPDATE services SET active_deployment_id = 'active' WHERE id = 'service';`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, digest := range []string{"sha256:active", "sha256:old"} {
+	for _, digest := range []string{"sha256:active", "sha256:old", "sha256:retained-preview"} {
 		if _, ok := known[digest]; !ok {
 			t.Fatalf("known final image digest %s was omitted", digest)
 		}
+	}
+	if _, ok := known["sha256:deleted-preview"]; ok {
+		t.Fatal("preview history without an archive kept its container image")
 	}
 }

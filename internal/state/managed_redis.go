@@ -10,10 +10,14 @@ import (
 
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/opencontainers/go-digest"
 )
 
-var ErrManagedRedisNotFound = errors.New("managed Redis resource not found")
+var (
+	ErrManagedRedisNotFound = errors.New("managed Redis resource not found")
+	ErrManagedRedisChanged  = errors.New("managed Redis resource changed")
+)
 
 type ManagedRedis struct {
 	ID                   string
@@ -26,6 +30,7 @@ type ManagedRedis struct {
 	PasswordEncrypted    []byte
 	CPUMillicores        int64
 	MemoryMaxBytes       int64
+	PortForward          *serviceconfig.PortForward
 	BackupEnabled        bool
 	BackupCron           string
 	BackupRetentionCount int
@@ -152,10 +157,11 @@ func (store *Store) managedRedis(ctx context.Context, resourceID, projectID stri
 	var memoryBytes sql.NullInt64
 	var backupEnabled int
 	var backupCron sql.NullString
+	var portForwardJSON sql.NullString
 	query := `
 SELECT r.id, r.project_id, p.name, r.name, r.image_tag, r.image_digest,
        r.volume_id, r.password_encrypted, r.cpu_millis, r.memory_bytes,
-       r.backup_enabled, r.backup_cron, r.backup_retention_count,
+       r.port_forward_json, r.backup_enabled, r.backup_cron, r.backup_retention_count,
        r.created_at, r.updated_at
 FROM managed_redis r
 JOIN projects p ON p.id = r.project_id
@@ -168,8 +174,8 @@ WHERE r.id = ?`
 	err := store.database.QueryRowContext(ctx, query, arguments...).Scan(
 		&resource.ID, &resource.ProjectID, &resource.ProjectName, &resource.Name,
 		&resource.ImageTag, &resource.ImageDigest, &resource.VolumeID,
-		&resource.PasswordEncrypted, &cpuMillis, &memoryBytes, &backupEnabled,
-		&backupCron, &resource.BackupRetentionCount, &resource.CreatedAtMillis,
+		&resource.PasswordEncrypted, &cpuMillis, &memoryBytes, &portForwardJSON,
+		&backupEnabled, &backupCron, &resource.BackupRetentionCount, &resource.CreatedAtMillis,
 		&resource.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -182,7 +188,56 @@ WHERE r.id = ?`
 	resource.MemoryMaxBytes = memoryBytes.Int64
 	resource.BackupEnabled = backupEnabled == 1
 	resource.BackupCron = backupCron.String
+	if portForwardJSON.Valid {
+		if err := json.Unmarshal([]byte(portForwardJSON.String), &resource.PortForward); err != nil {
+			return ManagedRedis{}, fmt.Errorf("decode managed Redis port-forward settings: %w", err)
+		}
+	}
 	return resource, nil
+}
+
+type UpdateManagedRedisPortForwardInput struct {
+	ID                    string
+	ProjectID             string
+	PortForward           *serviceconfig.PortForward
+	ExpectedUpdatedMillis int64
+	UpdatedAtMillis       int64
+}
+
+func (store *Store) UpdateManagedRedisPortForward(ctx context.Context, input UpdateManagedRedisPortForwardInput) (ManagedRedis, error) {
+	if input.ID == "" || input.ProjectID == "" || input.ExpectedUpdatedMillis <= 0 || input.UpdatedAtMillis <= 0 {
+		return ManagedRedis{}, errors.New("update managed Redis port-forward input is incomplete")
+	}
+	normalized, err := serviceconfig.NormalizePortForward(input.PortForward)
+	if err != nil {
+		return ManagedRedis{}, err
+	}
+	portForwardJSON, err := optionalJSON(normalized)
+	if err != nil {
+		return ManagedRedis{}, fmt.Errorf("encode managed Redis port-forward settings: %w", err)
+	}
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		result, execErr := transaction.ExecContext(ctx, `
+UPDATE managed_redis SET port_forward_json = ?, updated_at = ?
+WHERE id = ? AND project_id = ? AND updated_at = ?`,
+			portForwardJSON, input.UpdatedAtMillis, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+		)
+		if execErr != nil {
+			return fmt.Errorf("update managed Redis port-forward settings: %w", execErr)
+		}
+		changed, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("count managed Redis port-forward update: %w", rowsErr)
+		}
+		if changed != 1 {
+			return ErrManagedRedisChanged
+		}
+		return nil
+	})
+	if err != nil {
+		return ManagedRedis{}, err
+	}
+	return store.ManagedRedisInProject(ctx, input.ProjectID, input.ID)
 }
 
 func (store *Store) ManagedRedisByProject(ctx context.Context, projectID string) ([]ManagedRedis, error) {

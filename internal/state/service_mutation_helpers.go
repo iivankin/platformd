@@ -36,11 +36,11 @@ SELECT updated_at FROM services WHERE id = ? AND project_id = ?`, serviceID, pro
 }
 
 func validateServiceDependencies(ctx context.Context, transaction *sql.Tx, projectID, serviceID string, snapshot serviceconfig.Snapshot) error {
-	if snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil {
+	if snapshot.Source.Type == servicesource.DockerImageUpload {
 		var domainCount int
 		if err := transaction.QueryRowContext(ctx, `
 SELECT count(*) FROM service_domains WHERE service_id = ?`, serviceID).Scan(&domainCount); err != nil {
-			return fmt.Errorf("count service domains for PR previews: %w", err)
+			return fmt.Errorf("count image upload preview domains: %w", err)
 		}
 		if domainCount != 1 {
 			return ErrPreviewDomainCount
@@ -120,13 +120,13 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	if err != nil {
 		return fmt.Errorf("encode service environment: %w", err)
 	}
-	buildEnvironmentJSON, err := json.Marshal(snapshot.BuildEnvironment)
-	if err != nil {
-		return fmt.Errorf("encode service build environment: %w", err)
-	}
 	beforeDeployJSON, err := optionalJSON(snapshot.BeforeDeploy)
 	if err != nil {
 		return fmt.Errorf("encode service before-deploy settings: %w", err)
+	}
+	portForwardJSON, err := optionalJSON(snapshot.PortForward)
+	if err != nil {
+		return fmt.Errorf("encode service port-forward settings: %w", err)
 	}
 	sourceJSON, err := json.Marshal(snapshot.Source)
 	if err != nil {
@@ -143,13 +143,13 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	result, err := transaction.ExecContext(ctx, `
 	UPDATE services SET
 	  source_json = ?, command_json = ?, args_json = ?,
-	  environment_json = ?, build_environment_json = ?, before_deploy_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
+	  environment_json = ?, before_deploy_json = ?, port_forward_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
   cpu_millis = ?, memory_bytes = ?, enabled = ?,
   active_deployment_id = CASE WHEN ? = 0 THEN NULL ELSE active_deployment_id END,
   updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
 		string(sourceJSON), commandJSON, argsJSON,
-		string(environmentJSON), string(buildEnvironmentJSON), beforeDeployJSON, healthPort, healthPath, healthTimeout,
+		string(environmentJSON), beforeDeployJSON, portForwardJSON, healthPort, healthPath, healthTimeout,
 		nullablePositive(snapshot.CPUMillicores), nullablePositive(snapshot.MemoryMaxBytes), boolInteger(enabled),
 		boolInteger(enabled), updatedAt, serviceID, projectID, expectedUpdated,
 	)

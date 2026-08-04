@@ -30,6 +30,16 @@ const formatDuration = (deployment: Deployment) => {
   return `${(milliseconds / 1000).toFixed(1)} seconds`;
 };
 
+const sourceDescription = (source: Deployment["snapshot"]["source"]) => {
+  if (source.type === "docker_image_upload") {
+    return `${source.dockerUpload.repository} · ${source.dockerUpload.branch}`;
+  }
+  if (source.type === "unconfigured") {
+    return "Not configured";
+  }
+  return source.image.reference;
+};
+
 const Detail = ({ label, value }: { label: string; value: string }) => (
   <div className="grid gap-1 border-b border-border px-5 py-3 last:border-b-0 md:grid-cols-[10rem_minmax(0,1fr)] md:gap-4">
     <dt className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
@@ -113,14 +123,7 @@ export const DeploymentDetails = ({
       <section>
         <SectionTitle>Runtime snapshot</SectionTitle>
         <dl>
-          <Detail
-            label="Source"
-            value={
-              snapshot.source.type === "github"
-                ? `${snapshot.source.github.repository} · ${snapshot.source.github.branch}`
-                : snapshot.source.image.reference
-            }
-          />
+          <Detail label="Source" value={sourceDescription(snapshot.source)} />
           <Detail
             label="Command"
             value={snapshot.command?.join(" ") || "Image default"}

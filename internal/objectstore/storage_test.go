@@ -18,6 +18,7 @@ import (
 type memoryStorage struct {
 	mu        sync.Mutex
 	buckets   map[string]map[string]memoryObject
+	searches  map[string]LargestObjectsSearch
 	nowMillis int64
 }
 
@@ -29,6 +30,7 @@ type memoryObject struct {
 func newMemoryStorage() *memoryStorage {
 	return &memoryStorage{
 		buckets:   make(map[string]map[string]memoryObject),
+		searches:  make(map[string]LargestObjectsSearch),
 		nowMillis: time.Now().UnixMilli(),
 	}
 }
@@ -184,6 +186,59 @@ func (storage *memoryStorage) ListEntries(_ context.Context, storeID, prefix, de
 		entries = entries[:limit]
 	}
 	return entries, more, nil
+}
+
+func (storage *memoryStorage) Stats(_ context.Context, storeID string) (ObjectStoreStats, error) {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	objects := storage.buckets[storeID]
+	result := ObjectStoreStats{
+		Ready: true, ObservedAtMillis: storage.nowMillis,
+		ObjectSizeHistogram: []ObjectSizeHistogramBucket{},
+	}
+	for _, object := range objects {
+		result.ObjectCount++
+		result.TotalBytes += uint64(object.metadata.Size)
+	}
+	return result, nil
+}
+
+func (storage *memoryStorage) LargestObjects(_ context.Context, storeID string) (LargestObjectsSearch, error) {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	if search, exists := storage.searches[storeID]; exists {
+		return search, nil
+	}
+	return LargestObjectsSearch{Status: LargestObjectsIdle, Objects: []LargestObject{}}, nil
+}
+
+func (storage *memoryStorage) StartLargestObjects(_ context.Context, storeID string) (LargestObjectsSearch, error) {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	objects := make([]LargestObject, 0, len(storage.buckets[storeID]))
+	for key, object := range storage.buckets[storeID] {
+		objects = append(objects, LargestObject{Key: key, Size: uint64(object.metadata.Size)})
+	}
+	sort.Slice(objects, func(left, right int) bool {
+		return objects[left].Size > objects[right].Size ||
+			(objects[left].Size == objects[right].Size && objects[left].Key < objects[right].Key)
+	})
+	if len(objects) > 10 {
+		objects = objects[:10]
+	}
+	search := LargestObjectsSearch{
+		Status: LargestObjectsComplete, ScannedObjects: uint64(len(storage.buckets[storeID])), Objects: objects,
+	}
+	storage.searches[storeID] = search
+	return search, nil
+}
+
+func (storage *memoryStorage) CancelLargestObjects(_ context.Context, storeID string) (LargestObjectsSearch, error) {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	search := LargestObjectsSearch{Status: LargestObjectsCancelled, Objects: []LargestObject{}}
+	storage.searches[storeID] = search
+	return search, nil
 }
 
 func (storage *memoryStorage) Delete(_ context.Context, storeID, objectKey string) error {

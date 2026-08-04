@@ -13,6 +13,7 @@ import (
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -25,6 +26,7 @@ type Store interface {
 	CreateManagedPostgres(context.Context, state.CreateManagedPostgres) (state.ManagedPostgres, error)
 	ManagedPostgresInProject(context.Context, string, string) (state.ManagedPostgres, error)
 	ManagedPostgresByProject(context.Context, string) ([]state.ManagedPostgres, error)
+	UpdateManagedPostgresPortForward(context.Context, state.UpdateManagedPostgresPortForwardInput) (state.ManagedPostgres, error)
 	RecordManagedPostgresExtension(context.Context, state.RecordManagedPostgresExtension) error
 	RecordManagedPostgresQuery(context.Context, state.RecordManagedPostgresQuery) error
 	BeginOperation(context.Context, state.BeginOperation) error
@@ -162,6 +164,22 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 
 func (application *Application) Resource(ctx context.Context, projectID, resourceID string) (state.ManagedPostgres, error) {
 	return application.store.ManagedPostgresInProject(ctx, projectID, resourceID)
+}
+
+func (application *Application) UpdatePortForward(
+	ctx context.Context,
+	projectID, resourceID string,
+	portForward *serviceconfig.PortForward,
+	expectedUpdatedAt int64,
+) (state.ManagedPostgres, error) {
+	normalized, err := serviceconfig.NormalizePortForward(portForward)
+	if err != nil {
+		return state.ManagedPostgres{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return application.store.UpdateManagedPostgresPortForward(ctx, state.UpdateManagedPostgresPortForwardInput{
+		ID: resourceID, ProjectID: projectID, PortForward: normalized,
+		ExpectedUpdatedMillis: expectedUpdatedAt, UpdatedAtMillis: application.now().UnixMilli(),
+	})
 }
 
 func (application *Application) OwnerPassword(ctx context.Context, projectID, resourceID string) (string, error) {

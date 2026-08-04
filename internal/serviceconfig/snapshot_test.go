@@ -3,8 +3,6 @@ package serviceconfig
 import (
 	"strings"
 	"testing"
-
-	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 func TestCanonicalNormalizesAndHashesServiceSnapshot(t *testing.T) {
@@ -61,8 +59,6 @@ func TestSnapshotValidationRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 		{Source: PublicImageSource("alpine"), Environment: map[string]string{"BAD-NAME": "value"}},
 		{Source: PublicImageSource("alpine"), Environment: map[string]string{"PLATFORMD_SERVICE_ID": "override"}},
 		{Source: PublicImageSource("alpine"), Environment: map[string]string{"TOKEN": "plain"}, SecretReferences: []SecretReference{{EnvironmentName: "TOKEN", SecretID: "secret"}}},
-		{Source: PublicImageSource("alpine"), BuildEnvironment: map[string]string{"TOKEN": "secret"}},
-		{Source: githubTestSource(), BuildEnvironment: map[string]string{"BAD-NAME": "secret"}},
 		{Source: PublicImageSource("alpine"), HealthCheck: &HealthCheck{Path: "/healthz"}},
 		{Source: PublicImageSource("alpine"), HealthCheck: &HealthCheck{Port: 8080, Path: "https://example.com/health"}},
 		{Source: PublicImageSource("alpine"), VolumeMounts: []VolumeMount{{VolumeID: "volume", ContainerPath: "/"}}},
@@ -75,31 +71,11 @@ func TestSnapshotValidationRejectsUnsafeOrAmbiguousConfiguration(t *testing.T) {
 	}
 }
 
-func TestGitHubSnapshotNormalizesBuildEnvironment(t *testing.T) {
+func TestBeforeDeployNormalizesCommandAndCloudflareHostnames(t *testing.T) {
 	normalized, err := Normalize(Snapshot{
-		Source: githubTestSource(),
-		BuildEnvironment: map[string]string{
-			"DATABASE_URL": "${{database.DATABASE_URL}}",
-			"SENTRY_TOKEN": "secret",
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if normalized.BuildEnvironment["DATABASE_URL"] != "${{database.DATABASE_URL}}" || len(normalized.Environment) != 0 {
-		t.Fatalf("normalized build environment = %#v", normalized.BuildEnvironment)
-	}
-}
-
-func TestBeforeDeployNormalizesAllActionsAndArbitraryWorkflowInputs(t *testing.T) {
-	normalized, err := Normalize(Snapshot{
-		Source: githubTestSource(),
+		Source: PublicImageSource("alpine"),
 		BeforeDeploy: &BeforeDeploy{
-			Command: "  bun run migrate  ",
-			GitHubWorkflow: &GitHubWorkflow{
-				Path: ".github/workflows/migrate.yml", Name: " Migrate database ",
-				Inputs: map[string]any{"dryRun": false, "batch": float64(20), "metadata": map[string]any{"actor": "platformd"}},
-			},
+			Command:             "  bun run migrate  ",
 			CloudflareHostnames: []string{"WWW.Example.com", "api.example.com", "www.example.com"},
 		},
 	})
@@ -107,36 +83,11 @@ func TestBeforeDeployNormalizesAllActionsAndArbitraryWorkflowInputs(t *testing.T
 		t.Fatal(err)
 	}
 	beforeDeploy := normalized.BeforeDeploy
-	if beforeDeploy == nil || beforeDeploy.Command != "bun run migrate" || beforeDeploy.GitHubWorkflow == nil || beforeDeploy.GitHubWorkflow.Name != "Migrate database" {
+	if beforeDeploy == nil || beforeDeploy.Command != "bun run migrate" {
 		t.Fatalf("normalized before deploy = %+v", beforeDeploy)
 	}
 	if got := strings.Join(beforeDeploy.CloudflareHostnames, ","); got != "api.example.com,www.example.com" {
 		t.Fatalf("Cloudflare hostnames = %q", got)
-	}
-	if beforeDeploy.GitHubWorkflow.Inputs["dryRun"] != false || beforeDeploy.GitHubWorkflow.Inputs["batch"] != float64(20) {
-		t.Fatalf("workflow inputs = %#v", beforeDeploy.GitHubWorkflow.Inputs)
-	}
-}
-
-func TestBeforeDeployWorkflowRequiresGitHubSource(t *testing.T) {
-	_, err := Normalize(Snapshot{
-		Source: PublicImageSource("alpine"),
-		BeforeDeploy: &BeforeDeploy{GitHubWorkflow: &GitHubWorkflow{
-			Path: ".github/workflows/migrate.yml", Name: "Migrate", Inputs: map[string]any{},
-		}},
-	})
-	if err == nil {
-		t.Fatal("non-GitHub source accepted a before-deploy workflow")
-	}
-}
-
-func githubTestSource() servicesource.Source {
-	return servicesource.Source{
-		Type: servicesource.GitHubImage,
-		GitHub: &servicesource.GitHub{
-			RepositoryID: 1, Repository: "acme/api", Branch: "main",
-			DockerfilePath: "Dockerfile", ContextPath: ".",
-		},
 	}
 }
 

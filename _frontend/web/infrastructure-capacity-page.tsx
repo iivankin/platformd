@@ -25,6 +25,8 @@ const componentPresentation: Record<string, { color: string; label: string }> =
     cloudflare_mesh: { color: "bg-blue-500", label: "Cloudflare Mesh state" },
     container_images: { color: "bg-sky-500", label: "Container images" },
     emergency_reserve: { color: "bg-zinc-500", label: "Emergency reserve" },
+    image_uploads: { color: "bg-orange-500", label: "Image uploads" },
+    images: { color: "bg-rose-500", label: "Uploaded images" },
     logs: { color: "bg-amber-500", label: "Logs" },
     object_storage: { color: "bg-cyan-500", label: "Object storage" },
     other: otherComponentPresentation,
@@ -33,7 +35,6 @@ const componentPresentation: Record<string, { color: string; label: string }> =
       color: "bg-indigo-500",
       label: "PostgreSQL extension cache",
     },
-    registry: { color: "bg-rose-500", label: "Registry" },
     releases: { color: "bg-lime-500", label: "Platform releases" },
     volumes: { color: "bg-emerald-500", label: "Volumes" },
   };

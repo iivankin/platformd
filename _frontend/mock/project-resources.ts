@@ -78,7 +78,6 @@ const createService: ResourceCreator = (state, projectID, input) => {
       typeof input.beforeDeploy === "object" && input.beforeDeploy !== null
         ? (input.beforeDeploy as Service["beforeDeploy"])
         : undefined,
-    buildEnvironment: stringRecord(input.buildEnvironment),
     cpuMillicores: 500,
     createdAt,
     enabled: booleanField(input, "enabled", true),
@@ -90,6 +89,10 @@ const createService: ResourceCreator = (state, projectID, input) => {
     id,
     memoryMaxBytes: 536_870_912,
     name,
+    portForward:
+      typeof input.portForward === "object" && input.portForward !== null
+        ? (input.portForward as Service["portForward"])
+        : undefined,
     projectId: projectID,
     registryCredential:
       typeof input.registryCredential === "object" &&

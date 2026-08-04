@@ -8,7 +8,6 @@ import (
 	"github.com/iivankin/platformd/internal/automationauth"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/portforward"
-	"github.com/iivankin/platformd/internal/server"
 )
 
 type publicHandlerFactory struct {
@@ -16,7 +15,7 @@ type publicHandlerFactory struct {
 	mcp           mcp.Config
 	authenticator *automationauth.Authenticator
 	portForwards  *portforward.Application
-	githubWebhook http.Handler
+	imageUpload   http.Handler
 	available     bool
 }
 
@@ -25,15 +24,15 @@ func newPublicHandlerFactory(
 	mcpConfig mcp.Config,
 	authenticator *automationauth.Authenticator,
 	portForwards *portforward.Application,
-	githubWebhook http.Handler,
+	imageUpload http.Handler,
 	available bool,
 ) (*publicHandlerFactory, error) {
-	if authenticator == nil || portForwards == nil || githubWebhook == nil {
+	if authenticator == nil || portForwards == nil || imageUpload == nil {
 		return nil, errors.New("public handler security dependencies are missing")
 	}
 	return &publicHandlerFactory{
 		api: apiConfig, mcp: mcpConfig, authenticator: authenticator,
-		portForwards: portForwards, githubWebhook: githubWebhook, available: available,
+		portForwards: portForwards, imageUpload: imageUpload, available: available,
 	}, nil
 }
 
@@ -57,12 +56,19 @@ func (factory *publicHandlerFactory) Build(hostname string) (http.Handler, error
 	if err != nil {
 		return nil, err
 	}
+	createForward, err := automationapi.CreatePortForwardHandler(automationapi.PortForwardCreateConfig{
+		Hostname: hostname, Application: factory.portForwards, Authenticator: factory.authenticator,
+	})
+	if err != nil {
+		return nil, err
+	}
 	protectedMux := http.NewServeMux()
 	protectedMux.Handle("/public/mcp", mcpHandler)
 	protectedMux.Handle("/", publicAPI)
 	var handler http.Handler = publicHandler(
-		factory.githubWebhook,
+		factory.imageUpload,
 		forwardHandler,
+		createForward,
 		factory.authenticator.Protect(protectedMux),
 	)
 	if !factory.available {
@@ -74,9 +80,11 @@ func (factory *publicHandlerFactory) Build(hostname string) (http.Handler, error
 	return handler, nil
 }
 
-func publicHandler(githubWebhook, forward, protected http.Handler) http.Handler {
+func publicHandler(imageUpload, forward, createForward, protected http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("POST "+server.GitHubWebhookPath, githubWebhook)
+	mux.Handle("GET /public/api/v1/projects/{projectID}/services/{serviceID}/image", imageUpload)
+	mux.Handle("POST /public/api/v1/projects/{projectID}/services/{serviceID}/image", imageUpload)
+	mux.Handle("POST /public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards", createForward)
 	mux.Handle(portforward.EndpointPath, forward)
 	mux.Handle("/", protected)
 	return mux

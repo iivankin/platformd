@@ -52,7 +52,7 @@ func TestBuildControlEncryptsConsistentSQLiteAndExactRelease(t *testing.T) {
 	}
 	defer os.RemoveAll(built.WorkDirectory)
 	if built.Manifest.PlatformVersion != "1.2.3" || built.Manifest.SchemaVersion != state.SupportedSchemaVersion() ||
-		len(built.Manifest.Resources.RegistryRepositories) != 0 || len(built.Envelope.Chunks) == 0 {
+		len(built.Manifest.Resources.Images) != 0 || len(built.Envelope.Chunks) == 0 {
 		t.Fatalf("control build metadata = %+v / %+v", built.Manifest, built.Envelope)
 	}
 	if _, err := os.Lstat(filepath.Join(built.WorkDirectory, "snapshot.db")); !os.IsNotExist(err) {

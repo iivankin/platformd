@@ -1,9 +1,11 @@
 mod bucket;
 mod buffer_pool;
 mod data_plane;
+mod largest_objects;
 mod protocol;
 mod runtime;
 mod s3_backend;
+mod usage;
 
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -47,6 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let runtime = StoreRuntime::open(&volume).await?;
     let store = runtime.store.clone();
     let data_plane = data_plane::DataPlane::new(store.clone());
+    let largest_objects = largest_objects::LargestObjectSearches::default();
     let listener = UnixListener::bind(&socket)?;
     tokio::fs::set_permissions(&socket, Permissions::from_mode(0o600)).await?;
 
@@ -70,10 +73,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 };
                 let store = store.clone();
                 let data_plane = data_plane.clone();
+                let largest_objects = largest_objects.clone();
                 connections.spawn(async move {
                     let _permit = permit;
                     let service = service_fn(move |request| {
-                        protocol::handle(store.clone(), data_plane.clone(), request)
+                        protocol::handle(
+                            store.clone(),
+                            data_plane.clone(),
+                            largest_objects.clone(),
+                            request,
+                        )
                     });
                     if let Err(error) = hyper::server::conn::http1::Builder::new()
                         .serve_connection(TokioIo::new(connection), service)

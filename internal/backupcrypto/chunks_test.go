@@ -13,7 +13,7 @@ import (
 
 func TestEncryptedWorkChunksRoundTripWithoutPlaintextFiles(t *testing.T) {
 	t.Parallel()
-	cipher, err := NewResourceCipher(cryptobox.MasterKey{1, 2, 3}, "registry")
+	cipher, err := NewResourceCipher(cryptobox.MasterKey{1, 2, 3}, "image")
 	if err != nil {
 		t.Fatal(err)
 	}

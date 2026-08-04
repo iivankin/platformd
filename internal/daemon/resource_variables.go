@@ -112,49 +112,10 @@ func (resolver resourceVariableResolver) addRuntimeEnvironment(
 	}
 	result["PLATFORMD_DEPLOYMENT_ID"] = environmentContext.DeploymentID
 	result["PLATFORMD_PUBLIC_URLS"] = publicURLs
-	if github := desired.Snapshot.Source.GitHub; github != nil {
-		result["PLATFORMD_GIT_REPOSITORY"] = github.Repository
-	}
-	if environmentContext.SourceRevision != "" {
-		result["PLATFORMD_GIT_COMMIT_SHA"] = environmentContext.SourceRevision
-	}
-	if environmentContext.CommitMessage != "" {
-		result["PLATFORMD_GIT_COMMIT_MESSAGE"] = environmentContext.CommitMessage
-	}
 	if environmentContext.Kind == deployment.EnvironmentPreview {
 		result["PLATFORMD_PREVIEW_URL"] = environmentContext.PreviewURL
-		result["PLATFORMD_GIT_PULL_REQUEST_NUMBER"] = strconv.Itoa(environmentContext.PullRequestNumber)
 	}
 	return nil
-}
-
-func (resolver resourceVariableResolver) ResolveBuild(
-	ctx context.Context,
-	desired state.ServiceDesired,
-	environmentContext deployment.EnvironmentContext,
-) (map[string]string, error) {
-	resolution, err := resolver.resolution(ctx, desired)
-	if err != nil {
-		return nil, err
-	}
-	result := make(map[string]string, len(desired.Snapshot.BuildEnvironment)+8)
-	for name, raw := range desired.Snapshot.BuildEnvironment {
-		value, resolveErr := variableexpression.Expand(raw, func(reference variableexpression.Reference) (string, error) {
-			return resolution.reference(ctx, reference)
-		})
-		if resolveErr != nil {
-			return nil, fmt.Errorf("%s: %w", name, resolveErr)
-		}
-		result[name] = value
-	}
-	if _, configured := result["CI"]; !configured {
-		result["CI"] = "1"
-	}
-	if _, configured := result["NODE_ENV"]; !configured {
-		result["NODE_ENV"] = "production"
-	}
-	addEnvironmentIdentity(desired, environmentContext, result)
-	return result, nil
 }
 
 func (resolver resourceVariableResolver) resolution(ctx context.Context, desired state.ServiceDesired) (*environmentResolution, error) {
@@ -281,6 +242,9 @@ func (resolution *environmentResolution) serviceOutput(ctx context.Context, serv
 	if _, ok := service.Snapshot.Environment[output]; ok {
 		return resolution.serviceVariable(ctx, service, output)
 	}
+	if resourcevariables.Supports("service", output) {
+		return resolution.staticServiceOutput(ctx, service, output)
+	}
 	domains, err := resolution.resolver.store.ServiceDomains(ctx, resolution.projectID, service.ID)
 	if err != nil {
 		return "", err
@@ -306,6 +270,27 @@ func (resolution *environmentResolution) serviceOutput(ctx context.Context, serv
 		return "", fmt.Errorf("service %s does not export %s", service.Name, output)
 	}
 	return value, nil
+}
+
+func (resolution *environmentResolution) staticServiceOutput(
+	ctx context.Context,
+	service state.ServiceDesired,
+	output string,
+) (string, error) {
+	values := map[string]string{
+		"PLATFORMD_PROJECT_ID":     service.ProjectID,
+		"PLATFORMD_PROJECT_NAME":   service.ProjectName,
+		"PLATFORMD_SERVICE_ID":     service.ID,
+		"PLATFORMD_SERVICE_NAME":   service.Name,
+		"PLATFORMD_PRIVATE_DOMAIN": service.Name + "." + service.ProjectName + ".internal",
+	}
+	if value, ok := values[output]; ok {
+		return value, nil
+	}
+	if output == "PLATFORMD_PUBLIC_URLS" {
+		return resolution.resolver.publicURLs(ctx, service, deployment.EnvironmentContext{Kind: deployment.EnvironmentProduction})
+	}
+	return "", fmt.Errorf("service %s does not export %s", service.Name, output)
 }
 
 func (resolution *environmentResolution) objectStoreOutput(ctx context.Context, resourceID, output string) (string, error) {

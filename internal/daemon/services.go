@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 	"github.com/iivankin/platformd/internal/volume"
@@ -22,7 +24,7 @@ type liveServiceRepository struct {
 
 type serviceRuntime interface {
 	DeployService(context.Context, string, bool) error
-	DeployServiceRevision(context.Context, string, string, bool) error
+	DeployServiceImage(context.Context, string, state.DeploymentRecord) error
 	RestartServiceDeployment(context.Context, string, string) error
 	DeleteServiceDeploymentLogs(string, string) error
 	DeleteService(context.Context, state.ServiceDesired) error
@@ -68,6 +70,12 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 	if repository.volumeFilesystem != nil {
 		for _, item := range deleted.Volumes {
 			repository.reportCleanupError(repository.volumeFilesystem.Remove(ctx, item.ProjectID, item.ID))
+		}
+	}
+	for _, path := range deleted.ImagePaths {
+		removeErr := os.Remove(path)
+		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			repository.reportCleanupError(removeErr)
 		}
 	}
 	return deleted, nil
@@ -139,7 +147,7 @@ func (repository liveServiceRepository) ServiceDeployment(ctx context.Context, p
 		return state.DeploymentRecord{}, previewErr
 	}
 	status := preview.Status
-	if status == "active" || status == "building" {
+	if status == "active" || status == "deploying" {
 		status = "running"
 	} else if status == "stopped" {
 		status = "interrupted"
@@ -147,7 +155,6 @@ func (repository liveServiceRepository) ServiceDeployment(ctx context.Context, p
 	return state.DeploymentRecord{
 		ID: preview.ID, ServiceID: preview.ServiceID,
 		ImageDigest: preview.ImageDigest, ImageReference: preview.ImageReference,
-		SourceRevision: preview.SourceRevision, CommitMessage: preview.CommitMessage,
 		ConfigHash: preview.ConfigHash, Snapshot: preview.Snapshot, Status: status,
 		ErrorCode: preview.ErrorCode, ErrorMessage: preview.ErrorMessage,
 		CreatedAtMillis: preview.CreatedAtMillis, FinishedAtMillis: preview.FinishedAtMillis,
@@ -176,8 +183,8 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}
-	if !updated.Enabled || updated.Snapshot.Source.GitHub == nil || updated.Snapshot.Source.GitHub.PullRequestPreview == nil {
-		if err := repository.runtime.stopServicePreviews(ctx, updated.ID, "PR previews disabled"); err != nil {
+	if !updated.Enabled || updated.Snapshot.Source.Type != servicesource.DockerImageUpload {
+		if err := repository.runtime.stopServicePreviews(ctx, updated.ID, "Image previews disabled"); err != nil {
 			return state.ServiceDesired{}, err
 		}
 	}
@@ -197,8 +204,8 @@ func (repository liveServiceRepository) DeployServiceVersion(ctx context.Context
 		return state.ServiceDesired{}, err
 	}
 	var deployErr error
-	if updated.Snapshot.Source.GitHub != nil {
-		deployErr = repository.runtime.DeployServiceRevision(ctx, updated.ID, deployment.SourceRevision, true)
+	if updated.Snapshot.Source.Type == servicesource.DockerImageUpload {
+		deployErr = repository.runtime.DeployServiceImage(ctx, updated.ID, deployment)
 	} else {
 		deployErr = repository.runtime.DeployService(ctx, updated.ID, true)
 	}

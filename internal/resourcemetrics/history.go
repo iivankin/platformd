@@ -31,6 +31,7 @@ type historyBucket struct {
 	running     bool
 	memory      weightedHistoryValue
 	memoryPeak  uint64
+	disk        weightedHistoryValue
 	cpu         weightedHistoryValue
 	cpuPeak     int64
 	ingress     weightedHistoryValue
@@ -98,6 +99,9 @@ func (bucket *historyBucket) add(values state.MetricValues, running bool) {
 	bucket.running = bucket.running || running
 	bucket.memory.add(float64(values.MemoryBytes), duration)
 	bucket.memoryPeak = max(bucket.memoryPeak, values.MemoryPeakBytes)
+	if values.DiskBytes != nil {
+		bucket.disk.add(float64(*values.DiskBytes), duration)
+	}
 	if values.CPUMillicores != nil && values.CPUPeakMillicores != nil {
 		bucket.cpu.add(float64(*values.CPUMillicores), values.CPUDurationMillis)
 		bucket.cpuPeak = max(bucket.cpuPeak, *values.CPUPeakMillicores)
@@ -121,6 +125,10 @@ func historyPoints(buckets map[int64]*historyBucket, order []int64) []Point {
 			ObservedAt: bucket.observedAt, DurationMillis: bucket.duration,
 			MemoryBytes: uint64(math.Round(bucket.memory.average())), MemoryPeakBytes: bucket.memoryPeak,
 			Running: bucket.running, Proxy: bucket.proxy.finish(),
+		}
+		if average, ok := bucket.disk.intAverage(); ok {
+			diskBytes := uint64(average)
+			point.DiskBytes = &diskBytes
 		}
 		if average, ok := bucket.cpu.intAverage(); ok {
 			point.CPUMillicores = &average

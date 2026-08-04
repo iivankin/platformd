@@ -15,6 +15,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -23,6 +24,7 @@ const maximumManagedRedisRequestBytes = 16 << 10
 type ManagedRedisRepository interface {
 	Create(context.Context, managedredis.CreateInput) (managedredis.CreateResult, error)
 	Resource(context.Context, string, string) (state.ManagedRedis, error)
+	UpdatePortForward(context.Context, string, string, *serviceconfig.PortForward, int64) (state.ManagedRedis, error)
 	Password(context.Context, string, string) (string, error)
 	Resources(context.Context, string) ([]state.ManagedRedis, error)
 	Persistence(context.Context, string, string) (managedredis.PersistenceReport, error)
@@ -37,21 +39,22 @@ type ManagedRedisRepository interface {
 }
 
 type managedRedisResponse struct {
-	ID                   string `json:"id"`
-	ProjectID            string `json:"projectId"`
-	Name                 string `json:"name"`
-	Hostname             string `json:"hostname"`
-	Port                 int    `json:"port"`
-	ImageTag             string `json:"imageTag"`
-	ImageDigest          string `json:"imageDigest"`
-	CPUMillicores        int64  `json:"cpuMillicores,omitempty"`
-	MemoryBytes          int64  `json:"memoryBytes,omitempty"`
-	BackupEnabled        bool   `json:"backupEnabled"`
-	BackupCron           string `json:"backupCron,omitempty"`
-	BackupRetentionCount int    `json:"backupRetentionCount"`
-	Password             string `json:"password,omitempty"`
-	CreatedAt            int64  `json:"createdAt"`
-	UpdatedAt            int64  `json:"updatedAt"`
+	ID                   string                     `json:"id"`
+	ProjectID            string                     `json:"projectId"`
+	Name                 string                     `json:"name"`
+	Hostname             string                     `json:"hostname"`
+	Port                 int                        `json:"port"`
+	ImageTag             string                     `json:"imageTag"`
+	ImageDigest          string                     `json:"imageDigest"`
+	CPUMillicores        int64                      `json:"cpuMillicores,omitempty"`
+	MemoryBytes          int64                      `json:"memoryBytes,omitempty"`
+	PortForward          *serviceconfig.PortForward `json:"portForward,omitempty"`
+	BackupEnabled        bool                       `json:"backupEnabled"`
+	BackupCron           string                     `json:"backupCron,omitempty"`
+	BackupRetentionCount int                        `json:"backupRetentionCount"`
+	Password             string                     `json:"password,omitempty"`
+	CreatedAt            int64                      `json:"createdAt"`
+	UpdatedAt            int64                      `json:"updatedAt"`
 }
 
 type managedRedisPersistenceResponse struct {
@@ -68,6 +71,7 @@ func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepos
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
+	mux.HandleFunc("PUT /api/v1/projects/{projectID}/redis/{redisID}/port-forward", updateManagedRedisPortForward(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/persistence", getManagedRedisPersistence(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/stats", getManagedRedisStats(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(repository))
@@ -267,6 +271,52 @@ func getManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 	}
 }
 
+func updateManagedRedisPortForward(repository ManagedRedisRepository) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64                     `json:"expectedUpdatedAt"`
+		PortForward       *serviceconfig.PortForward `json:"portForward"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeAPIError(response, http.StatusUnsupportedMediaType, "json_required", "Content-Type must be application/json")
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, maximumManagedRedisRequestBytes)
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var body requestBody
+		if err := decoder.Decode(&body); err != nil || requireJSONEnd(decoder) != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_json", "Request body contains invalid managed Redis fields")
+			return
+		}
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_port_forward", "expectedUpdatedAt is required")
+			return
+		}
+		resource, err := repository.UpdatePortForward(
+			request.Context(),
+			request.PathValue("projectID"),
+			request.PathValue("redisID"),
+			body.PortForward,
+			body.ExpectedUpdatedAt,
+		)
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		password, err := repository.Password(request.Context(), request.PathValue("projectID"), request.PathValue("redisID"))
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicManagedRedis(resource, password))
+	}
+}
+
 func createManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 	type requestBody struct {
 		Name          string                          `json:"name"`
@@ -325,6 +375,7 @@ func publicManagedRedis(resource state.ManagedRedis, password string) managedRed
 		Hostname: resource.Name + "." + resource.ProjectName + ".internal", Port: managedredis.Port,
 		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest,
 		CPUMillicores: resource.CPUMillicores, MemoryBytes: resource.MemoryMaxBytes,
+		PortForward: resource.PortForward,
 		BackupEnabled: resource.BackupEnabled, BackupCron: resource.BackupCron,
 		BackupRetentionCount: resource.BackupRetentionCount, Password: password,
 		CreatedAt: resource.CreatedAtMillis, UpdatedAt: resource.UpdatedAtMillis,
@@ -338,6 +389,8 @@ func writeManagedRedisError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
 	case errors.Is(err, state.ErrManagedRedisNotFound):
 		writeAPIError(response, http.StatusNotFound, "redis_not_found", "Managed Redis resource not found")
+	case errors.Is(err, state.ErrManagedRedisChanged):
+		writeAPIError(response, http.StatusConflict, "redis_changed", "Managed Redis resource changed")
 	case errors.Is(err, state.ErrResourceNameConflict):
 		writeAPIError(response, http.StatusConflict, "resource_name_conflict", "A project resource with this name already exists")
 	case errors.Is(err, state.ErrBackupTargetNotFound), errors.Is(err, state.ErrInvalidBackupPolicy):

@@ -23,6 +23,7 @@ import {
   parseServiceConfiguration,
   serviceConfigurationDraftFromCreateInput,
 } from "@/service-configuration";
+import { emptyPortForwardDraft } from "@/service-port-forward";
 import type { ServiceSettingsDraft } from "@/service-settings-model";
 
 export type PendingServiceCreationSettings = ServiceSettingsDraft;
@@ -43,6 +44,7 @@ export const emptyPendingServiceCreationSettings = (
   configuration: serviceConfigurationDraftFromCreateInput(input),
   domains: [],
   listeners: [],
+  portForward: emptyPortForwardDraft(),
   volumeMounts: [],
   volumes: [],
 });
@@ -206,13 +208,8 @@ export const applyPendingResource = (
         ...draft.input,
         beforeDeploy: parseBeforeDeploy(
           draft.settings.beforeDeploy,
-          configuration.source,
           draft.settings.domains
         ),
-        buildEnvironment:
-          configuration.source.type === "github"
-            ? draft.input.buildEnvironment
-            : {},
         domains: draft.settings.domains,
         healthCheck: configuration.healthCheck,
         listeners: draft.settings.listeners,

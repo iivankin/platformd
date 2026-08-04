@@ -41,11 +41,10 @@ SELECT id, admin_hostname FROM installation WHERE singleton = 1`).Scan(&installa
 		var inUse int
 		if err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
-  SELECT 1 FROM installation WHERE registry_hostname = ?
-  UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
+  SELECT 1 FROM service_domains WHERE hostname = ?
   UNION ALL SELECT 1 FROM preview_deployments WHERE hostname = ? AND status = 'active'
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
-)`, hostname, hostname, hostname, hostname).Scan(&inUse); err != nil {
+)`, hostname, hostname, hostname).Scan(&inUse); err != nil {
 			return fmt.Errorf("check admin hostname role: %w", err)
 		}
 		if inUse == 1 {

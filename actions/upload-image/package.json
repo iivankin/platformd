@@ -1,0 +1,21 @@
+{
+  "name": "platformd-upload-image",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "GitHub Action to upload OCI image archives to platformd",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "rm -rf dist && esbuild src/index.ts --bundle --platform=node --target=node24 --format=cjs --minify-whitespace --outfile=dist/index.js",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run typecheck && npm run build && git diff --exit-code -- dist"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "esbuild": "0.28.1",
+    "typescript": "5.9.3"
+  }
+}

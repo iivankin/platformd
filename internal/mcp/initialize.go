@@ -18,12 +18,16 @@ func (handler *Handler) initialize(response http.ResponseWriter, message request
 			Version string `json:"version"`
 		} `json:"clientInfo"`
 	}
-	if err := json.Unmarshal(message.Params, &params); err != nil || params.ProtocolVersion != ProtocolVersion || params.Capabilities == nil || params.ClientInfo.Name == "" || params.ClientInfo.Version == "" {
-		writeRPCError(response, message.ID, codeInvalidParams, "Unsupported protocol version or invalid initialize params")
+	if err := json.Unmarshal(message.Params, &params); err != nil || params.ProtocolVersion == "" || params.Capabilities == nil || params.ClientInfo.Name == "" || params.ClientInfo.Version == "" {
+		writeRPCError(response, message.ID, codeInvalidParams, "Invalid initialize params")
 		return
 	}
+	protocolVersion := ProtocolVersion
+	if supportsProtocolVersion(params.ProtocolVersion) {
+		protocolVersion = params.ProtocolVersion
+	}
 	writeRPCResult(response, message.ID, map[string]any{
-		"protocolVersion": ProtocolVersion,
+		"protocolVersion": protocolVersion,
 		"capabilities": map[string]any{
 			"tools": map[string]any{},
 		},

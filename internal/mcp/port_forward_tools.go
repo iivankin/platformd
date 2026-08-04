@@ -13,7 +13,7 @@ import (
 func portForwardAdminTool() Tool {
 	return Tool{
 		Name:        "create_port_forward",
-		Description: "Create a short-lived ticket for the platformd-forward CLI to expose one running service, PostgreSQL, or Redis TCP port on the agent's localhost. Returns installation and connection commands. Requires an admin token.",
+		Description: "Create a short-lived ticket for the platformd-forward CLI to expose one running service, PostgreSQL, object store, or Redis TCP port on the agent's localhost. Returns installation and connection commands. Requires an admin token.",
 		InputSchema: objectSchema(map[string]any{
 			"project":          map[string]any{"type": "string"},
 			"resource":         map[string]any{"type": "string"},

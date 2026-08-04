@@ -32,6 +32,13 @@ func (*applicationStore) ManagedRedisByProject(context.Context, string) ([]state
 	return nil, nil
 }
 
+func (*applicationStore) UpdateManagedRedisPortForward(
+	_ context.Context,
+	input state.UpdateManagedRedisPortForwardInput,
+) (state.ManagedRedis, error) {
+	return state.ManagedRedis{ID: input.ID, ProjectID: input.ProjectID, PortForward: input.PortForward}, nil
+}
+
 func (store *applicationStore) RecordManagedRedisDataMutation(_ context.Context, input state.RecordManagedRedisDataMutation) error {
 	store.audit = input
 	return nil

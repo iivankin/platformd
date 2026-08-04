@@ -17,6 +17,10 @@ type previewEngine struct {
 	spec containerengine.ContainerSpec
 }
 
+func (*previewEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
+	return containerengine.Image{}, nil
+}
+
 func (*previewEngine) InspectImage(context.Context, string) (containerengine.Image, error) {
 	return containerengine.Image{}, nil
 }
@@ -79,7 +83,7 @@ func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 		desired,
 		deployment.EnvironmentContext{
 			DeploymentID: "preview", Kind: deployment.EnvironmentPreview,
-			PreviewURL: "https://preview-abcdef.example.com", PullRequestNumber: 42,
+			PreviewURL: "https://preview-abcdef.example.com",
 		},
 		"image",
 	); err != nil {

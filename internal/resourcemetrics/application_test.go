@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/cgroupstats"
+	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/hostmetrics"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
@@ -17,7 +18,10 @@ type metricStoreStub struct {
 	projects         []string
 	samples          []state.ResourceMetricSample
 	aggregateSamples []state.AggregateMetricSample
+	resourceSeries   []state.ResourceMetricSeries
+	projectSeries    []state.AggregateMetricSeries
 	batches          []state.MetricBatch
+	aggregateQueries int
 }
 
 func (store *metricStoreStub) ResourceMetricTargets(context.Context) ([]state.ResourceMetricTarget, error) {
@@ -34,11 +38,20 @@ func (store *metricStoreStub) RecordMetricBatch(_ context.Context, batch state.M
 }
 
 func (store *metricStoreStub) AggregateMetricSamples(context.Context, string, string, int64, int64) ([]state.AggregateMetricSample, error) {
+	store.aggregateQueries++
 	return store.aggregateSamples, nil
 }
 
 func (store *metricStoreStub) ResourceMetricSamples(context.Context, string, string, int64, int64) ([]state.ResourceMetricSample, error) {
 	return store.samples, nil
+}
+
+func (store *metricStoreStub) ResourceMetricSeriesByProject(context.Context, string, int64, int64) ([]state.ResourceMetricSeries, error) {
+	return store.resourceSeries, nil
+}
+
+func (store *metricStoreStub) ProjectAggregateMetricSeries(context.Context, int64, int64) ([]state.AggregateMetricSeries, error) {
+	return store.projectSeries, nil
 }
 
 type usageReaderStub struct {
@@ -73,15 +86,62 @@ type hostReaderStub struct {
 	sample hostmetrics.Sample
 }
 
+type diskReaderStub struct {
+	snapshot diskusage.ResourceSnapshot
+}
+
+func (reader diskReaderStub) Resources(context.Context) (diskusage.ResourceSnapshot, error) {
+	return reader.snapshot, nil
+}
+
 func (reader hostReaderStub) Read() (hostmetrics.Sample, error) {
 	return reader.sample, nil
+}
+
+func TestDiskUsageIncludesEveryProjectVolumeWithoutBlockingLiveTargets(t *testing.T) {
+	store := &metricStoreStub{
+		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project"}},
+		projects: []string{"project"},
+	}
+	disk := diskReaderStub{snapshot: diskusage.ResourceSnapshot{
+		CheckedAt: time.Unix(99, 0),
+		Resources: []diskusage.ResourceUsage{
+			{Kind: "service", ResourceID: "api", ProjectID: "project", Bytes: 100},
+			{Kind: "service", ResourceID: "disabled", ProjectID: "project", Bytes: 200},
+		},
+	}}
+	application, err := NewApplication(
+		store,
+		usageReaderStub{sample: cgroupstats.Sample{Running: true}},
+		networkReaderStub{complete: true}, disk, hostReaderStub{}, Config{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	application.collect(context.Background(), func(err error) { t.Fatal(err) })
+	resource, err := application.Read(cgroupstats.Service, "api")
+	if err != nil || resource.DiskBytes == nil || *resource.DiskBytes != 100 {
+		t.Fatalf("resource disk usage = %+v, %v", resource.DiskBytes, err)
+	}
+	disabled, err := application.Read(cgroupstats.Service, "disabled")
+	if err != nil || disabled.DiskBytes == nil || *disabled.DiskBytes != 200 || disabled.Running {
+		t.Fatalf("disk-only resource usage = %+v, %v", disabled, err)
+	}
+	project, err := application.ReadProject("project")
+	if err != nil || project.DiskBytes == nil || *project.DiskBytes != 300 {
+		t.Fatalf("project disk usage = %+v, %v", project.DiskBytes, err)
+	}
+	installation, err := application.ReadInstallation()
+	if err != nil || installation.DiskBytes == nil || *installation.DiskBytes != 300 {
+		t.Fatalf("installation disk usage = %+v, %v", installation.DiskBytes, err)
+	}
 }
 
 func TestLiveSamplingUsesExactElapsedTimeAndTypedProtocolMetrics(t *testing.T) {
 	clock := time.Unix(100, 0)
 	store := &metricStoreStub{
 		targets: []state.ResourceMetricTarget{
-			{Kind: "service", ResourceID: "api", ProjectID: "project"},
+			{Kind: "service", ResourceID: "api", ProjectID: "project", HTTPRoute: true, UDPRoute: true},
 			{Kind: "redis", ResourceID: "cache", ProjectID: "project"},
 		},
 		projects: []string{"project"},
@@ -102,7 +162,7 @@ func TestLiveSamplingUsesExactElapsedTimeAndTypedProtocolMetrics(t *testing.T) {
 		MemoryUsedBytes: 600, MemoryTotalBytes: 1_000,
 		NetworkRXBytes: 1_000, NetworkTXBytes: 500, NetworkInterface: "eth0",
 	}}
-	application, err := NewApplication(store, usage, network, host, Config{
+	application, err := NewApplication(store, usage, network, diskReaderStub{}, host, Config{
 		LiveInterval: time.Second, PersistInterval: time.Minute,
 		Now: func() time.Time { return clock },
 	})
@@ -138,20 +198,23 @@ func TestLiveSamplingUsesExactElapsedTimeAndTypedProtocolMetrics(t *testing.T) {
 		service.Proxy.HTTP.LatencyP95Millis == nil || *service.Proxy.HTTP.LatencyP95Millis != 100 ||
 		service.Proxy.TCP.ConnectionsPerSecond == nil || *service.Proxy.TCP.ConnectionsPerSecond != 1 ||
 		service.Proxy.TCP.ConnectionsPeakPerSecond == nil || *service.Proxy.TCP.ConnectionsPeakPerSecond != 3 ||
-		service.Proxy.UDP.IngressPacketsPerSecond == nil || *service.Proxy.UDP.IngressPacketsPerSecond != 3 {
+		service.Proxy.UDP.IngressPacketsPerSecond == nil || *service.Proxy.UDP.IngressPacketsPerSecond != 3 ||
+		!service.TrafficRoutes.HTTP || service.TrafficRoutes.TCP || !service.TrafficRoutes.UDP {
 		t.Fatalf("service live usage = %+v, %v", service, err)
 	}
 	project, err := application.ReadProject("project")
 	if err != nil || project.CPUMillicores == nil || *project.CPUMillicores != 350 ||
 		project.MemoryBytes != 320 || project.RunningResources != 2 || project.TotalResources != 2 ||
 		project.Proxy == nil || project.Proxy.HTTP.ActiveRequests != 2 || project.Proxy.HTTP.ActiveRequestsPeak != 5 ||
-		project.Proxy.HTTP.RequestsPeakPerSecond == nil || *project.Proxy.HTTP.RequestsPeakPerSecond != 4 {
+		project.Proxy.HTTP.RequestsPeakPerSecond == nil || *project.Proxy.HTTP.RequestsPeakPerSecond != 4 ||
+		!project.TrafficRoutes.HTTP || project.TrafficRoutes.TCP || !project.TrafficRoutes.UDP {
 		t.Fatalf("project live usage = %+v, %v", project, err)
 	}
 	installation, err := application.ReadInstallation()
 	if err != nil || installation.Host == nil || installation.Host.CPUMillicores == nil ||
 		*installation.Host.CPUMillicores != 6000 || installation.Host.NetworkIngressBytesPerSecond == nil ||
-		*installation.Host.NetworkIngressBytesPerSecond != 2000 {
+		*installation.Host.NetworkIngressBytesPerSecond != 2000 || !installation.TrafficRoutes.HTTP ||
+		installation.TrafficRoutes.TCP || !installation.TrafficRoutes.UDP {
 		t.Fatalf("installation live usage = %+v, %v", installation, err)
 	}
 }
@@ -201,7 +264,7 @@ func TestProxyRatesSurviveIncompleteNftablesSampleWithoutRecoverySpike(t *testin
 		counters: map[string]trafficmetrics.Counters{"api": {HTTPRequestsTotal: 10, IngressBytes: 1_000}},
 		complete: true,
 	}
-	application, err := NewApplication(store, usage, network, hostReaderStub{}, Config{
+	application, err := NewApplication(store, usage, network, diskReaderStub{}, hostReaderStub{}, Config{
 		LiveInterval: time.Second, PersistInterval: time.Minute, Now: func() time.Time { return clock },
 	})
 	if err != nil {
@@ -245,7 +308,7 @@ func TestCollectKeepsActiveResourceRollupAcrossCgroupReadFailure(t *testing.T) {
 		},
 		errors: make(map[metricKey]error),
 	}
-	application, err := NewApplication(store, usage, networkReaderStub{complete: true}, hostReaderStub{}, Config{
+	application, err := NewApplication(store, usage, networkReaderStub{complete: true}, diskReaderStub{}, hostReaderStub{}, Config{
 		LiveInterval: time.Second, PersistInterval: time.Minute, Now: func() time.Time { return clock },
 	})
 	if err != nil {
@@ -324,6 +387,34 @@ func TestMinuteRollupUsesCounterDeltasAndKeepsTwoSecondPeak(t *testing.T) {
 	}
 }
 
+func TestMinuteRollupPersistsProjectAndHostWithoutInstallationHistory(t *testing.T) {
+	start := time.Unix(200, 0)
+	project := Current{
+		Sample:          cgroupstats.Sample{MemoryBytes: 100, Running: true},
+		MemoryPeakBytes: 100, RunningResources: 1, TotalResources: 1,
+	}
+	host := HostCurrent{MemoryUsedBytes: 200, MemoryPeakBytes: 200, MemoryTotalBytes: 1000}
+	installation := Current{Host: &host}
+	accumulator := newMinuteAccumulator(
+		start, nil, map[string]Current{"project": project}, installation,
+	)
+	project.interval = metricInterval{duration: 2 * time.Second}
+	host.interval = metricInterval{duration: 2 * time.Second}
+	installation.Host = &host
+	accumulator.add(
+		start.Add(2*time.Second), nil, nil, map[string]Current{"project": project}, installation,
+	)
+
+	batch := accumulator.batch(start.Add(2*time.Second), Retention)
+	scopes := make(map[string]bool, len(batch.Aggregates))
+	for _, sample := range batch.Aggregates {
+		scopes[sample.ScopeKind] = true
+	}
+	if len(batch.Aggregates) != 2 || !scopes["project"] || !scopes["host"] || scopes["installation"] {
+		t.Fatalf("aggregate metric scopes = %+v", batch.Aggregates)
+	}
+}
+
 func TestMinuteRollupKeepsActiveResourceAcrossTransientReadGap(t *testing.T) {
 	start := time.Unix(300, 0)
 	key := metricKey{kind: "service", id: "api"}
@@ -355,6 +446,7 @@ func TestHistoryWeightsMinuteAveragesAndMergesLatencyHistograms(t *testing.T) {
 	averageTwo, peakTwo := int64(30), int64(40)
 	egressOne, egressPeakOne := int64(20), int64(120)
 	egressTwo, egressPeakTwo := int64(40), int64(50)
+	diskOne, diskTwo := uint64(100), uint64(400)
 	firstProxy, secondProxy := validProxySample(), validProxySample()
 	*firstProxy.HTTP.RequestsPerSecond, *firstProxy.HTTP.RequestsPeakPerSecond = 10, 10
 	*secondProxy.HTTP.RequestsPerSecond, *secondProxy.HTTP.RequestsPeakPerSecond = 30, 30
@@ -364,7 +456,7 @@ func TestHistoryWeightsMinuteAveragesAndMergesLatencyHistograms(t *testing.T) {
 		{Kind: "service", ResourceID: "api", ObservedAt: from, MetricValues: state.MetricValues{
 			DurationMillis: 60_000, CPUDurationMillis: 30_000, NetworkDurationMillis: 30_000, ProxyDurationMillis: 30_000,
 			CPUMillicores: &averageOne, CPUPeakMillicores: &peakOne,
-			MemoryBytes: 100, MemoryPeakBytes: 150,
+			MemoryBytes: 100, MemoryPeakBytes: 150, DiskBytes: &diskOne,
 			NetworkIngressBytesPerSecond: &averageOne, NetworkIngressPeakBytesPerSecond: &peakOne,
 			NetworkEgressBytesPerSecond: &egressOne, NetworkEgressPeakBytesPerSecond: &egressPeakOne,
 			Proxy: firstProxy,
@@ -372,7 +464,7 @@ func TestHistoryWeightsMinuteAveragesAndMergesLatencyHistograms(t *testing.T) {
 		{Kind: "service", ResourceID: "api", ObservedAt: from + 60_000, MetricValues: state.MetricValues{
 			DurationMillis: 120_000, CPUDurationMillis: 120_000, NetworkDurationMillis: 120_000, ProxyDurationMillis: 120_000,
 			CPUMillicores: &averageTwo, CPUPeakMillicores: &peakTwo,
-			MemoryBytes: 400, MemoryPeakBytes: 450,
+			MemoryBytes: 400, MemoryPeakBytes: 450, DiskBytes: &diskTwo,
 			NetworkIngressBytesPerSecond: &averageTwo, NetworkIngressPeakBytesPerSecond: &peakTwo,
 			NetworkEgressBytesPerSecond: &egressTwo, NetworkEgressPeakBytesPerSecond: &egressPeakTwo,
 			Proxy: secondProxy,
@@ -382,10 +474,58 @@ func TestHistoryWeightsMinuteAveragesAndMergesLatencyHistograms(t *testing.T) {
 		points[0].CPUPeakMillicores == nil || *points[0].CPUPeakMillicores != 100 || points[0].Proxy == nil ||
 		points[0].Proxy.HTTP.RequestsPerSecond == nil || *points[0].Proxy.HTTP.RequestsPerSecond != 26 ||
 		points[0].MemoryBytes != 300 || points[0].MemoryPeakBytes != 450 ||
+		points[0].DiskBytes == nil || *points[0].DiskBytes != 300 ||
 		points[0].NetworkIngressBytesPerSecond == nil || *points[0].NetworkIngressBytesPerSecond != 26 ||
 		points[0].NetworkEgressBytesPerSecond == nil || *points[0].NetworkEgressBytesPerSecond != 36 ||
 		points[0].Proxy.HTTP.LatencyP95Millis == nil || *points[0].Proxy.HTTP.LatencyP95Millis != 5 {
 		t.Fatalf("history points = %+v", points)
+	}
+}
+
+func TestAggregateHistoryIncludesWorkloadAndProjectSeries(t *testing.T) {
+	observedAt := time.Unix(7200, 0).UnixMilli()
+	diskBytes := uint64(4096)
+	values := state.MetricValues{
+		DurationMillis: 60_000, MemoryBytes: 100, MemoryPeakBytes: 100, DiskBytes: &diskBytes,
+	}
+	store := &metricStoreStub{
+		aggregateSamples: []state.AggregateMetricSample{{
+			ScopeKind: "project", ScopeID: "project", ObservedAt: observedAt,
+			RunningResources: 1, TotalResources: 1, MetricValues: values,
+		}},
+		resourceSeries: []state.ResourceMetricSeries{{
+			Kind: "service", ResourceID: "api", Name: "api",
+			Samples: []state.ResourceMetricSample{{
+				Kind: "service", ResourceID: "api", ObservedAt: observedAt, MetricValues: values,
+			}},
+		}},
+		projectSeries: []state.AggregateMetricSeries{{
+			ScopeID: "project", Name: "production",
+			Samples: []state.AggregateMetricSample{{
+				ScopeKind: "project", ScopeID: "project", ObservedAt: observedAt,
+				RunningResources: 1, TotalResources: 1, MetricValues: values,
+			}},
+		}},
+	}
+	application, err := NewApplication(
+		store, usageReaderStub{}, networkReaderStub{}, diskReaderStub{}, hostReaderStub{},
+		Config{Now: func() time.Time { return time.Unix(7260, 0) }},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := application.ProjectHistory(context.Background(), "project", time.Hour)
+	if err != nil || len(project.Series) != 1 || project.Series[0].Name != "api" ||
+		len(project.Series[0].Points) != 1 || project.Series[0].Points[0].DiskBytes == nil || len(project.Points) != 0 {
+		t.Fatalf("project history series = %+v, %v", project.Series, err)
+	}
+	installation, err := application.InstallationHistory(context.Background(), time.Hour)
+	if err != nil || len(installation.Series) != 1 || installation.Series[0].Kind != "project" ||
+		installation.Series[0].Name != "production" || len(installation.Points) != 0 {
+		t.Fatalf("installation history series = %+v, %v", installation.Series, err)
+	}
+	if store.aggregateQueries != 0 {
+		t.Fatalf("aggregate total queries = %d, want 0", store.aggregateQueries)
 	}
 }
 

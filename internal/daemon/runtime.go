@@ -57,7 +57,6 @@ type runtimeStack struct {
 	deployments                *deployment.Controller
 	previews                   *preview.Application
 	serviceWatcher             *servicewatcher.Watcher
-	embeddedRegistryHost       string
 	serviceRestarts            *servicerestart.Manager
 	serviceFailures            map[string]error
 	publishedBackends          atomic.Pointer[serviceBackendSnapshot]

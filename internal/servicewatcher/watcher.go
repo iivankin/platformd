@@ -24,25 +24,19 @@ type Deployer interface {
 }
 
 type Config struct {
-	Store                  Store
-	Deployer               Deployer
-	IsEmbedded             func(string) bool
-	RemoteInterval         time.Duration
-	RemoteMaximumBackoff   time.Duration
-	EmbeddedRetry          time.Duration
-	EmbeddedMaximumBackoff time.Duration
-	Concurrency            int
+	Store                Store
+	Deployer             Deployer
+	RemoteInterval       time.Duration
+	RemoteMaximumBackoff time.Duration
+	Concurrency          int
 }
 
 type Watcher struct {
-	store                  Store
-	deployer               Deployer
-	isEmbedded             func(string) bool
-	remoteInterval         time.Duration
-	remoteMaximumBackoff   time.Duration
-	embeddedRetry          time.Duration
-	embeddedMaximumBackoff time.Duration
-	slots                  chan struct{}
+	store                Store
+	deployer             Deployer
+	remoteInterval       time.Duration
+	remoteMaximumBackoff time.Duration
+	slots                chan struct{}
 
 	mu       sync.Mutex
 	ctx      context.Context
@@ -55,14 +49,12 @@ type serviceLoop struct {
 	wake       chan struct{}
 	reset      chan time.Duration
 	stop       chan struct{}
-	reference  string
-	embedded   bool
 	generation uint64
 }
 
 func New(config Config) (*Watcher, error) {
-	if config.Store == nil || config.Deployer == nil || config.IsEmbedded == nil {
-		return nil, errors.New("service watcher store, deployer, and embedded classifier are required")
+	if config.Store == nil || config.Deployer == nil {
+		return nil, errors.New("service watcher store and deployer are required")
 	}
 	if config.RemoteInterval == 0 {
 		config.RemoteInterval = RemoteInterval
@@ -70,23 +62,16 @@ func New(config Config) (*Watcher, error) {
 	if config.RemoteMaximumBackoff == 0 {
 		config.RemoteMaximumBackoff = RemoteMaximumBackoff
 	}
-	if config.EmbeddedRetry == 0 {
-		config.EmbeddedRetry = EmbeddedRetry
-	}
-	if config.EmbeddedMaximumBackoff == 0 {
-		config.EmbeddedMaximumBackoff = EmbeddedMaximumRetry
-	}
 	if config.Concurrency == 0 {
 		config.Concurrency = defaultConcurrency
 	}
 	if config.RemoteInterval <= 0 || config.RemoteMaximumBackoff < config.RemoteInterval ||
-		config.EmbeddedRetry <= 0 || config.EmbeddedMaximumBackoff < config.EmbeddedRetry || config.Concurrency < 1 {
+		config.Concurrency < 1 {
 		return nil, errors.New("service watcher timing or concurrency configuration is invalid")
 	}
 	return &Watcher{
-		store: config.Store, deployer: config.Deployer, isEmbedded: config.IsEmbedded,
+		store: config.Store, deployer: config.Deployer,
 		remoteInterval: config.RemoteInterval, remoteMaximumBackoff: config.RemoteMaximumBackoff,
-		embeddedRetry: config.EmbeddedRetry, embeddedMaximumBackoff: config.EmbeddedMaximumBackoff,
 		slots: make(chan struct{}, config.Concurrency), services: make(map[string]*serviceLoop),
 	}, nil
 }
@@ -131,9 +116,7 @@ func (watcher *Watcher) Close() {
 	}
 }
 
-// Track registers a service after its immediate create/update reconcile. A
-// failed embedded reconcile gets a bounded retry; a successful embedded tag
-// service sleeps until its repository commit callback wakes it.
+// Track registers a service after its immediate create/update reconcile.
 func (watcher *Watcher) Track(ctx context.Context, serviceID string, retry bool) error {
 	desired, err := watcher.store.DesiredService(ctx, serviceID)
 	if err != nil {
@@ -151,16 +134,12 @@ func (watcher *Watcher) Track(ctx context.Context, serviceID string, retry bool)
 		return errors.New("service watcher is not started")
 	}
 	if existing := watcher.services[serviceID]; existing != nil {
-		existing.reference = reference
-		existing.embedded = desired.Snapshot.Source.Type == servicesource.RegistryImage
 		watcher.mu.Unlock()
 		resetDelay(existing.reset, watcher.initialDelay(existing, retry))
 		return nil
 	}
 	loop := &serviceLoop{
 		wake: make(chan struct{}, 1), reset: make(chan time.Duration, 1), stop: make(chan struct{}),
-		reference: reference,
-		embedded:  desired.Snapshot.Source.Type == servicesource.RegistryImage,
 	}
 	watcher.services[serviceID] = loop
 	runContext := watcher.ctx
@@ -182,11 +161,6 @@ func (watcher *Watcher) NotifyService(serviceID string) {
 // Unlike Track, it also creates a short-lived loop for disabled, digest-pinned,
 // and non-auto-updating services so HTTP mutations never wait for image work.
 func (watcher *Watcher) Reconcile(ctx context.Context, serviceID string) error {
-	desired, err := watcher.store.DesiredService(ctx, serviceID)
-	if err != nil {
-		return err
-	}
-	reference := servicesource.ImageReference(desired.Snapshot.Source)
 	watcher.mu.Lock()
 	if !watcher.started || watcher.ctx == nil {
 		watcher.mu.Unlock()
@@ -196,52 +170,17 @@ func (watcher *Watcher) Reconcile(ctx context.Context, serviceID string) error {
 	if loop == nil {
 		loop = &serviceLoop{
 			wake: make(chan struct{}, 1), reset: make(chan time.Duration, 1), stop: make(chan struct{}),
-			reference:  reference,
-			embedded:   desired.Snapshot.Source.Type == servicesource.RegistryImage,
 			generation: 1,
 		}
 		watcher.services[serviceID] = loop
 		runContext := watcher.ctx
 		go watcher.runService(runContext, serviceID, loop, false)
 	} else {
-		loop.reference = reference
-		loop.embedded = desired.Snapshot.Source.Type == servicesource.RegistryImage
 		loop.generation++
 	}
 	watcher.mu.Unlock()
 	coalesce(loop.wake)
 	return nil
-}
-
-// NotifyEmbedded is called only after the embedded registry committed the tag.
-// Exact normalized references prevent unrelated services from waking.
-func (watcher *Watcher) NotifyEmbedded(imageReference string) {
-	watcher.mu.Lock()
-	loops := make([]*serviceLoop, 0)
-	for _, loop := range watcher.services {
-		if loop.embedded && loop.reference == imageReference {
-			loops = append(loops, loop)
-		}
-	}
-	watcher.mu.Unlock()
-	for _, loop := range loops {
-		coalesce(loop.wake)
-	}
-}
-
-// Reclassify applies a changed embedded-registry hostname to every tracked
-// reference without recreating watcher loops or persisting derived state.
-func (watcher *Watcher) Reclassify() {
-	watcher.mu.Lock()
-	loops := make([]*serviceLoop, 0, len(watcher.services))
-	for _, loop := range watcher.services {
-		loop.embedded = watcher.isEmbedded(loop.reference)
-		loops = append(loops, loop)
-	}
-	watcher.mu.Unlock()
-	for _, loop := range loops {
-		resetDelay(loop.reset, watcher.normalDelay(loop))
-	}
 }
 
 func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *serviceLoop, retry bool) {
@@ -281,7 +220,6 @@ func (watcher *Watcher) runService(ctx context.Context, serviceID string, loop *
 			delay = 0
 			continue
 		}
-		watcher.updateLoop(loop, reference)
 		if errors.Is(err, deployment.ErrBlockedPair) {
 			failures = 0
 			delay = watcher.normalDelay(loop)
@@ -318,29 +256,11 @@ func (watcher *Watcher) initialDelay(loop *serviceLoop, retry bool) time.Duratio
 }
 
 func (watcher *Watcher) normalDelay(loop *serviceLoop) time.Duration {
-	watcher.mu.Lock()
-	embedded := loop.embedded
-	watcher.mu.Unlock()
-	if embedded {
-		return 0
-	}
 	return watcher.remoteInterval
 }
 
 func (watcher *Watcher) failureDelay(loop *serviceLoop, failures int) time.Duration {
-	watcher.mu.Lock()
-	embedded := loop.embedded
-	watcher.mu.Unlock()
-	if embedded {
-		return exponentialDelay(watcher.embeddedRetry, watcher.embeddedMaximumBackoff, failures)
-	}
 	return exponentialDelay(watcher.remoteInterval, watcher.remoteMaximumBackoff, failures)
-}
-
-func (watcher *Watcher) updateLoop(loop *serviceLoop, reference string) {
-	watcher.mu.Lock()
-	loop.reference = reference
-	watcher.mu.Unlock()
 }
 
 func (watcher *Watcher) remove(serviceID string, loop *serviceLoop) {

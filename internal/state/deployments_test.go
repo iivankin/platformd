@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
+	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 func TestDeploymentPublicationIsAtomicAndOptimistic(t *testing.T) {
@@ -49,6 +50,87 @@ VALUES ('service', 'project', 'api', '{"type":"public_image","autoUpdate":true,"
 	if service.ActiveDeploymentID != "deployment" || service.ActiveSourceRevision != "commit" ||
 		deployment.Status != "succeeded" || deployment.FinishedAtMillis != 3 {
 		t.Fatalf("service/deployment = %+v / %+v", service, deployment)
+	}
+}
+
+func TestDeploymentActivationMovesUploadedProductionRevision(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.database.ExecContext(ctx, `
+INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
+INSERT INTO services(id, project_id, name, source_json, environment_json, health_timeout_seconds, enabled, created_at, updated_at)
+VALUES ('service', 'project', 'api', '{"type":"docker_image_upload","dockerUpload":{"repository":"acme/backend","branch":"main","workflows":[]}}', '{}', 60, 1, 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	_, snapshotJSON, hash, err := serviceconfig.Canonical(serviceconfig.Snapshot{Source: servicesource.Source{
+		Type: servicesource.DockerImageUpload,
+		DockerUpload: &servicesource.DockerUpload{
+			Repository: "acme/backend", Branch: "main",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	begin := func(deploymentID, revisionID, digest string, createdAt int64) {
+		t.Helper()
+		if err := store.BeginDeployment(ctx, BeginDeployment{
+			ID: deploymentID, ServiceID: "service", ImageDigest: digest,
+			ImageReference: "oci-archive:/images/" + revisionID + ".oci", ImageRevisionID: revisionID,
+			ConfigHash: hash, SnapshotJSON: snapshotJSON, CreatedAtMillis: createdAt,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.database.ExecContext(ctx, `
+INSERT INTO service_image_revisions(
+  id, service_id, tag, kind, archive_path, archive_sha256, image_digest,
+  deployment_id, oidc_metadata_json, status, created_at
+) VALUES (?, 'service', 'latest', 'production', ?, ?, ?, ?, '{}', 'importing', ?)`,
+			revisionID, "/images/"+revisionID+".oci",
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			digest, deploymentID, createdAt,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	begin("deployment-one", "revision-one", "sha256:one", 2)
+	if err := store.ActivateDeployment(ctx, "service", "deployment-one", "", 3); err != nil {
+		t.Fatal(err)
+	}
+
+	begin("deployment-two", "revision-two", "sha256:two", 4)
+	if err := store.ActivateDeployment(ctx, "service", "deployment-two", "deployment-one", 5); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.BeginDeployment(ctx, BeginDeployment{
+		ID: "deployment-rollback", ServiceID: "service", ImageDigest: "sha256:one",
+		ImageReference: "oci-archive:/images/revision-one.oci", ImageRevisionID: "revision-one",
+		ConfigHash: hash, SnapshotJSON: snapshotJSON, CreatedAtMillis: 6,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ActivateDeployment(ctx, "service", "deployment-rollback", "deployment-two", 7); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := store.ImageRevision(ctx, "revision-one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.ImageRevision(ctx, "revision-two")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Status != "active" || first.DeploymentID != "deployment-rollback" || first.RetiredAtMillis != 0 {
+		t.Fatalf("reactivated revision = %+v", first)
+	}
+	if second.Status != "retired" || second.RetiredAtMillis != 7 {
+		t.Fatalf("retired revision = %+v", second)
 	}
 }
 

@@ -28,7 +28,6 @@ const memoryStorage = (initial: string | null = null) => {
 };
 
 const service: Service = {
-  buildEnvironment: {},
   createdAt: 1,
   enabled: true,
   environment: { LOG_LEVEL: "info" },

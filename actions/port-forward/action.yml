@@ -1,0 +1,58 @@
+name: platformd port forward
+description: Open a short-lived localhost TCP tunnel to a platformd resource.
+author: Ilya Ivankin
+
+branding:
+  icon: arrow-right-circle
+  color: red
+
+inputs:
+  url:
+    description: HTTPS origin of the platformd admin hostname, for example https://admin.example.com.
+    required: true
+  token:
+    description: platformd admin API token. When omitted, the action uses GitHub Actions OIDC (requires id-token: write and a port-forward allowlist on the target resource).
+    required: false
+  project:
+    description: Name of the project containing the target resource.
+    required: true
+  resource:
+    description: Name of the target service, PostgreSQL, Redis, or object store resource.
+    required: true
+  port:
+    description: TCP port exposed by the target resource. Object stores require 9000.
+    required: true
+  local-port:
+    description: Localhost TCP port. Defaults to port.
+    required: false
+  expires-in-seconds:
+    description: Ticket lifetime from 60 to 28800 seconds.
+    required: false
+    default: "3600"
+  platformd-version:
+    description: Exact platformd-forward release version, or latest. Ignored when binary-path is set.
+    required: false
+    default: latest
+  binary-path:
+    description: Local path to a platformd-forward binary. Skips release download and checksum verification.
+    required: false
+  connection-url:
+    description: PostgreSQL or Redis URL to rewrite through the tunnel and export.
+    required: false
+  connection-env:
+    description: Exported environment variable name. Defaults from the resource kind detected by platformd.
+    required: false
+
+outputs:
+  host:
+    description: Local tunnel host. Always 127.0.0.1.
+  port:
+    description: Local tunnel port.
+  expires-at:
+    description: RFC 3339 ticket expiration time.
+
+runs:
+  using: node24
+  main: dist/index.js
+  post: dist/cleanup/index.js
+  post-if: always()

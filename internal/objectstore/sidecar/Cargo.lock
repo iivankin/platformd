@@ -3423,6 +3423,7 @@ dependencies = [
  "rustfs-ecstore",
  "rustfs-heal",
  "rustfs-rio",
+ "rustfs-scanner",
  "rustfs-storage-api",
  "s3s",
  "serde",
@@ -4517,6 +4518,41 @@ source = "git+https://github.com/rustfs/rustfs.git?rev=2e5cef513fb31e25940f1c77e
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "rustfs-scanner"
+version = "1.0.0-beta.12"
+source = "git+https://github.com/rustfs/rustfs.git?rev=2e5cef513fb31e25940f1c77e208f28b302561bb#2e5cef513fb31e25940f1c77e208f28b302561bb"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "chrono",
+ "futures",
+ "hex-simd",
+ "hmac 0.13.0",
+ "http 1.5.0",
+ "metrics",
+ "rand 0.10.2",
+ "rmp-serde",
+ "rustfs-common",
+ "rustfs-config",
+ "rustfs-credentials",
+ "rustfs-data-usage",
+ "rustfs-ecstore",
+ "rustfs-filemeta",
+ "rustfs-storage-api",
+ "rustfs-utils",
+ "s3s",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "thiserror 2.0.19",
+ "time",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

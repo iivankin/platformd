@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/portforward"
-	"github.com/iivankin/platformd/internal/server"
 )
 
 func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
@@ -14,8 +13,9 @@ func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
 		return http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) { _, _ = response.Write([]byte(value)) })
 	}
 	handler := publicHandler(
-		marker("github"),
+		marker("image"),
 		marker("forward"),
+		marker("create-forward"),
 		marker("protected"),
 	)
 
@@ -24,9 +24,15 @@ func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
 		path   string
 		want   string
 	}{
-		{method: http.MethodPost, path: server.GitHubWebhookPath, want: "github"},
-		{method: http.MethodGet, path: server.GitHubWebhookPath, want: "protected"},
+		{method: http.MethodPost, path: "/public/api/v1/projects/project/services/service/image", want: "image"},
+		{method: http.MethodGet, path: "/public/api/v1/projects/project/services/service/image", want: "image"},
+		{method: http.MethodPut, path: "/public/api/v1/projects/project/services/service/image", want: "protected"},
 		{method: http.MethodGet, path: portforward.EndpointPath, want: "forward"},
+		{
+			method: http.MethodPost,
+			path:   "/public/api/v1/projects/shop/resources/api/port-forwards",
+			want:   "create-forward",
+		},
 		{method: http.MethodPost, path: "/public/api/v1/projects", want: "protected"},
 	} {
 		request := httptest.NewRequest(test.method, test.path, nil)

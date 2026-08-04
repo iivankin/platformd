@@ -37,7 +37,6 @@ type PreviewDeploymentRepository interface {
 
 type ServiceEnvironmentResolver interface {
 	Resolve(context.Context, state.ServiceDesired, deployment.EnvironmentContext) (map[string]string, error)
-	ResolveBuild(context.Context, state.ServiceDesired, deployment.EnvironmentContext) (map[string]string, error)
 }
 
 type ServiceDeploymentActionRepository interface {
@@ -53,8 +52,8 @@ type serviceResponse struct {
 	Command            []string                           `json:"command,omitempty"`
 	Args               []string                           `json:"args,omitempty"`
 	Environment        map[string]string                  `json:"environment"`
-	BuildEnvironment   map[string]string                  `json:"buildEnvironment"`
 	BeforeDeploy       *serviceconfig.BeforeDeploy        `json:"beforeDeploy,omitempty"`
+	PortForward        *serviceconfig.PortForward         `json:"portForward,omitempty"`
 	HealthCheck        *serviceconfig.HealthCheck         `json:"healthCheck,omitempty"`
 	CPUMillicores      int64                              `json:"cpuMillicores,omitempty"`
 	MemoryMaxBytes     int64                              `json:"memoryMaxBytes,omitempty"`
@@ -85,8 +84,8 @@ type serviceConfigRequest struct {
 	Command          []string                        `json:"command"`
 	Args             []string                        `json:"args"`
 	Environment      map[string]string               `json:"environment"`
-	BuildEnvironment map[string]string               `json:"buildEnvironment"`
 	BeforeDeploy     *serviceconfig.BeforeDeploy     `json:"beforeDeploy"`
+	PortForward      *serviceconfig.PortForward      `json:"portForward"`
 	SecretReferences []serviceconfig.SecretReference `json:"secretReferences"`
 	HealthCheck      *serviceconfig.HealthCheck      `json:"healthCheck"`
 	CPUMillicores    int64                           `json:"cpuMillicores"`
@@ -98,7 +97,8 @@ func (request serviceConfigRequest) snapshot() serviceconfig.Snapshot {
 	return serviceconfig.Snapshot{
 		Source:  request.Source,
 		Command: request.Command, Args: request.Args, Environment: request.Environment,
-		BuildEnvironment: request.BuildEnvironment, BeforeDeploy: request.BeforeDeploy,
+		BeforeDeploy:     request.BeforeDeploy,
+		PortForward:      request.PortForward,
 		SecretReferences: request.SecretReferences, HealthCheck: request.HealthCheck,
 		CPUMillicores: request.CPUMillicores, MemoryMaxBytes: request.MemoryMaxBytes,
 		VolumeMounts: request.VolumeMounts,
@@ -108,7 +108,6 @@ func (request serviceConfigRequest) snapshot() serviceconfig.Snapshot {
 func registerServiceRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/services", createService(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/variables/resolved", resolvedServiceVariables(config))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/build-variables/resolved", resolvedServiceBuildVariables(config))
 	registerServiceLifecycleRoutes(mux, config)
 }
 
@@ -179,7 +178,7 @@ func createService(config handlerConfig) http.HandlerFunc {
 			enabled = *body.Enabled
 		}
 		setup := initialServiceSetup{Domains: body.Domains, Listeners: body.Listeners, Volumes: body.Volumes}
-		if snapshot.Source.GitHub != nil && snapshot.Source.GitHub.PullRequestPreview != nil && len(setup.Domains) != 1 {
+		if snapshot.Source.Type == servicesource.DockerImageUpload && len(setup.Domains) != 1 {
 			writeAPIError(response, http.StatusConflict, "preview_domain_count", state.ErrPreviewDomainCount.Error())
 			return
 		}
@@ -206,7 +205,7 @@ func createService(config handlerConfig) http.HandlerFunc {
 			beforeDeploy := *snapshot.BeforeDeploy
 			beforeDeploy.CloudflareHostnames = nil
 			initialSnapshot.BeforeDeploy = &beforeDeploy
-			if beforeDeploy.Command == "" && beforeDeploy.GitHubWorkflow == nil {
+			if beforeDeploy.Command == "" {
 				initialSnapshot.BeforeDeploy = nil
 			}
 		}
@@ -271,8 +270,9 @@ func publicService(ctx context.Context, config handlerConfig, service state.Serv
 		ID: service.ID, ProjectID: service.ProjectID, Name: service.Name,
 		Source:  service.Snapshot.Source,
 		Command: service.Snapshot.Command, Args: service.Snapshot.Args,
-		Environment: service.Snapshot.Environment, BuildEnvironment: service.Snapshot.BuildEnvironment,
+		Environment:    service.Snapshot.Environment,
 		BeforeDeploy:   service.Snapshot.BeforeDeploy,
+		PortForward:    service.Snapshot.PortForward,
 		HealthCheck:    service.Snapshot.HealthCheck,
 		CPUMillicores:  service.Snapshot.CPUMillicores,
 		MemoryMaxBytes: service.Snapshot.MemoryMaxBytes,
@@ -359,36 +359,6 @@ func resolvedServiceVariables(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		environment, err := config.serviceEnvironment.Resolve(request.Context(), service, environmentContext)
-		if err != nil {
-			writeAPIError(response, http.StatusUnprocessableEntity, "variable_resolution_failed", err.Error())
-			return
-		}
-		response.Header().Set("Cache-Control", "no-store")
-		writeJSON(response, http.StatusOK, responseBody{Environment: environment})
-	}
-}
-
-func resolvedServiceBuildVariables(config handlerConfig) http.HandlerFunc {
-	type responseBody struct {
-		Environment map[string]string `json:"environment"`
-	}
-	return func(response http.ResponseWriter, request *http.Request) {
-		if config.serviceEnvironment == nil {
-			writeAPIError(response, http.StatusServiceUnavailable, "variable_resolution_unavailable", "Variable resolution is unavailable")
-			return
-		}
-		service, err := config.services.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
-		if errors.Is(err, state.ErrServiceNotFound) || errors.Is(err, sql.ErrNoRows) {
-			writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
-			return
-		}
-		if err != nil {
-			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load service")
-			return
-		}
-		environment, err := config.serviceEnvironment.ResolveBuild(request.Context(), service, deployment.EnvironmentContext{
-			DeploymentID: service.ActiveDeploymentID, Kind: deployment.EnvironmentProduction,
-		})
 		if err != nil {
 			writeAPIError(response, http.StatusUnprocessableEntity, "variable_resolution_failed", err.Error())
 			return

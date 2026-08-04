@@ -208,11 +208,6 @@ const imageSourceSchema = z.discriminatedUnion("type", [
   z.object({
     autoUpdate: z.boolean().optional().default(false),
     image: z.object({ reference: z.string().min(1) }),
-    type: z.literal("platformd_registry"),
-  }),
-  z.object({
-    autoUpdate: z.boolean().optional().default(false),
-    image: z.object({ reference: z.string().min(1) }),
     minimumReleaseAgeDays: z.number().int().positive().max(36_500).optional(),
     type: z.literal("public_image"),
   }),
@@ -224,27 +219,20 @@ const imageSourceSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-const githubSourceSchema = z.object({
-  github: z.object({
+const dockerImageUploadSourceSchema = z.object({
+  dockerUpload: z.object({
     branch: z.string().min(1),
-    contextPath: z.string().min(1),
-    dockerfilePath: z.string().min(1),
-    pullRequestPreview: z
-      .object({ hostnameTemplate: z.string().min(1) })
-      .optional(),
     repository: z.string().min(1),
-    repositoryId: z.number().int().positive(),
-    revision: z
-      .string()
-      .regex(/^[\da-f]{40}$/u)
-      .optional(),
-    triggerPaths: z.array(z.string().min(1)),
-    waitForCi: z.boolean(),
+    workflows: z.array(z.string().min(1)),
   }),
-  type: z.literal("github"),
+  type: z.literal("docker_image_upload"),
 });
 
-const serviceSourceSchema = z.union([imageSourceSchema, githubSourceSchema]);
+const serviceSourceSchema = z.union([
+  imageSourceSchema,
+  dockerImageUploadSourceSchema,
+  z.object({ type: z.literal("unconfigured") }),
+]);
 export type ServiceSource = z.infer<typeof serviceSourceSchema>;
 
 const canvasResourceSchema = z.object({
@@ -313,20 +301,19 @@ const healthCheckSchema = z.object({
   timeoutSeconds: z.number().int().min(1).max(3600),
 });
 
-const githubWorkflowSchema = z.object({
-  inputs: z.record(z.string(), z.unknown()),
-  name: z.string().min(1),
-  path: z.string().min(1),
-});
-
 const beforeDeploySchema = z.object({
   cloudflareHostnames: z.array(z.string().min(1)),
   command: z.string().min(1).optional(),
-  githubWorkflow: githubWorkflowSchema.optional(),
 });
 
-export type GitHubWorkflow = z.infer<typeof githubWorkflowSchema>;
 export type BeforeDeploy = z.infer<typeof beforeDeploySchema>;
+
+const portForwardSchema = z.object({
+  repository: z.string().min(1),
+  workflows: z.array(z.string().min(1)),
+});
+
+export type PortForwardAccess = z.infer<typeof portForwardSchema>;
 
 const serviceSchema = z.object({
   activeConfigHash: z.string().min(1).optional(),
@@ -334,7 +321,6 @@ const serviceSchema = z.object({
   activeImageDigest: z.string().min(1).optional(),
   args: z.array(z.string()).optional(),
   beforeDeploy: beforeDeploySchema.optional(),
-  buildEnvironment: z.record(z.string(), z.string()),
   command: z.array(z.string()).optional(),
   cpuMillicores: z.number().int().nonnegative().optional(),
   createdAt: z.number().int().positive(),
@@ -344,6 +330,7 @@ const serviceSchema = z.object({
   id: z.string().min(1),
   memoryMaxBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
+  portForward: portForwardSchema.optional(),
   projectId: z.string().min(1),
   registryCredential: serviceRegistryCredentialSchema.optional(),
   secretReferences: z.array(
@@ -381,12 +368,12 @@ export interface CreateServiceVolumeInput extends CreateVolumeInput {
 
 export interface CreateServiceInput {
   beforeDeploy?: BeforeDeploy;
-  buildEnvironment: Record<string, string>;
   domains?: Pick<ServiceDomain, "hostname" | "targetPort">[];
   environment: Record<string, string>;
   healthCheck?: z.infer<typeof healthCheckSchema>;
   listeners?: Pick<ServiceListener, "protocol" | "publicPort" | "targetPort">[];
   name: string;
+  portForward?: PortForwardAccess;
   registryCredential?: Pick<ServiceRegistryCredential, "password" | "username">;
   source: ServiceSource;
   volumes?: CreateServiceVolumeInput[];
@@ -395,7 +382,6 @@ export interface CreateServiceInput {
 export interface UpdateServiceInput {
   args?: string[];
   beforeDeploy?: BeforeDeploy;
-  buildEnvironment: Record<string, string>;
   command?: string[];
   cpuMillicores?: number;
   enabled: boolean;
@@ -403,6 +389,7 @@ export interface UpdateServiceInput {
   expectedUpdatedAt: number;
   healthCheck?: z.infer<typeof healthCheckSchema>;
   memoryMaxBytes?: number;
+  portForward?: PortForwardAccess;
   registryCredential?: Pick<ServiceRegistryCredential, "password" | "username">;
   secretReferences: Service["secretReferences"];
   source: ServiceSource;
@@ -423,7 +410,6 @@ const deploymentSchema = z.object({
   snapshot: serviceSchema.pick({
     args: true,
     beforeDeploy: true,
-    buildEnvironment: true,
     command: true,
     cpuMillicores: true,
     environment: true,
@@ -453,24 +439,15 @@ export type Deployment = z.infer<typeof deploymentSchema>;
 export type DeploymentPage = z.infer<typeof deploymentPageSchema>;
 
 const previewDeploymentSchema = z.object({
-  commitMessage: z.string().min(1).optional(),
   createdAt: z.number().int().positive(),
   errorMessage: z.string().optional(),
   expiresAt: z.number().int().positive(),
   finishedAt: z.number().int().positive().optional(),
   hostname: z.string().min(1),
   id: z.string().min(1),
-  pullRequestNumber: z.number().int().positive(),
   serviceId: z.string().min(1),
-  sourceRevision: z.string().min(1),
-  status: z.enum([
-    "active",
-    "building",
-    "failed",
-    "interrupted",
-    "skipped",
-    "stopped",
-  ]),
+  status: z.enum(["active", "deploying", "failed", "interrupted", "stopped"]),
+  tag: z.string().min(1),
   targetPort: z.number().int().min(1).max(65_535),
 });
 
@@ -655,6 +632,7 @@ const resourceUsageSchema = z.object({
   // the current two-second interval has no valid counter delta.
   cpuMillicores: z.number().int().nonnegative().optional(),
   cpuPeakMillicores: z.number().int().nonnegative().optional(),
+  diskBytes: z.number().int().nonnegative().optional(),
   host: hostUsageSchema.optional(),
   hostCpuCores: z.number().int().nonnegative(),
   hostMemoryBytes: z.number().int().nonnegative(),
@@ -670,11 +648,17 @@ const resourceUsageSchema = z.object({
   running: z.boolean(),
   runningResources: z.number().int().nonnegative(),
   totalResources: z.number().int().nonnegative(),
+  trafficRoutes: z.object({
+    http: z.boolean(),
+    tcp: z.boolean(),
+    udp: z.boolean(),
+  }),
 });
 
 const resourceUsageHistoryPointSchema = z.object({
   cpuMillicores: z.number().int().nonnegative().optional(),
   cpuPeakMillicores: z.number().int().nonnegative().optional(),
+  diskBytes: z.number().int().nonnegative().optional(),
   durationMillis: z.number().int().positive(),
   memoryBytes: z.number().int().nonnegative(),
   memoryPeakBytes: z.number().int().nonnegative(),
@@ -690,6 +674,14 @@ const resourceUsageHistoryPointSchema = z.object({
 const resourceUsageHistorySchema = z.object({
   from: z.number().int().positive(),
   points: z.array(resourceUsageHistoryPointSchema),
+  series: z.array(
+    z.object({
+      id: z.string().min(1),
+      kind: z.enum(["postgres", "project", "redis", "service"]),
+      name: z.string().min(1),
+      points: z.array(resourceUsageHistoryPointSchema),
+    })
+  ),
   stepMillis: z.number().int().positive(),
   to: z.number().int().positive(),
 });
@@ -778,6 +770,7 @@ const managedRedisSchema = z.object({
   name: z.string().min(1),
   password: z.string().min(1),
   port: z.literal(6379),
+  portForward: portForwardSchema.optional(),
   projectId: z.string().min(1),
   updatedAt: z.number().int().positive(),
 });
@@ -934,6 +927,7 @@ const managedPostgresSchema = z.object({
   ownerPassword: z.string().min(1),
   ownerUsername: z.string().min(1),
   port: z.literal(5432),
+  portForward: portForwardSchema.optional(),
   projectId: z.string().min(1),
   updatedAt: z.number().int().positive(),
 });
@@ -1000,6 +994,7 @@ const objectStoreSchema = z.object({
   id: z.string().min(1),
   internalHostname: z.string().min(1),
   name: z.string().min(1),
+  portForward: portForwardSchema.optional(),
   projectId: z.string().min(1),
   publicHostname: z.string().min(1).optional(),
   region: z.literal("us-east-1"),
@@ -1021,6 +1016,38 @@ const objectPageSchema = z.object({
   objects: z.array(objectMetadataSchema),
 });
 
+const objectStoreStatsSchema = z.object({
+  objectCount: z.number().int().nonnegative(),
+  objectSizeHistogram: z.array(
+    z.object({
+      count: z.number().int().nonnegative(),
+      label: z.string().min(1),
+    })
+  ),
+  observedAt: z.number().int().positive().optional(),
+  ready: z.boolean(),
+  totalBytes: z.number().int().nonnegative(),
+});
+
+const largestObjectsSearchSchema = z.object({
+  error: z.string().min(1).optional(),
+  objects: z.array(
+    z.object({
+      key: z.string().min(1),
+      size: z.number().int().nonnegative(),
+    })
+  ),
+  scannedObjects: z.number().int().nonnegative(),
+  status: z.enum([
+    "idle",
+    "running",
+    "cancelling",
+    "complete",
+    "cancelled",
+    "failed",
+  ]),
+});
+
 const objectPreviewSchema = z.object({
   allowed: z.boolean(),
   base64: z.string().optional(),
@@ -1032,6 +1059,8 @@ export type ObjectStore = z.infer<typeof objectStoreSchema>;
 export type ObjectMetadata = z.infer<typeof objectMetadataSchema>;
 export type ObjectPage = z.infer<typeof objectPageSchema>;
 export type ObjectPreview = z.infer<typeof objectPreviewSchema>;
+export type ObjectStoreStats = z.infer<typeof objectStoreStatsSchema>;
+export type LargestObjectsSearch = z.infer<typeof largestObjectsSearchSchema>;
 
 export interface ObjectStoreInitialCredentials {
   accessKey: string;
@@ -1052,84 +1081,6 @@ export interface CreateBackupPolicyInput {
   enabled: boolean;
   retentionCount: number;
   targetId: string;
-}
-
-const registrySettingsSchema = z.object({ hostname: z.string() });
-const registryRepositorySchema = z.object({
-  backupCron: z.string().optional(),
-  backupEnabled: z.boolean(),
-  backupRetentionCount: z.number().int().min(1).max(100),
-  blobCount: z.number().int().nonnegative(),
-  createdAt: z.number().int().positive(),
-  credentialName: z.string().min(1).optional(),
-  credentialPermission: z.enum(["pull", "pull_push"]).optional(),
-  id: z.string().min(1),
-  lastPushedAt: z.number().int().positive().optional(),
-  manifestCount: z.number().int().nonnegative(),
-  name: z.string().min(1),
-  publicPull: z.boolean(),
-  referencedBlobBytes: z.number().int().nonnegative(),
-  secret: z.string().min(1).optional(),
-  tagCount: z.number().int().nonnegative(),
-  totalBlobBytes: z.number().int().nonnegative(),
-  updatedAt: z.number().int().positive(),
-  username: z.string().min(1).optional(),
-});
-const registryRepositoriesSchema = z.object({
-  repositories: z.array(registryRepositorySchema),
-});
-const registryPlatformSchema = z.object({
-  architecture: z.string(),
-  os: z.string(),
-  variant: z.string().optional(),
-});
-const registryImageSchema = z.object({
-  blobDigests: z.array(z.string()),
-  digest: z.string().min(1),
-  manifest: z.record(z.string(), z.unknown()).optional(),
-  manifestSize: z.number().int().positive(),
-  mediaType: z.string().min(1),
-  platforms: z.array(registryPlatformSchema),
-  pushedAt: z.number().int().positive(),
-  referencedBlobBytes: z.number().int().nonnegative(),
-  tags: z.array(z.string()),
-});
-const registryImagesSchema = z.object({
-  images: z.array(registryImageSchema),
-  nextCursor: z.string(),
-});
-const registryCredentialSchema = z.object({
-  createdAt: z.number().int().positive(),
-  id: z.string().min(1),
-  lastUsedAt: z.number().int().positive().optional(),
-  name: z.string().min(1),
-  permission: z.enum(["pull", "pull_push"]),
-  secret: z.string().min(1).optional(),
-  secretAvailable: z.boolean(),
-  username: z.string().min(1),
-});
-const registryCredentialsSchema = z.object({
-  credentials: z.array(registryCredentialSchema),
-});
-const registryCleanupSchema = z.object({
-  blobCount: z.number().int().nonnegative(),
-  bytes: z.number().int().nonnegative(),
-  deleted: z.boolean(),
-  previewDigests: z.array(z.string()),
-  previewTruncated: z.boolean(),
-});
-
-export type RegistrySettings = z.infer<typeof registrySettingsSchema>;
-export type RegistryRepository = z.infer<typeof registryRepositorySchema>;
-export type RegistryImage = z.infer<typeof registryImageSchema>;
-export type RegistryCredential = z.infer<typeof registryCredentialSchema>;
-export type RegistryCleanup = z.infer<typeof registryCleanupSchema>;
-
-export interface CreateRegistryRepositoryInput {
-  credentialName: string;
-  credentialPermission: "pull" | "pull_push";
-  name: string;
-  publicPull: boolean;
 }
 
 const backupTargetSchema = z.object({
@@ -1207,10 +1158,10 @@ const databaseVersionStartSchema = databaseVersionPreviewSchema
   .extend({ operation: operationSchema });
 
 const recoveryResourceKindSchema = z.enum([
+  "image",
   "object_store",
   "postgres",
   "redis",
-  "registry",
   "volume",
 ]);
 
@@ -1706,25 +1657,6 @@ export const fetchResolvedServiceEnvironment = async (
   return resolvedEnvironmentSchema.parse(await response.json()).environment;
 };
 
-export const fetchResolvedServiceBuildEnvironment = async (
-  projectID: string,
-  serviceID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<Record<string, string>> => {
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/build-variables/resolved`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `resolved build variables request failed with ${response.status}`
-    );
-  }
-  return resolvedEnvironmentSchema.parse(await response.json()).environment;
-};
-
 export const updateService = async (
   projectID: string,
   serviceID: string,
@@ -1988,7 +1920,7 @@ export const fetchServicePreviews = async (
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
-    throw await apiError(response, "PR preview history request failed");
+    throw await apiError(response, "image preview history request failed");
   }
   return z
     .object({ previews: z.array(previewDeploymentSchema) })
@@ -2646,6 +2578,35 @@ export const fetchManagedRedis = async (
   return managedRedisSchema.parse(await response.json());
 };
 
+export const updateManagedRedisPortForward = async (
+  projectID: string,
+  redisID: string,
+  input: {
+    expectedUpdatedAt: number;
+    portForward?: PortForwardAccess;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedRedis> => {
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/port-forward`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis port-forward update failed with ${response.status}`
+    );
+  }
+  return managedRedisSchema.parse(await response.json());
+};
+
 export const fetchManagedRedisPersistence = async (
   projectID: string,
   redisID: string,
@@ -2805,6 +2766,35 @@ export const fetchManagedPostgres = async (
     throw await apiError(
       response,
       `managed PostgreSQL request failed with ${response.status}`
+    );
+  }
+  return managedPostgresSchema.parse(await response.json());
+};
+
+export const updateManagedPostgresPortForward = async (
+  projectID: string,
+  postgresID: string,
+  input: {
+    expectedUpdatedAt: number;
+    portForward?: PortForwardAccess;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedPostgres> => {
+  const response = await fetcher(
+    `${managedPostgresPath(projectID, postgresID)}/port-forward`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL port-forward update failed with ${response.status}`
     );
   }
   return managedPostgresSchema.parse(await response.json());
@@ -3014,6 +3004,129 @@ export const fetchObjectStore = async (
   return objectStoreSchema.parse(await response.json());
 };
 
+export const updateObjectStorePortForward = async (
+  projectID: string,
+  storeID: string,
+  input: {
+    expectedUpdatedAt: number;
+    portForward?: PortForwardAccess;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectStore> => {
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/port-forward`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object store port-forward update failed with ${response.status}`
+    );
+  }
+  return objectStoreSchema.parse(await response.json());
+};
+
+export const updateObjectStorePublicAccess = async (
+  projectID: string,
+  storeID: string,
+  input: {
+    corsOrigins: string[];
+    expectedUpdatedAt: number;
+    publicHostname?: string;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectStore> => {
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/public-access`,
+    {
+      body: JSON.stringify({
+        corsOrigins: input.corsOrigins,
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        publicHostname: input.publicHostname ?? "",
+      }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object store public-access update failed with ${response.status}`
+    );
+  }
+  return objectStoreSchema.parse(await response.json());
+};
+
+export const fetchObjectStoreStats = async (
+  projectID: string,
+  storeID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ObjectStoreStats> => {
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/stats`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object store stats request failed with ${response.status}`
+    );
+  }
+  return objectStoreStatsSchema.parse(await response.json());
+};
+
+const largestObjectsRequest = async (
+  projectID: string,
+  storeID: string,
+  method: "DELETE" | "GET" | "POST",
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<LargestObjectsSearch> => {
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/largest-objects`,
+    { headers: { Accept: "application/json" }, method, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `largest objects request failed with ${response.status}`
+    );
+  }
+  return largestObjectsSearchSchema.parse(await response.json());
+};
+
+export const fetchLargestObjectsSearch = (
+  projectID: string,
+  storeID: string,
+  signal?: AbortSignal,
+  fetcher?: Fetcher
+) => largestObjectsRequest(projectID, storeID, "GET", signal, fetcher);
+
+export const startLargestObjectsSearch = (
+  projectID: string,
+  storeID: string,
+  signal?: AbortSignal,
+  fetcher?: Fetcher
+) => largestObjectsRequest(projectID, storeID, "POST", signal, fetcher);
+
+export const cancelLargestObjectsSearch = (
+  projectID: string,
+  storeID: string,
+  signal?: AbortSignal,
+  fetcher?: Fetcher
+) => largestObjectsRequest(projectID, storeID, "DELETE", signal, fetcher);
+
 export const fetchObjects = async (
   projectID: string,
   storeID: string,
@@ -3115,9 +3228,6 @@ export const deleteObject = async (
     );
   }
 };
-
-const registryRepositoryPath = (repositoryID?: string) =>
-  `/api/v1/registry/repositories${repositoryID ? `/${encodeURIComponent(repositoryID)}` : ""}`;
 
 export const fetchBackupTargets = async (
   signal?: AbortSignal,
@@ -3437,279 +3547,6 @@ export const retryRecovery = async (
       `Recovery retry failed with ${response.status}`
     );
   }
-};
-
-export const fetchRegistrySettings = async (
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistrySettings> => {
-  const response = await fetcher("/api/v1/registry", {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry settings request failed with ${response.status}`
-    );
-  }
-  return registrySettingsSchema.parse(await response.json());
-};
-
-export const setRegistryHostname = async (
-  hostname: string,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistrySettings> => {
-  const response = await fetcher("/api/v1/registry/hostname", {
-    body: JSON.stringify({ hostname }),
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    method: "PUT",
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry hostname update failed with ${response.status}`
-    );
-  }
-  return registrySettingsSchema.parse(await response.json());
-};
-
-export const fetchRegistryRepositories = async (
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryRepository[]> => {
-  const response = await fetcher(registryRepositoryPath(), {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry repositories request failed with ${response.status}`
-    );
-  }
-  return registryRepositoriesSchema.parse(await response.json()).repositories;
-};
-
-export const createRegistryRepository = async (
-  input: CreateRegistryRepositoryInput,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryRepository> => {
-  const response = await fetcher(registryRepositoryPath(), {
-    body: JSON.stringify(input),
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry repository creation failed with ${response.status}`
-    );
-  }
-  return registryRepositorySchema.parse(await response.json());
-};
-
-export const setRegistryRepositoryPublicPull = async (
-  repositoryID: string,
-  publicPull: boolean,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryRepository> => {
-  const response = await fetcher(
-    `${registryRepositoryPath(repositoryID)}/public-pull`,
-    {
-      body: JSON.stringify({ publicPull }),
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      method: "PUT",
-    }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry public pull update failed with ${response.status}`
-    );
-  }
-  return registryRepositorySchema.parse(await response.json());
-};
-
-export const fetchRegistryImages = async (
-  repositoryID: string,
-  options: { after?: string; limit?: number } = {},
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-) => {
-  const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
-  if (options.after) {
-    query.set("after", options.after);
-  }
-  const response = await fetcher(
-    `${registryRepositoryPath(repositoryID)}/images?${query.toString()}`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry images request failed with ${response.status}`
-    );
-  }
-  return registryImagesSchema.parse(await response.json());
-};
-
-export const fetchRegistryImage = async (
-  repositoryID: string,
-  digest: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryImage> => {
-  const response = await fetcher(
-    `${registryRepositoryPath(repositoryID)}/images/${encodeURIComponent(digest)}`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry image request failed with ${response.status}`
-    );
-  }
-  return registryImageSchema.parse(await response.json());
-};
-
-export const deleteRegistryTag = async (
-  repositoryID: string,
-  tag: string,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<void> => {
-  const response = await fetcher(
-    `${registryRepositoryPath(repositoryID)}/tags/${encodeURIComponent(tag)}`,
-    { method: "DELETE" }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry tag deletion failed with ${response.status}`
-    );
-  }
-};
-
-export const deleteRegistryImage = async (
-  repositoryID: string,
-  digest: string,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<void> => {
-  const response = await fetcher(
-    `${registryRepositoryPath(repositoryID)}/manifests/${encodeURIComponent(digest)}`,
-    { method: "DELETE" }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry image deletion failed with ${response.status}`
-    );
-  }
-};
-
-export const deleteRegistryRepository = async (
-  repositoryID: string,
-  expectedName: string,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<void> => {
-  const response = await fetcher(registryRepositoryPath(repositoryID), {
-    body: JSON.stringify({ expectedName }),
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    method: "DELETE",
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry repository deletion failed with ${response.status}`
-    );
-  }
-};
-
-const registryCredentialsPath = (repositoryID: string, credentialID?: string) =>
-  `${registryRepositoryPath(repositoryID)}/credentials${credentialID ? `/${encodeURIComponent(credentialID)}` : ""}`;
-
-export const fetchRegistryCredentials = async (
-  repositoryID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryCredential[]> => {
-  const response = await fetcher(registryCredentialsPath(repositoryID), {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry credentials request failed with ${response.status}`
-    );
-  }
-  return registryCredentialsSchema.parse(await response.json()).credentials;
-};
-
-export const createRegistryCredential = async (
-  repositoryID: string,
-  input: { name: string; permission: "pull" | "pull_push" },
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryCredential> => {
-  const response = await fetcher(registryCredentialsPath(repositoryID), {
-    body: JSON.stringify(input),
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry credential creation failed with ${response.status}`
-    );
-  }
-  return registryCredentialSchema.parse(await response.json());
-};
-
-export const deleteRegistryCredential = async (
-  repositoryID: string,
-  credentialID: string,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<void> => {
-  const response = await fetcher(
-    registryCredentialsPath(repositoryID, credentialID),
-    {
-      method: "DELETE",
-    }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry credential deletion failed with ${response.status}`
-    );
-  }
-};
-
-export const cleanupRegistryRepository = async (
-  repositoryID: string,
-  dryRun: boolean,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RegistryCleanup> => {
-  const response = await fetcher(
-    `${registryRepositoryPath(repositoryID)}/cleanup`,
-    {
-      body: JSON.stringify({ dryRun }),
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-    }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `Registry cleanup failed with ${response.status}`
-    );
-  }
-  return registryCleanupSchema.parse(await response.json());
 };
 
 const serviceDomainsPath = (projectID: string, serviceID: string) =>
@@ -4068,29 +3905,6 @@ export const deleteOriginCertificate = async (
   return installationSettingsSchema.parse(await response.json());
 };
 
-const githubAppSettingsSchema = z.object({
-  appId: z.number().int().nonnegative(),
-  appSlug: z.string(),
-  configured: z.boolean(),
-  updatedAt: z.number().int().nonnegative(),
-  webhookPath: z.string().min(1),
-});
-
-const githubRepositorySchema = z.object({
-  defaultBranch: z.string().min(1),
-  fullName: z.string().min(1),
-  id: z.number().int().positive(),
-  installationId: z.number().int().positive(),
-});
-
-export type GitHubAppSettings = z.infer<typeof githubAppSettingsSchema>;
-export type GitHubRepository = z.infer<typeof githubRepositorySchema>;
-const githubRepositoryPathSchema = z.object({
-  path: z.string().min(1),
-  type: z.enum(["blob", "tree"]),
-});
-export type GitHubRepositoryPath = z.infer<typeof githubRepositoryPathSchema>;
-
 const cloudflareDNSSettingsSchema = z.object({
   configured: z.boolean(),
   updatedAt: z.number().int().nonnegative(),
@@ -4120,95 +3934,6 @@ export type CloudflareMeshSettings = z.infer<
 export type CloudflareMeshCredential = z.infer<
   typeof cloudflareMeshCredentialSchema
 >;
-
-export const fetchGitHubAppSettings = async (
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<GitHubAppSettings> => {
-  const response = await fetcher("/api/v1/settings/github", {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiError(response, "GitHub App settings request failed");
-  }
-  return githubAppSettingsSchema.parse(await response.json());
-};
-
-export const configureGitHubApp = async (
-  input: { appId: number; privateKeyPem: string; webhookSecret: string },
-  fetcher: Fetcher = globalThis.fetch
-): Promise<GitHubAppSettings> => {
-  const response = await fetcher("/api/v1/settings/github", {
-    body: JSON.stringify(input),
-    headers: { Accept: "application/json", "Content-Type": "application/json" },
-    method: "PUT",
-  });
-  if (!response.ok) {
-    throw await apiError(response, "GitHub App configuration failed");
-  }
-  return githubAppSettingsSchema.parse(await response.json());
-};
-
-export const fetchGitHubRepositories = async (
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<GitHubRepository[]> => {
-  const response = await fetcher("/api/v1/settings/github/repositories", {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiError(response, "GitHub repositories request failed");
-  }
-  return z
-    .object({ repositories: z.array(githubRepositorySchema) })
-    .parse(await response.json()).repositories;
-};
-
-export const fetchGitHubRepositoryPaths = async (
-  repositoryID: number,
-  ref: string,
-  query: string,
-  kind: "directory" | "dockerfile" | "path",
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<GitHubRepositoryPath[]> => {
-  const parameters = new URLSearchParams({ kind, q: query, ref });
-  const response = await fetcher(
-    `/api/v1/settings/github/repositories/${repositoryID}/paths?${parameters.toString()}`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(response, "GitHub repository paths request failed");
-  }
-  return z
-    .object({ paths: z.array(githubRepositoryPathSchema) })
-    .parse(await response.json()).paths;
-};
-
-export const fetchGitHubWorkflows = async (
-  repositoryID: number,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<GitHubWorkflow[]> => {
-  const response = await fetcher(
-    `/api/v1/settings/github/repositories/${repositoryID}/workflows`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(response, "GitHub workflows request failed");
-  }
-  return z
-    .object({
-      workflows: z.array(githubWorkflowSchema.omit({ inputs: true })),
-    })
-    .parse(await response.json())
-    .workflows.map((workflow) => ({
-      ...workflow,
-      inputs: {},
-    }));
-};
 
 export const fetchCloudflareDNSSettings = async (
   signal?: AbortSignal,

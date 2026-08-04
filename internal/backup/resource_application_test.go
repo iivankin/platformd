@@ -86,6 +86,47 @@ func TestResourceApplicationListsVerifiedRemoteGenerationsWithoutSQLiteCatalog(t
 	}
 }
 
+func TestResourceApplicationListsImageGenerationsWithoutBackupPolicy(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	root := t.TempDir()
+	store, target, targetGate, master := resourceJobTarget(t, root)
+	defer store.Close()
+	if _, err := target.SetControlTarget(ctx, "target", Actor{Kind: "access", ID: "user", Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	remote := newMemoryControlRemote()
+	built := resourcePublicationBuild(
+		t, master, "image", "revision-1", "generation-1", []byte("archive"), time.Unix(20, 0),
+	)
+	if err := PublishResource(ctx, remote, master, built); err != nil {
+		os.RemoveAll(built.WorkDirectory)
+		t.Fatal(err)
+	}
+	os.RemoveAll(built.WorkDirectory)
+	application, err := NewResourceApplication(ResourceApplicationConfig{
+		Store: store, Target: target, TargetGate: targetGate, Master: master,
+		RemoteFactory: func(remotes3.Config) (ControlRemote, error) { return remote, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy, err := application.Policy(ctx, "image", "revision-1")
+	if err != nil || policy.Policy.TargetID != "target" || policy.Policy.ResourceKind != "image" {
+		t.Fatalf("image policy = %+v, %v", policy, err)
+	}
+	generations, err := application.Generations(ctx, "image", "revision-1", "target")
+	if err != nil || len(generations) != 1 || generations[0].GenerationID != "generation-1" {
+		t.Fatalf("image generations = %+v, %v", generations, err)
+	}
+	if _, err := application.SetPolicy(ctx, PolicyInput{
+		ResourceKind: "image", ResourceID: "revision-1", TargetID: "target",
+		Actor: Actor{Kind: "access", ID: "user", Email: "user@example.com"},
+	}); !errors.Is(err, state.ErrInvalidBackupPolicy) {
+		t.Fatalf("set image policy error = %v", err)
+	}
+}
+
 func TestResourceApplicationPurgesEveryResourceFromEveryBackupTarget(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

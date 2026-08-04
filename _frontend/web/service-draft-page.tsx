@@ -19,14 +19,12 @@ const draftViews: { label: string; value: ServiceDraftView }[] = [
 
 export const ServiceDraftPage = ({
   draft,
-  embeddedRegistryHost,
   onChange,
   projectID,
   projectName,
   view,
 }: {
   draft: ServiceDraft;
-  embeddedRegistryHost: string;
   onChange: (draft: ServiceDraft) => void;
   projectID: string;
   projectName: string;
@@ -86,7 +84,6 @@ export const ServiceDraftPage = ({
             settings: (
               <ServiceDraftSettings
                 draft={draft}
-                embeddedRegistryHost={embeddedRegistryHost}
                 internalHostname={internalHostname}
                 onChange={onChange}
                 projectID={projectID}
@@ -95,13 +92,11 @@ export const ServiceDraftPage = ({
             variables: (
               <ServiceVariables
                 busy={false}
-                onSave={({ buildEnvironment, environment }) => {
+                onSave={({ environment }) => {
                   onChange({
                     ...draft,
                     input: {
                       ...draft.input,
-                      buildEnvironment:
-                        buildEnvironment ?? draft.input.buildEnvironment,
                       environment: environment ?? draft.input.environment,
                     },
                   });
@@ -110,7 +105,6 @@ export const ServiceDraftPage = ({
                 projectID={projectID}
                 resolvedRaw={false}
                 service={{
-                  buildEnvironment: draft.input.buildEnvironment,
                   environment: draft.input.environment,
                   id: draft.id,
                   source: draft.settings.configuration.source,

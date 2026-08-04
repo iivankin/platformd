@@ -27,7 +27,6 @@ export type CreateKind =
   | null;
 
 interface ProjectCreateOverlaysProperties {
-  embeddedRegistryHost: string;
   kind: CreateKind;
   onClose: () => void;
   onDrafted: (draft: PendingResourceCreation) => void;
@@ -39,7 +38,6 @@ interface ProjectCreateOverlaysProperties {
 }
 
 export const ProjectCreateOverlays = ({
-  embeddedRegistryHost,
   kind,
   onClose,
   onDrafted,
@@ -53,7 +51,6 @@ export const ProjectCreateOverlays = ({
     ) : null}
     {kind === "service" ? (
       <ServiceCreatePanel
-        embeddedRegistryHost={embeddedRegistryHost}
         onClose={onClose}
         onDrafted={(input) => {
           onDrafted({

@@ -48,19 +48,27 @@ const gatewayDetail = (data: ResourceFlowNode["data"]) => {
 const connectionHandleTop = (index: number, count: number): string =>
   `${((index + 1) / (count + 1)) * 100}%`;
 
+const sourceDetail = (source: ResourceFlowNode["data"]["source"]) => {
+  if (source?.type === "docker_image_upload") {
+    return source.dockerUpload.repository;
+  }
+  if (source?.type === "unconfigured") {
+    return;
+  }
+  return source?.image.reference;
+};
+
 const ResourceNodeComponent = ({
   data,
   selected,
 }: NodeProps<ResourceFlowNode>) => {
   const kind = resourceKinds[data.kind];
   const Icon = kind.icon;
-  const incomingHandleIDs = data.incomingHandleIDs ?? [];
-  const outgoingHandleIDs = data.outgoingHandleIDs ?? [];
+  const leftHandles = data.leftHandles ?? [];
+  const rightHandles = data.rightHandles ?? [];
   const detail =
     gatewayDetail(data) ??
-    (data.source?.type === "github"
-      ? data.source.github.repository
-      : data.source?.image.reference) ??
+    sourceDetail(data.source) ??
     data.imageReference ??
     data.bucketName ??
     data.internalHostname;
@@ -70,15 +78,15 @@ const ResourceNodeComponent = ({
       className={nodeClassName(selected, Boolean(data.pendingChangeCount))}
       style={{ height: data.layoutHeight }}
     >
-      {incomingHandleIDs.map((handleID, index) => (
+      {leftHandles.map((handle, index) => (
         <Handle
           className="!size-2.5 !border-background !bg-muted-foreground"
-          id={handleID}
+          id={handle.id}
           isConnectable={false}
-          key={handleID}
+          key={handle.id}
           position={Position.Left}
-          style={{ top: connectionHandleTop(index, incomingHandleIDs.length) }}
-          type="target"
+          style={{ top: connectionHandleTop(index, leftHandles.length) }}
+          type={handle.type}
         />
       ))}
       <div className="flex h-9 items-center border-b border-border px-3">
@@ -143,15 +151,15 @@ const ResourceNodeComponent = ({
           ))}
         </div>
       ) : null}
-      {outgoingHandleIDs.map((handleID, index) => (
+      {rightHandles.map((handle, index) => (
         <Handle
           className="!size-2.5 !border-background !bg-muted-foreground"
-          id={handleID}
+          id={handle.id}
           isConnectable={false}
-          key={handleID}
+          key={handle.id}
           position={Position.Right}
-          style={{ top: connectionHandleTop(index, outgoingHandleIDs.length) }}
-          type="source"
+          style={{ top: connectionHandleTop(index, rightHandles.length) }}
+          type={handle.type}
         />
       ))}
     </article>

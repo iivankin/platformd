@@ -9,7 +9,6 @@ import (
 
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/serviceconfig"
-	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -79,9 +78,15 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 		Snapshot: serviceconfig.Snapshot{
 			Source: serviceconfig.PublicImageSource("alpine"),
 			Environment: map[string]string{
-				"UPSTREAM":          "${{api.PUBLIC_ENDPOINT}}/ready",
-				"UPSTREAM_PUBLIC":   "${{api.API_URL}}",
-				"UPSTREAM_INTERNAL": "${{api.API_URL_INTERNAL}}/health",
+				"UPSTREAM":                "${{api.PUBLIC_ENDPOINT}}/ready",
+				"UPSTREAM_PUBLIC":         "${{api.API_URL}}",
+				"UPSTREAM_INTERNAL":       "${{api.API_URL_INTERNAL}}/health",
+				"UPSTREAM_PROJECT_ID":     "${{api.PLATFORMD_PROJECT_ID}}",
+				"UPSTREAM_PROJECT_NAME":   "${{api.PLATFORMD_PROJECT_NAME}}",
+				"UPSTREAM_SERVICE_ID":     "${{api.PLATFORMD_SERVICE_ID}}",
+				"UPSTREAM_SERVICE_NAME":   "${{api.PLATFORMD_SERVICE_NAME}}",
+				"UPSTREAM_PRIVATE_DOMAIN": "${{api.PLATFORMD_PRIVATE_DOMAIN}}",
+				"UPSTREAM_PUBLIC_URLS":    "${{api.PLATFORMD_PUBLIC_URLS}}",
 			},
 		},
 		AuditEventID: "worker-audit", ActorKind: "access", ActorID: "actor",
@@ -111,6 +116,12 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 		"UPSTREAM":                 "https://backend/v1/ready",
 		"UPSTREAM_PUBLIC":          "https://api.example.com",
 		"UPSTREAM_INTERNAL":        "http://api.shop.internal:8080/health",
+		"UPSTREAM_PROJECT_ID":      "project",
+		"UPSTREAM_PROJECT_NAME":    "shop",
+		"UPSTREAM_SERVICE_ID":      "api",
+		"UPSTREAM_SERVICE_NAME":    "api",
+		"UPSTREAM_PRIVATE_DOMAIN":  "api.shop.internal",
+		"UPSTREAM_PUBLIC_URLS":     "https://api.example.com",
 		"NODE_ENV":                 "production",
 		"PLATFORMD_ENVIRONMENT":    "production",
 		"PLATFORMD_PROJECT_ID":     "project",
@@ -124,133 +135,6 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 	for name, value := range want {
 		if resolved[name] != value {
 			t.Fatalf("resolved %s = %q, want %q", name, resolved[name], value)
-		}
-	}
-}
-
-func TestResourceVariableResolverExpandsBuildEnvironmentOutputs(t *testing.T) {
-	ctx := context.Background()
-	store, err := state.Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	project, err := store.CreateProject(ctx, state.CreateProject{
-		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.CreateNetworkGateway(ctx, state.CreateNetworkGateway{
-		ID: "warehouse", ProjectID: project.ID,
-		Configuration: state.NetworkGatewayConfiguration{
-			Name: "warehouse", Mode: "import", Transport: "vpc", Protocol: "tcp",
-			InterfaceName: "wg0", SourceAddress: "10.20.0.2", ListenPort: 5432,
-			RemoteHost: "10.20.0.9", RemotePort: 5432,
-		},
-		AuditEventID: "gateway-audit", ActorKind: "access", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 2,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	worker, err := store.CreateService(ctx, state.CreateService{
-		ID: "worker", ProjectID: project.ID, Name: "worker", Enabled: true,
-		Snapshot: serviceconfig.Snapshot{
-			Source: servicesource.Source{Type: servicesource.GitHubImage, GitHub: &servicesource.GitHub{
-				RepositoryID: 1, Repository: "acme/worker", Branch: "main",
-				DockerfilePath: "Dockerfile", ContextPath: ".",
-			}},
-			BuildEnvironment: map[string]string{
-				"WAREHOUSE_HOST":    "${{warehouse.HOST}}",
-				"WAREHOUSE_PORT":    "${{warehouse.PORT}}",
-				"WAREHOUSE_ADDRESS": "postgres://${{warehouse.ADDRESS}}/inventory",
-				"NODE_ENV":          "test",
-			},
-		},
-		AuditEventID: "worker-audit", ActorKind: "access", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 3,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	resolver := resourceVariableResolver{store: store}
-	resolved, err := resolver.ResolveBuild(ctx, worker, deployment.EnvironmentContext{
-		DeploymentID: "deployment",
-		Kind:         deployment.EnvironmentProduction,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{
-		"CI":                       "1",
-		"WAREHOUSE_HOST":           "warehouse.shop.internal",
-		"WAREHOUSE_PORT":           "5432",
-		"WAREHOUSE_ADDRESS":        "postgres://warehouse.shop.internal:5432/inventory",
-		"NODE_ENV":                 "test",
-		"PLATFORMD_ENVIRONMENT":    "production",
-		"PLATFORMD_PROJECT_ID":     "project",
-		"PLATFORMD_PROJECT_NAME":   "shop",
-		"PLATFORMD_SERVICE_ID":     "worker",
-		"PLATFORMD_SERVICE_NAME":   "worker",
-		"PLATFORMD_PRIVATE_DOMAIN": "worker.shop.internal",
-	}
-	for name, value := range want {
-		if resolved[name] != value {
-			t.Fatalf("resolved %s = %q, want %q", name, resolved[name], value)
-		}
-	}
-
-	previewContext := deployment.EnvironmentContext{
-		DeploymentID:      "preview-deployment",
-		Kind:              deployment.EnvironmentPreview,
-		PreviewURL:        "https://worker-pr-42.example.com",
-		PullRequestNumber: 42,
-		SourceRevision:    "abc123",
-		CommitMessage:     "Test preview variables",
-	}
-	previewBuild, err := resolver.ResolveBuild(ctx, worker, previewContext)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, value := range map[string]string{
-		"CI":                    "1",
-		"NODE_ENV":              "test",
-		"PLATFORMD_ENVIRONMENT": "preview",
-		"PLATFORMD_PREVIEW":     "true",
-	} {
-		if previewBuild[name] != value {
-			t.Fatalf("preview build %s = %q, want %q", name, previewBuild[name], value)
-		}
-	}
-	for _, name := range []string{
-		"PLATFORMD_DEPLOYMENT_ID", "PLATFORMD_PUBLIC_URLS", "PLATFORMD_PREVIEW_URL",
-		"PLATFORMD_GIT_PULL_REQUEST_NUMBER", "PLATFORMD_GIT_COMMIT_SHA",
-	} {
-		if _, exists := previewBuild[name]; exists {
-			t.Fatalf("dynamic variable %s leaked into preview build", name)
-		}
-	}
-
-	previewRuntime, err := resolver.Resolve(ctx, worker, previewContext)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for name, value := range map[string]string{
-		"NODE_ENV":                          "production",
-		"PLATFORMD_ENVIRONMENT":             "preview",
-		"PLATFORMD_PREVIEW":                 "true",
-		"PLATFORMD_DEPLOYMENT_ID":           "preview-deployment",
-		"PLATFORMD_PUBLIC_URLS":             "https://worker-pr-42.example.com",
-		"PLATFORMD_PREVIEW_URL":             "https://worker-pr-42.example.com",
-		"PLATFORMD_GIT_REPOSITORY":          "acme/worker",
-		"PLATFORMD_GIT_COMMIT_SHA":          "abc123",
-		"PLATFORMD_GIT_COMMIT_MESSAGE":      "Test preview variables",
-		"PLATFORMD_GIT_PULL_REQUEST_NUMBER": "42",
-	} {
-		if previewRuntime[name] != value {
-			t.Fatalf("preview runtime %s = %q, want %q", name, previewRuntime[name], value)
 		}
 	}
 }

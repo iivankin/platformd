@@ -76,6 +76,42 @@ func (repository *liveObjectStoreRepository) ObjectStoresByProject(ctx context.C
 	return repository.store.ObjectStoresByProject(ctx, projectID)
 }
 
+func (repository *liveObjectStoreRepository) UpdateObjectStorePortForward(
+	ctx context.Context,
+	input state.UpdateObjectStorePortForwardInput,
+) (state.ObjectStore, error) {
+	return repository.store.UpdateObjectStorePortForward(ctx, input)
+}
+
+func (repository *liveObjectStoreRepository) UpdateObjectStorePublicAccess(
+	ctx context.Context,
+	input state.UpdateObjectStorePublicAccessInput,
+) (state.ObjectStore, error) {
+	updated, err := func() (state.ObjectStore, error) {
+		repository.publicMu.Lock()
+		defer repository.publicMu.Unlock()
+		if input.PublicHostname != "" {
+			hostname, err := publichostname.Normalize(input.PublicHostname)
+			if err != nil {
+				return state.ObjectStore{}, err
+			}
+			if !repository.certificates.Covers(hostname) {
+				return state.ObjectStore{}, state.ErrCertificateCoverage
+			}
+			input.PublicHostname = hostname
+		}
+		return repository.store.UpdateObjectStorePublicAccess(ctx, input)
+	}()
+	if err != nil {
+		return state.ObjectStore{}, err
+	}
+	if err := repository.runtime.EnableObjectStore(ctx, updated); err != nil {
+		repository.runtime.recordObjectStoreFailure(updated.ProjectID, err)
+	}
+	_ = repository.reloadPublicRoutes(ctx)
+	return updated, nil
+}
+
 func (repository *liveObjectStoreRepository) S3CredentialsByObjectStore(ctx context.Context, objectStoreID string) ([]state.S3Credential, error) {
 	return repository.store.S3CredentialsByObjectStore(ctx, objectStoreID)
 }

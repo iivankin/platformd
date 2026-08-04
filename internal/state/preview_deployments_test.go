@@ -2,9 +2,11 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
@@ -35,10 +37,19 @@ func TestPreviewGCWaitsForCloudflareCleanup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Write(ctx, func(transaction *sql.Tx) error {
+		_, err := transaction.ExecContext(ctx, `INSERT INTO service_image_revisions(
+id, service_id, tag, kind, archive_path, archive_sha256, image_digest,
+oidc_metadata_json, status, created_at
+) VALUES ('revision', 'service', 'preview', 'preview', '/images/revision.oci', ?, 'sha256:digest', '{}', 'importing', 3)`, strings.Repeat("a", 64))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.BeginPreviewDeployment(ctx, BeginPreviewDeployment{
-		ID: "preview", ServiceID: "service", PullRequestNumber: 7,
-		SourceRevision: "0123456789abcdef0123456789abcdef01234567",
-		Hostname:       "preview.example.com", TargetPort: 8080,
+		ID: "preview", ServiceID: "service", Tag: "preview", ImageRevisionID: "revision",
+		Hostname: "preview.example.com", TargetPort: 8080,
+		ImageDigest: "sha256:digest", ImageReference: "oci-archive:/images/revision.oci",
 		ConfigHash: hash, SnapshotJSON: snapshotJSON, CreatedAtMillis: 3, ExpiresAtMillis: 100,
 	}); err != nil {
 		t.Fatal(err)
@@ -48,6 +59,13 @@ func TestPreviewGCWaitsForCloudflareCleanup(t *testing.T) {
 	}
 	if err := store.ActivatePreviewDeployment(ctx, "preview", "", []string{"dns-record"}, 4); err != nil {
 		t.Fatal(err)
+	}
+	revision, err := store.ImageRevision(ctx, "revision")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revision.Status != "active" || revision.PreviewID != "preview" || revision.ActivatedAtMillis != 4 {
+		t.Fatalf("activated preview revision = %+v", revision)
 	}
 	if err := store.StopPreviewDeployment(ctx, "preview", 5); err != nil {
 		t.Fatal(err)

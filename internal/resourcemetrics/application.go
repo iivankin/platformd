@@ -4,14 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/hostmetrics"
 )
 
-func NewApplication(store Store, usage UsageReader, network NetworkReader, host hostmetrics.Reader, config Config) (*Application, error) {
-	if store == nil || usage == nil || network == nil || host == nil {
+func NewApplication(store Store, usage UsageReader, network NetworkReader, disk DiskReader, host hostmetrics.Reader, config Config) (*Application, error) {
+	if store == nil || usage == nil || network == nil || disk == nil || host == nil {
 		return nil, errors.New("resource metrics dependencies are incomplete")
 	}
 	if config.LiveInterval == 0 {
@@ -30,7 +31,7 @@ func NewApplication(store Store, usage UsageReader, network NetworkReader, host 
 		return nil, errors.New("resource metrics intervals or retention are invalid")
 	}
 	return &Application{
-		store: store, usage: usage, network: network, host: host,
+		store: store, usage: usage, network: network, disk: disk, host: host,
 		liveInterval: config.LiveInterval, persistInterval: config.PersistInterval,
 		retention: config.Retention, now: config.Now,
 		resources: make(map[metricKey]Current), projects: make(map[string]Current),
@@ -78,28 +79,55 @@ func (application *Application) History(ctx context.Context, kind cgroupstats.Ki
 	if err := cgroupstats.ValidateResource(kind, resourceID); err != nil {
 		return History{}, err
 	}
-	step, err := stepForWindow(window)
+	history, step, err := application.historyWindow(window)
 	if err != nil {
 		return History{}, err
 	}
-	to := application.now().UnixMilli()
-	from := to - window.Milliseconds()
-	samples, err := application.store.ResourceMetricSamples(ctx, string(kind), resourceID, from, to)
+	samples, err := application.store.ResourceMetricSamples(ctx, string(kind), resourceID, history.From, history.To)
 	if err != nil {
 		return History{}, err
 	}
-	return History{From: from, To: to, StepMillis: step.Milliseconds(), Points: aggregateResources(samples, from, step)}, nil
+	history.Points = aggregateResources(samples, history.From, step)
+	return history, nil
 }
 
 func (application *Application) ProjectHistory(ctx context.Context, projectID string, window time.Duration) (History, error) {
 	if projectID == "" {
 		return History{}, cgroupstats.ErrInvalidResource
 	}
-	return application.aggregateHistory(ctx, "project", projectID, window)
+	history, step, err := application.historyWindow(window)
+	if err != nil {
+		return History{}, err
+	}
+	series, err := application.store.ResourceMetricSeriesByProject(ctx, projectID, history.From, history.To)
+	if err != nil {
+		return History{}, err
+	}
+	for _, item := range series {
+		history.Series = append(history.Series, HistorySeries{
+			ID: item.ResourceID, Kind: item.Kind, Name: item.Name,
+			Points: aggregateResources(item.Samples, history.From, step),
+		})
+	}
+	return history, nil
 }
 
 func (application *Application) InstallationHistory(ctx context.Context, window time.Duration) (History, error) {
-	return application.aggregateHistory(ctx, "installation", "installation", window)
+	history, step, err := application.historyWindow(window)
+	if err != nil {
+		return History{}, err
+	}
+	series, err := application.store.ProjectAggregateMetricSeries(ctx, history.From, history.To)
+	if err != nil {
+		return History{}, err
+	}
+	for _, item := range series {
+		history.Series = append(history.Series, HistorySeries{
+			ID: item.ScopeID, Kind: "project", Name: item.Name,
+			Points: aggregateScopes(item.Samples, history.From, step),
+		})
+	}
+	return history, nil
 }
 
 func (application *Application) HostHistory(ctx context.Context, window time.Duration) (History, error) {
@@ -107,17 +135,27 @@ func (application *Application) HostHistory(ctx context.Context, window time.Dur
 }
 
 func (application *Application) aggregateHistory(ctx context.Context, kind, id string, window time.Duration) (History, error) {
+	history, step, err := application.historyWindow(window)
+	if err != nil {
+		return History{}, err
+	}
+	samples, err := application.store.AggregateMetricSamples(ctx, kind, id, history.From, history.To)
+	if err != nil {
+		return History{}, err
+	}
+	history.Points = aggregateScopes(samples, history.From, step)
+	return history, nil
+}
+
+func (application *Application) historyWindow(window time.Duration) (History, time.Duration, error) {
 	step, err := stepForWindow(window)
 	if err != nil {
-		return History{}, err
+		return History{}, 0, err
 	}
 	to := application.now().UnixMilli()
-	from := to - window.Milliseconds()
-	samples, err := application.store.AggregateMetricSamples(ctx, kind, id, from, to)
-	if err != nil {
-		return History{}, err
-	}
-	return History{From: from, To: to, StepMillis: step.Milliseconds(), Points: aggregateScopes(samples, from, step)}, nil
+	return History{
+		From: to - window.Milliseconds(), To: to, StepMillis: step.Milliseconds(),
+	}, step, nil
 }
 
 func (application *Application) Run(ctx context.Context, onError func(error)) error {
@@ -156,6 +194,28 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 	if hostErr != nil {
 		onError(fmt.Errorf("read host metrics: %w", hostErr))
 	}
+	diskSnapshot, diskErr := application.disk.Resources(ctx)
+	if diskErr != nil {
+		onError(fmt.Errorf("read resource disk usage: %w", diskErr))
+	}
+	diskReady := diskErr == nil && !diskSnapshot.CheckedAt.IsZero()
+	diskByResource := make(map[metricKey]uint64, len(diskSnapshot.Resources))
+	diskByProject := make(map[string]uint64, len(projectIDs))
+	var installationDisk uint64
+	if diskReady {
+		for _, resource := range diskSnapshot.Resources {
+			projectBytes := diskByProject[resource.ProjectID]
+			if resource.Bytes > math.MaxInt64 || projectBytes > math.MaxInt64-resource.Bytes || installationDisk > math.MaxInt64-resource.Bytes {
+				diskReady = false
+				onError(errors.New("resource disk usage exceeds the metrics storage range"))
+				break
+			}
+			key := metricKey{kind: resource.Kind, id: resource.ResourceID}
+			diskByResource[key] = resource.Bytes
+			diskByProject[resource.ProjectID] = projectBytes + resource.Bytes
+			installationDisk += resource.Bytes
+		}
+	}
 
 	application.mu.RLock()
 	previous := application.previous
@@ -183,14 +243,15 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 	for _, target := range targets {
 		kind := cgroupstats.Kind(target.Kind)
 		key := metricKey{kind: target.Kind, id: target.ResourceID}
+		trafficRoutes := TrafficRoutes{HTTP: target.HTTPRoute, TCP: target.TCPRoute, UDP: target.UDPRoute}
 		activeResources[key] = struct{}{}
 		usage, readErr := application.usage.Read(kind, target.ResourceID)
 		if readErr != nil {
 			onError(fmt.Errorf("read %s %s metrics: %w", target.Kind, target.ResourceID, readErr))
 			builder := projectBuilder(projectBuilders, target.ProjectID)
 			publicService := target.Kind == string(cgroupstats.Service)
-			builder.missing(publicService)
-			installation.missing(publicService)
+			builder.missing(publicService, trafficRoutes)
+			installation.missing(publicService, trafficRoutes)
 			continue
 		}
 		usage.ObservedAtMillis = collectedAt.UnixMilli()
@@ -198,12 +259,16 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 			Sample: usage, TotalResources: 1,
 			MemoryPeakBytes: max(usage.MemoryPeakBytes, usage.MemoryBytes),
 		}
+		if diskBytes, measured := diskByResource[key]; diskReady && measured {
+			current.DiskBytes = uint64Pointer(diskBytes)
+		}
 		if usage.Running {
 			current.RunningResources = 1
 		}
 		counters := publicNetwork.Counters[target.ResourceID]
 		if target.Kind == string(cgroupstats.Service) {
 			current.Proxy = proxyMetricsFromCounters(counters)
+			current.TrafficRoutes = trafficRoutes
 			if publicNetwork.Complete {
 				current.NetworkRXBytes = counters.IngressBytes
 				current.NetworkTXBytes = counters.EgressBytes
@@ -224,16 +289,39 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 		projectBuilder(projectBuilders, target.ProjectID).add(current, publicService)
 		installation.add(current, publicService)
 	}
+	if diskReady {
+		for _, diskResource := range diskSnapshot.Resources {
+			key := metricKey{kind: diskResource.Kind, id: diskResource.ResourceID}
+			if _, exists := resources[key]; exists {
+				continue
+			}
+			current := Current{
+				Sample: cgroupstats.Sample{
+					ObservedAtMillis: collectedAt.UnixMilli(), HostCPUCores: hostSample.CPUCores,
+					HostMemoryBytes: hostSample.MemoryTotalBytes,
+				},
+				DiskBytes: uint64Pointer(diskResource.Bytes), TotalResources: 1,
+			}
+			resources[key] = current
+			activeResources[key] = struct{}{}
+		}
+	}
 
 	projects := make(map[string]Current, len(projectBuilders))
 	for projectID, builder := range projectBuilders {
 		current := builder.finish()
+		if diskReady {
+			current.DiskBytes = uint64Pointer(diskByProject[projectID])
+		}
 		if current.ObservedAtMillis == 0 {
 			current.ObservedAtMillis = collectedAt.UnixMilli()
 		}
 		projects[projectID] = current
 	}
 	installationCurrent := installation.finish()
+	if diskReady {
+		installationCurrent.DiskBytes = uint64Pointer(installationDisk)
+	}
 	if installationCurrent.ObservedAtMillis == 0 {
 		installationCurrent.ObservedAtMillis = collectedAt.UnixMilli()
 	}

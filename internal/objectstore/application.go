@@ -21,6 +21,7 @@ import (
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/publichostname"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -37,6 +38,8 @@ type Repository interface {
 	ObjectStore(context.Context, string) (state.ObjectStore, error)
 	ObjectStoreInProject(context.Context, string, string) (state.ObjectStore, error)
 	ObjectStoresByProject(context.Context, string) ([]state.ObjectStore, error)
+	UpdateObjectStorePortForward(context.Context, state.UpdateObjectStorePortForwardInput) (state.ObjectStore, error)
+	UpdateObjectStorePublicAccess(context.Context, state.UpdateObjectStorePublicAccessInput) (state.ObjectStore, error)
 	S3CredentialsByObjectStore(context.Context, string) ([]state.S3Credential, error)
 	RecordObjectStoreRestore(context.Context, state.RecordObjectStoreRestore) error
 }
@@ -202,6 +205,46 @@ func (application *Application) Store(ctx context.Context, projectID, storeID st
 	return application.repository.ObjectStoreInProject(ctx, projectID, storeID)
 }
 
+func (application *Application) UpdatePortForward(
+	ctx context.Context,
+	projectID, storeID string,
+	portForward *serviceconfig.PortForward,
+	expectedUpdatedAt int64,
+) (state.ObjectStore, error) {
+	normalized, err := serviceconfig.NormalizePortForward(portForward)
+	if err != nil {
+		return state.ObjectStore{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return application.repository.UpdateObjectStorePortForward(ctx, state.UpdateObjectStorePortForwardInput{
+		ID: storeID, ProjectID: projectID, PortForward: normalized,
+		ExpectedUpdatedMillis: expectedUpdatedAt, UpdatedAtMillis: application.now().UnixMilli(),
+	})
+}
+
+func (application *Application) UpdatePublicAccess(
+	ctx context.Context,
+	projectID, storeID string,
+	publicHostname string,
+	corsOrigins []string,
+	expectedUpdatedAt int64,
+) (state.ObjectStore, error) {
+	if publicHostname != "" {
+		hostname, err := publichostname.Normalize(publicHostname)
+		if err != nil {
+			return state.ObjectStore{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+		}
+		publicHostname = hostname
+	}
+	normalizedCORS, err := corsorigin.NormalizeAll(corsOrigins)
+	if err != nil {
+		return state.ObjectStore{}, fmt.Errorf("%w: %v", ErrInvalidInput, err)
+	}
+	return application.repository.UpdateObjectStorePublicAccess(ctx, state.UpdateObjectStorePublicAccessInput{
+		ID: storeID, ProjectID: projectID, PublicHostname: publicHostname, CORSOrigins: normalizedCORS,
+		ExpectedUpdatedMillis: expectedUpdatedAt, UpdatedAtMillis: application.now().UnixMilli(),
+	})
+}
+
 func (application *Application) Details(ctx context.Context, projectID, storeID string) (StoreDetails, error) {
 	store, err := application.repository.ObjectStoreInProject(ctx, projectID, storeID)
 	if err != nil {
@@ -228,6 +271,43 @@ func (application *Application) Details(ctx context.Context, projectID, storeID 
 
 func (application *Application) Stores(ctx context.Context, projectID string) ([]state.ObjectStore, error) {
 	return application.repository.ObjectStoresByProject(ctx, projectID)
+}
+
+func (application *Application) Stats(ctx context.Context, projectID, storeID string) (ObjectStoreStats, error) {
+	store, err := application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+	if err != nil {
+		return ObjectStoreStats{}, err
+	}
+	return application.storage.Stats(ctx, store.ID)
+}
+
+func (application *Application) LargestObjects(ctx context.Context, projectID, storeID string) (LargestObjectsSearch, error) {
+	store, err := application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+	if err != nil {
+		return LargestObjectsSearch{}, err
+	}
+	return application.storage.LargestObjects(ctx, store.ID)
+}
+
+func (application *Application) StartLargestObjects(ctx context.Context, projectID, storeID string) (LargestObjectsSearch, error) {
+	store, err := application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+	if err != nil {
+		return LargestObjectsSearch{}, err
+	}
+	release, err := application.beginRequest(store.ID)
+	if err != nil {
+		return LargestObjectsSearch{}, err
+	}
+	defer release()
+	return application.storage.StartLargestObjects(ctx, store.ID)
+}
+
+func (application *Application) CancelLargestObjects(ctx context.Context, projectID, storeID string) (LargestObjectsSearch, error) {
+	store, err := application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+	if err != nil {
+		return LargestObjectsSearch{}, err
+	}
+	return application.storage.CancelLargestObjects(ctx, store.ID)
 }
 
 func (application *Application) DeleteStoreData(ctx context.Context, storeID string) error {

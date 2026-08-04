@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/iivankin/platformd/internal/serviceconfig"
-	"github.com/iivankin/platformd/internal/servicesource"
 )
 
 func TestCreateAndReadDesiredService(t *testing.T) {
@@ -71,52 +70,6 @@ func TestCreateServiceRejectsBeforeDeployCloudflareHostnameWithoutDomain(t *test
 	})
 	if !errors.Is(err, ErrDependencyMissing) {
 		t.Fatalf("error = %v, want ErrDependencyMissing", err)
-	}
-}
-
-func TestCreateAndReadGitHubBuildEnvironment(t *testing.T) {
-	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.database.Exec(`INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1)`); err != nil {
-		t.Fatal(err)
-	}
-	created, err := store.CreateService(context.Background(), CreateService{
-		ID: "service", ProjectID: "project", Name: "web", Enabled: false,
-		Snapshot: serviceconfig.Snapshot{
-			Source: servicesource.Source{Type: servicesource.GitHubImage, GitHub: &servicesource.GitHub{
-				RepositoryID: 1, Repository: "acme/web", Branch: "main",
-				DockerfilePath: "Dockerfile", ContextPath: ".",
-			}},
-			BuildEnvironment: map[string]string{"API_TOKEN": "secret"},
-			BeforeDeploy: &serviceconfig.BeforeDeploy{
-				Command: "bun run migrate",
-				GitHubWorkflow: &serviceconfig.GitHubWorkflow{
-					Path: ".github/workflows/migrate.yml", Name: "Migrate",
-					Inputs: map[string]any{"dryRun": false, "batch": float64(20)},
-				},
-			},
-		},
-		AuditEventID: "audit", ActorKind: "access", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.Snapshot.BuildEnvironment["API_TOKEN"] != "secret" {
-		t.Fatalf("created build environment = %#v", created.Snapshot.BuildEnvironment)
-	}
-	loaded, err := store.DesiredService(context.Background(), created.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Snapshot.BuildEnvironment["API_TOKEN"] != "secret" {
-		t.Fatalf("loaded build environment = %#v", loaded.Snapshot.BuildEnvironment)
-	}
-	if loaded.Snapshot.BeforeDeploy == nil || loaded.Snapshot.BeforeDeploy.Command != "bun run migrate" || loaded.Snapshot.BeforeDeploy.GitHubWorkflow == nil || loaded.Snapshot.BeforeDeploy.GitHubWorkflow.Inputs["dryRun"] != false {
-		t.Fatalf("loaded before-deploy configuration = %#v", loaded.Snapshot.BeforeDeploy)
 	}
 }
 

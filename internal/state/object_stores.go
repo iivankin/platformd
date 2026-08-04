@@ -11,10 +11,12 @@ import (
 	"github.com/iivankin/platformd/internal/corsorigin"
 	"github.com/iivankin/platformd/internal/publichostname"
 	"github.com/iivankin/platformd/internal/resourcename"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
 var (
 	ErrObjectStoreNotFound  = errors.New("object store not found")
+	ErrObjectStoreChanged   = errors.New("object store changed")
 	ErrS3CredentialNotFound = errors.New("S3 credential not found")
 )
 
@@ -26,6 +28,7 @@ type ObjectStore struct {
 	BucketName           string
 	PublicHostname       string
 	CORSOrigins          []string
+	PortForward          *serviceconfig.PortForward
 	BackupEnabled        bool
 	BackupCron           string
 	BackupRetentionCount int
@@ -178,7 +181,7 @@ func (store *Store) ObjectStore(ctx context.Context, storeID string) (ObjectStor
 
 const objectStoreSelect = `
 SELECT o.id, o.project_id, p.name, o.name, o.bucket_name, o.public_hostname,
-       o.cors_origins_json, o.backup_enabled, o.backup_cron,
+       o.cors_origins_json, o.port_forward_json, o.backup_enabled, o.backup_cron,
        o.backup_retention_count, o.created_at, o.updated_at
 FROM object_stores o JOIN projects p ON p.id = o.project_id`
 
@@ -227,10 +230,11 @@ func scanObjectStore(scanner objectStoreScanner) (ObjectStore, error) {
 	var result ObjectStore
 	var publicHostname, backupCron sql.NullString
 	var corsJSON string
+	var portForwardJSON sql.NullString
 	var backupEnabled int
 	err := scanner.Scan(
 		&result.ID, &result.ProjectID, &result.ProjectName, &result.Name, &result.BucketName,
-		&publicHostname, &corsJSON, &backupEnabled, &backupCron,
+		&publicHostname, &corsJSON, &portForwardJSON, &backupEnabled, &backupCron,
 		&result.BackupRetentionCount, &result.CreatedAtMillis, &result.UpdatedAtMillis,
 	)
 	if err != nil {
@@ -242,7 +246,118 @@ func scanObjectStore(scanner objectStoreScanner) (ObjectStore, error) {
 	result.PublicHostname = publicHostname.String
 	result.BackupEnabled = backupEnabled == 1
 	result.BackupCron = backupCron.String
+	if portForwardJSON.Valid {
+		if err := json.Unmarshal([]byte(portForwardJSON.String), &result.PortForward); err != nil {
+			return ObjectStore{}, fmt.Errorf("decode object store port-forward settings: %w", err)
+		}
+	}
 	return result, nil
+}
+
+type UpdateObjectStorePortForwardInput struct {
+	ID                    string
+	ProjectID             string
+	PortForward           *serviceconfig.PortForward
+	ExpectedUpdatedMillis int64
+	UpdatedAtMillis       int64
+}
+
+type UpdateObjectStorePublicAccessInput struct {
+	ID                    string
+	ProjectID             string
+	PublicHostname        string
+	CORSOrigins           []string
+	ExpectedUpdatedMillis int64
+	UpdatedAtMillis       int64
+}
+
+func (store *Store) UpdateObjectStorePortForward(ctx context.Context, input UpdateObjectStorePortForwardInput) (ObjectStore, error) {
+	if input.ID == "" || input.ProjectID == "" || input.ExpectedUpdatedMillis <= 0 || input.UpdatedAtMillis <= 0 {
+		return ObjectStore{}, errors.New("update object store port-forward input is incomplete")
+	}
+	normalized, err := serviceconfig.NormalizePortForward(input.PortForward)
+	if err != nil {
+		return ObjectStore{}, err
+	}
+	portForwardJSON, err := optionalJSON(normalized)
+	if err != nil {
+		return ObjectStore{}, fmt.Errorf("encode object store port-forward settings: %w", err)
+	}
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		result, execErr := transaction.ExecContext(ctx, `
+UPDATE object_stores SET port_forward_json = ?, updated_at = ?
+WHERE id = ? AND project_id = ? AND updated_at = ?`,
+			portForwardJSON, input.UpdatedAtMillis, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+		)
+		if execErr != nil {
+			return fmt.Errorf("update object store port-forward settings: %w", execErr)
+		}
+		changed, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("count object store port-forward update: %w", rowsErr)
+		}
+		if changed != 1 {
+			return ErrObjectStoreChanged
+		}
+		return nil
+	})
+	if err != nil {
+		return ObjectStore{}, err
+	}
+	return store.ObjectStoreInProject(ctx, input.ProjectID, input.ID)
+}
+
+func (store *Store) UpdateObjectStorePublicAccess(ctx context.Context, input UpdateObjectStorePublicAccessInput) (ObjectStore, error) {
+	if input.ID == "" || input.ProjectID == "" || input.ExpectedUpdatedMillis <= 0 || input.UpdatedAtMillis <= 0 {
+		return ObjectStore{}, errors.New("update object store public access input is incomplete")
+	}
+	if input.PublicHostname != "" {
+		hostname, err := publichostname.Normalize(input.PublicHostname)
+		if err != nil {
+			return ObjectStore{}, err
+		}
+		input.PublicHostname = hostname
+	}
+	normalizedCORS, err := corsorigin.NormalizeAll(input.CORSOrigins)
+	if err != nil {
+		return ObjectStore{}, err
+	}
+	corsJSON, err := json.Marshal(normalizedCORS)
+	if err != nil {
+		return ObjectStore{}, fmt.Errorf("encode object store CORS origins: %w", err)
+	}
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		if input.PublicHostname != "" {
+			inUse, checkErr := publicHostnameRoleExistsExcept(ctx, transaction, input.PublicHostname, input.ID)
+			if checkErr != nil {
+				return checkErr
+			}
+			if inUse {
+				return ErrHostnameInUse
+			}
+		}
+		result, execErr := transaction.ExecContext(ctx, `
+UPDATE object_stores SET public_hostname = ?, cors_origins_json = ?, updated_at = ?
+WHERE id = ? AND project_id = ? AND updated_at = ?`,
+			nullableString(input.PublicHostname), string(corsJSON), input.UpdatedAtMillis,
+			input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+		)
+		if execErr != nil {
+			return fmt.Errorf("update object store public access: %w", execErr)
+		}
+		changed, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return fmt.Errorf("count object store public access update: %w", rowsErr)
+		}
+		if changed != 1 {
+			return ErrObjectStoreChanged
+		}
+		return nil
+	})
+	if err != nil {
+		return ObjectStore{}, err
+	}
+	return store.ObjectStoreInProject(ctx, input.ProjectID, input.ID)
 }
 
 func (store *Store) ObjectStoresByProject(ctx context.Context, projectID string) ([]ObjectStore, error) {

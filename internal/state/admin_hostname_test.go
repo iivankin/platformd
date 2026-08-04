@@ -30,21 +30,9 @@ func TestAdminHostnameRequiresCertificateAndUnusedPublicRole(t *testing.T) {
 	if err := store.SetAdminHostname(ctx, input); !errors.Is(err, state.ErrCertificateCoverage) {
 		t.Fatalf("uncovered admin hostname error = %v", err)
 	}
-	if _, err := store.SetRegistryHostname(ctx, state.SetRegistryHostnameInput{
-		Hostname: "api.example.com", AuditEventID: "audit-registry", ActorKind: "access",
-		ActorID: "subject-a", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	input.Hostname = "api.example.com"
-	input.AuditEventID = "audit-admin-2"
-	input.UpdatedAtMillis = 4
-	if err := store.SetAdminHostname(ctx, input); !errors.Is(err, state.ErrHostnameInUse) {
-		t.Fatalf("registry hostname conflict error = %v", err)
-	}
 	input.Hostname = "CONTROL.Example.com"
-	input.AuditEventID = "audit-admin-3"
-	input.UpdatedAtMillis = 5
+	input.AuditEventID = "audit-admin-2"
+	input.UpdatedAtMillis = 3
 	if err := store.SetAdminHostname(ctx, input); err != nil {
 		t.Fatal(err)
 	}

@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/resourcename"
 )
@@ -42,12 +41,6 @@ type ResolvedProject struct {
 	Name string
 }
 
-type ResolvedResource struct {
-	ID   string
-	Kind string
-	Name string
-}
-
 type TargetResolver interface {
 	ResolveResourceAddress(string, string, string, int) (string, error)
 }
@@ -72,6 +65,7 @@ type Config struct {
 	Repository ResourceRepository
 	Resolver   TargetResolver
 	Audit      AuditRecorder
+	OIDC       OIDCVerifier
 	Random     io.Reader
 	Now        func() time.Time
 	NewID      func() (string, error)
@@ -81,6 +75,7 @@ type Application struct {
 	repository ResourceRepository
 	resolver   TargetResolver
 	audit      AuditRecorder
+	oidc       OIDCVerifier
 	random     io.Reader
 	now        func() time.Time
 	newID      func() (string, error)
@@ -140,6 +135,7 @@ func New(config Config) (*Application, error) {
 		repository: config.Repository,
 		resolver:   config.Resolver,
 		audit:      config.Audit,
+		oidc:       config.OIDC,
 		random:     config.Random,
 		now:        config.Now,
 		newID:      config.NewID,
@@ -147,39 +143,14 @@ func New(config Config) (*Application, error) {
 	}, nil
 }
 
-func (application *Application) Create(ctx context.Context, identity automation.Identity, input CreateInput) (Grant, error) {
-	if !identity.IsAdmin() {
-		return Grant{}, automation.ErrAdminRequired
-	}
-	lifetime, err := validateCreateInput(input)
-	if err != nil {
-		return Grant{}, err
-	}
-	project, err := application.repository.ResolveProject(ctx, input.Project)
-	if err != nil {
-		return Grant{}, err
-	}
-	if project.ID == "" || project.Name != input.Project {
-		return Grant{}, errors.New("resolved port forward project is invalid")
-	}
-	if !identity.AllowsProject(project.ID) {
-		return Grant{}, automation.ErrProjectBoundary
-	}
-	resource, err := application.repository.ResolveResource(ctx, project.ID, input.Resource)
-	if err != nil {
-		return Grant{}, err
-	}
-	switch resource.Kind {
-	case "service", "postgres", "redis":
-	default:
-		return Grant{}, ErrInvalidInput
-	}
-	if resource.ID == "" || resource.Name != input.Resource {
-		return Grant{}, errors.New("resolved port forward resource is invalid")
-	}
-	if _, err := application.resolver.ResolveResourceAddress(project.ID, resource.Kind, resource.ID, input.Port); err != nil {
-		return Grant{}, fmt.Errorf("%w: %v", ErrTargetUnavailable, err)
-	}
+func (application *Application) issueTicket(
+	ctx context.Context,
+	project ResolvedProject,
+	resource ResolvedResource,
+	port int,
+	lifetime time.Duration,
+	actorTokenID string,
+) (Grant, error) {
 	ticketID, err := application.newID()
 	if err != nil {
 		return Grant{}, fmt.Errorf("create port forward ticket ID: %w", err)
@@ -192,7 +163,7 @@ func (application *Application) Create(ctx context.Context, identity automation.
 	expiresAt := createdAt.Add(lifetime)
 	state := &ticketState{
 		id: ticketID, projectID: project.ID, resourceKind: resource.Kind,
-		resourceID: resource.ID, port: input.Port, expiresAt: expiresAt,
+		resourceID: resource.ID, port: port, expiresAt: expiresAt,
 	}
 	hash := sha256.Sum256([]byte(ticket))
 	application.mu.Lock()
@@ -205,9 +176,9 @@ func (application *Application) Create(ctx context.Context, identity automation.
 	application.mu.Unlock()
 
 	audit := AuditRecord{
-		ID: ticketID, ActorTokenID: identity.TokenID, TicketID: ticketID,
+		ID: ticketID, ActorTokenID: actorTokenID, TicketID: ticketID,
 		ProjectID: project.ID, ResourceKind: resource.Kind,
-		ResourceID: resource.ID, Port: input.Port, CreatedAt: createdAt, ExpiresAt: expiresAt,
+		ResourceID: resource.ID, Port: port, CreatedAt: createdAt, ExpiresAt: expiresAt,
 	}
 	if err := application.audit.RecordPortForwardTicket(ctx, audit); err != nil {
 		application.mu.Lock()
@@ -219,7 +190,7 @@ func (application *Application) Create(ctx context.Context, identity automation.
 	}
 	return Grant{
 		ID: ticketID, Ticket: ticket, Project: project.Name, Resource: resource.Name,
-		ResourceKind: resource.Kind, Port: input.Port, ExpiresAt: expiresAt,
+		ResourceKind: resource.Kind, Port: port, ExpiresAt: expiresAt,
 	}, nil
 }
 

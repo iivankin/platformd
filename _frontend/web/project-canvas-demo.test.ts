@@ -5,6 +5,7 @@ import {
   demoCanvasPresets,
   projectCanvasForDemoPreset,
 } from "@/project-canvas-demo";
+import type { DemoCanvasPreset } from "@/project-canvas-demo";
 
 const canvas: ProjectCanvas = {
   connections: [],
@@ -32,10 +33,14 @@ test("builds valid connected resources for every complex demo preset", () => {
     dense: { connections: 14, resources: 9 },
     diamond: { connections: 4, resources: 4 },
     "fan-out": { connections: 6, resources: 7 },
+    marketplace: { connections: 9, resources: 10 },
     microservices: { connections: 13, resources: 9 },
     saas: { connections: 10, resources: 8 },
     "web-app": { connections: 7, resources: 6 },
   } as const;
+  const allowDisconnected = new Set<Exclude<DemoCanvasPreset, "default">>([
+    "marketplace",
+  ]);
 
   for (const preset of demoCanvasPresets) {
     if (preset.value === "default") {
@@ -58,7 +63,14 @@ test("builds valid connected resources for every complex demo preset", () => {
         connection.targetId,
       ])
     );
-    expect(connectedResourceIDs).toEqual(resourceIDs);
+    if (allowDisconnected.has(preset.value)) {
+      expect([...connectedResourceIDs].every((id) => resourceIDs.has(id))).toBe(
+        true
+      );
+      expect(connectedResourceIDs.size).toBeLessThan(resourceIDs.size);
+    } else {
+      expect(connectedResourceIDs).toEqual(resourceIDs);
+    }
     expect(
       result.connections.every(
         (connection) =>

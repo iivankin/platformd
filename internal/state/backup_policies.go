@@ -85,8 +85,6 @@ SELECT EXISTS(SELECT 1 FROM backup_targets WHERE id = ?)`, targetID).Scan(&exist
 
 func (store *Store) BackupPolicies(ctx context.Context) ([]BackupPolicy, error) {
 	const query = `
-SELECT 'registry', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM registry_repositories
-UNION ALL
 SELECT 'object_store', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM object_stores
 UNION ALL
 SELECT 'postgres', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM managed_postgres
@@ -152,21 +150,13 @@ func (store *Store) SetBackupPolicy(ctx context.Context, input SetBackupPolicy) 
 	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		var projectID any
 		var name string
-		if input.ResourceKind == "registry" {
-			if err := transaction.QueryRowContext(ctx, "SELECT name FROM "+table+" WHERE id = ?", input.ResourceID).Scan(&name); errors.Is(err, sql.ErrNoRows) {
-				return ErrBackupResourceNotFound
-			} else if err != nil {
-				return fmt.Errorf("load backup policy audit target: %w", err)
-			}
-		} else {
-			var scopedProjectID string
-			if err := transaction.QueryRowContext(ctx, "SELECT project_id, name FROM "+table+" WHERE id = ?", input.ResourceID).Scan(&scopedProjectID, &name); errors.Is(err, sql.ErrNoRows) {
-				return ErrBackupResourceNotFound
-			} else if err != nil {
-				return fmt.Errorf("load backup policy audit scope: %w", err)
-			}
-			projectID = scopedProjectID
+		var scopedProjectID string
+		if err := transaction.QueryRowContext(ctx, "SELECT project_id, name FROM "+table+" WHERE id = ?", input.ResourceID).Scan(&scopedProjectID, &name); errors.Is(err, sql.ErrNoRows) {
+			return ErrBackupResourceNotFound
+		} else if err != nil {
+			return fmt.Errorf("load backup policy audit scope: %w", err)
 		}
+		projectID = scopedProjectID
 		metadataFields["name"] = name
 		metadata, err := json.Marshal(metadataFields)
 		if err != nil {
@@ -236,8 +226,6 @@ func scanBackupPolicy(scanner backupPolicyScanner) (BackupPolicy, error) {
 
 func backupResourceTable(kind string) (string, error) {
 	switch kind {
-	case "registry":
-		return "registry_repositories", nil
 	case "object_store":
 		return "object_stores", nil
 	case "postgres":

@@ -76,38 +76,6 @@ func TestServiceAPICommitsCanonicalDesiredConfigAndCanvasNode(t *testing.T) {
 	}
 }
 
-func TestServiceAPIPersistsGitHubBuildEnvironment(t *testing.T) {
-	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	if _, err := store.CreateProject(context.Background(), state.CreateProject{
-		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	handler := access.ProtectAdmin(
-		"admin.example.com", projectVerifier{},
-		server.Handler(server.DefaultMeta("ready"), server.WithServices(store)),
-	)
-	request := projectRequest(http.MethodPost, "/api/v1/projects/project/services", `{
-  "name":"web",
-  "source":{"type":"github","github":{"repositoryId":1,"repository":"acme/web","branch":"main","dockerfilePath":"Dockerfile","contextPath":".","triggerPaths":[],"waitForCi":false}},
-  "buildEnvironment":{"DATABASE_URL":"${{database.DATABASE_URL}}","SENTRY_AUTH_TOKEN":"secret"},
-  "environment":{},
-  "enabled":false
-}`)
-	request.Header.Set("Origin", "https://admin.example.com")
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusCreated ||
-		!strings.Contains(response.Body.String(), `"buildEnvironment":{"DATABASE_URL":"${{database.DATABASE_URL}}","SENTRY_AUTH_TOKEN":"secret"}`) {
-		t.Fatalf("create status/body = %d/%s", response.Code, response.Body)
-	}
-}
-
 func TestServiceAPIRejectsInvalidInlineRegistryCredential(t *testing.T) {
 	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
 	if err != nil {

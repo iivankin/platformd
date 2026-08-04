@@ -11,7 +11,7 @@ import { Plus, Waypoints } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
-import { fetchProjectCanvas, fetchRegistrySettings } from "@/api";
+import { fetchProjectCanvas } from "@/api";
 import type { ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { NetworkGatewayDraftPage } from "@/network-gateway-draft-page";
@@ -126,7 +126,6 @@ const ProjectRouteOverlay = ({
   canvas,
   canvasWithDrafts,
   deploymentID,
-  embeddedRegistryHost,
   onDraftChange,
   projectID,
   resourceID,
@@ -136,7 +135,6 @@ const ProjectRouteOverlay = ({
   canvas: ProjectCanvas | null;
   canvasWithDrafts: ProjectCanvas | null;
   deploymentID: string;
-  embeddedRegistryHost: string;
   onDraftChange: (draft: PendingResourceCreation) => void;
   projectID: string;
   resourceID: string;
@@ -150,7 +148,6 @@ const ProjectRouteOverlay = ({
     return (
       <ServiceDraftPage
         draft={routedDraft}
-        embeddedRegistryHost={embeddedRegistryHost}
         onChange={onDraftChange}
         projectID={projectID}
         projectName={canvas?.project.name ?? ""}
@@ -200,8 +197,6 @@ export const ProjectCanvasPage = ({
   } = useParams();
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
-  const [metadataError, setMetadataError] = useState<string | null>(null);
-  const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [createKind, setCreateKind] = useState<CreateKind>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [applyingChanges, setApplyingChanges] = useState(false);
@@ -255,7 +250,7 @@ export const ProjectCanvasPage = ({
     [serviceChanges]
   );
   const isCanvasEmpty = displayedCanvas?.resources.length === 0;
-  const pageError = canvasError ?? metadataError;
+  const pageError = canvasError;
   const pendingServices = useMemo(
     () =>
       Object.values(serviceChanges).toSorted((left, right) =>
@@ -302,31 +297,6 @@ export const ProjectCanvasPage = ({
       }
     };
   }, [projectID, refreshVersion, setEdges, setNodes]);
-
-  useEffect(() => {
-    const controller = new AbortController();
-    const load = async () => {
-      try {
-        const registrySettings = await fetchRegistrySettings(controller.signal);
-        setEmbeddedRegistryHost(registrySettings.hostname);
-        setMetadataError(null);
-      } catch (loadError) {
-        if (
-          loadError instanceof DOMException &&
-          loadError.name === "AbortError"
-        ) {
-          return;
-        }
-        setMetadataError(
-          loadError instanceof Error
-            ? loadError.message
-            : "Unable to load project settings"
-        );
-      }
-    };
-    void load();
-    return () => controller.abort();
-  }, [projectID, refreshVersion]);
 
   useEffect(() => {
     if (!displayedCanvas) {
@@ -383,7 +353,6 @@ export const ProjectCanvasPage = ({
     setApplyingResourceDraftIDs(resourceDraftIDs);
     const operations: CanvasApplyOperation[] = [
       ...pendingServices.map((change) => ({
-        buildEnvironment: change.buildEnvironment,
         environment: change.environment,
         id: change.serviceID,
         label: change.serviceName,
@@ -392,8 +361,6 @@ export const ProjectCanvasPage = ({
         type: "service" as const,
       })),
       ...pendingResources.map((draft) => ({
-        buildEnvironment:
-          draft.kind === "service" ? draft.input.buildEnvironment : undefined,
         environment:
           draft.kind === "service" ? draft.input.environment : undefined,
         id: draft.id,
@@ -499,12 +466,13 @@ export const ProjectCanvasPage = ({
           />
         ) : null}
         <Button
-          className="absolute top-4 right-5 z-10 shadow-sm"
+          className="absolute top-4 right-4 z-10 shadow-sm max-sm:top-auto max-sm:bottom-4 sm:right-5"
           onClick={() => setCreateKind("picker")}
           size="sm"
         >
           <Plus />
-          New resource
+          <span className="hidden sm:inline">New resource</span>
+          <span className="sm:hidden">New</span>
         </Button>
         <ProjectChangeBar
           applying={applyingChanges}
@@ -515,7 +483,6 @@ export const ProjectCanvasPage = ({
           resourceDrafts={pendingResources}
         />
         <ProjectCreateOverlays
-          embeddedRegistryHost={embeddedRegistryHost}
           kind={createKind}
           onClose={() => {
             setCreateKind(null);
@@ -616,7 +583,6 @@ export const ProjectCanvasPage = ({
           canvas={canvas}
           canvasWithDrafts={canvasWithDrafts}
           deploymentID={deploymentID}
-          embeddedRegistryHost={embeddedRegistryHost}
           key={refreshVersion}
           onDraftChange={(draft) => setResourceDraft(draft.id, draft)}
           projectID={projectID}

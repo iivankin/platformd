@@ -29,10 +29,10 @@ import { useResourceRestore } from "@/use-resource-restore";
 const recoveryPollMilliseconds = 2000;
 
 const resourcePresentation: Record<RecoveryResourceKind, { label: string }> = {
+  image: { label: "Image" },
   object_store: { label: "Object Store" },
   postgres: { label: "PostgreSQL" },
   redis: { label: "Redis" },
-  registry: { label: "Registry" },
   volume: { label: "Volume" },
 };
 

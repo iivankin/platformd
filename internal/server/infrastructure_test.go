@@ -79,6 +79,7 @@ func (usageStub) Read(kind cgroupstats.Kind, resourceID string) (resourcemetrics
 		return resourcemetrics.Current{}, cgroupstats.ErrInvalidResource
 	}
 	cpu, cpuPeak, ingress, ingressPeak, egress, egressPeak := int64(42), int64(84), int64(100), int64(300), int64(50), int64(150)
+	diskBytes := uint64(128 << 20)
 	rps, rpsPeak, p95 := 12.5, 40.0, 90.0
 	return resourcemetrics.Current{
 		Sample: cgroupstats.Sample{
@@ -86,10 +87,11 @@ func (usageStub) Read(kind cgroupstats.Kind, resourceID string) (resourcemetrics
 			HostCPUCores: 8, HostMemoryBytes: 16 << 30, Running: true,
 		},
 		NetworkRXBytes: 100, NetworkTXBytes: 200, NetworkAvailable: true,
-		CPUMillicores: &cpu, CPUPeakMillicores: &cpuPeak, MemoryPeakBytes: 70 << 20,
+		CPUMillicores: &cpu, CPUPeakMillicores: &cpuPeak, MemoryPeakBytes: 70 << 20, DiskBytes: &diskBytes,
 		NetworkIngressBytesPerSecond: &ingress, NetworkIngressPeakBytesPerSecond: &ingressPeak,
 		NetworkEgressBytesPerSecond: &egress, NetworkEgressPeakBytesPerSecond: &egressPeak,
 		RunningResources: 1, TotalResources: 1,
+		TrafficRoutes: resourcemetrics.TrafficRoutes{HTTP: true},
 		Proxy: &resourcemetrics.ProxyMetrics{
 			HTTP: resourcemetrics.HTTPMetrics{RequestsPerSecond: &rps, RequestsPeakPerSecond: &rpsPeak, RequestsTotal: 100, LatencyP95Millis: &p95},
 		},
@@ -102,11 +104,12 @@ func (usageStub) History(_ context.Context, kind cgroupstats.Kind, resourceID st
 	}
 	cpu, cpuPeak, ingress, ingressPeak, egress, egressPeak := int64(12), int64(90), int64(34), int64(120), int64(56), int64(180)
 	rps, rpsPeak := 8.5, 30.0
+	diskBytes := uint64(96 << 20)
 	return resourcemetrics.History{
 		From: 1, To: 2, StepMillis: 300_000,
 		Points: []resourcemetrics.Point{{
 			ObservedAt: 2, DurationMillis: 60_000, CPUMillicores: &cpu, CPUPeakMillicores: &cpuPeak,
-			MemoryBytes: 78, MemoryPeakBytes: 100,
+			MemoryBytes: 78, MemoryPeakBytes: 100, DiskBytes: &diskBytes,
 			NetworkIngressBytesPerSecond: &ingress, NetworkIngressPeakBytesPerSecond: &ingressPeak,
 			NetworkEgressBytesPerSecond: &egress, NetworkEgressPeakBytesPerSecond: &egressPeak,
 			Running: true, Proxy: &resourcemetrics.ProxyMetrics{HTTP: resourcemetrics.HTTPMetrics{RequestsPerSecond: &rps, RequestsPeakPerSecond: &rpsPeak}},
@@ -125,7 +128,11 @@ func (usageStub) ProjectHistory(ctx context.Context, projectID string, window ti
 	if projectID != "project" {
 		return resourcemetrics.History{}, cgroupstats.ErrInvalidResource
 	}
-	return usageStub{}.History(ctx, cgroupstats.Service, "api", window)
+	history, err := usageStub{}.History(ctx, cgroupstats.Service, "api", window)
+	if err == nil {
+		history.Series = []resourcemetrics.HistorySeries{{ID: "api", Kind: "service", Name: "api", Points: history.Points}}
+	}
+	return history, err
 }
 
 func (usageStub) ReadInstallation() (resourcemetrics.Current, error) {
@@ -235,7 +242,9 @@ func TestInfrastructureReportsStatelessResourceCgroupUsage(t *testing.T) {
 	response = httptest.NewRecorder()
 	protected.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"memoryBytes":67108864`) ||
+		!strings.Contains(response.Body.String(), `"diskBytes":134217728`) ||
 		!strings.Contains(response.Body.String(), `"networkAvailable":true`) ||
+		!strings.Contains(response.Body.String(), `"trafficRoutes":{"http":true,"tcp":false,"udp":false}`) ||
 		!strings.Contains(response.Body.String(), `"running":true`) ||
 		!strings.Contains(response.Body.String(), `"cpuPeakMillicores":84`) ||
 		!strings.Contains(response.Body.String(), `"requestsPeakPerSecond":40`) {
@@ -253,6 +262,7 @@ func TestInfrastructureReportsPersistedResourceUsageHistory(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stepMillis":300000`) ||
 		!strings.Contains(response.Body.String(), `"cpuMillicores":12`) ||
 		!strings.Contains(response.Body.String(), `"networkIngressBytesPerSecond":34`) ||
+		!strings.Contains(response.Body.String(), `"diskBytes":100663296`) ||
 		!strings.Contains(response.Body.String(), `"cpuPeakMillicores":90`) ||
 		!strings.Contains(response.Body.String(), `"requestsPeakPerSecond":30`) {
 		t.Fatalf("resource usage history = %d/%s", response.Code, response.Body)
@@ -293,6 +303,10 @@ func TestInfrastructureReportsProjectAndInstallationUsageFromSameSampler(t *test
 		protected.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
 		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"cpuMillicores":12`) {
 			t.Fatalf("scope history %s = %d/%s", path, response.Code, response.Body)
+		}
+		if path == "/api/v1/infrastructure/projects/project/usage/history?range=6h" &&
+			!strings.Contains(response.Body.String(), `"series":[{"id":"api","kind":"service","name":"api"`) {
+			t.Fatalf("project history series = %d/%s", response.Code, response.Body)
 		}
 	}
 }

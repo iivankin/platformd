@@ -10,6 +10,7 @@ import (
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/publichostname"
+	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -152,7 +153,7 @@ func (repository liveDomainRepository) validatePreviewDomainAttach(ctx context.C
 	if err != nil {
 		return err
 	}
-	if service.Snapshot.Source.GitHub == nil || service.Snapshot.Source.GitHub.PullRequestPreview == nil {
+	if service.Snapshot.Source.Type != servicesource.DockerImageUpload {
 		return nil
 	}
 	domains, err := repository.store.ServiceDomains(ctx, input.ProjectID, input.ServiceID)
@@ -172,7 +173,7 @@ func (repository liveDomainRepository) validatePreviewDomainDetach(ctx context.C
 	if err != nil {
 		return err
 	}
-	if service.Snapshot.Source.GitHub != nil && service.Snapshot.Source.GitHub.PullRequestPreview != nil {
+	if service.Snapshot.Source.Type == servicesource.DockerImageUpload {
 		return state.ErrPreviewDomainCount
 	}
 	return nil

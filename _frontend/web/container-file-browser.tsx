@@ -274,8 +274,8 @@ export const ContainerFileBrowser = ({
         </p>
       ) : null}
 
-      <div className="grid h-[24rem] grid-cols-[minmax(16rem,0.9fr)_minmax(15rem,1.1fr)]">
-        <div className="min-w-0 border-r border-border">
+      <div className="grid h-[24rem] min-h-0 grid-cols-[minmax(16rem,0.9fr)_minmax(15rem,1.1fr)]">
+        <div className="min-h-0 min-w-0 overflow-hidden border-r border-border">
           {entriesByDirectory.has(currentRoot) ? (
             <ContainerFileTree
               entriesByDirectory={entriesByDirectory}

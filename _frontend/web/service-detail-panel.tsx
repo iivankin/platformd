@@ -4,7 +4,6 @@ import { useNavigate } from "react-router";
 import {
   deleteService,
   deployServiceVersion,
-  fetchRegistrySettings,
   fetchService,
   fetchServiceDeployments,
   fetchServiceDomains,
@@ -88,7 +87,6 @@ export const ServiceDetailPanel = ({
   const [domains, setDomains] = useState<ServiceDomain[]>([]);
   const [listeners, setListeners] = useState<ServiceListener[]>([]);
   const [volumes, setVolumes] = useState<Volume[]>([]);
-  const [embeddedRegistryHost, setEmbeddedRegistryHost] = useState("");
   const [nextCursor, setNextCursor] = useState<string>();
   const [awaitingDeploymentAfter, setAwaitingDeploymentAfter] =
     useState<number>();
@@ -103,7 +101,6 @@ export const ServiceDetailPanel = ({
         loadedDomains,
         loadedListeners,
         loadedVolumes,
-        registrySettings,
         loadedPreviews,
       ] = await Promise.all([
         fetchService(projectID, serviceID, signal),
@@ -111,7 +108,6 @@ export const ServiceDetailPanel = ({
         fetchServiceDomains(projectID, serviceID, signal),
         fetchServiceListeners(projectID, serviceID, signal),
         fetchVolumes(projectID, serviceID, signal),
-        fetchRegistrySettings(signal),
         fetchServicePreviews(projectID, serviceID, signal),
       ]);
       setService(loadedService);
@@ -120,7 +116,6 @@ export const ServiceDetailPanel = ({
       setDomains(loadedDomains);
       setListeners(loadedListeners);
       setVolumes(loadedVolumes);
-      setEmbeddedRegistryHost(registrySettings.hostname);
       setPreviews(loadedPreviews);
       setError(null);
     },
@@ -291,10 +286,8 @@ export const ServiceDetailPanel = ({
   };
 
   const saveVariables = ({
-    buildEnvironment,
     environment,
   }: {
-    buildEnvironment?: Record<string, string>;
     environment?: Record<string, string>;
   }) => {
     if (!service) {
@@ -302,7 +295,6 @@ export const ServiceDetailPanel = ({
     }
     onPendingSettingsChange(
       createPendingServiceSettings({
-        buildEnvironment,
         current: pendingSettings,
         domains,
         draft:
@@ -411,7 +403,6 @@ export const ServiceDetailPanel = ({
               actionError={error}
               busy={Boolean(busy)}
               domains={domains}
-              embeddedRegistryHost={embeddedRegistryHost}
               internalHostname={data.internalHostname}
               key={service.updatedAt}
               listeners={listeners}
@@ -433,8 +424,6 @@ export const ServiceDetailPanel = ({
               projectID={projectID}
               resolvedRaw={!pendingSettings}
               service={{
-                buildEnvironment:
-                  pendingSettings?.buildEnvironment ?? service.buildEnvironment,
                 environment:
                   pendingSettings?.environment ?? service.environment,
                 id: service.id,

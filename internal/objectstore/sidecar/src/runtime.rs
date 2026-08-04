@@ -13,6 +13,7 @@ use rustfs_heal::{
     heal::{clear_unclean_shutdown_markers, storage::ECStoreHealStorage},
     init_heal_manager, shutdown_ahm_services,
 };
+use rustfs_scanner::init_data_scanner;
 use rustfs_storage_api::{BucketOperations as _, BucketOptions};
 use std::{
     fs, io,
@@ -65,6 +66,7 @@ impl StoreRuntime {
 
         let _heal_shutdown = create_ahm_services_cancel_token();
         init_heal_manager(Arc::new(ECStoreHealStorage::new(store.clone())), None).await?;
+        init_data_scanner(shutdown.clone(), store.clone()).await;
         Ok(Self { store, shutdown })
     }
 

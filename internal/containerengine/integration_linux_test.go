@@ -73,6 +73,17 @@ func TestPrivateRuntimeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pull image: %v", err)
 	}
+	archivePath := filepath.Join(t.TempDir(), "alpine.oci")
+	if err := engine.runtime.LibimageRuntime().Save(ctx, []string{image.ID}, "oci-archive", archivePath, nil); err != nil {
+		t.Fatalf("save OCI archive fixture: %v", err)
+	}
+	imported, err := engine.Pull(ctx, PullRequest{Reference: "oci-archive:" + archivePath})
+	if err != nil {
+		t.Fatalf("import OCI archive: %v", err)
+	}
+	if imported.Digest != image.Digest || imported.OS != "linux" || imported.Architecture != "amd64" {
+		t.Fatalf("imported OCI image = %+v, want digest %s on linux/amd64", imported, image.Digest)
+	}
 	network, err := engine.CreateNetwork(NetworkSpec{
 		Name:      "platformd-integration",
 		Interface: "pdit0",

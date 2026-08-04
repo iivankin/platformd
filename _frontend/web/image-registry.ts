@@ -28,15 +28,3 @@ export const imageRegistryHost = (reference: string): string | undefined => {
   }
   return "docker.io";
 };
-
-export const isEmbeddedRegistryReference = (
-  reference: string,
-  embeddedRegistryHost: string
-) => {
-  const imageHost = imageRegistryHost(reference);
-  return (
-    imageHost !== undefined &&
-    canonicalHost(embeddedRegistryHost) !== "" &&
-    imageHost === canonicalHost(embeddedRegistryHost)
-  );
-};

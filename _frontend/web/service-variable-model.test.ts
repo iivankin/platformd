@@ -26,7 +26,6 @@ const service = (
   name: string,
   environment: Record<string, string>
 ): Service => ({
-  buildEnvironment: {},
   createdAt: 1,
   enabled: true,
   environment,
@@ -124,6 +123,57 @@ test("variable suggestions fill names and string expressions from project resour
   ).toBe(false);
 });
 
+test("variable suggestions include static outputs exported by services", () => {
+  const resources: ProjectCanvas["resources"] = [
+    {
+      enabled: true,
+      id: "current",
+      internalHostname: "web.shop.internal",
+      kind: "service",
+      name: "web",
+      status: "running",
+      volumes: [],
+    },
+    {
+      enabled: true,
+      id: "api",
+      internalHostname: "api.shop.internal",
+      kind: "service",
+      name: "api",
+      status: "running",
+      volumes: [],
+    },
+  ];
+  const api = service("api", "api", {});
+
+  const suggestions = variableSuggestions(
+    resources,
+    new Map([
+      ["current", service("current", "web", {})],
+      ["api", api],
+    ]),
+    new Map(),
+    "current"
+  );
+
+  expect(
+    new Set(
+      suggestions
+        .filter((suggestion) => suggestion.source === "api")
+        .map((suggestion) => suggestion.variableName)
+    )
+  ).toEqual(
+    new Set([
+      "PLATFORMD_PRIVATE_DOMAIN",
+      "PLATFORMD_PROJECT_ID",
+      "PLATFORMD_PROJECT_NAME",
+      "PLATFORMD_PUBLIC_URLS",
+      "PLATFORMD_SERVICE_ID",
+      "PLATFORMD_SERVICE_NAME",
+    ])
+  );
+});
+
 test("variable suggestions include variables exported by service drafts", () => {
   const resources: ProjectCanvas["resources"] = [
     {
@@ -146,7 +196,6 @@ test("variable suggestions include variables exported by service drafts", () => 
     },
   ];
   const input = {
-    buildEnvironment: {},
     environment: {
       CUSTOM_ENDPOINT: "/v1",
       PAGE_TOKEN: "secret",
@@ -165,20 +214,23 @@ test("variable suggestions include variables exported by service drafts", () => 
     settings: emptyPendingServiceCreationSettings(input),
   };
 
-  expect(
-    variableSuggestions(resources, new Map(), new Map(), "current", [draft])
-  ).toEqual([
-    {
-      expression: reference("api", "CUSTOM_ENDPOINT"),
-      source: "api",
-      variableName: "CUSTOM_ENDPOINT",
-    },
-    {
-      expression: reference("api", "PAGE_TOKEN"),
-      source: "api",
-      variableName: "PAGE_TOKEN",
-    },
-  ]);
+  const suggestions = variableSuggestions(
+    resources,
+    new Map(),
+    new Map(),
+    "current",
+    [draft]
+  );
+  expect(suggestions).toContainEqual({
+    expression: reference("api", "CUSTOM_ENDPOINT"),
+    source: "api",
+    variableName: "CUSTOM_ENDPOINT",
+  });
+  expect(suggestions).toContainEqual({
+    expression: reference("api", "PAGE_TOKEN"),
+    source: "api",
+    variableName: "PAGE_TOKEN",
+  });
 });
 
 test("variable suggestions include generated outputs from managed drafts", () => {

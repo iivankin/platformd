@@ -12,7 +12,7 @@ func adminTools() []Tool {
 	source := map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"type":                  map[string]any{"type": "string", "enum": []string{"github", "platformd_registry", "public_image"}},
+			"type":                  map[string]any{"type": "string", "enum": []string{"docker_image_upload", "public_image", "private_image"}},
 			"autoUpdate":            map[string]any{"type": "boolean"},
 			"minimumReleaseAgeDays": map[string]any{"type": "integer", "minimum": 1, "maximum": 36_500},
 			"image": map[string]any{
@@ -22,18 +22,14 @@ func adminTools() []Tool {
 				},
 				"required": []string{"reference"},
 			},
-			"github": map[string]any{
+			"dockerUpload": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{
-					"repositoryId":   map[string]any{"type": "integer"},
-					"repository":     map[string]any{"type": "string"},
-					"branch":         map[string]any{"type": "string"},
-					"dockerfilePath": map[string]any{"type": "string"},
-					"contextPath":    map[string]any{"type": "string"},
-					"triggerPaths":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"waitForCi":      map[string]any{"type": "boolean"},
+					"repository": map[string]any{"type": "string"},
+					"branch":     map[string]any{"type": "string"},
+					"workflows":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 				},
-				"required": []string{"repositoryId", "repository", "branch", "dockerfilePath", "contextPath", "triggerPaths", "waitForCi"},
+				"required": []string{"repository", "branch", "workflows"},
 			},
 		},
 		"required":             []string{"type"},
@@ -49,14 +45,6 @@ func adminTools() []Tool {
 					"command": map[string]any{"type": "string", "maxLength": 262_144},
 					"cloudflareHostnames": map[string]any{
 						"type": "array", "maxItems": 30, "items": map[string]string{"type": "string"},
-					},
-					"githubWorkflow": map[string]any{
-						"type": "object", "additionalProperties": false,
-						"required": []string{"path", "name"},
-						"properties": map[string]any{
-							"path": map[string]string{"type": "string"}, "name": map[string]string{"type": "string"},
-							"inputs": map[string]any{"type": "object", "maxProperties": 25},
-						},
 					},
 				},
 			},

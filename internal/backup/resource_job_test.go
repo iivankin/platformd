@@ -81,15 +81,15 @@ func TestResourceJobRecordsExporterFailureAndSkipsRecordWhenTargetBusy(t *testin
 	exporter := &resourceExporterStub{err: errors.New("snapshot failed")}
 	job, err := NewResourceJob(ResourceJobConfig{
 		Store: store, Target: target, TargetGate: targetGate, Admission: admission.New(), Growth: growthStub{},
-		Master: master, WorkRoot: filepath.Join(root, "work"), Exporters: map[string]ResourceExporter{"registry": exporter},
+		Master: master, WorkRoot: filepath.Join(root, "work"), Exporters: map[string]ResourceExporter{"image": exporter},
 		RemoteFactory: func(remotes3.Config) (ControlRemote, error) { return newMemoryControlRemote(), nil },
 		Now:           func() time.Time { return time.Unix(30, 0) },
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record, err := job.RunResource(ctx, "registry", "repository-1", "target", nil, 7)
-	if err == nil || record.Status != "failed" || record.ErrorCode != "registry_backup_failed" {
+	record, err := job.RunResource(ctx, "image", "service-1", "target", nil, 7)
+	if err == nil || record.Status != "failed" || record.ErrorCode != "image_backup_failed" {
 		t.Fatalf("failed resource backup = %+v, %v", record, err)
 	}
 	release, acquired := targetGate.TryAcquire()
@@ -97,7 +97,7 @@ func TestResourceJobRecordsExporterFailureAndSkipsRecordWhenTargetBusy(t *testin
 		t.Fatal("failed to occupy target gate")
 	}
 	defer release()
-	if _, err := job.RunResource(ctx, "registry", "repository-1", "target", nil, 7); !errors.Is(err, ErrTargetBusy) {
+	if _, err := job.RunResource(ctx, "image", "service-1", "target", nil, 7); !errors.Is(err, ErrTargetBusy) {
 		t.Fatalf("busy resource backup error = %v", err)
 	}
 	var count int

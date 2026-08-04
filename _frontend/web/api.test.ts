@@ -14,9 +14,7 @@ import {
   createManagedRedis,
   createProject,
   createManagedPostgres,
-  createRegistryRepository,
-  createRegistryCredential,
-  cleanupRegistryRepository,
+  cancelLargestObjectsSearch,
   createService,
   createVolume,
   detachServiceDomain,
@@ -24,10 +22,6 @@ import {
   deleteObject,
   deleteBackupTarget,
   deleteProject,
-  deleteRegistryImage,
-  deleteRegistryCredential,
-  deleteRegistryRepository,
-  deleteRegistryTag,
   deleteService,
   deleteVolume,
   fetchAPITokens,
@@ -54,12 +48,14 @@ import {
   fetchHostUsageHistory,
   fetchInstallationUsage,
   fetchInstallationUsageHistory,
+  fetchLargestObjectsSearch,
   fetchDiskPressure,
   forceImageGarbageCollection,
   applySelfUpdate,
   fetchManagedImageTags,
   previewDatabaseVersion,
   startDatabaseVersionChange,
+  startLargestObjectsSearch,
   fetchDatabaseVersionOperation,
   fetchManagedPostgres,
   fetchManagedPostgresExtensions,
@@ -69,20 +65,15 @@ import {
   fetchOperation,
   fetchObjects,
   fetchObjectStore,
+  fetchObjectStoreStats,
   fetchProjectCanvas,
   fetchProjectUsage,
   fetchProjectUsageHistory,
   fetchProjects,
-  fetchRegistryImage,
-  fetchRegistryImages,
-  fetchRegistryCredentials,
-  fetchRegistryRepositories,
-  fetchRegistrySettings,
   fetchRecoveryStatus,
   fetchResourceLogs,
   fetchResourceUsage,
   fetchResourceUsageHistory,
-  fetchResolvedServiceBuildEnvironment,
   fetchSelfUpdateStatus,
   deployServiceVersion,
   mutateManagedRedis,
@@ -95,13 +86,12 @@ import {
   runBackupNow,
   scanManagedRedisKeys,
   setAdminHostname,
-  setRegistryHostname,
-  setRegistryRepositoryPublicPull,
   setManagedPostgresExtension,
   setBackupPolicy,
   restoreBackupGeneration,
   retryRecovery,
   updateService,
+  updateObjectStorePublicAccess,
   uploadObject,
 } from "@/api";
 
@@ -363,7 +353,6 @@ test("creates a private image service with service-owned credentials", async () 
   const service = await createService(
     "project",
     {
-      buildEnvironment: {},
       domains: [{ hostname: "api.example.com", targetPort: 8080 }],
       environment: { APP_ENV: "production" },
       healthCheck: { path: "/healthz", port: 8080, timeoutSeconds: 60 },
@@ -389,7 +378,6 @@ test("creates a private image service with service-owned credentials", async () 
       return Promise.resolve(
         Response.json(
           {
-            buildEnvironment: {},
             createdAt: 1,
             enabled: true,
             environment: { APP_ENV: "production" },
@@ -438,7 +426,6 @@ test("creates a private image service with service-owned credentials", async () 
 
 test("reads and mutates service lifecycle with optimistic version fields", async () => {
   const service = {
-    buildEnvironment: {},
     createdAt: 1,
     enabled: true,
     environment: {},
@@ -466,7 +453,6 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     "project",
     "service",
     {
-      buildEnvironment: {},
       enabled: false,
       environment: {},
       expectedUpdatedAt: 2,
@@ -482,7 +468,6 @@ test("reads and mutates service lifecycle with optimistic version fields", async
     }
   );
   expect(JSON.parse(updateBody)).toEqual({
-    buildEnvironment: {},
     enabled: false,
     environment: {},
     expectedUpdatedAt: 2,
@@ -513,26 +498,6 @@ test("reads and mutates service lifecycle with optimistic version fields", async
       return Promise.resolve(new Response(null, { status: 204 }));
     })
   ).resolves.toBeUndefined();
-});
-
-test("loads resolved GitHub build variables", async () => {
-  let requested = "";
-  await expect(
-    fetchResolvedServiceBuildEnvironment(
-      "project/id",
-      "service/id",
-      undefined,
-      (input) => {
-        requested = input.toString();
-        return Promise.resolve(
-          Response.json({ environment: { DATABASE_URL: "postgres://db" } })
-        );
-      }
-    )
-  ).resolves.toEqual({ DATABASE_URL: "postgres://db" });
-  expect(requested).toBe(
-    "/api/v1/projects/project%2Fid/services/service%2Fid/build-variables/resolved"
-  );
 });
 
 test("manages service-owned volumes", async () => {
@@ -587,7 +552,6 @@ test("validates bounded deployment history pages", async () => {
               serviceConfigHash: "config",
               serviceId: "service",
               snapshot: {
-                buildEnvironment: {},
                 environment: {},
                 secretReferences: [],
                 source: {
@@ -625,7 +589,6 @@ test("loads one deployment by its stable route", async () => {
             serviceConfigHash: "config",
             serviceId: "service/id",
             snapshot: {
-              buildEnvironment: {},
               environment: {},
               secretReferences: [],
               source: {
@@ -858,6 +821,7 @@ test("reads stateless resource cgroup usage", async () => {
       requested = input.toString();
       return Promise.resolve(
         Response.json({
+          diskBytes: 128 * 1024 ** 2,
           hostCpuCores: 8,
           hostMemoryBytes: 16 * 1024 ** 3,
           memoryBytes: 64 * 1024 ** 2,
@@ -867,10 +831,15 @@ test("reads stateless resource cgroup usage", async () => {
           running: true,
           runningResources: 1,
           totalResources: 1,
+          trafficRoutes: { http: true, tcp: false, udp: false },
         })
       );
     })
-  ).resolves.toMatchObject({ memoryBytes: 64 * 1024 ** 2, running: true });
+  ).resolves.toMatchObject({
+    diskBytes: 128 * 1024 ** 2,
+    memoryBytes: 64 * 1024 ** 2,
+    running: true,
+  });
   expect(requested).toBe(
     "/api/v1/infrastructure/resources/service/api%2Fid/usage"
   );
@@ -888,6 +857,7 @@ test("reads persisted resource usage history", async () => {
             {
               cpuMillicores: 12,
               cpuPeakMillicores: 20,
+              diskBytes: 96 * 1024 ** 2,
               durationMillis: 60_000,
               memoryBytes: 64 * 1024 ** 2,
               memoryPeakBytes: 70 * 1024 ** 2,
@@ -897,12 +867,32 @@ test("reads persisted resource usage history", async () => {
               running: true,
             },
           ],
+          series: [
+            {
+              id: "cache/id",
+              kind: "redis",
+              name: "cache",
+              points: [
+                {
+                  diskBytes: 96 * 1024 ** 2,
+                  durationMillis: 60_000,
+                  memoryBytes: 64 * 1024 ** 2,
+                  memoryPeakBytes: 70 * 1024 ** 2,
+                  observedAt: 2,
+                  running: true,
+                },
+              ],
+            },
+          ],
           stepMillis: 3_600_000,
           to: 3,
         })
       );
     })
-  ).resolves.toMatchObject({ points: [{ cpuMillicores: 12 }] });
+  ).resolves.toMatchObject({
+    points: [{ cpuMillicores: 12, diskBytes: 96 * 1024 ** 2 }],
+    series: [{ kind: "redis", name: "cache" }],
+  });
   expect(requested).toBe(
     "/api/v1/infrastructure/resources/redis/cache%2Fid/usage/history?range=7d"
   );
@@ -915,7 +905,13 @@ test("reads project and installation usage from aggregate scope routes", async (
     requested.push(path);
     if (path.includes("/history")) {
       return Promise.resolve(
-        Response.json({ from: 1, points: [], stepMillis: 60_000, to: 2 })
+        Response.json({
+          from: 1,
+          points: [],
+          series: [],
+          stepMillis: 60_000,
+          to: 2,
+        })
       );
     }
     return Promise.resolve(
@@ -932,6 +928,7 @@ test("reads project and installation usage from aggregate scope routes", async (
         running: true,
         runningResources: 2,
         totalResources: 3,
+        trafficRoutes: { http: true, tcp: true, udp: false },
       })
     );
   };
@@ -1495,6 +1492,100 @@ test("uses the Access-only object storage browser contract", async () => {
     })
   ).resolves.toEqual(resource);
 
+  const withPublicAccess = {
+    ...resource,
+    corsOrigins: ["https://app.example.com"],
+    publicHostname: "objects.example.com",
+    updatedAt: 2,
+  };
+  await expect(
+    updateObjectStorePublicAccess(
+      resource.projectId,
+      resource.id,
+      {
+        corsOrigins: ["https://app.example.com"],
+        expectedUpdatedAt: 1,
+        publicHostname: "objects.example.com",
+      },
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/object-stores/store%2Fid/public-access"
+        );
+        expect(init?.method).toBe("PUT");
+        expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
+          corsOrigins: ["https://app.example.com"],
+          expectedUpdatedAt: 1,
+          publicHostname: "objects.example.com",
+        });
+        return Promise.resolve(Response.json(withPublicAccess));
+      }
+    )
+  ).resolves.toEqual(withPublicAccess);
+
+  const stats = {
+    objectCount: 3,
+    objectSizeHistogram: [
+      { count: 2, label: "0-1KB" },
+      { count: 1, label: "1KB-1MB" },
+    ],
+    observedAt: 1_720_000_000_000,
+    ready: true,
+    totalBytes: 4096,
+  };
+  await expect(
+    fetchObjectStoreStats(
+      resource.projectId,
+      resource.id,
+      undefined,
+      (input) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/object-stores/store%2Fid/stats"
+        );
+        return Promise.resolve(Response.json(stats));
+      }
+    )
+  ).resolves.toEqual(stats);
+
+  const largestObjects = {
+    objects: [{ key: "videos/archive.mov", size: 8192 }],
+    scannedObjects: 3,
+    status: "complete" as const,
+  };
+  const largestObjectsFetcher =
+    (method: string) => (input: string | URL | Request, init?: RequestInit) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/object-stores/store%2Fid/largest-objects"
+      );
+      expect(init?.method).toBe(method);
+      return Promise.resolve(Response.json(largestObjects));
+    };
+  await Promise.all([
+    expect(
+      fetchLargestObjectsSearch(
+        resource.projectId,
+        resource.id,
+        undefined,
+        largestObjectsFetcher("GET")
+      )
+    ).resolves.toEqual(largestObjects),
+    expect(
+      startLargestObjectsSearch(
+        resource.projectId,
+        resource.id,
+        undefined,
+        largestObjectsFetcher("POST")
+      )
+    ).resolves.toEqual(largestObjects),
+    expect(
+      cancelLargestObjectsSearch(
+        resource.projectId,
+        resource.id,
+        undefined,
+        largestObjectsFetcher("DELETE")
+      )
+    ).resolves.toEqual(largestObjects),
+  ]);
+
   const metadata = {
     contentType: "text/plain",
     createdAt: 1,
@@ -1787,147 +1878,6 @@ test("creates and revokes one-time API tokens", async () => {
     return Promise.resolve(new Response(null, { status: 204 }));
   });
   expect(revokeURL).toBe("/api/v1/tokens/token%2Fwith%20slash");
-});
-
-test("uses the Registry settings, repository, image, and deletion contracts", async () => {
-  const repository = {
-    backupEnabled: false,
-    backupRetentionCount: 7,
-    blobCount: 2,
-    createdAt: 1,
-    id: "repository/id",
-    manifestCount: 1,
-    name: "team/api",
-    publicPull: false,
-    referencedBlobBytes: 42,
-    tagCount: 1,
-    totalBlobBytes: 42,
-    updatedAt: 1,
-  };
-  const image = {
-    blobDigests: ["sha256:blob"],
-    digest: "sha256:digest",
-    manifestSize: 42,
-    mediaType: "application/vnd.oci.image.manifest.v1+json",
-    platforms: [],
-    pushedAt: 1,
-    referencedBlobBytes: 42,
-    tags: ["latest"],
-  };
-  await expect(
-    fetchRegistrySettings(undefined, () =>
-      Promise.resolve(Response.json({ hostname: "registry.example.com" }))
-    )
-  ).resolves.toEqual({ hostname: "registry.example.com" });
-
-  let hostnameBody = "";
-  await setRegistryHostname("registry.example.com", (_input, init) => {
-    hostnameBody = init?.body?.toString() ?? "";
-    return Promise.resolve(Response.json({ hostname: "registry.example.com" }));
-  });
-  expect(JSON.parse(hostnameBody)).toEqual({
-    hostname: "registry.example.com",
-  });
-
-  await expect(
-    fetchRegistryRepositories(undefined, () =>
-      Promise.resolve(Response.json({ repositories: [repository] }))
-    )
-  ).resolves.toEqual([repository]);
-  await expect(
-    createRegistryRepository(
-      {
-        credentialName: "deployer",
-        credentialPermission: "pull_push",
-        name: repository.name,
-        publicPull: false,
-      },
-      () => Promise.resolve(Response.json(repository, { status: 201 }))
-    )
-  ).resolves.toEqual(repository);
-
-  let publicPullBody = "";
-  await expect(
-    setRegistryRepositoryPublicPull(repository.id, true, (_input, init) => {
-      publicPullBody = init?.body?.toString() ?? "";
-      return Promise.resolve(
-        Response.json({ ...repository, publicPull: true })
-      );
-    })
-  ).resolves.toMatchObject({ publicPull: true });
-  expect(JSON.parse(publicPullBody)).toEqual({ publicPull: true });
-
-  await expect(
-    fetchRegistryImages(repository.id, {}, undefined, (input) => {
-      expect(input.toString()).toContain("repository%2Fid/images?limit=100");
-      return Promise.resolve(
-        Response.json({ images: [image], nextCursor: "" })
-      );
-    })
-  ).resolves.toEqual({ images: [image], nextCursor: "" });
-  await expect(
-    fetchRegistryImage(repository.id, image.digest, undefined, (input) => {
-      expect(input.toString()).toContain("sha256%3Adigest");
-      return Promise.resolve(
-        Response.json({ ...image, manifest: { schemaVersion: 2 } })
-      );
-    })
-  ).resolves.toMatchObject({ manifest: { schemaVersion: 2 } });
-
-  const deletionFetcher = ((input, init) => {
-    expect(input.toString()).not.toContain("repository/id");
-    expect(init?.method).toBe("DELETE");
-    return Promise.resolve(new Response(null, { status: 204 }));
-  }) as typeof fetch;
-  await Promise.all([
-    deleteRegistryTag(repository.id, "latest/tag", deletionFetcher),
-    deleteRegistryImage(repository.id, image.digest, deletionFetcher),
-    deleteRegistryRepository(repository.id, repository.name, deletionFetcher),
-  ]);
-
-  const credential = {
-    createdAt: 1,
-    id: "credential/id",
-    name: "reader",
-    permission: "pull" as const,
-    secretAvailable: false,
-    username: "robot",
-  };
-  await expect(
-    fetchRegistryCredentials(repository.id, undefined, () =>
-      Promise.resolve(Response.json({ credentials: [credential] }))
-    )
-  ).resolves.toEqual([credential]);
-  await expect(
-    createRegistryCredential(
-      repository.id,
-      { name: credential.name, permission: credential.permission },
-      () =>
-        Promise.resolve(
-          Response.json(
-            { ...credential, secret: "secret", secretAvailable: true },
-            { status: 201 }
-          )
-        )
-    )
-  ).resolves.toMatchObject({ secret: "secret", username: "robot" });
-  await deleteRegistryCredential(repository.id, credential.id, deletionFetcher);
-  await expect(
-    cleanupRegistryRepository(repository.id, true, (_input, init) => {
-      expect(JSON.parse(init?.body?.toString() ?? "")).toEqual({
-        dryRun: true,
-      });
-      return Promise.resolve(
-        Response.json({
-          blobCount: 1,
-          bytes: 42,
-          deleted: false,
-          previewDigests: ["sha256:orphan"],
-          previewTruncated: false,
-        })
-      );
-    })
-  ).resolves.toMatchObject({ blobCount: 1, deleted: false });
 });
 
 test("configures named probed backup targets without returning secrets", async () => {

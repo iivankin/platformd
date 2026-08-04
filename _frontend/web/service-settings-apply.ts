@@ -13,6 +13,7 @@ import {
 import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
 import { parseBeforeDeploy } from "@/service-before-deploy-model";
 import { parseServiceConfiguration } from "@/service-configuration";
+import { parsePortForward } from "@/service-port-forward";
 import { serviceListenerDraftKey } from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
 
@@ -82,7 +83,6 @@ export const applyServiceSettings = async (
   );
   const beforeDeploy = parseBeforeDeploy(
     change.draft.beforeDeploy,
-    configuration.source,
     change.draft.domains
   );
   const [currentService, currentDomains, currentListeners, currentVolumes] =
@@ -190,7 +190,6 @@ export const applyServiceSettings = async (
   return updateService(projectID, change.serviceID, {
     args: service.args,
     beforeDeploy,
-    buildEnvironment: change.buildEnvironment,
     command: service.command,
     cpuMillicores: service.cpuMillicores,
     enabled: service.enabled,
@@ -198,6 +197,7 @@ export const applyServiceSettings = async (
     expectedUpdatedAt: service.updatedAt,
     healthCheck: configuration.healthCheck,
     memoryMaxBytes: service.memoryMaxBytes,
+    portForward: parsePortForward(change.draft.portForward),
     registryCredential: configuration.registryCredential,
     secretReferences: service.secretReferences,
     source: configuration.source,

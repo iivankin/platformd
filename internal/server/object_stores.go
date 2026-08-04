@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/iivankin/platformd/internal/objectstore"
+	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -21,22 +22,23 @@ const (
 )
 
 type objectStoreResponse struct {
-	ID                   string   `json:"id"`
-	ProjectID            string   `json:"projectId"`
-	Name                 string   `json:"name"`
-	BucketName           string   `json:"bucketName"`
-	InternalHostname     string   `json:"internalHostname"`
-	PublicHostname       string   `json:"publicHostname,omitempty"`
-	CORSOrigins          []string `json:"corsOrigins"`
-	BackupEnabled        bool     `json:"backupEnabled"`
-	BackupCron           string   `json:"backupCron,omitempty"`
-	BackupRetentionCount int      `json:"backupRetentionCount"`
-	AccessKey            string   `json:"accessKey,omitempty"`
-	Secret               string   `json:"secret,omitempty"`
-	CredentialPermission string   `json:"credentialPermission,omitempty"`
-	Region               string   `json:"region"`
-	CreatedAt            int64    `json:"createdAt"`
-	UpdatedAt            int64    `json:"updatedAt"`
+	ID                   string                     `json:"id"`
+	ProjectID            string                     `json:"projectId"`
+	Name                 string                     `json:"name"`
+	BucketName           string                     `json:"bucketName"`
+	InternalHostname     string                     `json:"internalHostname"`
+	PublicHostname       string                     `json:"publicHostname,omitempty"`
+	CORSOrigins          []string                   `json:"corsOrigins"`
+	PortForward          *serviceconfig.PortForward `json:"portForward,omitempty"`
+	BackupEnabled        bool                       `json:"backupEnabled"`
+	BackupCron           string                     `json:"backupCron,omitempty"`
+	BackupRetentionCount int                        `json:"backupRetentionCount"`
+	AccessKey            string                     `json:"accessKey,omitempty"`
+	Secret               string                     `json:"secret,omitempty"`
+	CredentialPermission string                     `json:"credentialPermission,omitempty"`
+	Region               string                     `json:"region"`
+	CreatedAt            int64                      `json:"createdAt"`
+	UpdatedAt            int64                      `json:"updatedAt"`
 }
 
 type objectMetadataResponse struct {
@@ -52,12 +54,59 @@ func registerObjectStoreRoutes(mux *http.ServeMux, application *objectstore.Appl
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores", listObjectStores(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores", createObjectStore(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}", getObjectStore(application))
+	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/port-forward", updateObjectStorePortForward(application))
+	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/public-access", updateObjectStorePublicAccess(application))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/stats", getObjectStoreStats(application))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/largest-objects", manageLargestObjects(application))
+	mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores/{storeID}/largest-objects", manageLargestObjects(application))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/object-stores/{storeID}/largest-objects", manageLargestObjects(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/objects", browseObjects(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/objects", uploadObject(application))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/object-stores/{storeID}/objects", deleteBrowserObject(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/objects/preview", previewObject(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/objects/download", downloadObject(application))
 	mux.HandleFunc("HEAD /api/v1/projects/{projectID}/object-stores/{storeID}/objects/download", downloadObject(application))
+}
+
+func manageLargestObjects(application *objectstore.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		var (
+			search objectstore.LargestObjectsSearch
+			err    error
+			status = http.StatusOK
+		)
+		switch request.Method {
+		case http.MethodGet:
+			search, err = application.LargestObjects(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+		case http.MethodPost:
+			search, err = application.StartLargestObjects(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+			status = http.StatusAccepted
+		case http.MethodDelete:
+			search, err = application.CancelLargestObjects(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+		}
+		if err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		writeJSON(response, status, search)
+	}
+}
+
+func getObjectStoreStats(application *objectstore.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		stats, err := application.Stats(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+		if err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, stats)
+	}
 }
 
 func listObjectStores(application *objectstore.Application) http.HandlerFunc {
@@ -81,6 +130,105 @@ func listObjectStores(application *objectstore.Application) http.HandlerFunc {
 func getObjectStore(application *objectstore.Application) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		details, err := application.Details(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+		if err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicObjectStore(details.Store, objectstore.CreateResult{
+			Store: details.Store, Credential: details.Credential, AccessKey: details.AccessKey, Secret: details.Secret,
+		}))
+	}
+}
+
+func updateObjectStorePortForward(application *objectstore.Application) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64                     `json:"expectedUpdatedAt"`
+		PortForward       *serviceconfig.PortForward `json:"portForward"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeAPIError(response, http.StatusUnsupportedMediaType, "json_required", "Content-Type must be application/json")
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, maximumObjectStoreCreateBytes)
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var body requestBody
+		if err := decoder.Decode(&body); err != nil || requireJSONEnd(decoder) != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_json", "Request body contains invalid object store fields")
+			return
+		}
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_port_forward", "expectedUpdatedAt is required")
+			return
+		}
+		if _, err := application.UpdatePortForward(
+			request.Context(),
+			request.PathValue("projectID"),
+			request.PathValue("storeID"),
+			body.PortForward,
+			body.ExpectedUpdatedAt,
+		); err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		details, err := application.Details(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
+		if err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicObjectStore(details.Store, objectstore.CreateResult{
+			Store: details.Store, Credential: details.Credential, AccessKey: details.AccessKey, Secret: details.Secret,
+		}))
+	}
+}
+
+func updateObjectStorePublicAccess(application *objectstore.Application) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64    `json:"expectedUpdatedAt"`
+		PublicHostname    string   `json:"publicHostname"`
+		CORSOrigins       []string `json:"corsOrigins"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
+		if err != nil || mediaType != "application/json" {
+			writeAPIError(response, http.StatusUnsupportedMediaType, "json_required", "Content-Type must be application/json")
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, maximumObjectStoreCreateBytes)
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var body requestBody
+		if err := decoder.Decode(&body); err != nil || requireJSONEnd(decoder) != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_json", "Request body contains invalid object store fields")
+			return
+		}
+		if body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_object_store", "expectedUpdatedAt is required")
+			return
+		}
+		if body.CORSOrigins == nil {
+			body.CORSOrigins = []string{}
+		}
+		if _, err := application.UpdatePublicAccess(
+			request.Context(),
+			request.PathValue("projectID"),
+			request.PathValue("storeID"),
+			body.PublicHostname,
+			body.CORSOrigins,
+			body.ExpectedUpdatedAt,
+		); err != nil {
+			writeObjectStoreError(response, err)
 			return
 		}
 		details, err := application.Details(request.Context(), request.PathValue("projectID"), request.PathValue("storeID"))
@@ -305,7 +453,8 @@ func publicObjectStore(store state.ObjectStore, created objectstore.CreateResult
 	return objectStoreResponse{
 		ID: store.ID, ProjectID: store.ProjectID, Name: store.Name, BucketName: store.BucketName,
 		InternalHostname: store.Name + "." + store.ProjectName + ".internal", PublicHostname: store.PublicHostname,
-		CORSOrigins: store.CORSOrigins, BackupEnabled: store.BackupEnabled, BackupCron: store.BackupCron,
+		CORSOrigins: store.CORSOrigins, PortForward: store.PortForward,
+		BackupEnabled: store.BackupEnabled, BackupCron: store.BackupCron,
 		BackupRetentionCount: store.BackupRetentionCount, AccessKey: created.AccessKey, Secret: created.Secret,
 		CredentialPermission: created.Credential.Permission, CreatedAt: store.CreatedAtMillis, UpdatedAt: store.UpdatedAtMillis,
 		Region: objectstore.Region,
@@ -332,6 +481,8 @@ func writeObjectStoreError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
 	case errors.Is(err, state.ErrObjectStoreNotFound):
 		writeAPIError(response, http.StatusNotFound, "object_store_not_found", "Object store not found")
+	case errors.Is(err, state.ErrObjectStoreChanged):
+		writeAPIError(response, http.StatusConflict, "object_store_changed", "Object store changed")
 	case errors.Is(err, objectstore.ErrObjectNotFound):
 		writeAPIError(response, http.StatusNotFound, "object_not_found", "Object not found")
 	case errors.Is(err, state.ErrResourceNameConflict):

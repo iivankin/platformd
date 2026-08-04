@@ -32,33 +32,35 @@ export const ResourceVariables = ({
           {description}
         </p>
       </header>
-      <div className="grid grid-cols-[13rem_minmax(0,1fr)_3rem] border-b border-border px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-        <span>Name</span>
-        <span>Current value</span>
-        <span />
-      </div>
-      {variables.map((variable) => (
-        <div
-          className="grid min-h-11 grid-cols-[13rem_minmax(0,1fr)_3rem] items-center border-b border-border px-5 text-[10px]"
-          key={variable.name}
-        >
-          <code>{variable.name}</code>
-          <code
-            className="truncate pr-4 text-muted-foreground"
-            title={variable.value}
-          >
-            {variable.value}
-          </code>
-          <Button
-            aria-label={`Copy ${variable.name}`}
-            onClick={() => void copy(variable)}
-            size="icon"
-            variant="ghost"
-          >
-            {copied === variable.name ? <Check /> : <Copy />}
-          </Button>
+      <div className="min-w-0 overflow-x-auto">
+        <div className="grid min-w-[28rem] grid-cols-[13rem_minmax(0,1fr)_3rem] border-b border-border px-5 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+          <span>Name</span>
+          <span>Current value</span>
+          <span />
         </div>
-      ))}
+        {variables.map((variable) => (
+          <div
+            className="grid min-h-11 min-w-[28rem] grid-cols-[13rem_minmax(0,1fr)_3rem] items-center border-b border-border px-5 text-[10px]"
+            key={variable.name}
+          >
+            <code>{variable.name}</code>
+            <code
+              className="truncate pr-4 text-muted-foreground"
+              title={variable.value}
+            >
+              {variable.value}
+            </code>
+            <Button
+              aria-label={`Copy ${variable.name}`}
+              onClick={() => void copy(variable)}
+              size="icon"
+              variant="ghost"
+            >
+              {copied === variable.name ? <Check /> : <Copy />}
+            </Button>
+          </div>
+        ))}
+      </div>
     </SectionCard>
   );
 };

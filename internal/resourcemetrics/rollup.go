@@ -9,12 +9,11 @@ import (
 )
 
 type minuteAccumulator struct {
-	startedAt    time.Time
-	lastAt       time.Time
-	resources    map[metricKey]*metricRollup
-	projects     map[string]*metricRollup
-	installation *metricRollup
-	host         *metricRollup
+	startedAt time.Time
+	lastAt    time.Time
+	resources map[metricKey]*metricRollup
+	projects  map[string]*metricRollup
+	host      *metricRollup
 }
 
 type metricRollup struct {
@@ -24,6 +23,8 @@ type metricRollup struct {
 	memoryWeighted float64
 	memoryDuration int64
 	memoryPeak     uint64
+	diskWeighted   float64
+	diskDuration   int64
 
 	cpuUsageMicros uint64
 	cpuWeighted    float64
@@ -72,9 +73,8 @@ func newMinuteAccumulator(
 ) *minuteAccumulator {
 	accumulator := &minuteAccumulator{
 		startedAt: now, lastAt: now,
-		resources:    make(map[metricKey]*metricRollup, len(resources)),
-		projects:     make(map[string]*metricRollup, len(projects)),
-		installation: &metricRollup{},
+		resources: make(map[metricKey]*metricRollup, len(resources)),
+		projects:  make(map[string]*metricRollup, len(projects)),
 	}
 	for key, current := range resources {
 		rollup := &metricRollup{}
@@ -86,7 +86,6 @@ func newMinuteAccumulator(
 		rollup.seedCurrent(current)
 		accumulator.projects[projectID] = rollup
 	}
-	accumulator.installation.seedCurrent(installation)
 	if installation.Host != nil {
 		accumulator.host = &metricRollup{}
 		accumulator.host.seedHost(*installation.Host)
@@ -135,7 +134,6 @@ func (accumulator *minuteAccumulator) add(
 		}
 		rollup.addCurrent(current, fallback)
 	}
-	accumulator.installation.addCurrent(installation, fallback)
 	if installation.Host != nil {
 		if accumulator.host == nil {
 			accumulator.host = &metricRollup{}
@@ -154,7 +152,7 @@ func (accumulator *minuteAccumulator) ready(now time.Time, interval time.Duratio
 func (accumulator *minuteAccumulator) batch(now time.Time, retention time.Duration) state.MetricBatch {
 	batch := state.MetricBatch{
 		Resources:       make([]state.ResourceMetricSample, 0, len(accumulator.resources)),
-		Aggregates:      make([]state.AggregateMetricSample, 0, len(accumulator.projects)+2),
+		Aggregates:      make([]state.AggregateMetricSample, 0, len(accumulator.projects)+1),
 		RetentionCutoff: now.Add(-retention).UnixMilli(),
 	}
 	for key, rollup := range accumulator.resources {
@@ -172,14 +170,6 @@ func (accumulator *minuteAccumulator) batch(now time.Time, retention time.Durati
 				MetricValues: values,
 			})
 		}
-	}
-	if values, ok := accumulator.installation.values(); ok {
-		batch.Aggregates = append(batch.Aggregates, state.AggregateMetricSample{
-			ScopeKind: "installation", ScopeID: "installation", ObservedAt: now.UnixMilli(),
-			RunningResources: accumulator.installation.runningResources,
-			TotalResources:   accumulator.installation.totalResources,
-			MetricValues:     values,
-		})
 	}
 	if accumulator.host != nil {
 		if values, ok := accumulator.host.values(); ok {
@@ -212,6 +202,7 @@ func (rollup *metricRollup) addCurrent(current Current, fallback time.Duration) 
 	rollup.runningResources = current.RunningResources
 	rollup.totalResources = current.TotalResources
 	rollup.addMemory(current.MemoryBytes, current.MemoryPeakBytes, duration)
+	rollup.addDisk(current.DiskBytes, duration)
 	rollup.addCPU(current.CPUMillicores, current.CPUPeakMillicores, current.interval.cpuUsageMicros, duration)
 	rollup.addNetwork(current, duration)
 	rollup.addProxy(current.Proxy, current.interval.traffic, duration)
@@ -234,6 +225,14 @@ func (rollup *metricRollup) addMemory(value, peak uint64, duration int64) {
 	rollup.memoryWeighted += float64(value) * float64(duration)
 	rollup.memoryDuration += duration
 	rollup.memoryPeak = max(rollup.memoryPeak, value, peak)
+}
+
+func (rollup *metricRollup) addDisk(value *uint64, duration int64) {
+	if value == nil {
+		return
+	}
+	rollup.diskWeighted += float64(*value) * float64(duration)
+	rollup.diskDuration += duration
 }
 
 func (rollup *metricRollup) addCPU(value, peak *int64, exactDelta *uint64, duration int64) {
@@ -365,6 +364,10 @@ func (rollup *metricRollup) values() (state.MetricValues, bool) {
 		MemoryBytes:     weightedUint64(rollup.memoryWeighted, rollup.memoryDuration),
 		MemoryPeakBytes: rollup.memoryPeak,
 		Running:         rollup.running,
+	}
+	if rollup.diskDuration > 0 {
+		diskBytes := weightedUint64(rollup.diskWeighted, rollup.diskDuration)
+		values.DiskBytes = &diskBytes
 	}
 	if rollup.cpuSeen && rollup.cpuDuration > 0 {
 		average := weightedCPU(rollup.cpuUsageMicros, rollup.cpuWeighted, rollup.cpuDuration)

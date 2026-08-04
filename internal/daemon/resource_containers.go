@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -16,6 +17,9 @@ import (
 func (stack *runtimeStack) ResolveResourceAddress(projectID, kind, resourceID string, port int) (string, error) {
 	if projectID == "" || resourceID == "" || port < 1 || port > 65535 {
 		return "", errors.New("resource address input is invalid")
+	}
+	if kind == "object_store" {
+		return stack.resolveObjectStoreAddress(projectID, port)
 	}
 	stack.mu.Lock()
 	network, exists := stack.projectNetworks[projectID]
@@ -39,6 +43,25 @@ func (stack *runtimeStack) ResolveResourceAddress(projectID, kind, resourceID st
 		return "", errors.New("resource container project network address is invalid")
 	}
 	return net.JoinHostPort(address.String(), strconv.Itoa(port)), nil
+}
+
+func (stack *runtimeStack) resolveObjectStoreAddress(projectID string, port int) (string, error) {
+	if port != firewall.ObjectStorePort {
+		return "", fmt.Errorf("object store port forward requires port %d", firewall.ObjectStorePort)
+	}
+	stack.mu.Lock()
+	network, exists := stack.projectNetworks[projectID]
+	running := stack.objectStoreProjects[projectID]
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || !exists || !running {
+		return "", errors.New("project S3 endpoint is unavailable")
+	}
+	gateway, err := netip.ParseAddr(network.Gateway)
+	if err != nil || !gateway.IsValid() {
+		return "", errors.New("project network gateway address is invalid")
+	}
+	return net.JoinHostPort(gateway.String(), strconv.Itoa(firewall.ObjectStorePort)), nil
 }
 
 func (stack *runtimeStack) ResourceContainer(kind, resourceID string) (containerengine.Container, bool, error) {
@@ -132,5 +155,32 @@ func (repository liveContainerResourceRepository) ResolveResource(ctx context.Co
 	if err != nil {
 		return portforward.ResolvedResource{}, err
 	}
-	return portforward.ResolvedResource{ID: resource.ID, Kind: resource.Kind, Name: resource.Name}, nil
+	resolved := portforward.ResolvedResource{ID: resource.ID, Kind: resource.Kind, Name: resource.Name}
+	switch resource.Kind {
+	case "service":
+		service, err := repository.store.DesiredService(ctx, resource.ID)
+		if err != nil {
+			return portforward.ResolvedResource{}, err
+		}
+		resolved.PortForward = service.Snapshot.PortForward
+	case "postgres":
+		postgres, err := repository.store.ManagedPostgresInProject(ctx, projectID, resource.ID)
+		if err != nil {
+			return portforward.ResolvedResource{}, err
+		}
+		resolved.PortForward = postgres.PortForward
+	case "redis":
+		redis, err := repository.store.ManagedRedisInProject(ctx, projectID, resource.ID)
+		if err != nil {
+			return portforward.ResolvedResource{}, err
+		}
+		resolved.PortForward = redis.PortForward
+	case "object_store":
+		store, err := repository.store.ObjectStoreInProject(ctx, projectID, resource.ID)
+		if err != nil {
+			return portforward.ResolvedResource{}, err
+		}
+		resolved.PortForward = store.PortForward
+	}
+	return resolved, nil
 }

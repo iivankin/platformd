@@ -431,7 +431,7 @@ export const PostgresDataBrowser = ({
       : undefined;
 
   return (
-    <div className="grid min-h-[36rem] grid-cols-[13rem_minmax(28rem,1fr)] overflow-hidden border border-border">
+    <div className="grid min-h-[36rem] grid-cols-1 overflow-hidden border border-border lg:grid-cols-[13rem_minmax(0,1fr)]">
       <PostgresDataBrowserSidebar
         loading={catalog.loading}
         onRefresh={catalog.handleRefresh}

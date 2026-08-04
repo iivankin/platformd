@@ -6,7 +6,6 @@ import {
   ChevronRight,
   FolderKanban,
   LogOut,
-  PackageOpen,
   Plus,
   Settings,
 } from "lucide-react";
@@ -26,7 +25,6 @@ export interface NavigationItem {
 }
 
 export const globalNavigation: NavigationItem[] = [
-  { icon: PackageOpen, label: "Registry", path: "/registry" },
   { icon: Activity, label: "Monitoring", path: "/monitoring" },
   { icon: Settings, label: "Settings", path: "/settings" },
 ];
@@ -36,6 +34,7 @@ interface SidebarProperties {
   identity: Identity | null;
   identityError: string | null;
   identityLoading: boolean;
+  mobile?: boolean;
   onCollapsedChange: (collapsed: boolean) => void;
   projects: Project[];
   recovery?: boolean;
@@ -231,152 +230,165 @@ export const Sidebar = ({
   identity,
   identityError,
   identityLoading,
+  mobile = false,
   onCollapsedChange,
   projects,
   recovery = false,
   updateAvailable = false,
 }: SidebarProperties) => {
   const navigate = useNavigate();
+  const overlay = mobile && !collapsed;
+  const labelsCollapsed = collapsed && !overlay;
 
   return (
-    <aside
-      className={cn(
-        "relative flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200",
-        collapsed ? "w-12" : "w-52"
-      )}
-    >
-      <button
-        className="flex h-12 items-center gap-2.5 border-b border-border px-3 text-left"
-        onClick={() => navigate("/")}
-        type="button"
-      >
-        <span className="grid size-7 shrink-0 place-items-center border border-border bg-secondary text-[10px] font-bold">
-          pd
-        </span>
-        {!collapsed && (
-          <span className="min-w-0 space-y-0.5">
-            <span className="block text-xs leading-none font-semibold">
-              platformd
-            </span>
-            <span className="block text-[9px] leading-none whitespace-nowrap text-muted-foreground">
-              single-vps control plane
-            </span>
-          </span>
+    <>
+      {overlay ? <div aria-hidden="true" className="w-12 shrink-0" /> : null}
+      <aside
+        className={cn(
+          "flex shrink-0 flex-col overflow-hidden border-r border-border bg-card transition-[width] duration-200",
+          overlay
+            ? "fixed inset-y-0 left-0 z-40 w-52 shadow-2xl"
+            : cn("relative", collapsed ? "w-12" : "w-52")
         )}
-      </button>
+      >
+        <button
+          className="flex h-12 items-center gap-2.5 border-b border-border px-3 text-left"
+          onClick={() => navigate("/")}
+          type="button"
+        >
+          <span className="grid size-7 shrink-0 place-items-center border border-border bg-secondary text-[10px] font-bold">
+            pd
+          </span>
+          {!labelsCollapsed && (
+            <span className="min-w-0 space-y-0.5">
+              <span className="block text-xs leading-none font-semibold">
+                platformd
+              </span>
+              <span className="block text-[9px] leading-none whitespace-nowrap text-muted-foreground">
+                single-vps control plane
+              </span>
+            </span>
+          )}
+        </button>
 
-      <nav className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5">
-        {recovery ? (
-          <NavLink
-            className={navClassName}
-            title={collapsed ? "Recovery" : undefined}
-            to="/recovery"
-          >
-            <ArchiveRestore className="size-4 shrink-0" />
-            <span className={sidebarLabelClassName(collapsed)}>Recovery</span>
-          </NavLink>
-        ) : (
-          <>
-            <div className="flex h-8 items-center">
-              <NavLink
-                className={({ isActive }) =>
-                  cn(navClassName({ isActive }), "min-w-0 flex-1")
-                }
-                end
-                title={collapsed ? "Projects" : undefined}
-                to="/projects"
-              >
-                <FolderKanban className="size-4 shrink-0" />
-                <span className={sidebarLabelClassName(collapsed)}>
-                  Projects
-                </span>
-              </NavLink>
-              {!collapsed && (
-                <Button
-                  aria-label="Create project"
-                  className="size-7"
-                  onClick={() => navigate("/projects/new")}
-                  size="icon"
-                  title="Create project"
-                  variant="ghost"
-                >
-                  <Plus />
-                </Button>
-              )}
-            </div>
-
-            {projects.map((project) => (
-              <NavLink
-                className={({ isActive }) =>
-                  cn(navClassName({ isActive }), !collapsed && "pl-6")
-                }
-                key={project.id}
-                title={collapsed ? project.name : undefined}
-                to={`/projects/${project.id}`}
-              >
-                <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
-                  <Box className="size-3.5" />
-                </span>
-                <span
-                  className={sidebarLabelClassName(
-                    collapsed,
-                    "max-w-32 truncate"
-                  )}
-                >
-                  {project.name}
-                </span>
-              </NavLink>
-            ))}
-
-            <div className="my-1.5 border-t border-border" />
-            {globalNavigation.map((item) => {
-              const Icon = item.icon;
-              const showUpdate = item.path === "/monitoring" && updateAvailable;
-              return (
+        <nav className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto p-1.5">
+          {recovery ? (
+            <NavLink
+              className={navClassName}
+              title={labelsCollapsed ? "Recovery" : undefined}
+              to="/recovery"
+            >
+              <ArchiveRestore className="size-4 shrink-0" />
+              <span className={sidebarLabelClassName(labelsCollapsed)}>
+                Recovery
+              </span>
+            </NavLink>
+          ) : (
+            <>
+              <div className="flex h-8 items-center">
                 <NavLink
-                  aria-label={
-                    showUpdate ? `${item.label}, update available` : item.label
-                  }
                   className={({ isActive }) =>
-                    cn(navClassName({ isActive }), "relative")
+                    cn(navClassName({ isActive }), "min-w-0 flex-1")
                   }
-                  key={item.path}
-                  title={collapsed ? item.label : undefined}
-                  to={item.path}
+                  end
+                  title={labelsCollapsed ? "Projects" : undefined}
+                  to="/projects"
+                >
+                  <FolderKanban className="size-4 shrink-0" />
+                  <span className={sidebarLabelClassName(labelsCollapsed)}>
+                    Projects
+                  </span>
+                </NavLink>
+                {!labelsCollapsed && (
+                  <Button
+                    aria-label="Create project"
+                    className="size-7"
+                    onClick={() => navigate("/projects/new")}
+                    size="icon"
+                    title="Create project"
+                    variant="ghost"
+                  >
+                    <Plus />
+                  </Button>
+                )}
+              </div>
+
+              {projects.map((project) => (
+                <NavLink
+                  className={({ isActive }) =>
+                    cn(navClassName({ isActive }), !labelsCollapsed && "pl-6")
+                  }
+                  key={project.id}
+                  title={labelsCollapsed ? project.name : undefined}
+                  to={`/projects/${project.id}`}
                 >
                   <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
-                    <Icon className="size-4" />
+                    <Box className="size-3.5" />
                   </span>
-                  <span className={sidebarLabelClassName(collapsed)}>
-                    {item.label}
+                  <span
+                    className={sidebarLabelClassName(
+                      labelsCollapsed,
+                      "max-w-32 truncate"
+                    )}
+                  >
+                    {project.name}
                   </span>
-                  {showUpdate ? (
-                    <span
-                      aria-hidden="true"
-                      className={cn(
-                        "shrink-0 bg-cyan-500",
-                        collapsed
-                          ? "absolute top-1.5 right-1.5 size-1.5"
-                          : "ml-auto px-1.5 py-0.5 text-[7px] tracking-[0.08em] text-black uppercase"
-                      )}
-                    >
-                      {collapsed ? null : "Update"}
-                    </span>
-                  ) : null}
                 </NavLink>
-              );
-            })}
-          </>
-        )}
-      </nav>
+              ))}
 
-      <SidebarFooter
-        collapsed={collapsed}
-        identity={identity}
-        identityError={identityError}
-        identityLoading={identityLoading}
-        onCollapsedChange={onCollapsedChange}
-      />
-    </aside>
+              <div className="my-1.5 border-t border-border" />
+              {globalNavigation.map((item) => {
+                const Icon = item.icon;
+                const showUpdate =
+                  item.path === "/monitoring" && updateAvailable;
+                return (
+                  <NavLink
+                    aria-label={
+                      showUpdate
+                        ? `${item.label}, update available`
+                        : item.label
+                    }
+                    className={({ isActive }) =>
+                      cn(navClassName({ isActive }), "relative")
+                    }
+                    key={item.path}
+                    title={labelsCollapsed ? item.label : undefined}
+                    to={item.path}
+                  >
+                    <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
+                      <Icon className="size-4" />
+                    </span>
+                    <span className={sidebarLabelClassName(labelsCollapsed)}>
+                      {item.label}
+                    </span>
+                    {showUpdate ? (
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "shrink-0 bg-cyan-500",
+                          labelsCollapsed
+                            ? "absolute top-1.5 right-1.5 size-1.5"
+                            : "ml-auto px-1.5 py-0.5 text-[7px] tracking-[0.08em] text-black uppercase"
+                        )}
+                      >
+                        {labelsCollapsed ? null : "Update"}
+                      </span>
+                    ) : null}
+                  </NavLink>
+                );
+              })}
+            </>
+          )}
+        </nav>
+
+        <SidebarFooter
+          collapsed={labelsCollapsed}
+          identity={identity}
+          identityError={identityError}
+          identityLoading={identityLoading}
+          onCollapsedChange={onCollapsedChange}
+        />
+      </aside>
+    </>
   );
 };

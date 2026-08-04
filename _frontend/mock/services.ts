@@ -12,7 +12,6 @@ import { stringRecord } from "./project-helpers";
 import {
   mockDomainOutputs,
   referencedResourceNames,
-  resolveMockBuildEnvironment,
   resolveMockEnvironment,
 } from "./service-variables";
 import type { MockState } from "./state";
@@ -55,6 +54,16 @@ const updateServiceBeforeDeploy = (
   service.beforeDeploy =
     typeof input.beforeDeploy === "object" && input.beforeDeploy !== null
       ? (input.beforeDeploy as Service["beforeDeploy"])
+      : undefined;
+};
+
+const updateServicePortForward = (
+  service: Service,
+  input: Record<string, unknown>
+) => {
+  service.portForward =
+    typeof input.portForward === "object" && input.portForward !== null
+      ? (input.portForward as Service["portForward"])
       : undefined;
 };
 
@@ -103,11 +112,11 @@ const handleService = async (
   const input = await readObject(request);
   service.enabled = booleanField(input, "enabled", service.enabled);
   updateServiceBeforeDeploy(service, input);
+  updateServicePortForward(service, input);
   if (typeof input.source === "object" && input.source !== null) {
     service.source = input.source as Service["source"];
   }
   updateServiceRegistryCredential(service, input);
-  service.buildEnvironment = stringRecord(input.buildEnvironment);
   service.environment = stringRecord(input.environment);
   service.healthCheck =
     typeof input.healthCheck === "object" && input.healthCheck !== null
@@ -138,21 +147,18 @@ const handleService = async (
       );
     }
     const references = new Map<string, string[]>();
-    for (const [environment, prefix] of [
-      [service.environment, ""],
-      [service.buildEnvironment, "build:"],
-    ] as const) {
-      for (const [environmentName, value] of Object.entries(environment)) {
-        for (const resourceName of referencedResourceNames(value)) {
-          const resource = canvas.resources.find(
-            (candidate) => candidate.name === resourceName
-          );
-          if (resource) {
-            references.set(resource.id, [
-              ...(references.get(resource.id) ?? []),
-              prefix + environmentName,
-            ]);
-          }
+    for (const [environmentName, value] of Object.entries(
+      service.environment
+    )) {
+      for (const resourceName of referencedResourceNames(value)) {
+        const resource = canvas.resources.find(
+          (candidate) => candidate.name === resourceName
+        );
+        if (resource) {
+          references.set(resource.id, [
+            ...(references.get(resource.id) ?? []),
+            environmentName,
+          ]);
         }
       }
     }
@@ -260,8 +266,7 @@ const handleServiceDeploymentAction = (
 
 const resolvedVariablesResponse = (
   state: MockState,
-  serviceID: string,
-  build = false
+  serviceID: string
 ): Response => {
   const service = state.services[serviceID];
   if (!service) {
@@ -269,9 +274,7 @@ const resolvedVariablesResponse = (
   }
   try {
     return json({
-      environment: build
-        ? resolveMockBuildEnvironment(state, serviceID)
-        : resolveMockEnvironment(state, serviceID),
+      environment: resolveMockEnvironment(state, serviceID),
     });
   } catch (error) {
     return mockError(
@@ -318,9 +321,6 @@ const handleServiceReadModels = (
   }
   if (resource === "variables" && detail === "resolved") {
     return resolvedVariablesResponse(state, serviceID);
-  }
-  if (resource === "build-variables" && detail === "resolved") {
-    return resolvedVariablesResponse(state, serviceID, true);
   }
   if (resource === "logs" && !detail) {
     const window = state.logs[serviceID] ?? { records: [], truncated: false };
