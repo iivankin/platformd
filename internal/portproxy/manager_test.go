@@ -101,11 +101,13 @@ func TestManagerForwardsUDPAndRejectsUnavailableOrReservedTCPPorts(t *testing.T)
 	}
 	counters := traffic.Snapshot()["service"]
 	deadline := time.Now().Add(time.Second)
-	for (counters.EgressBytes != uint64(len("datagram")) || counters.UDPEgressPackets != 1) && time.Now().Before(deadline) {
+	want := uint64(len("datagram"))
+	for (counters.IngressBytes != want || counters.EgressBytes != want ||
+		counters.UDPIngressPackets != 1 || counters.UDPEgressPackets != 1) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 		counters = traffic.Snapshot()["service"]
 	}
-	if counters.IngressBytes != uint64(len("datagram")) || counters.EgressBytes != uint64(len("datagram")) {
+	if counters.IngressBytes != want || counters.EgressBytes != want {
 		t.Fatalf("public UDP counters = %+v", counters)
 	}
 	if counters.UDPIngressPackets != 1 || counters.UDPEgressPackets != 1 {
