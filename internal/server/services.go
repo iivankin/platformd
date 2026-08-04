@@ -178,7 +178,7 @@ func createService(config handlerConfig) http.HandlerFunc {
 			enabled = *body.Enabled
 		}
 		setup := initialServiceSetup{Domains: body.Domains, Listeners: body.Listeners, Volumes: body.Volumes}
-		if snapshot.Source.Type == servicesource.DockerImageUpload && len(setup.Domains) != 1 {
+		if servicesource.ImageUploadPreviewsEnabled(snapshot.Source) && len(setup.Domains) != 1 {
 			writeAPIError(response, http.StatusConflict, "preview_domain_count", state.ErrPreviewDomainCount.Error())
 			return
 		}

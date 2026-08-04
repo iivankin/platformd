@@ -36,13 +36,22 @@ func TestNormalizeImageSourceKinds(t *testing.T) {
 func TestNormalizeDockerImageUpload(t *testing.T) {
 	normalized, err := Normalize(Source{Type: DockerImageUpload, DockerUpload: &DockerUpload{
 		Repository: " acme/backend ", Branch: "main", Workflows: []string{"deploy.yml", "deploy.yml", "release.yaml"},
+		Previews: true,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if normalized.DockerUpload == nil || normalized.DockerUpload.Repository != "acme/backend" ||
-		len(normalized.DockerUpload.Workflows) != 2 {
+		len(normalized.DockerUpload.Workflows) != 2 || !normalized.DockerUpload.Previews {
 		t.Fatalf("normalized upload source = %+v", normalized)
+	}
+	if ImageUploadPreviewsEnabled(normalized) != true {
+		t.Fatal("expected image upload previews to be enabled")
+	}
+	if ImageUploadPreviewsEnabled(Source{Type: DockerImageUpload, DockerUpload: &DockerUpload{
+		Repository: "acme/backend", Branch: "main",
+	}}) {
+		t.Fatal("expected image upload previews to default off")
 	}
 	for _, invalid := range []Source{
 		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "backend", Branch: "main"}},

@@ -253,3 +253,36 @@ func migrateSchemaVersionFive(ctx context.Context, database *sql.DB) error {
 	}
 	return nil
 }
+
+func migrateSchemaVersionSix(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 6 to 7: %w", err)
+	}
+	var exists int
+	if err := transaction.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'projects'`,
+	).Scan(&exists); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 6 to 7: %w", err), transaction.Rollback())
+	}
+	if exists == 1 {
+		for _, statement := range []string{
+			`ALTER TABLE projects ADD COLUMN icon_bytes BLOB CHECK (icon_bytes IS NULL OR length(icon_bytes) BETWEEN 1 AND 131072)`,
+			`ALTER TABLE projects ADD COLUMN icon_content_type TEXT CHECK (
+  icon_content_type IS NULL
+  OR icon_content_type IN ('image/png', 'image/jpeg', 'image/webp')
+)`,
+		} {
+			if _, err := transaction.ExecContext(ctx, statement); err != nil {
+				return errors.Join(fmt.Errorf("migrate SQLite schema 6 to 7: %w", err), transaction.Rollback())
+			}
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, `PRAGMA user_version = 7`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 6 to 7: %w", err), transaction.Rollback())
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 6 to 7: %w", err)
+	}
+	return nil
+}

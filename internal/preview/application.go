@@ -358,7 +358,7 @@ func (application *Application) desiredPreview(ctx context.Context, serviceID st
 	if err != nil {
 		return state.ServiceDesired{}, nil, err
 	}
-	if !desired.Enabled || desired.Snapshot.Source.Type != servicesource.DockerImageUpload {
+	if !desired.Enabled || !servicesource.ImageUploadPreviewsEnabled(desired.Snapshot.Source) {
 		return state.ServiceDesired{}, nil, errors.New("service is not configured for uploaded image previews")
 	}
 	domains, err := application.store.ServiceDomains(ctx, desired.ProjectID, serviceID)

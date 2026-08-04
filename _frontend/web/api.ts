@@ -70,6 +70,7 @@ const identityAvatarURL = (
 
 const projectSchema = z.object({
   createdAt: z.number().int().nonnegative(),
+  hasIcon: z.boolean(),
   id: z.string().min(1),
   name: z.string().min(1),
   networkGatewayCount: z.number().int().nonnegative(),
@@ -222,6 +223,7 @@ const imageSourceSchema = z.discriminatedUnion("type", [
 const dockerImageUploadSourceSchema = z.object({
   dockerUpload: z.object({
     branch: z.string().min(1),
+    previews: z.boolean(),
     repository: z.string().min(1),
     workflows: z.array(z.string().min(1)),
   }),
@@ -1335,6 +1337,51 @@ export const fetchProjects = async (
     );
   }
   return projectsSchema.parse(await response.json());
+};
+
+export const projectIconURL = (project: Pick<Project, "id" | "updatedAt">) =>
+  `/api/v1/projects/${encodeURIComponent(project.id)}/icon?v=${project.updatedAt}`;
+
+export const uploadProjectIcon = async (
+  projectID: string,
+  file: Blob,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Project> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/icon`,
+    {
+      body: file,
+      headers: { Accept: "application/json" },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project icon upload failed with ${response.status}`
+    );
+  }
+  return projectSchema.parse(await response.json());
+};
+
+export const clearProjectIcon = async (
+  projectID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Project> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/icon`,
+    {
+      headers: { Accept: "application/json" },
+      method: "DELETE",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `project icon clear failed with ${response.status}`
+    );
+  }
+  return projectSchema.parse(await response.json());
 };
 
 export const createProject = async (

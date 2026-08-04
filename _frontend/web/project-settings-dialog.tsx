@@ -1,6 +1,7 @@
 import { Dialog } from "@base-ui/react/dialog";
 import {
   Activity,
+  Box,
   Check,
   Copy,
   FolderKanban,
@@ -9,9 +10,10 @@ import {
   Webhook,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import type { Project } from "@/api";
+import { clearProjectIcon, projectIconURL, uploadProjectIcon } from "@/api";
 import { AuditEventsView } from "@/audit-events-view";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -46,14 +48,19 @@ const projectDetailRowClassName =
 
 const ProjectGeneralSettings = ({
   onDeleted,
+  onUpdated,
   project,
 }: {
   onDeleted: (projectID: string) => void;
+  onUpdated: (project: Project) => void;
   project: Project;
 }) => {
   const [copyStatus, setCopyStatus] = useState<"copied" | "error" | "idle">(
     "idle"
   );
+  const [iconError, setIconError] = useState<string | undefined>();
+  const [iconBusy, setIconBusy] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const resources = projectResourceCount(project);
 
   const copyProjectID = async () => {
@@ -62,6 +69,43 @@ const ProjectGeneralSettings = ({
       setCopyStatus("copied");
     } catch {
       setCopyStatus("error");
+    }
+  };
+
+  const replaceIcon = async (file: File | undefined) => {
+    if (!file || iconBusy) {
+      return;
+    }
+    setIconBusy(true);
+    setIconError(undefined);
+    try {
+      onUpdated(await uploadProjectIcon(project.id, file));
+    } catch (error) {
+      setIconError(
+        error instanceof Error ? error.message : "Unable to upload project icon"
+      );
+    } finally {
+      setIconBusy(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    }
+  };
+
+  const removeIcon = async () => {
+    if (iconBusy || !project.hasIcon) {
+      return;
+    }
+    setIconBusy(true);
+    setIconError(undefined);
+    try {
+      onUpdated(await clearProjectIcon(project.id));
+    } catch (error) {
+      setIconError(
+        error instanceof Error ? error.message : "Unable to remove project icon"
+      );
+    } finally {
+      setIconBusy(false);
     }
   };
 
@@ -75,6 +119,54 @@ const ProjectGeneralSettings = ({
       </header>
 
       <dl>
+        <div className={projectDetailRowClassName}>
+          <dt className="text-muted-foreground">Icon</dt>
+          <dd className="flex min-w-0 items-center gap-3">
+            <span className="grid size-8 place-items-center border border-border bg-muted/40">
+              {project.hasIcon ? (
+                <img
+                  alt=""
+                  className="size-8 object-cover"
+                  src={projectIconURL(project)}
+                />
+              ) : (
+                <Box className="size-3.5 text-muted-foreground" />
+              )}
+            </span>
+            <span className="truncate text-muted-foreground">
+              64×64 recommended · PNG, JPEG, or WebP · max 128 KiB
+            </span>
+          </dd>
+          <div className="flex items-center gap-2">
+            <input
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={(event) =>
+                void replaceIcon(event.target.files?.[0] ?? undefined)
+              }
+              ref={fileInputRef}
+              type="file"
+            />
+            <Button
+              disabled={iconBusy}
+              onClick={() => fileInputRef.current?.click()}
+              size="sm"
+              variant="outline"
+            >
+              {project.hasIcon ? "Replace" : "Upload"}
+            </Button>
+            {project.hasIcon ? (
+              <Button
+                disabled={iconBusy}
+                onClick={() => void removeIcon()}
+                size="sm"
+                variant="ghost"
+              >
+                Remove
+              </Button>
+            ) : null}
+          </div>
+        </div>
         <div className={projectDetailRowClassName}>
           <dt className="text-muted-foreground">Name</dt>
           <dd className="truncate font-medium">{project.name}</dd>
@@ -112,6 +204,12 @@ const ProjectGeneralSettings = ({
         </div>
       </dl>
 
+      {iconError ? (
+        <p className="border-b border-destructive/30 bg-destructive/5 px-6 py-3 text-[10px] text-destructive">
+          {iconError}
+        </p>
+      ) : null}
+
       {copyStatus === "error" ? (
         <p className="border-b border-destructive/30 bg-destructive/5 px-6 py-3 text-[10px] text-destructive">
           Unable to access the clipboard. Copy the project ID manually.
@@ -142,15 +240,23 @@ const ProjectGeneralSettings = ({
 
 export const ProjectSettingsDialog = ({
   onDeleted,
+  onUpdated,
   project,
 }: {
   onDeleted: (projectID: string) => void;
+  onUpdated: (project: Project) => void;
   project: Project;
 }) => {
   const [section, setSection] = useState<ProjectSettingsSection>("general");
   const content = (() => {
     if (section === "general") {
-      return <ProjectGeneralSettings onDeleted={onDeleted} project={project} />;
+      return (
+        <ProjectGeneralSettings
+          onDeleted={onDeleted}
+          onUpdated={onUpdated}
+          project={project}
+        />
+      );
     }
     if (section === "usage") {
       return <ProjectUsage projectID={project.id} />;

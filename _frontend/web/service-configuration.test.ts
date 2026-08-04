@@ -6,11 +6,12 @@ import {
   serviceConfigurationDraftFromCreateInput,
 } from "@/service-configuration";
 
-const uploadDraft = () => ({
+const uploadDraft = (previews = false) => ({
   ...emptyServiceConfigurationDraft(),
   source: {
     dockerUpload: {
       branch: "main",
+      previews,
       repository: "acme/api",
       workflows: ["deploy.yml"],
     },
@@ -18,20 +19,23 @@ const uploadDraft = () => ({
   },
 });
 
-test("requires exactly one HTTP domain for uploaded images", () => {
-  expect(() => parseServiceConfiguration(uploadDraft(), 0)).toThrow(
-    "Image upload services require exactly one HTTP domain"
+test("requires exactly one HTTP domain only when image previews are enabled", () => {
+  expect(parseServiceConfiguration(uploadDraft(false), 0).source.type).toBe(
+    "docker_image_upload"
   );
-  expect(() => parseServiceConfiguration(uploadDraft(), 2)).toThrow(
-    "Image upload services require exactly one HTTP domain"
+  expect(() => parseServiceConfiguration(uploadDraft(true), 0)).toThrow(
+    "Image upload previews require exactly one HTTP domain"
   );
-  expect(parseServiceConfiguration(uploadDraft(), 1).source.type).toBe(
+  expect(() => parseServiceConfiguration(uploadDraft(true), 2)).toThrow(
+    "Image upload previews require exactly one HTTP domain"
+  );
+  expect(parseServiceConfiguration(uploadDraft(true), 1).source.type).toBe(
     "docker_image_upload"
   );
 });
 
 test("allows an incomplete upload domain while a service is still a draft", () => {
-  expect(parseServiceConfiguration(uploadDraft()).source.type).toBe(
+  expect(parseServiceConfiguration(uploadDraft(true)).source.type).toBe(
     "docker_image_upload"
   );
 });

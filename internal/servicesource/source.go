@@ -42,6 +42,7 @@ type DockerUpload struct {
 	Repository string   `json:"repository"`
 	Branch     string   `json:"branch"`
 	Workflows  []string `json:"workflows"`
+	Previews   bool     `json:"previews"`
 }
 
 type Source struct {
@@ -119,4 +120,10 @@ func IsImage(source Source) bool {
 
 func IsRemoteImage(source Source) bool {
 	return source.Type == PublicImage || source.Type == PrivateImage
+}
+
+// ImageUploadPreviewsEnabled reports whether non-latest image upload tags should
+// publish ephemeral preview deployments under the service's HTTP domain.
+func ImageUploadPreviewsEnabled(source Source) bool {
+	return source.Type == DockerImageUpload && source.DockerUpload != nil && source.DockerUpload.Previews
 }

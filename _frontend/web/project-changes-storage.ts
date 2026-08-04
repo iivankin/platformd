@@ -25,6 +25,7 @@ const sourceSchema = z.union([
   z.object({
     dockerUpload: z.object({
       branch: z.string(),
+      previews: z.boolean(),
       repository: z.string(),
       workflows: z.array(z.string()),
     }),

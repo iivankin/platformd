@@ -22,7 +22,10 @@ inputs:
     default: "8388608"
     required: false
   github-token:
-    description: Token used to register a GitHub Deployment. Defaults to GITHUB_TOKEN when present.
+    description: >-
+      Token used to register a GitHub Deployment and, for preview uploads, comment
+      the preview URL on an open PR. Defaults to GITHUB_TOKEN when present.
+      Needs deployments: write; preview comments also need pull-requests: write.
     default: ${{ github.token }}
     required: false
   environment:

@@ -38,6 +38,11 @@ CREATE TABLE cloudflare_mesh_settings (
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  icon_bytes BLOB CHECK (icon_bytes IS NULL OR length(icon_bytes) BETWEEN 1 AND 131072),
+  icon_content_type TEXT CHECK (
+    icon_content_type IS NULL
+    OR icon_content_type IN ('image/png', 'image/jpeg', 'image/webp')
+  ),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 ) STRICT;
@@ -537,4 +542,4 @@ CREATE TABLE aggregate_metric_samples (
 CREATE INDEX aggregate_metric_samples_retention_idx
   ON aggregate_metric_samples(observed_at);
 
-PRAGMA user_version = 6;
+PRAGMA user_version = 7;

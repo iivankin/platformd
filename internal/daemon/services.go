@@ -183,7 +183,7 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}
-	if !updated.Enabled || updated.Snapshot.Source.Type != servicesource.DockerImageUpload {
+	if !updated.Enabled || !servicesource.ImageUploadPreviewsEnabled(updated.Snapshot.Source) {
 		if err := repository.runtime.stopServicePreviews(ctx, updated.ID, "Image previews disabled"); err != nil {
 			return state.ServiceDesired{}, err
 		}

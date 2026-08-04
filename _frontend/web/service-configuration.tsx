@@ -32,7 +32,12 @@ export interface ServiceConfigurationValues {
 }
 
 const defaultSource = (): ServiceSource => ({
-  dockerUpload: { branch: "main", repository: "", workflows: [] },
+  dockerUpload: {
+    branch: "main",
+    previews: false,
+    repository: "",
+    workflows: [],
+  },
   type: "docker_image_upload",
 });
 
@@ -114,8 +119,12 @@ const validateServiceSource = (
     if (!source.dockerUpload.branch.trim()) {
       throw new Error("Production branch is required");
     }
-    if (httpDomainCount !== undefined && httpDomainCount !== 1) {
-      throw new Error("Image upload services require exactly one HTTP domain");
+    if (
+      source.dockerUpload.previews &&
+      httpDomainCount !== undefined &&
+      httpDomainCount !== 1
+    ) {
+      throw new Error("Image upload previews require exactly one HTTP domain");
     }
     return;
   }
@@ -185,6 +194,33 @@ const sourceOptions: {
   },
 ];
 
+const ToggleRow = ({
+  enabled,
+  label,
+  onChange,
+}: {
+  enabled: boolean;
+  label: string;
+  onChange: (enabled: boolean) => void;
+}) => (
+  <button
+    aria-pressed={enabled}
+    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-4 text-left hover:bg-muted/40"
+    onClick={() => onChange(!enabled)}
+    type="button"
+  >
+    <span
+      className={`grid size-5 place-items-center border ${enabled ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600" : "border-border text-muted-foreground"}`}
+    >
+      <Power className="size-2.5" />
+    </span>
+    <span className="text-[9px]">{label}</span>
+    <span className="ml-auto text-[9px] text-muted-foreground">
+      {enabled ? "On" : "Off"}
+    </span>
+  </button>
+);
+
 const DockerImageUploadFields = ({
   draft,
   httpDomainCount,
@@ -203,7 +239,8 @@ const DockerImageUploadFields = ({
       ...draft,
       dockerUpload: { ...draft.dockerUpload, ...values },
     });
-  const domainReady = httpDomainCount === 1;
+  const previewsEnabled = draft.dockerUpload.previews;
+  const domainReady = !previewsEnabled || httpDomainCount === 1;
 
   return (
     <div className="grid gap-3 border-t border-border p-4 md:grid-cols-2">
@@ -258,13 +295,25 @@ const DockerImageUploadFields = ({
           value={draft.dockerUpload.workflows.join(", ")}
         />
       </label>
+      <div className="-mx-4 md:col-span-2">
+        <ToggleRow
+          enabled={previewsEnabled}
+          label="Image previews for non-latest tags"
+          onChange={(previews) => update({ previews })}
+        />
+        {previewsEnabled ? (
+          <p
+            className={`border-t border-border px-4 py-2 text-[9px] leading-4 ${domainReady ? "text-muted-foreground" : "text-destructive"}`}
+          >
+            {domainReady
+              ? "Ready for preview URLs under the HTTP domain."
+              : "Add exactly one HTTP domain before enabling previews."}
+          </p>
+        ) : null}
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
-        <p
-          className={`text-[9px] leading-4 ${domainReady ? "text-muted-foreground" : "text-destructive"}`}
-        >
-          {domainReady
-            ? "Ready for image uploads and preview URLs."
-            : "Add exactly one HTTP domain before uploading images."}
+        <p className="text-[9px] leading-4 text-muted-foreground">
+          Production branch tags as <code>latest</code> deploy production.
         </p>
         {projectID && serviceID ? (
           <GitHubActionExampleDialog
@@ -279,7 +328,7 @@ const DockerImageUploadFields = ({
             }
             steps={[
               "Allow the GitHub repository (and optional workflow files) above.",
-              "Keep exactly one HTTP domain so production and preview URLs can be published.",
+              "Turn on image previews and keep exactly one HTTP domain if you want non-latest tags published.",
               "Paste url, project, and resource into the workflow below and run it.",
             ]}
             title="Docker image upload"
@@ -302,33 +351,6 @@ const sourceForType = (
   }
   return { autoUpdate: true, image: { reference: "" }, type };
 };
-
-const ToggleRow = ({
-  enabled,
-  label,
-  onChange,
-}: {
-  enabled: boolean;
-  label: string;
-  onChange: (enabled: boolean) => void;
-}) => (
-  <button
-    aria-pressed={enabled}
-    className="flex min-h-11 w-full items-center gap-3 border-t border-border px-4 text-left hover:bg-muted/40"
-    onClick={() => onChange(!enabled)}
-    type="button"
-  >
-    <span
-      className={`grid size-5 place-items-center border ${enabled ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-600" : "border-border text-muted-foreground"}`}
-    >
-      <Power className="size-2.5" />
-    </span>
-    <span className="text-[9px]">{label}</span>
-    <span className="ml-auto text-[9px] text-muted-foreground">
-      {enabled ? "On" : "Off"}
-    </span>
-  </button>
-);
 
 const SourceFields = ({
   draft,

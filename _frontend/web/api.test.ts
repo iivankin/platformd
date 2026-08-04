@@ -241,6 +241,7 @@ test("reads Access display name and picture from custom OIDC claims", async () =
 
 const project = {
   createdAt: 1,
+  hasIcon: false,
   id: "project-id",
   name: "shop",
   networkGatewayCount: 0,

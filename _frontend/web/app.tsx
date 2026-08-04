@@ -261,6 +261,7 @@ export const App = () => {
                     <ProjectCanvasPage
                       isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
+                      onProjectUpdated={data.handleProjectUpdated}
                     />
                   }
                   path="/projects/:projectID/:resourceCollection/:resourceID/deployments/:deploymentID/:deploymentView?"
@@ -270,6 +271,7 @@ export const App = () => {
                     <ProjectCanvasPage
                       isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
+                      onProjectUpdated={data.handleProjectUpdated}
                     />
                   }
                   path="/projects/:projectID/:resourceCollection/:resourceID/:view?"
@@ -279,6 +281,7 @@ export const App = () => {
                     <ProjectCanvasPage
                       isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
+                      onProjectUpdated={data.handleProjectUpdated}
                     />
                   }
                   path="/projects/:projectID"

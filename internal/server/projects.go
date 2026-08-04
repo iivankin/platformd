@@ -23,11 +23,15 @@ type ProjectRepository interface {
 	ProjectCanvas(context.Context, string) (state.ProjectCanvas, error)
 	CreateProject(context.Context, state.CreateProject) (state.ProjectSummary, error)
 	DeleteProject(context.Context, state.DeleteProjectInput) (state.ProjectDeletionPlan, error)
+	ProjectIcon(context.Context, string) (state.ProjectIcon, error)
+	SetProjectIcon(context.Context, state.SetProjectIconInput) (state.ProjectSummary, error)
+	ClearProjectIcon(context.Context, state.ClearProjectIconInput) (state.ProjectSummary, error)
 }
 
 type projectResponse struct {
 	ID                  string `json:"id"`
 	Name                string `json:"name"`
+	HasIcon             bool   `json:"hasIcon"`
 	ServiceCount        int    `json:"serviceCount"`
 	PostgresCount       int    `json:"postgresCount"`
 	RedisCount          int    `json:"redisCount"`
@@ -84,6 +88,9 @@ func registerProjectRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET /api/v1/projects", listProjects(config.projects))
 	mux.HandleFunc("POST /api/v1/projects", createProject(config))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/canvas", getProjectCanvas(config.projects))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/icon", getProjectIcon(config.projects))
+	mux.HandleFunc("PUT /api/v1/projects/{projectID}/icon", putProjectIcon(config))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/icon", deleteProjectIcon(config))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}", deleteProject(config))
 }
 
@@ -292,11 +299,112 @@ func requireJSONEnd(decoder *json.Decoder) error {
 
 func publicProject(project state.ProjectSummary) projectResponse {
 	return projectResponse{
-		ID: project.ID, Name: project.Name,
+		ID: project.ID, Name: project.Name, HasIcon: project.HasIcon,
 		ServiceCount: project.ServiceCount, PostgresCount: project.PostgresCount,
 		RedisCount: project.RedisCount, ObjectStoreCount: project.ObjectStoreCount,
 		NetworkGatewayCount: project.NetworkGatewayCount,
 		CreatedAt:           project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
+	}
+}
+
+func getProjectIcon(repository ProjectRepository) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := access.IdentityFromContext(request.Context()); !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		icon, err := repository.ProjectIcon(request.Context(), request.PathValue("projectID"))
+		switch {
+		case errors.Is(err, state.ErrProjectNotFound):
+			writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
+		case errors.Is(err, state.ErrProjectIconNotFound):
+			writeAPIError(response, http.StatusNotFound, "project_icon_not_found", "Project icon not found")
+		case err != nil:
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to load project icon")
+		default:
+			response.Header().Set("Cache-Control", "private, max-age=60")
+			response.Header().Set("Content-Type", icon.ContentType)
+			response.Header().Set("X-Content-Type-Options", "nosniff")
+			response.WriteHeader(http.StatusOK)
+			_, _ = response.Write(icon.Bytes)
+		}
+	}
+}
+
+func putProjectIcon(config handlerConfig) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := access.IdentityFromContext(request.Context())
+		if !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, state.MaximumProjectIconBytes+1)
+		payload, err := io.ReadAll(request.Body)
+		if err != nil {
+			var maxBytesError *http.MaxBytesError
+			if errors.As(err, &maxBytesError) {
+				writeAPIError(response, http.StatusRequestEntityTooLarge, "project_icon_too_large", state.ErrInvalidProjectIcon.Error())
+				return
+			}
+			writeAPIError(response, http.StatusBadRequest, "invalid_project_icon", "Unable to read project icon")
+			return
+		}
+		timestamp := config.now()
+		_, auditID, correlationID, err := createRequestIDs()
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate project icon identifiers")
+			return
+		}
+		project, err := config.projects.SetProjectIcon(request.Context(), state.SetProjectIconInput{
+			ProjectID: request.PathValue("projectID"), Bytes: payload,
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
+			RequestCorrelationID: correlationID, UpdatedAtMillis: timestamp.UnixMilli(),
+		})
+		switch {
+		case errors.Is(err, state.ErrProjectNotFound):
+			writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
+		case errors.Is(err, state.ErrInvalidProjectIcon):
+			writeAPIError(response, http.StatusBadRequest, "invalid_project_icon", err.Error())
+		case err != nil:
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to save project icon")
+		default:
+			response.Header().Set("Cache-Control", "private, no-store")
+			response.Header().Set("X-Request-ID", correlationID)
+			writeJSON(response, http.StatusOK, publicProject(project))
+		}
+	}
+}
+
+func deleteProjectIcon(config handlerConfig) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := access.IdentityFromContext(request.Context())
+		if !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		timestamp := config.now()
+		_, auditID, correlationID, err := createRequestIDs()
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate project icon identifiers")
+			return
+		}
+		project, err := config.projects.ClearProjectIcon(request.Context(), state.ClearProjectIconInput{
+			ProjectID: request.PathValue("projectID"),
+			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
+			RequestCorrelationID: correlationID, UpdatedAtMillis: timestamp.UnixMilli(),
+		})
+		switch {
+		case errors.Is(err, state.ErrProjectNotFound):
+			writeAPIError(response, http.StatusNotFound, "project_not_found", "Project not found")
+		case errors.Is(err, state.ErrProjectIconNotFound):
+			writeAPIError(response, http.StatusNotFound, "project_icon_not_found", "Project icon not found")
+		case err != nil:
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to clear project icon")
+		default:
+			response.Header().Set("Cache-Control", "private, no-store")
+			response.Header().Set("X-Request-ID", correlationID)
+			writeJSON(response, http.StatusOK, publicProject(project))
+		}
 	}
 }
 

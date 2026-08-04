@@ -12,7 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
-import type { ProjectCanvas } from "@/api";
+import type { Project, ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { NetworkGatewayDraftPage } from "@/network-gateway-draft-page";
 import {
@@ -184,9 +184,11 @@ const ProjectRouteOverlay = ({
 export const ProjectCanvasPage = ({
   isDemo,
   onProjectDeleted,
+  onProjectUpdated,
 }: {
   isDemo: boolean;
   onProjectDeleted: (projectID: string) => void;
+  onProjectUpdated: (project: Project) => void;
 }) => {
   const navigate = useNavigate();
   const {
@@ -436,6 +438,15 @@ export const ProjectCanvasPage = ({
     void navigate("/projects", { replace: true });
   };
 
+  const handleProjectUpdated = (project: Project) => {
+    onProjectUpdated(project);
+    setCanvas((current) =>
+      current
+        ? { ...current, project: { ...current.project, ...project } }
+        : current
+    );
+  };
+
   return (
     <div className="flex h-full min-h-0 animate-in flex-col duration-200 fade-in slide-in-from-bottom-1">
       <section className="flex min-h-12 shrink-0 items-center gap-4 border-b border-border px-5 py-2.5">
@@ -446,6 +457,7 @@ export const ProjectCanvasPage = ({
           {canvas ? (
             <ProjectSettingsDialog
               onDeleted={handleProjectDeleted}
+              onUpdated={handleProjectUpdated}
               project={canvas.project}
             />
           ) : null}

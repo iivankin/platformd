@@ -11,7 +11,10 @@ inputs:
     description: HTTPS origin of the platformd admin hostname, for example https://admin.example.com.
     required: true
   token:
-    description: platformd admin API token. When omitted, the action uses GitHub Actions OIDC (requires id-token: write and a port-forward allowlist on the target resource).
+    description: >-
+      platformd admin API token. When omitted, the action uses GitHub Actions
+      OIDC (requires id-token: write and a port-forward allowlist on the target
+      resource).
     required: false
   project:
     description: Name of the project containing the target resource.

@@ -75,6 +75,18 @@ func (repository liveProjectRepository) CreateProject(ctx context.Context, input
 	return created, nil
 }
 
+func (repository liveProjectRepository) ProjectIcon(ctx context.Context, projectID string) (state.ProjectIcon, error) {
+	return repository.store.ProjectIcon(ctx, projectID)
+}
+
+func (repository liveProjectRepository) SetProjectIcon(ctx context.Context, input state.SetProjectIconInput) (state.ProjectSummary, error) {
+	return repository.store.SetProjectIcon(ctx, input)
+}
+
+func (repository liveProjectRepository) ClearProjectIcon(ctx context.Context, input state.ClearProjectIconInput) (state.ProjectSummary, error) {
+	return repository.store.ClearProjectIcon(ctx, input)
+}
+
 func (repository liveProjectRepository) DeleteProject(ctx context.Context, input state.DeleteProjectInput) (state.ProjectDeletionPlan, error) {
 	plan, err := repository.store.ProjectDeletionPlan(ctx, input.ID)
 	if err != nil {

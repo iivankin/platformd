@@ -79,8 +79,9 @@ func (store *Store) ProjectCanvas(ctx context.Context, projectID string) (Projec
 
 func (store *Store) Project(ctx context.Context, projectID string) (ProjectSummary, error) {
 	var project ProjectSummary
+	var hasIcon int
 	err := store.database.QueryRowContext(ctx, `
-SELECT p.id, p.name,
+SELECT p.id, p.name, CASE WHEN p.icon_bytes IS NULL THEN 0 ELSE 1 END,
        (SELECT count(*) FROM services s WHERE s.project_id = p.id),
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
@@ -89,7 +90,7 @@ SELECT p.id, p.name,
        p.created_at, p.updated_at
 FROM projects p
 WHERE p.id = ?`, projectID).Scan(
-		&project.ID, &project.Name, &project.ServiceCount,
+		&project.ID, &project.Name, &hasIcon, &project.ServiceCount,
 		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 		&project.CreatedAtMillis, &project.UpdatedAtMillis,
 	)
@@ -99,13 +100,15 @@ WHERE p.id = ?`, projectID).Scan(
 	if err != nil {
 		return ProjectSummary{}, fmt.Errorf("load project canvas project: %w", err)
 	}
+	project.HasIcon = hasIcon == 1
 	return project, nil
 }
 
 func (store *Store) ProjectByName(ctx context.Context, name string) (ProjectSummary, error) {
 	var project ProjectSummary
+	var hasIcon int
 	err := store.database.QueryRowContext(ctx, `
-SELECT p.id, p.name,
+SELECT p.id, p.name, CASE WHEN p.icon_bytes IS NULL THEN 0 ELSE 1 END,
        (SELECT count(*) FROM services s WHERE s.project_id = p.id),
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
@@ -114,7 +117,7 @@ SELECT p.id, p.name,
        p.created_at, p.updated_at
 FROM projects p
 WHERE p.name = ?`, name).Scan(
-		&project.ID, &project.Name, &project.ServiceCount,
+		&project.ID, &project.Name, &hasIcon, &project.ServiceCount,
 		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 		&project.CreatedAtMillis, &project.UpdatedAtMillis,
 	)
@@ -124,6 +127,7 @@ WHERE p.name = ?`, name).Scan(
 	if err != nil {
 		return ProjectSummary{}, fmt.Errorf("load project by name: %w", err)
 	}
+	project.HasIcon = hasIcon == 1
 	return project, nil
 }
 

@@ -217,6 +217,9 @@ func (application *Application) begin(
 	tag string,
 	identity state.ImageUploadIdentity,
 ) (state.ImageUpload, error) {
+	if tag != "latest" && !servicesource.ImageUploadPreviewsEnabled(service.Snapshot.Source) {
+		return state.ImageUpload{}, requestError{"previews_disabled", "Image upload previews are disabled for this service"}
+	}
 	if err := application.growth.PermitGrowth(ctx); err != nil {
 		return state.ImageUpload{}, err
 	}

@@ -91,6 +91,7 @@ const reference = (resource: string, output: string) =>
 
 const project: Project = {
   createdAt: now - 45 * 86_400_000,
+  hasIcon: false,
   id: "project-demo",
   name: "storefront",
   networkGatewayCount: 0,

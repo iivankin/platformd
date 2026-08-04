@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	schemaVersion   = 6
+	schemaVersion   = 7
 	writerQueueSize = 128
 )
 
@@ -265,42 +265,29 @@ func initializeSchema(ctx context.Context, database *sql.DB) error {
 		if err := migrateSchemaVersionOne(ctx, database); err != nil {
 			return err
 		}
-		if err := migrateSchemaVersionTwo(ctx, database); err != nil {
-			return err
-		}
-		if err := migrateSchemaVersionThree(ctx, database); err != nil {
-			return err
-		}
-		if err := migrateSchemaVersionFour(ctx, database); err != nil {
-			return err
-		}
-		return migrateSchemaVersionFive(ctx, database)
+		fallthrough
 	case 2:
 		if err := migrateSchemaVersionTwo(ctx, database); err != nil {
 			return err
 		}
-		if err := migrateSchemaVersionThree(ctx, database); err != nil {
-			return err
-		}
-		if err := migrateSchemaVersionFour(ctx, database); err != nil {
-			return err
-		}
-		return migrateSchemaVersionFive(ctx, database)
+		fallthrough
 	case 3:
 		if err := migrateSchemaVersionThree(ctx, database); err != nil {
 			return err
 		}
-		if err := migrateSchemaVersionFour(ctx, database); err != nil {
-			return err
-		}
-		return migrateSchemaVersionFive(ctx, database)
+		fallthrough
 	case 4:
 		if err := migrateSchemaVersionFour(ctx, database); err != nil {
 			return err
 		}
-		return migrateSchemaVersionFive(ctx, database)
+		fallthrough
 	case 5:
-		return migrateSchemaVersionFive(ctx, database)
+		if err := migrateSchemaVersionFive(ctx, database); err != nil {
+			return err
+		}
+		fallthrough
+	case 6:
+		return migrateSchemaVersionSix(ctx, database)
 	case 0:
 		// Continue with first-time schema initialization below.
 	default:

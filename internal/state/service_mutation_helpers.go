@@ -36,7 +36,7 @@ SELECT updated_at FROM services WHERE id = ? AND project_id = ?`, serviceID, pro
 }
 
 func validateServiceDependencies(ctx context.Context, transaction *sql.Tx, projectID, serviceID string, snapshot serviceconfig.Snapshot) error {
-	if snapshot.Source.Type == servicesource.DockerImageUpload {
+	if servicesource.ImageUploadPreviewsEnabled(snapshot.Source) {
 		var domainCount int
 		if err := transaction.QueryRowContext(ctx, `
 SELECT count(*) FROM service_domains WHERE service_id = ?`, serviceID).Scan(&domainCount); err != nil {

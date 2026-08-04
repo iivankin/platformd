@@ -153,17 +153,27 @@ func (repository liveDomainRepository) validatePreviewDomainAttach(ctx context.C
 	if err != nil {
 		return err
 	}
-	if service.Snapshot.Source.Type != servicesource.DockerImageUpload {
-		return nil
-	}
 	domains, err := repository.store.ServiceDomains(ctx, input.ProjectID, input.ServiceID)
 	if err != nil {
 		return err
 	}
+	return validateImageUploadPreviewDomainAttach(service.Snapshot.Source, domains, input.Hostname)
+}
+
+// validateImageUploadPreviewDomainAttach keeps docker_image_upload services with
+// previews enabled at exactly one HTTP domain: the first attach is allowed,
+// updates to that hostname are allowed, and a second distinct hostname is rejected.
+func validateImageUploadPreviewDomainAttach(source servicesource.Source, domains []state.ServiceDomain, hostname string) error {
+	if !servicesource.ImageUploadPreviewsEnabled(source) {
+		return nil
+	}
 	for _, domain := range domains {
-		if domain.Hostname == input.Hostname {
+		if domain.Hostname == hostname {
 			return nil
 		}
+	}
+	if len(domains) == 0 {
+		return nil
 	}
 	return state.ErrPreviewDomainCount
 }
@@ -173,7 +183,7 @@ func (repository liveDomainRepository) validatePreviewDomainDetach(ctx context.C
 	if err != nil {
 		return err
 	}
-	if service.Snapshot.Source.Type == servicesource.DockerImageUpload {
+	if servicesource.ImageUploadPreviewsEnabled(service.Snapshot.Source) {
 		return state.ErrPreviewDomainCount
 	}
 	return nil

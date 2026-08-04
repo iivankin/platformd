@@ -7,6 +7,7 @@ permissions:
   contents: read
   id-token: write
   deployments: write
+  pull-requests: write
 
 jobs:
   deploy:
@@ -15,6 +16,7 @@ jobs:
       contents: read
       id-token: write
       deployments: write
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v4
@@ -36,7 +38,7 @@ jobs:
 
 `url` is the HTTPS origin of the platformd admin hostname (not a secret; a repository variable is fine). `project` and `resource` are the project and service IDs from the admin UI. The action builds the public upload URL and uses it as the OIDC audience.
 
-`latest` is accepted only from the production branch configured on the service and deploys production. Any other valid image tag creates or replaces a preview. If the service has an allowed-workflow list, the current workflow filename must be present in it.
+`latest` is accepted only from the production branch configured on the service and deploys production. Any other valid image tag creates or replaces a preview when image previews are enabled on the service. If the service has an allowed-workflow list, the current workflow filename must be present in it.
 
 The action uploads 8 MiB chunks by default. `chunk-size` may be changed, but platformd does not impose a total archive-size limit.
 
@@ -45,7 +47,8 @@ The action uploads 8 MiB chunks by default. `chunk-size` may be changed, but pla
 After a successful upload the action publishes a result in this order:
 
 1. **GitHub Deployment** when `github-token` / `GITHUB_TOKEN` can call the Deployments API (`deployments: write`). Preview and production both create a success status; `environment_url` is the preview URL or the optional `environment-url` input for `latest`. `log_url` points at the platformd admin deploy-logs page for that deployment/preview.
-2. Otherwise, if a URL is known, it still sets the `environment-url` output so the job can wire:
+2. **PR comment** for non-`latest` uploads with a preview URL when the token can comment (`pull-requests: write`). The action finds an open PR for the current branch (or uses the PR from `pull_request` events), then creates or updates a comment marked per service. Missing permission or no open PR only skips the comment.
+3. Otherwise, if a URL is known, it still sets the `environment-url` output so the job can wire:
 
    ```yaml
    environment:

@@ -91,6 +91,12 @@ export const useAppData = () => {
     );
   }, []);
 
+  const handleProjectUpdated = useCallback((project: Project) => {
+    setProjects((current) =>
+      current.map((entry) => (entry.id === project.id ? project : entry))
+    );
+  }, []);
+
   const handleProjectDeleted = useCallback((projectID: string) => {
     setProjects((current) =>
       current.filter((project) => project.id !== projectID)
@@ -100,6 +106,7 @@ export const useAppData = () => {
   return {
     handleProjectCreated,
     handleProjectDeleted,
+    handleProjectUpdated,
     identity,
     identityError,
     identityLoading,

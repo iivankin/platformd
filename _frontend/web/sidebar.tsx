@@ -14,6 +14,7 @@ import type { ComponentType } from "react";
 import { NavLink, useNavigate } from "react-router";
 
 import type { Identity, Project } from "@/api";
+import { projectIconURL } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ThemeMenuItems } from "@/theme-switcher";
@@ -323,7 +324,19 @@ export const Sidebar = ({
                   to={`/projects/${project.id}`}
                 >
                   <span className="shrink-0 transition-transform duration-150 group-hover:scale-110">
-                    <Box className="size-3.5" />
+                    {project.hasIcon ? (
+                      <img
+                        alt=""
+                        className="size-3.5 object-cover"
+                        src={projectIconURL(project)}
+                      />
+                    ) : labelsCollapsed ? (
+                      <span className="grid size-3.5 place-items-center text-[9px] font-medium leading-none">
+                        {project.name.slice(0, 1).toUpperCase()}
+                      </span>
+                    ) : (
+                      <Box className="size-3.5" />
+                    )}
                   </span>
                   <span
                     className={sidebarLabelClassName(

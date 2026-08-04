@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { appendFileSync, createReadStream, statSync } from "node:fs";
+import { appendFileSync, createReadStream, readFileSync, statSync } from "node:fs";
 import type { Readable } from "node:stream";
 
 const terminalStatuses = new Set(["failed", "succeeded", "superseded"]);
@@ -60,13 +60,13 @@ async function oidcToken(audience: string): Promise<string> {
   return body.value;
 }
 
-async function responseBody(response: Response): Promise<JSONObject> {
+async function responseBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) {
     return {};
   }
   try {
-    return JSON.parse(text) as JSONObject;
+    return JSON.parse(text) as unknown;
   } catch {
     throw new Error(`platformd returned invalid JSON with ${response.status}`);
   }
@@ -92,7 +92,10 @@ async function request(
   } as RequestInit);
   const payload = await responseBody(response);
   if (!response.ok) {
-    const error = payload.error as { message?: unknown } | undefined;
+    const error =
+      payload && typeof payload === "object"
+        ? (payload as { error?: { message?: unknown } }).error
+        : undefined;
     const detail = typeof error?.message === "string" ? error.message : `HTTP ${response.status}`;
     throw new Error(`platformd image upload failed: ${detail}`);
   }
@@ -109,12 +112,22 @@ function sha256File(path: string): Promise<string> {
   });
 }
 
+class GitHubAPIError extends Error {
+  readonly status: number;
+
+  constructor(path: string, status: number, detail: string) {
+    super(`GitHub API ${path} failed: ${detail}`);
+    this.name = "GitHubAPIError";
+    this.status = status;
+  }
+}
+
 async function githubAPI(
   token: string,
   method: string,
   path: string,
   body?: JSONObject,
-): Promise<JSONObject> {
+): Promise<unknown> {
   const response = await fetch(`https://api.github.com${path}`, {
     method,
     headers: {
@@ -129,10 +142,32 @@ async function githubAPI(
   const payload = await responseBody(response);
   if (!response.ok) {
     const detail =
-      typeof payload.message === "string" ? payload.message : `HTTP ${response.status}`;
-    throw new Error(`GitHub API ${path} failed: ${detail}`);
+      payload && typeof payload === "object" && typeof (payload as JSONObject).message === "string"
+        ? ((payload as JSONObject).message as string)
+        : `HTTP ${response.status}`;
+    throw new GitHubAPIError(path, response.status, detail);
   }
   return payload;
+}
+
+async function githubAPIPages(token: string, path: string): Promise<JSONObject[]> {
+  const results: JSONObject[] = [];
+  for (let page = 1; ; page += 1) {
+    const separator = path.includes("?") ? "&" : "?";
+    const payload = await githubAPI(
+      token,
+      "GET",
+      `${path}${separator}per_page=100&page=${page}`,
+    );
+    if (!Array.isArray(payload)) {
+      throw new Error(`GitHub API ${path} did not return a list`);
+    }
+    const batch = payload as JSONObject[];
+    results.push(...batch);
+    if (batch.length < 100) {
+      return results;
+    }
+  }
 }
 
 function defaultEnvironmentName(tag: string): string {
@@ -234,15 +269,20 @@ async function createGitHubDeployment({
   const description = production
     ? "platformd production deployment"
     : `platformd preview ${tag}`;
-  const deployment = await githubAPI(token, "POST", `/repos/${owner}/${repo}/deployments`, {
-    auto_merge: false,
-    description,
-    environment,
-    production_environment: production,
-    ref,
-    required_contexts: [],
-    transient_environment: !production,
-  });
+  const deployment = (await githubAPI(
+    token,
+    "POST",
+    `/repos/${owner}/${repo}/deployments`,
+    {
+      auto_merge: false,
+      description,
+      environment,
+      production_environment: production,
+      ref,
+      required_contexts: [],
+      transient_environment: !production,
+    },
+  )) as JSONObject;
   if (!Number.isInteger(deployment.id)) {
     throw new Error("GitHub deployment response did not include an id");
   }
@@ -265,18 +305,113 @@ async function createGitHubDeployment({
   );
 }
 
+async function resolveOpenPullNumber(
+  token: string,
+  owner: string,
+  repo: string,
+): Promise<number | undefined> {
+  const eventName = process.env.GITHUB_EVENT_NAME ?? "";
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (
+    (eventName === "pull_request" || eventName === "pull_request_target") &&
+    eventPath
+  ) {
+    try {
+      const event = JSON.parse(readFileSync(eventPath, "utf8")) as {
+        pull_request?: { number?: unknown };
+      };
+      if (Number.isInteger(event.pull_request?.number)) {
+        return event.pull_request?.number as number;
+      }
+    } catch {
+      // Fall through to branch lookup.
+    }
+  }
+  const ref = process.env.GITHUB_REF ?? "";
+  if (!ref.startsWith("refs/heads/")) {
+    return undefined;
+  }
+  const branch = ref.slice("refs/heads/".length);
+  const pulls = (await githubAPI(
+    token,
+    "GET",
+    `/repos/${owner}/${repo}/pulls?head=${encodeURIComponent(`${owner}:${branch}`)}&state=open&per_page=1`,
+  )) as JSONObject[];
+  if (!Array.isArray(pulls) || pulls.length === 0) {
+    return undefined;
+  }
+  if (!Number.isInteger(pulls[0]?.number)) {
+    return undefined;
+  }
+  return pulls[0].number as number;
+}
+
+async function commentPreviewOnPR({
+  token,
+  serviceID,
+  previewURL,
+  logsURL,
+}: {
+  token: string;
+  serviceID: string;
+  previewURL: string;
+  logsURL: string;
+}): Promise<void> {
+  const repository = process.env.GITHUB_REPOSITORY;
+  if (!repository) {
+    throw new Error("GITHUB_REPOSITORY is required");
+  }
+  const [owner, repo] = repository.split("/");
+  if (!(owner && repo)) {
+    throw new Error(`invalid GITHUB_REPOSITORY ${repository}`);
+  }
+  const pullNumber = await resolveOpenPullNumber(token, owner, repo);
+  if (pullNumber === undefined) {
+    console.log("No open PR for this ref; skipping preview comment");
+    return;
+  }
+  const marker = `<!-- platformd-preview:${serviceID} -->`;
+  const lines = [marker, `### Preview \`${serviceID}\``, "", `- URL: ${previewURL}`];
+  if (logsURL) {
+    lines.push(`- Logs: ${logsURL}`);
+  }
+  const body = `${lines.join("\n")}\n`;
+  const comments = await githubAPIPages(
+    token,
+    `/repos/${owner}/${repo}/issues/${pullNumber}/comments`,
+  );
+  const existing = comments.find(
+    (comment) => typeof comment.body === "string" && comment.body.includes(marker),
+  );
+  if (existing && Number.isInteger(existing.id)) {
+    await githubAPI(token, "PATCH", `/repos/${owner}/${repo}/issues/comments/${existing.id}`, {
+      body,
+    });
+    console.log(`Updated preview comment on PR #${pullNumber}`);
+    return;
+  }
+  await githubAPI(token, "POST", `/repos/${owner}/${repo}/issues/${pullNumber}/comments`, {
+    body,
+  });
+  console.log(`Created preview comment on PR #${pullNumber}`);
+}
+
 async function publishDeployment({
   tag,
   environmentURL,
+  previewURL,
   logsURL,
   deploymentID,
   digest,
+  serviceID,
 }: {
   tag: string;
   environmentURL: string;
+  previewURL: string;
   logsURL: string;
   deploymentID: string;
   digest: string;
+  serviceID: string;
 }): Promise<void> {
   const token = input("github-token", process.env.GITHUB_TOKEN || "");
   const environment = input("environment", defaultEnvironmentName(tag));
@@ -306,6 +441,26 @@ async function publishDeployment({
     console.log(
       `Set environment-url output to ${environmentURL} (wire job environment.url to steps.<id>.outputs.environment-url)`,
     );
+  }
+
+  if (token && tag !== "latest" && previewURL) {
+    try {
+      await commentPreviewOnPR({
+        token,
+        serviceID,
+        previewURL,
+        logsURL,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof GitHubAPIError && (error.status === 401 || error.status === 403)) {
+        console.warn(
+          `Preview PR comment skipped (need pull-requests: write): ${message}`,
+        );
+      } else {
+        console.warn(`Preview PR comment skipped: ${message}`);
+      }
+    }
   }
 
   if (
@@ -425,9 +580,11 @@ async function run(): Promise<void> {
   await publishDeployment({
     tag,
     environmentURL,
+    previewURL: status.previewUrl || "",
     logsURL,
     deploymentID,
     digest: status.digest || "",
+    serviceID: resource,
   });
 }
 

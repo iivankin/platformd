@@ -297,6 +297,7 @@ permissions:
   contents: read
   id-token: write
   deployments: write
+  pull-requests: write
 
 jobs:
   deploy:
@@ -320,7 +321,7 @@ jobs:
           resource: ${serviceID}
           archive: \${{ runner.temp }}/image.oci
           # latest from the production branch deploys production.
-          # Any other tag creates a preview that expires after 14 days.
+          # Other tags create a 14-day preview when image previews are enabled.
           tag: latest`;
 
 export type PortForwardExampleKind =

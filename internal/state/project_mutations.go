@@ -15,6 +15,7 @@ var ErrProjectNameConflict = errors.New("project name already exists")
 type ProjectSummary struct {
 	ID                  string
 	Name                string
+	HasIcon             bool
 	ServiceCount        int
 	PostgresCount       int
 	RedisCount          int
@@ -56,7 +57,7 @@ type createProjectMutation struct {
 
 func (store *Store) Projects(ctx context.Context) ([]ProjectSummary, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT p.id, p.name,
+SELECT p.id, p.name, CASE WHEN p.icon_bytes IS NULL THEN 0 ELSE 1 END,
        (SELECT count(*) FROM services s WHERE s.project_id = p.id),
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
@@ -72,13 +73,15 @@ ORDER BY p.name, p.id`)
 	var result []ProjectSummary
 	for rows.Next() {
 		var project ProjectSummary
+		var hasIcon int
 		if err := rows.Scan(
-			&project.ID, &project.Name, &project.ServiceCount,
+			&project.ID, &project.Name, &hasIcon, &project.ServiceCount,
 			&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 			&project.CreatedAtMillis, &project.UpdatedAtMillis,
 		); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)
 		}
+		project.HasIcon = hasIcon == 1
 		result = append(result, project)
 	}
 	if err := rows.Err(); err != nil {

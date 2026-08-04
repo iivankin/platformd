@@ -35,6 +35,7 @@ const handleProjectCollection = async (
   const input = await readObject(request);
   const project: Project = {
     createdAt: mockNow(),
+    hasIcon: false,
     id: nextMockID(state, "project"),
     name: stringField(input, "name", "mock-project"),
     networkGatewayCount: 0,
@@ -71,6 +72,87 @@ const handleCanvas = (
   return state.canvases[projectID]
     ? json(state.canvases[projectID])
     : mockError("not_found", "Project not found", 404);
+};
+
+// 1x1 PNG
+const mockProjectIconBytes = Uint8Array.from(
+  atob(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+  ),
+  (char) => char.codePointAt(0) ?? 0
+);
+
+const handleProjectIcon = async (
+  request: Request,
+  state: MockState,
+  segments: string[]
+): Promise<Response | undefined> => {
+  const [root, projectID, resource, ...rest] = segments;
+  if (
+    root !== "projects" ||
+    !projectID ||
+    resource !== "icon" ||
+    rest.length > 0
+  ) {
+    return undefined;
+  }
+  const index = state.projects.findIndex((entry) => entry.id === projectID);
+  if (index === -1) {
+    return mockError("project_not_found", "Project not found", 404);
+  }
+  const current = state.projects[index];
+  if (!current) {
+    return mockError("project_not_found", "Project not found", 404);
+  }
+  if (request.method === "GET") {
+    if (!current.hasIcon) {
+      return mockError("project_icon_not_found", "Project icon not found", 404);
+    }
+    return new Response(mockProjectIconBytes, {
+      headers: {
+        "Cache-Control": "private, max-age=60",
+        "Content-Type": "image/png",
+        "X-Content-Type-Options": "nosniff",
+      },
+    });
+  }
+  if (request.method === "PUT") {
+    const body = new Uint8Array(await request.arrayBuffer());
+    if (body.byteLength === 0 || body.byteLength > 131_072) {
+      return mockError(
+        "invalid_project_icon",
+        "Project icon must be a PNG, JPEG, or WebP image up to 128 KiB"
+      );
+    }
+    const updated: Project = {
+      ...current,
+      hasIcon: true,
+      updatedAt: mockNow(),
+    };
+    state.projects = state.projects.with(index, updated);
+    const canvas = state.canvases[projectID];
+    if (canvas) {
+      state.canvases[projectID] = { ...canvas, project: updated };
+    }
+    return json(updated);
+  }
+  if (request.method === "DELETE") {
+    if (!current.hasIcon) {
+      return mockError("project_icon_not_found", "Project icon not found", 404);
+    }
+    const updated: Project = {
+      ...current,
+      hasIcon: false,
+      updatedAt: mockNow(),
+    };
+    state.projects = state.projects.with(index, updated);
+    const canvas = state.canvases[projectID];
+    if (canvas) {
+      state.canvases[projectID] = { ...canvas, project: updated };
+    }
+    return json(updated);
+  }
+  return undefined;
 };
 
 const projectWebhookEventTypes: ProjectWebhookEventType[] = [
@@ -294,6 +376,7 @@ export const handleProjectsAPI = async (
   const segments = apiSegments(pathname);
   return (
     (await handleProjectCollection(request, state, segments)) ??
+    (await handleProjectIcon(request, state, segments)) ??
     (await handleProjectDelete(request, state, segments)) ??
     (await handleProjectWebhooks(request, state, segments)) ??
     handleCanvas(request, state, segments) ??

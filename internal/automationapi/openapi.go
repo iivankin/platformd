@@ -395,11 +395,12 @@ func serviceMutationSchemas() map[string]any {
 			},
 			"dockerUpload": map[string]any{
 				"type": "object", "additionalProperties": false,
-				"required": []string{"repository", "branch", "workflows"},
+				"required": []string{"repository", "branch", "workflows", "previews"},
 				"properties": map[string]any{
 					"repository": map[string]string{"type": "string"},
 					"branch":     map[string]string{"type": "string"},
 					"workflows":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+					"previews":   map[string]string{"type": "boolean"},
 				},
 			},
 		},
