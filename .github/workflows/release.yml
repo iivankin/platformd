@@ -125,22 +125,35 @@ jobs:
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/internaldns -run '^$' -fuzz '^FuzzDNSInputs$' -fuzztime 10s
           go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/ingress -run '^$' -fuzz '^FuzzProxyInputs$' -fuzztime 10s
 
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: internal/objectstore/sidecar -> target
+          prefix-key: platformd-objectstore-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock') }}
+
+      - name: Cache pip wheels for S3 SDK checks
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: ${{ runner.temp }}/platformd-pip-cache
+          key: platformd-s3-pip-boto3-1.40.18-lancedb-0.34.0
+
       - name: Build and verify bundled runtime
         env:
           PLATFORMD_STRICT_TOOLCHAIN: "1"
         run: build/runtime-linux-amd64.sh
 
       - name: Verify Rust S3 and SDK conformance
+        env:
+          # Match build/runtime-linux-amd64.sh so cargo reuses the release target.
+          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
+          PIP_CACHE_DIR: ${{ runner.temp }}/platformd-pip-cache
         run: |
           rm -rf "$PWD/.build/runtime-linux-amd64"
-          cargo clean --manifest-path internal/objectstore/sidecar/Cargo.toml
-          cargo test --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
-          cargo clippy --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
-          cargo clean --manifest-path internal/objectstore/sidecar/Cargo.toml
+          cargo test --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
+          cargo clippy --release --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
           python3 -m venv "$RUNNER_TEMP/platformd-s3-python"
           "$RUNNER_TEMP/platformd-s3-python/bin/pip" \
             --disable-pip-version-check \
-            --no-cache-dir \
             install \
             boto3==1.40.18 \
             lancedb==0.34.0
