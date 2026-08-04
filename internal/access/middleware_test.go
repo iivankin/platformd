@@ -52,7 +52,7 @@ func TestProtectAdminRejectsMissingTokenCSRFAndHostMismatch(t *testing.T) {
 		status  int
 	}{
 		{name: "missing token", request: adminRequest(http.MethodGet, "/"), status: http.StatusForbidden},
-		{name: "public upload is not accepted by admin middleware", request: adminRequest(http.MethodPost, "/public/api/v1/projects/project/services/service/image"), status: http.StatusForbidden},
+		{name: "public upload is not accepted by admin middleware", request: adminRequest(http.MethodPost, "/public/api/v1/projects/shop/services/api/image"), status: http.StatusForbidden},
 		{name: "missing origin", request: authenticatedRequest(http.MethodPost, "/api/v1/projects"), status: http.StatusForbidden},
 		{name: "wrong host", request: requestWithHost(http.MethodGet, "/", "other.example.com"), status: http.StatusMisdirectedRequest},
 	}

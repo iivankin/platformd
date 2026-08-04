@@ -225,14 +225,14 @@ const DockerImageUploadFields = ({
   draft,
   httpDomainCount,
   onSourceChange,
-  projectID,
-  serviceID,
+  projectName,
+  serviceName,
 }: {
   draft: Extract<ServiceSource, { type: "docker_image_upload" }>;
   httpDomainCount: number;
   onSourceChange: (source: ServiceSource) => void;
-  projectID?: string;
-  serviceID?: string;
+  projectName?: string;
+  serviceName?: string;
 }) => {
   const update = (values: Partial<typeof draft.dockerUpload>) =>
     onSourceChange({
@@ -315,14 +315,14 @@ const DockerImageUploadFields = ({
         <p className="text-[9px] leading-4 text-muted-foreground">
           Production branch tags as <code>latest</code> deploy production.
         </p>
-        {projectID && serviceID ? (
+        {projectName && serviceName ? (
           <GitHubActionExampleDialog
             description="GitHub Actions builds an OCI archive and uploads it to this service with OIDC. No registry or docker login."
-            example={uploadImageActionExample({ projectID, serviceID })}
+            example={uploadImageActionExample({ projectName, serviceName })}
             notes={
               <>
                 <code>project</code> and <code>resource</code> are this
-                project&apos;s and service&apos;s IDs. The workflow needs{" "}
+                project&apos;s and service&apos;s names. The workflow needs{" "}
                 <code>permissions: id-token: write</code>.
               </>
             }
@@ -357,9 +357,9 @@ const SourceFields = ({
   httpDomainCount,
   onRegistryCredentialChange,
   onSourceChange,
-  projectID,
+  projectName,
   registryCredential,
-  serviceID,
+  serviceName,
 }: {
   draft: ServiceSource;
   httpDomainCount: number;
@@ -367,9 +367,9 @@ const SourceFields = ({
     credential: Pick<ServiceRegistryCredential, "password" | "username">
   ) => void;
   onSourceChange: (source: ServiceSource) => void;
-  projectID?: string;
+  projectName?: string;
   registryCredential: Pick<ServiceRegistryCredential, "password" | "username">;
-  serviceID?: string;
+  serviceName?: string;
 }) => {
   if (draft.type === "unconfigured") {
     return (
@@ -384,8 +384,8 @@ const SourceFields = ({
         draft={draft}
         httpDomainCount={httpDomainCount}
         onSourceChange={onSourceChange}
-        projectID={projectID}
-        serviceID={serviceID}
+        projectName={projectName}
+        serviceName={serviceName}
       />
     );
   }
@@ -459,14 +459,14 @@ export const ServiceConfiguration = ({
   draft,
   httpDomainCount = 0,
   onDraftChange,
-  projectID,
-  serviceID,
+  projectName,
+  serviceName,
 }: {
   draft: ServiceConfigurationDraft;
   httpDomainCount?: number;
   onDraftChange: (draft: ServiceConfigurationDraft) => void;
-  projectID?: string;
-  serviceID?: string;
+  projectName?: string;
+  serviceName?: string;
 }) => {
   const update = (values: Partial<ServiceConfigurationDraft>) =>
     onDraftChange({ ...draft, ...values });
@@ -516,9 +516,9 @@ export const ServiceConfiguration = ({
               update({ registryCredential })
             }
             onSourceChange={(source) => update({ source })}
-            projectID={projectID}
+            projectName={projectName}
             registryCredential={draft.registryCredential}
-            serviceID={serviceID}
+            serviceName={serviceName}
           />
         </div>
       </SectionCard>

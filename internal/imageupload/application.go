@@ -34,6 +34,8 @@ var (
 )
 
 type Store interface {
+	ProjectByName(context.Context, string) (state.ProjectSummary, error)
+	ProjectResourceByName(context.Context, string, string) (state.ProjectResource, error)
 	Service(context.Context, string, string) (state.ServiceDesired, error)
 	BeginImageUpload(context.Context, state.BeginImageUploadInput) ([]string, error)
 	ImageUpload(context.Context, string, string) (state.ImageUpload, error)
@@ -131,8 +133,8 @@ func New(config Config) (*Application, error) {
 
 func (application *Application) Handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/image", application.status)
-	mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services/{serviceID}/image", application.upload)
+	mux.HandleFunc("GET /public/api/v1/projects/{projectName}/services/{serviceName}/image", application.status)
+	mux.HandleFunc("POST /public/api/v1/projects/{projectName}/services/{serviceName}/image", application.upload)
 	return mux
 }
 
@@ -141,8 +143,7 @@ func (application *Application) status(response http.ResponseWriter, request *ht
 	if !ok {
 		return
 	}
-	_ = service
-	writeUploadResponse(response, http.StatusOK, upload)
+	writeUploadResponse(response, http.StatusOK, upload, service)
 }
 
 func (application *Application) upload(response http.ResponseWriter, request *http.Request) {
@@ -172,7 +173,7 @@ func (application *Application) upload(response http.ResponseWriter, request *ht
 		return
 	}
 	if upload.Status != "uploading" {
-		writeUploadResponse(response, http.StatusAccepted, upload)
+		writeUploadResponse(response, http.StatusAccepted, upload, service)
 		return
 	}
 	offset, err := parseNonNegativeHeader(request.Header.Get("Upload-Offset"))
@@ -207,7 +208,7 @@ func (application *Application) upload(response http.ResponseWriter, request *ht
 	if next == upload.ExpectedLength {
 		go application.process(service.ID, upload.ID)
 	}
-	writeUploadResponse(response, http.StatusAccepted, upload)
+	writeUploadResponse(response, http.StatusAccepted, upload, service)
 }
 
 func (application *Application) begin(
@@ -272,7 +273,11 @@ func (application *Application) authorizeUpload(
 		writeOIDCError(response)
 		return state.ServiceDesired{}, "", state.ImageUploadIdentity{}, false
 	}
-	service, err := application.store.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+	service, err := application.resolveService(
+		request.Context(),
+		request.PathValue("projectName"),
+		request.PathValue("serviceName"),
+	)
 	if err != nil || !service.Enabled ||
 		service.Snapshot.Source.Type != servicesource.DockerImageUpload || service.Snapshot.Source.DockerUpload == nil {
 		writeOIDCError(response)
@@ -296,7 +301,11 @@ func (application *Application) authorizeExisting(response http.ResponseWriter, 
 		writeOIDCError(response)
 		return state.ServiceDesired{}, state.ImageUpload{}, false
 	}
-	service, err := application.store.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+	service, err := application.resolveService(
+		request.Context(),
+		request.PathValue("projectName"),
+		request.PathValue("serviceName"),
+	)
 	if err != nil || !service.Enabled ||
 		service.Snapshot.Source.Type != servicesource.DockerImageUpload || service.Snapshot.Source.DockerUpload == nil {
 		writeOIDCError(response)
@@ -314,6 +323,21 @@ func (application *Application) authorizeExisting(response http.ResponseWriter, 
 		return state.ServiceDesired{}, state.ImageUpload{}, false
 	}
 	return service, upload, true
+}
+
+func (application *Application) resolveService(ctx context.Context, projectName, serviceName string) (state.ServiceDesired, error) {
+	project, err := application.store.ProjectByName(ctx, projectName)
+	if err != nil {
+		return state.ServiceDesired{}, err
+	}
+	resource, err := application.store.ProjectResourceByName(ctx, project.ID, serviceName)
+	if err != nil {
+		return state.ServiceDesired{}, err
+	}
+	if resource.Kind != "service" {
+		return state.ServiceDesired{}, state.ErrProjectResourceNotFound
+	}
+	return application.store.Service(ctx, project.ID, resource.ID)
 }
 
 func (application *Application) verify(ctx context.Context, request *http.Request, service state.ServiceDesired, tag string) (state.ImageUploadIdentity, error) {

@@ -24,9 +24,9 @@ func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
 		path   string
 		want   string
 	}{
-		{method: http.MethodPost, path: "/public/api/v1/projects/project/services/service/image", want: "image"},
-		{method: http.MethodGet, path: "/public/api/v1/projects/project/services/service/image", want: "image"},
-		{method: http.MethodPut, path: "/public/api/v1/projects/project/services/service/image", want: "protected"},
+		{method: http.MethodPost, path: "/public/api/v1/projects/shop/services/api/image", want: "image"},
+		{method: http.MethodGet, path: "/public/api/v1/projects/shop/services/api/image", want: "image"},
+		{method: http.MethodPut, path: "/public/api/v1/projects/shop/services/api/image", want: "protected"},
 		{method: http.MethodGet, path: portforward.EndpointPath, want: "forward"},
 		{
 			method: http.MethodPost,

@@ -29,14 +29,14 @@ jobs:
         uses: iivankin/platformd/actions/upload-image@v1
         with:
           url: https://admin.example.com
-          project: PROJECT_ID
-          resource: SERVICE_ID
+          project: shop
+          resource: api
           archive: ${{ runner.temp }}/image.oci
           tag: latest
           environment-url: https://api.example.com
 ```
 
-`url` is the HTTPS origin of the platformd admin hostname (not a secret; a repository variable is fine). `project` and `resource` are the project and service IDs from the admin UI. The action builds the public upload URL and uses it as the OIDC audience.
+`url` is the HTTPS origin of the platformd admin hostname (not a secret; a repository variable is fine). `project` and `resource` are the project and service names from the admin UI. The action builds the public upload URL and uses it as the OIDC audience.
 
 `latest` is accepted only from the production branch configured on the service and deploys production. Any other valid image tag creates or replaces a preview when image previews are enabled on the service. If the service has an allowed-workflow list, the current workflow filename must be present in it.
 

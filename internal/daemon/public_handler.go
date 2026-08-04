@@ -82,8 +82,8 @@ func (factory *publicHandlerFactory) Build(hostname string) (http.Handler, error
 
 func publicHandler(imageUpload, forward, createForward, protected http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle("GET /public/api/v1/projects/{projectID}/services/{serviceID}/image", imageUpload)
-	mux.Handle("POST /public/api/v1/projects/{projectID}/services/{serviceID}/image", imageUpload)
+	mux.Handle("GET /public/api/v1/projects/{projectName}/services/{serviceName}/image", imageUpload)
+	mux.Handle("POST /public/api/v1/projects/{projectName}/services/{serviceName}/image", imageUpload)
 	mux.Handle("POST /public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards", createForward)
 	mux.Handle(portforward.EndpointPath, forward)
 	mux.Handle("/", protected)

@@ -28,6 +28,20 @@ type uploadTestStore struct {
 	upload  state.ImageUpload
 }
 
+func (store *uploadTestStore) ProjectByName(_ context.Context, name string) (state.ProjectSummary, error) {
+	if name != store.service.ProjectName && name != store.service.ProjectID {
+		return state.ProjectSummary{}, state.ErrProjectNotFound
+	}
+	return state.ProjectSummary{ID: store.service.ProjectID, Name: store.service.ProjectName}, nil
+}
+
+func (store *uploadTestStore) ProjectResourceByName(_ context.Context, projectID, name string) (state.ProjectResource, error) {
+	if projectID != store.service.ProjectID || (name != store.service.Name && name != store.service.ID) {
+		return state.ProjectResource{}, state.ErrProjectResourceNotFound
+	}
+	return state.ProjectResource{ID: store.service.ID, Kind: "service", Name: store.service.Name}, nil
+}
+
 func (store *uploadTestStore) Service(context.Context, string, string) (state.ServiceDesired, error) {
 	return store.service, nil
 }
@@ -130,11 +144,11 @@ func TestChunkUploadAndStatusShareTheOIDCEndpoint(t *testing.T) {
 			Body: io.NopCloser(bytes.NewReader(jwks)),
 		}, nil
 	})}
-	const endpoint = "/public/api/v1/projects/project/services/service/image"
+	const endpoint = "/public/api/v1/projects/shop/services/api/image"
 	const audience = "https://platform.example.com" + endpoint
 	token := signedUploadToken(t, privateKey, now, audience)
 	store := &uploadTestStore{service: state.ServiceDesired{
-		ID: "service", ProjectID: "project", Enabled: true,
+		ID: "service-id", ProjectID: "project-id", ProjectName: "shop", Name: "api", Enabled: true,
 		Snapshot: serviceconfig.Snapshot{Source: servicesource.Source{
 			Type: servicesource.DockerImageUpload,
 			DockerUpload: &servicesource.DockerUpload{

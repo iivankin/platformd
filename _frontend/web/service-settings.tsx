@@ -96,8 +96,8 @@ export const ServiceSettings = ({
           updateDraft({ ...draft, configuration })
         }
         httpDomainCount={draft.domains.length}
-        projectID={projectID}
-        serviceID={serviceID}
+        projectName={projectNameFromInternalHostname(internalHostname)}
+        serviceName={service.name}
       />
       <ServiceBeforeDeploy
         domains={draft.domains}

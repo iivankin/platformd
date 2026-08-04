@@ -11,6 +11,8 @@ type UploadStatus = {
   status?: string;
   errorMessage?: string;
   errorCode?: string;
+  projectId?: string;
+  serviceId?: string;
   deploymentId?: string;
   previewId?: string;
   previewUrl?: string;
@@ -178,8 +180,13 @@ function defaultEnvironmentName(tag: string): string {
   return `preview-${safe}`.slice(0, 255);
 }
 
-function platformdLogsURL(endpoint: string, deploymentID: string): string {
-  if (!(endpoint && deploymentID)) {
+function platformdLogsURL(
+  endpoint: string,
+  projectID: string,
+  serviceID: string,
+  deploymentID: string,
+): string {
+  if (!(endpoint && projectID && serviceID && deploymentID)) {
     return "";
   }
   let parsed: URL;
@@ -188,14 +195,6 @@ function platformdLogsURL(endpoint: string, deploymentID: string): string {
   } catch {
     return "";
   }
-  const match = parsed.pathname.match(
-    /^\/public\/api\/v1\/projects\/([^/]+)\/services\/([^/]+)\/image\/?$/u,
-  );
-  if (!match) {
-    return "";
-  }
-  const projectID = decodeURIComponent(match[1]);
-  const serviceID = decodeURIComponent(match[2]);
   return `${parsed.origin}/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments/${encodeURIComponent(deploymentID)}/deploy-logs`;
 }
 
@@ -571,7 +570,12 @@ async function run(): Promise<void> {
   }
   const deploymentID = status.deploymentId || status.previewId || "";
   const environmentURL = input("environment-url") || status.previewUrl || "";
-  const logsURL = platformdLogsURL(endpoint, deploymentID);
+  const logsURL = platformdLogsURL(
+    endpoint,
+    status.projectId || "",
+    status.serviceId || "",
+    deploymentID,
+  );
   setOutput("deployment-id", deploymentID);
   setOutput("digest", status.digest);
   setOutput("preview-url", status.previewUrl);

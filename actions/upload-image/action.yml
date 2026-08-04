@@ -5,10 +5,10 @@ inputs:
     description: HTTPS origin of the platformd admin hostname, for example https://admin.example.com.
     required: true
   project:
-    description: Project ID that owns the target service.
+    description: Project name that owns the target service.
     required: true
   resource:
-    description: Service ID that receives the uploaded image.
+    description: Service name that receives the uploaded image.
     required: true
   archive:
     description: Path to an OCI archive produced by Docker Buildx.

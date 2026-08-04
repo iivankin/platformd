@@ -9,7 +9,7 @@ func TestOIDCClaimsAuthorizeRepositoryBranchWorkflowAndAudience(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	verifier := NewOIDCVerifier(nil, func() time.Time { return now })
 	claims := oidcClaims{
-		Audience: oidcAudience{"https://platform.example.com/public/api/v1/projects/project/services/service/image"},
+		Audience: oidcAudience{"https://platform.example.com/public/api/v1/projects/shop/services/api/image"},
 		Issuer:   githubIssuer, ExpiresAt: now.Add(5 * time.Minute).Unix(), IssuedAt: now.Unix(),
 		Repository: "acme/backend", Ref: "refs/heads/main", SHA: "commit",
 		Workflow: "Deploy", WorkflowRef: "acme/backend/.github/workflows/deploy.yml@refs/heads/main",

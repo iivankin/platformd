@@ -286,12 +286,12 @@ export const projectNameFromInternalHostname = (hostname: string) => {
 
 export const uploadImageActionExample = ({
   origin = adminOrigin(),
-  projectID,
-  serviceID,
+  projectName,
+  serviceName,
 }: {
   origin?: string;
-  projectID: string;
-  serviceID: string;
+  projectName: string;
+  serviceName: string;
 }) => `# Build an OCI archive and upload it directly to this service.
 permissions:
   contents: read
@@ -317,8 +317,8 @@ jobs:
         with:
           # platformd admin origin — where the action calls the API (not the tunnel)
           url: ${origin}
-          project: ${projectID}
-          resource: ${serviceID}
+          project: ${projectName}
+          resource: ${serviceName}
           archive: \${{ runner.temp }}/image.oci
           # latest from the production branch deploys production.
           # Other tags create a 14-day preview when image previews are enabled.

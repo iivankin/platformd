@@ -17,12 +17,12 @@ test("derives project name from internal hostnames", () => {
 test("builds an upload example with url, project, and resource", () => {
   const example = uploadImageActionExample({
     origin: "https://admin.example.com",
-    projectID: "project-id",
-    serviceID: "service-id",
+    projectName: "storefront",
+    serviceName: "api",
   });
   expect(example).toContain("url: https://admin.example.com");
-  expect(example).toContain("project: project-id");
-  expect(example).toContain("resource: service-id");
+  expect(example).toContain("project: storefront");
+  expect(example).toContain("resource: api");
   expect(example).toContain("iivankin/platformd/actions/upload-image@v1");
   expect(example).not.toContain("endpoint:");
   expect(example).not.toContain("secrets.PLATFORMD");
