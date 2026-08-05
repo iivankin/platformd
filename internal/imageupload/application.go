@@ -37,6 +37,7 @@ type Store interface {
 	ProjectByName(context.Context, string) (state.ProjectSummary, error)
 	ProjectResourceByName(context.Context, string, string) (state.ProjectResource, error)
 	Service(context.Context, string, string) (state.ServiceDesired, error)
+	ServiceDomains(context.Context, string, string) ([]state.ServiceDomain, error)
 	BeginImageUpload(context.Context, state.BeginImageUploadInput) ([]string, error)
 	ImageUpload(context.Context, string, string) (state.ImageUpload, error)
 	AdvanceImageUpload(context.Context, string, int64, int64, int64) error
@@ -143,7 +144,7 @@ func (application *Application) status(response http.ResponseWriter, request *ht
 	if !ok {
 		return
 	}
-	writeUploadResponse(response, http.StatusOK, upload, service)
+	application.writeUploadResponse(response, request.Context(), http.StatusOK, upload, service)
 }
 
 func (application *Application) upload(response http.ResponseWriter, request *http.Request) {
@@ -173,7 +174,7 @@ func (application *Application) upload(response http.ResponseWriter, request *ht
 		return
 	}
 	if upload.Status != "uploading" {
-		writeUploadResponse(response, http.StatusAccepted, upload, service)
+		application.writeUploadResponse(response, request.Context(), http.StatusAccepted, upload, service)
 		return
 	}
 	offset, err := parseNonNegativeHeader(request.Header.Get("Upload-Offset"))
@@ -206,9 +207,35 @@ func (application *Application) upload(response http.ResponseWriter, request *ht
 	upload.ReceivedLength = next
 	upload.UpdatedAtMillis = application.now().UnixMilli()
 	if next == upload.ExpectedLength {
-		go application.process(service.ID, upload.ID)
+		go application.process(service.ProjectID, service.ID, upload.ID)
 	}
-	writeUploadResponse(response, http.StatusAccepted, upload, service)
+	application.writeUploadResponse(response, request.Context(), http.StatusAccepted, upload, service)
+}
+
+func (application *Application) writeUploadResponse(
+	response http.ResponseWriter,
+	ctx context.Context,
+	status int,
+	upload state.ImageUpload,
+	service state.ServiceDesired,
+) {
+	writeUploadResponse(response, status, upload, service, application.publicURL(ctx, service.ProjectID, service.ID, upload))
+}
+
+// publicURL is the site users hit for this upload: preview hostname, or the first
+// attached service domain for production. Empty when none is configured yet.
+func (application *Application) publicURL(ctx context.Context, projectID, serviceID string, upload state.ImageUpload) string {
+	if upload.PreviewURL != "" {
+		return upload.PreviewURL
+	}
+	if upload.Tag != "latest" || upload.Status != "succeeded" {
+		return ""
+	}
+	domains, err := application.store.ServiceDomains(ctx, projectID, serviceID)
+	if err != nil || len(domains) == 0 {
+		return ""
+	}
+	return "https://" + domains[0].Hostname
 }
 
 func (application *Application) begin(
@@ -363,7 +390,7 @@ func writeOIDCError(response http.ResponseWriter) {
 	writeUploadError(response, http.StatusUnauthorized, "invalid_oidc", "GitHub Actions OIDC token is invalid")
 }
 
-func (application *Application) process(serviceID, uploadID string) {
+func (application *Application) process(projectID, serviceID, uploadID string) {
 	processContext, cancel := context.WithCancel(application.context)
 	done := make(chan struct{})
 	application.registerRun(uploadID, runningUpload{cancel: cancel, done: done})
@@ -445,11 +472,16 @@ func (application *Application) process(serviceID, uploadID string) {
 		application.fail(upload.ID, "state_update_failed", err)
 		return
 	}
-	previewURL := ""
+	publicURL := ""
 	if kind == "production" {
 		err = application.runtime.DeployUploadedProduction(processContext, serviceID, deploymentID, revisionID, "oci-archive:"+archivePath, image, upload.Identity)
+		if err == nil {
+			publicURL = application.publicURL(processContext, projectID, serviceID, state.ImageUpload{
+				Tag: upload.Tag, Status: "succeeded",
+			})
+		}
 	} else {
-		previewURL, err = application.runtime.DeployUploadedPreview(processContext, serviceID, previewID, upload.Tag, revisionID, "oci-archive:"+archivePath, image, upload.Identity)
+		publicURL, err = application.runtime.DeployUploadedPreview(processContext, serviceID, previewID, upload.Tag, revisionID, "oci-archive:"+archivePath, image, upload.Identity)
 	}
 	if err != nil {
 		application.fail(upload.ID, "deployment_failed", err)
@@ -457,7 +489,7 @@ func (application *Application) process(serviceID, uploadID string) {
 	}
 	now := application.now()
 	if err := application.store.CompleteImageUpload(
-		processContext, upload.ID, revisionID, previewURL, now.UnixMilli(),
+		processContext, upload.ID, revisionID, publicURL, now.UnixMilli(),
 		now.Add(UploadRetention).UnixMilli(), now.Add(PreviewRetention).UnixMilli(),
 	); err != nil {
 		// Deploy already published the revision; clear the in-flight upload slot so

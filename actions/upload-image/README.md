@@ -33,7 +33,6 @@ jobs:
           resource: api
           archive: ${{ runner.temp }}/image.oci
           tag: latest
-          environment-url: https://api.example.com
 ```
 
 `url` is the HTTPS origin of the platformd admin hostname (not a secret; a repository variable is fine). `project` and `resource` are the project and service names from the admin UI. The action builds the public upload URL and uses it as the OIDC audience.
@@ -46,19 +45,19 @@ The action uploads 8 MiB chunks by default. `chunk-size` may be changed, but pla
 
 After a successful upload the action publishes a result in this order:
 
-1. **GitHub Deployment** when `github-token` / `GITHUB_TOKEN` can call the Deployments API (`deployments: write`). Preview and production both create a success status; `environment_url` is the preview URL or the optional `environment-url` input for `latest`. `log_url` points at the platformd admin deploy-logs page for that deployment/preview.
+1. **GitHub Deployment** when `github-token` / `GITHUB_TOKEN` can call the Deployments API (`deployments: write`). Preview and production both create a success status; `environment_url` comes from platformd (`url`: first attached service domain for `latest`, preview hostname otherwise). `log_url` points at the platformd admin deploy-logs page for that deployment/preview.
 2. **PR comment** for non-`latest` uploads with a preview URL when the token can comment (`pull-requests: write`). The action finds an open PR for the current branch (or uses the PR from `pull_request` events), then creates or updates a comment marked per service. Missing permission or no open PR only skips the comment.
 3. Otherwise, if a URL is known, it still sets the `environment-url` output so the job can wire:
 
    ```yaml
    environment:
-     name: production
+     name: api
      url: ${{ steps.upload.outputs.environment-url }}
    ```
 
-A Job Summary is always written: **Open site** (when known), **View logs in platformd** (when the upload endpoint path can be parsed), plus platformd id/digest. The same logs link is exposed as `logs-url`.
+A Job Summary is always written to `GITHUB_STEP_SUMMARY`: **Open site** / **View logs in platformd** (when known), plus a table with project, resource, tag, GitHub environment, URL, platformd id, and digest. The same logs link is exposed as `logs-url`.
 
-Default environment names: `production` for `latest`, `preview-<tag>` for everything else. Override with `environment`.
+Default environment names: `<resource>` for `latest`, `<resource>/preview-<tag>` for everything else. Override with `environment`.
 
 ## Development
 

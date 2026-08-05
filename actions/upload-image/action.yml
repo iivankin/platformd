@@ -29,10 +29,9 @@ inputs:
     default: ${{ github.token }}
     required: false
   environment:
-    description: GitHub Environment name. Defaults to production for latest, preview-<tag> otherwise.
-    required: false
-  environment-url:
-    description: Public URL for production (latest). Preview uploads use previewUrl from platformd when unset.
+    description: >-
+      GitHub Environment name. Defaults to <resource> for latest, or
+      <resource>/preview-<tag> otherwise.
     required: false
 outputs:
   upload-id:
@@ -44,7 +43,7 @@ outputs:
   preview-url:
     description: Preview URL for non-latest tags.
   environment-url:
-    description: URL suitable for jobs.<job>.environment.url when GitHub Deployments were not registered.
+    description: Public URL from platformd (attached service domain for latest, preview URL otherwise).
   logs-url:
     description: Admin UI link to platformd deploy logs for this production or preview deployment.
 runs:

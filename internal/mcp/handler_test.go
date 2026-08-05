@@ -312,6 +312,34 @@ func TestMCPRejectsInvalidTransportHeaders(t *testing.T) {
 	}
 }
 
+func TestMCPToolsCallAndListAcceptProtocolMeta(t *testing.T) {
+	repository := &repositoryStub{
+		projects: []state.ProjectSummary{{ID: "project-a", Name: "alpha"}},
+	}
+	handler := newTestHandler(t, repository)
+
+	list := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{"_meta":{"progressToken":"list-1"}}}`)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"error"`) || !strings.Contains(response.Body.String(), `"name":"list_projects"`) {
+		t.Fatalf("tools/list with _meta = %s", response.Body)
+	}
+
+	call := mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_projects","arguments":{},"_meta":{"progressToken":1}}}`)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), `"isError":true`) || strings.Contains(response.Body.String(), `Invalid tools/call params`) || !strings.Contains(response.Body.String(), `\"id\":\"project-a\"`) {
+		t.Fatalf("tools/call with _meta = %s", response.Body)
+	}
+
+	call = mcpRequest(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_projects","arguments":{"unexpected":true},"_meta":{}}}`)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"code":-32602`) || !strings.Contains(response.Body.String(), `list_projects requires an empty object`) {
+		t.Fatalf("tools/call still rejects unknown tool arguments = %s", response.Body)
+	}
+}
+
 func TestMCPReadToolsEnforceProjectBoundaryBeforeLookup(t *testing.T) {
 	boundProject := "project-a"
 	repository := &repositoryStub{

@@ -9,7 +9,6 @@ import type {
   ProjectCanvas,
   RuntimeDeployment,
 } from "@/api";
-import { BuildLogs } from "@/build-logs";
 import { DeploymentDetails } from "@/deployment-details";
 import { DeploymentLogs } from "@/deployment-logs";
 import { ManagedDeploymentDetails } from "@/managed-deployment-details";
@@ -121,18 +120,6 @@ const deploymentContent = ({
   resourceID: string;
   view: DeploymentWorkspaceView;
 }) => {
-  if (view === "build-logs" && kind === "service") {
-    return (
-      <BuildLogs
-        deploymentID={deployment.id}
-        projectID={projectID}
-        running={
-          deployment.status === "running" || deployment.status === "waiting"
-        }
-        serviceID={resourceID}
-      />
-    );
-  }
   if (view === "deploy-logs") {
     return (
       <DeploymentLogs
@@ -208,9 +195,7 @@ export const ProjectDeploymentPage = ({
   }
 
   const validView =
-    deploymentView === "details" ||
-    deploymentView === "deploy-logs" ||
-    (validKind === "service" && deploymentView === "build-logs");
+    deploymentView === "details" || deploymentView === "deploy-logs";
   if (!validView) {
     return (
       <Navigate
@@ -236,20 +221,6 @@ export const ProjectDeploymentPage = ({
         "details"
       ),
     },
-    ...(validKind === "service"
-      ? [
-          {
-            label: "Build logs",
-            path: resourceDeploymentPath(
-              projectID,
-              resourceID,
-              validKind,
-              deploymentID,
-              "build-logs"
-            ),
-          },
-        ]
-      : []),
     {
       label: "Deploy logs",
       path: resourceDeploymentPath(

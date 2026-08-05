@@ -47,12 +47,14 @@ const VariableSuggestionPopup = ({
 export const VariableNameCombobox = ({
   busy,
   onChange,
+  onPasteEnvironment,
   onSelect,
   row,
   suggestions,
 }: {
   busy: boolean;
   onChange: (name: string) => void;
+  onPasteEnvironment?: (text: string) => boolean;
   onSelect: (suggestion: VariableSuggestion) => void;
   row: VariableRow;
   suggestions: VariableSuggestion[];
@@ -82,6 +84,12 @@ export const VariableNameCombobox = ({
       autoCapitalize="none"
       autoComplete="off"
       className="h-full min-h-12 w-full bg-transparent px-5 font-mono text-[10px] outline-none placeholder:text-muted-foreground/70"
+      onPaste={(event) => {
+        const text = event.clipboardData.getData("text");
+        if (onPasteEnvironment?.(text)) {
+          event.preventDefault();
+        }
+      }}
       placeholder="VARIABLE_NAME"
       spellCheck={false}
     />

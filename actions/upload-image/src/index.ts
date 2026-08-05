@@ -15,13 +15,19 @@ type UploadStatus = {
   serviceId?: string;
   deploymentId?: string;
   previewId?: string;
-  previewUrl?: string;
+  url?: string;
   digest?: string;
 };
 
 function input(name: string, fallback = ""): string {
   const key = `INPUT_${name.replaceAll(" ", "_").toUpperCase()}`;
-  return (process.env[key] ?? fallback).trim();
+  const raw = process.env[key];
+  // GitHub sets INPUT_* to "" for omitted optional inputs; treat that as unset.
+  if (raw === undefined) {
+    return fallback.trim();
+  }
+  const value = raw.trim();
+  return value === "" ? fallback.trim() : value;
 }
 
 function sleep(milliseconds: number): Promise<void> {
@@ -172,12 +178,12 @@ async function githubAPIPages(token: string, path: string): Promise<JSONObject[]
   }
 }
 
-function defaultEnvironmentName(tag: string): string {
+function defaultEnvironmentName(resource: string, tag: string): string {
   if (tag === "latest") {
-    return "production";
+    return resource;
   }
   const safe = tag.replaceAll(/[^A-Za-z0-9._-]/gu, "-").replaceAll(/-+/gu, "-");
-  return `preview-${safe}`.slice(0, 255);
+  return `${resource}/preview-${safe}`.slice(0, 255);
 }
 
 function platformdLogsURL(
@@ -200,6 +206,9 @@ function platformdLogsURL(
 
 function writeSummary({
   title,
+  project,
+  resource,
+  tag,
   environmentURL,
   logsURL,
   deploymentID,
@@ -207,6 +216,9 @@ function writeSummary({
   environment,
 }: {
   title: string;
+  project: string;
+  resource: string;
+  tag: string;
   environmentURL: string;
   logsURL: string;
   deploymentID: string;
@@ -217,25 +229,37 @@ function writeSummary({
   if (!summary) {
     return false;
   }
-  const lines = [`### ${title}`, ""];
+  const lines = [`## ${title}`, ""];
   if (environmentURL) {
-    lines.push(`[Open site](${environmentURL})`);
+    lines.push(`**[Open site](${environmentURL})**`);
   }
   if (logsURL) {
-    lines.push(`[View logs in platformd](${logsURL})`);
+    lines.push(`**[View logs in platformd](${logsURL})**`);
   }
   if (environmentURL || logsURL) {
     lines.push("");
   }
+  lines.push("| | |", "| --- | --- |");
+  if (project) {
+    lines.push(`| Project | \`${project}\` |`);
+  }
+  if (resource) {
+    lines.push(`| Resource | \`${resource}\` |`);
+  }
+  lines.push(`| Tag | \`${tag}\` |`);
   if (environment) {
-    lines.push(`- environment: \`${environment}\``);
+    lines.push(`| GitHub environment | \`${environment}\` |`);
+  }
+  if (environmentURL) {
+    lines.push(`| URL | ${environmentURL} |`);
   }
   if (deploymentID) {
-    lines.push(`- platformd id: \`${deploymentID}\``);
+    lines.push(`| platformd id | \`${deploymentID}\` |`);
   }
   if (digest) {
-    lines.push(`- digest: \`${digest}\``);
+    lines.push(`| Digest | \`${digest}\` |`);
   }
+  lines.push("");
   appendFileSync(summary, `${lines.join("\n")}\n`);
   return true;
 }
@@ -396,6 +420,8 @@ async function commentPreviewOnPR({
 }
 
 async function publishDeployment({
+  project,
+  resource,
   tag,
   environmentURL,
   previewURL,
@@ -404,6 +430,8 @@ async function publishDeployment({
   digest,
   serviceID,
 }: {
+  project: string;
+  resource: string;
   tag: string;
   environmentURL: string;
   previewURL: string;
@@ -413,7 +441,7 @@ async function publishDeployment({
   serviceID: string;
 }): Promise<void> {
   const token = input("github-token", process.env.GITHUB_TOKEN || "");
-  const environment = input("environment", defaultEnvironmentName(tag));
+  const environment = input("environment", defaultEnvironmentName(resource, tag));
   const title = tag === "latest" ? "Production deployment" : "Preview deployment";
 
   if (token) {
@@ -465,6 +493,9 @@ async function publishDeployment({
   if (
     !writeSummary({
       title,
+      project,
+      resource,
+      tag,
       environmentURL,
       logsURL,
       deploymentID,
@@ -569,7 +600,8 @@ async function run(): Promise<void> {
     );
   }
   const deploymentID = status.deploymentId || status.previewId || "";
-  const environmentURL = input("environment-url") || status.previewUrl || "";
+  const publicURL = status.url || "";
+  const previewURL = tag === "latest" ? "" : publicURL;
   const logsURL = platformdLogsURL(
     endpoint,
     status.projectId || "",
@@ -578,13 +610,15 @@ async function run(): Promise<void> {
   );
   setOutput("deployment-id", deploymentID);
   setOutput("digest", status.digest);
-  setOutput("preview-url", status.previewUrl);
-  setOutput("environment-url", environmentURL);
+  setOutput("preview-url", previewURL);
+  setOutput("environment-url", publicURL);
   setOutput("logs-url", logsURL);
   await publishDeployment({
+    project,
+    resource,
     tag,
-    environmentURL,
-    previewURL: status.previewUrl || "",
+    environmentURL: publicURL,
+    previewURL,
     logsURL,
     deploymentID,
     digest: status.digest || "",

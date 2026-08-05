@@ -7,7 +7,7 @@ export type ResourceCollection =
   | "redis"
   | "services";
 
-export type DeploymentWorkspaceView = "build-logs" | "deploy-logs" | "details";
+export type DeploymentWorkspaceView = "deploy-logs" | "details";
 
 const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
   network_gateway: "network-gateways",

@@ -129,7 +129,7 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		var params struct {
 			Cursor string `json:"cursor"`
 		}
-		if err := decodeArguments(message.Params, &params); err != nil || params.Cursor != "" {
+		if err := decodeRequestParams(message.Params, &params); err != nil || params.Cursor != "" {
 			writeRPCError(response, message.ID, codeInvalidParams, "tools/list cursor is not supported")
 			return
 		}
@@ -161,7 +161,7 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 
 func (handler *Handler) callTool(response http.ResponseWriter, request *http.Request, message requestMessage, identity automation.Identity) {
 	var call toolCallParams
-	if err := decodeArguments(message.Params, &call); err != nil || call.Name == "" {
+	if err := decodeRequestParams(message.Params, &call); err != nil || call.Name == "" {
 		writeRPCError(response, message.ID, codeInvalidParams, "Invalid tools/call params")
 		return
 	}
@@ -402,6 +402,22 @@ func serviceArguments(arguments json.RawMessage) (struct {
 	return input, nil
 }
 
+// decodeRequestParams decodes MCP request envelopes. Unknown fields such as
+// `_meta` are ignored so clients can send protocol metadata without breaking
+// tools/list and tools/call.
+func decodeRequestParams(value json.RawMessage, destination any) error {
+	if len(value) == 0 {
+		value = json.RawMessage("{}")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	if err := decoder.Decode(destination); err != nil || requireEnd(decoder) != nil {
+		return errInvalidArguments
+	}
+	return nil
+}
+
+// decodeArguments decodes tool argument objects strictly. Unknown fields are
+// rejected so tool inputs stay schema-aligned.
 func decodeArguments(value json.RawMessage, destination any) error {
 	if len(value) == 0 {
 		value = json.RawMessage("{}")

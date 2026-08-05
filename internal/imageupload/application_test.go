@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 type uploadTestStore struct {
 	service state.ServiceDesired
 	upload  state.ImageUpload
+	domains []state.ServiceDomain
 }
 
 func (store *uploadTestStore) ProjectByName(_ context.Context, name string) (state.ProjectSummary, error) {
@@ -44,6 +46,13 @@ func (store *uploadTestStore) ProjectResourceByName(_ context.Context, projectID
 
 func (store *uploadTestStore) Service(context.Context, string, string) (state.ServiceDesired, error) {
 	return store.service, nil
+}
+
+func (store *uploadTestStore) ServiceDomains(_ context.Context, projectID, serviceID string) ([]state.ServiceDomain, error) {
+	if projectID != store.service.ProjectID || serviceID != store.service.ID {
+		return nil, state.ErrServiceNotFound
+	}
+	return append([]state.ServiceDomain(nil), store.domains...), nil
 }
 
 func (store *uploadTestStore) BeginImageUpload(_ context.Context, input state.BeginImageUploadInput) ([]string, error) {
@@ -211,6 +220,82 @@ func TestChunkUploadAndStatusShareTheOIDCEndpoint(t *testing.T) {
 	application.Handler().ServeHTTP(missingResponse, missing)
 	if missingResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("missing auth response = %d %s", missingResponse.Code, missingResponse.Body.String())
+	}
+}
+
+func TestSucceededProductionStatusReturnsFirstServiceDomainURL(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"alg": "RS256", "e": base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
+		"kid": "test-key", "kty": "RSA", "n": base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: oidcRoundTrip(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Request: request,
+			Body: io.NopCloser(bytes.NewReader(jwks)),
+		}, nil
+	})}
+	const endpoint = "/public/api/v1/projects/shop/services/api/image"
+	const audience = "https://platform.example.com" + endpoint
+	token := signedUploadToken(t, privateKey, now, audience)
+	store := &uploadTestStore{
+		service: state.ServiceDesired{
+			ID: "service-id", ProjectID: "project-id", ProjectName: "shop", Name: "api", Enabled: true,
+			Snapshot: serviceconfig.Snapshot{Source: servicesource.Source{
+				Type: servicesource.DockerImageUpload,
+				DockerUpload: &servicesource.DockerUpload{
+					Repository: "acme/backend", Branch: "main", Workflows: []string{"deploy.yml"},
+				},
+			}},
+		},
+		upload: state.ImageUpload{
+			ID: "upload-identifier-0001", ServiceID: "service-id", Tag: "latest",
+			Status: "succeeded", DeploymentID: "deployment-id",
+			Identity: state.ImageUploadIdentity{
+				Repository: "acme/backend", Ref: "refs/heads/main", SHA: "commit",
+				Workflow: "Deploy", WorkflowRef: "acme/backend/.github/workflows/deploy.yml@refs/heads/main",
+				Actor: "developer", RunID: "123", RunAttempt: "1",
+			},
+		},
+		domains: []state.ServiceDomain{
+			{Hostname: "api.example.com", ServiceID: "service-id"},
+			{Hostname: "www.example.com", ServiceID: "service-id"},
+		},
+	}
+	application, err := New(Config{
+		Context: context.Background(), Store: store, Engine: uploadTestEngine{}, Runtime: uploadTestRuntime{},
+		Growth: uploadTestGrowth{}, Verifier: NewOIDCVerifier(client, func() time.Time { return now }),
+		PublicHostname: "platform.example.com", UploadRoot: t.TempDir(), ImageRoot: t.TempDir(),
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statusRequest := httptest.NewRequest(http.MethodGet, endpoint, nil)
+	statusRequest.Header.Set("Authorization", "Bearer "+token)
+	statusRequest.Header.Set("Upload-ID", store.upload.ID)
+	statusResponse := httptest.NewRecorder()
+	application.Handler().ServeHTTP(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("status response = %d %s", statusResponse.Code, statusResponse.Body.String())
+	}
+	var body uploadResponse
+	if err := json.Unmarshal(statusResponse.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.URL != "https://api.example.com" {
+		t.Fatalf("url = %q, want first service domain", body.URL)
+	}
+	if strings.Contains(statusResponse.Body.String(), "previewUrl") {
+		t.Fatalf("response still exposes previewUrl: %s", statusResponse.Body.String())
 	}
 }
 

@@ -22,6 +22,12 @@ import { SectionCard } from "@/components/ui/card";
 import { newID } from "@/id";
 import { mergePendingCanvasResources } from "@/pending-resource-creation";
 import { useProjectChanges } from "@/project-changes";
+import {
+  applyParsedEnvironment,
+  looksLikeServiceEnvironment,
+  parseServiceEnvironment,
+} from "@/service-environment";
+import { ServicePasteEnvDialog } from "@/service-paste-env-dialog";
 import { ServiceSystemVariablesDialog } from "@/service-system-variables-dialog";
 import {
   VariableNameCombobox,
@@ -76,6 +82,32 @@ const VariableSection = ({
   const addVariable = () => {
     setRows((current) => [{ id: newID(), name: "", value: "" }, ...current]);
     setRaw(undefined);
+  };
+
+  const pasteEnvironment = (
+    parsed: Record<string, string>,
+    preferRowID?: string
+  ) => {
+    setRows((current) => applyParsedEnvironment(current, parsed, preferRowID));
+    setRaw(undefined);
+    setError(undefined);
+  };
+
+  const pasteEnvironmentText = (text: string, preferRowID?: string) => {
+    if (!looksLikeServiceEnvironment(text)) {
+      return false;
+    }
+    try {
+      pasteEnvironment(parseServiceEnvironment(text), preferRowID);
+      return true;
+    } catch (parseError) {
+      setError(
+        parseError instanceof Error
+          ? parseError.message
+          : "Unable to parse environment paste"
+      );
+      return true;
+    }
   };
 
   const save = async () => {
@@ -153,6 +185,10 @@ const VariableSection = ({
               <Braces /> {rawButtonLabel}
             </Button>
           ) : null}
+          <ServicePasteEnvDialog
+            busy={busy}
+            onPaste={(parsed) => pasteEnvironment(parsed)}
+          />
           <Button
             disabled={busy}
             onClick={addVariable}
@@ -182,6 +218,9 @@ const VariableSection = ({
                   <VariableNameCombobox
                     busy={busy}
                     onChange={(name) => updateRow(row.id, { name })}
+                    onPasteEnvironment={(text) =>
+                      pasteEnvironmentText(text, row.id)
+                    }
                     onSelect={(suggestion) =>
                       updateRow(row.id, {
                         name: suggestion.variableName,

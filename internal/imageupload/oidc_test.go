@@ -29,6 +29,7 @@ func TestOIDCClaimsAuthorizeRepositoryBranchWorkflowAndAudience(t *testing.T) {
 		"branch":     func(value *oidcClaims, _ *OIDCRequest) { value.Ref = "refs/heads/feature" },
 		"workflow": func(value *oidcClaims, _ *OIDCRequest) {
 			value.WorkflowRef = "acme/backend/.github/workflows/other.yml@refs/heads/main"
+			value.JobWorkflowRef = ""
 		},
 		"run": func(value *oidcClaims, _ *OIDCRequest) { value.RunID = "" },
 	} {
@@ -39,6 +40,32 @@ func TestOIDCClaimsAuthorizeRepositoryBranchWorkflowAndAudience(t *testing.T) {
 				t.Fatal("invalid claims were accepted")
 			}
 		})
+	}
+}
+
+func TestOIDCAcceptsReusableWorkflowJobRef(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	verifier := NewOIDCVerifier(nil, func() time.Time { return now })
+	claims := oidcClaims{
+		Audience: oidcAudience{"https://platform.example.com/public/api/v1/projects/shop/resources/db/port-forwards"},
+		Issuer:   githubIssuer, ExpiresAt: now.Add(5 * time.Minute).Unix(), IssuedAt: now.Unix(),
+		Repository: "acme/backend", Ref: "refs/heads/main", SHA: "commit",
+		Workflow: "CI", WorkflowRef: "acme/backend/.github/workflows/ci.yml@refs/heads/main",
+		JobWorkflowRef: "acme/backend/.github/workflows/deploy.yml@refs/heads/main",
+		Actor: "developer", RunID: "123", RunAttempt: "1",
+	}
+	if err := verifier.validateClaims(claims, OIDCRequest{
+		Audience: claims.Audience[0], Repository: "acme/backend",
+		Workflows: []string{"deploy.yml"},
+	}); err != nil {
+		t.Fatalf("reusable deploy workflow rejected: %v", err)
+	}
+	claims.JobWorkflowRef = "acme/backend/.github/workflows/other.yml@refs/heads/main"
+	if err := verifier.validateClaims(claims, OIDCRequest{
+		Audience: claims.Audience[0], Repository: "acme/backend",
+		Workflows: []string{"deploy.yml"},
+	}); err == nil {
+		t.Fatal("mismatched reusable workflow was accepted")
 	}
 }
 

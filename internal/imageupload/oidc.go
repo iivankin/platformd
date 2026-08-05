@@ -111,23 +111,33 @@ func (verifier *OIDCVerifier) validateClaims(claims oidcClaims, request OIDCRequ
 		return ErrOIDC
 	}
 	if len(request.Workflows) != 0 {
-		workflow := claims.WorkflowRef
-		if at := strings.LastIndexByte(workflow, '@'); at >= 0 {
-			workflow = workflow[:at]
-		}
-		workflow = path.Base(workflow)
-		allowed := false
-		for _, value := range request.Workflows {
-			if workflow == value {
-				allowed = true
-				break
-			}
-		}
+		// workflow_ref is the caller; job_workflow_ref is the reusable (called)
+		// workflow when present. Allow either so CI → deploy.yml reusable runs work
+		// when only deploy.yml is allowlisted.
+		allowed := workflowAllowed(claims.WorkflowRef, request.Workflows) ||
+			workflowAllowed(claims.JobWorkflowRef, request.Workflows)
 		if !allowed {
 			return ErrOIDC
 		}
 	}
 	return nil
+}
+
+func workflowAllowed(workflowRef string, allowed []string) bool {
+	workflow := strings.TrimSpace(workflowRef)
+	if workflow == "" {
+		return false
+	}
+	if at := strings.LastIndexByte(workflow, '@'); at >= 0 {
+		workflow = workflow[:at]
+	}
+	workflow = path.Base(workflow)
+	for _, value := range allowed {
+		if workflow == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (verifier *OIDCVerifier) key(ctx context.Context, keyID string) (*rsa.PublicKey, error) {
@@ -212,19 +222,20 @@ type oidcHeader struct {
 }
 
 type oidcClaims struct {
-	Audience    oidcAudience `json:"aud"`
-	Issuer      string       `json:"iss"`
-	ExpiresAt   int64        `json:"exp"`
-	NotBefore   int64        `json:"nbf"`
-	IssuedAt    int64        `json:"iat"`
-	Repository  string       `json:"repository"`
-	Ref         string       `json:"ref"`
-	SHA         string       `json:"sha"`
-	Workflow    string       `json:"workflow"`
-	WorkflowRef string       `json:"workflow_ref"`
-	Actor       string       `json:"actor"`
-	RunID       string       `json:"run_id"`
-	RunAttempt  string       `json:"run_attempt"`
+	Audience       oidcAudience `json:"aud"`
+	Issuer         string       `json:"iss"`
+	ExpiresAt      int64        `json:"exp"`
+	NotBefore      int64        `json:"nbf"`
+	IssuedAt       int64        `json:"iat"`
+	Repository     string       `json:"repository"`
+	Ref            string       `json:"ref"`
+	SHA            string       `json:"sha"`
+	Workflow       string       `json:"workflow"`
+	WorkflowRef    string       `json:"workflow_ref"`
+	JobWorkflowRef string       `json:"job_workflow_ref"`
+	Actor          string       `json:"actor"`
+	RunID          string       `json:"run_id"`
+	RunAttempt     string       `json:"run_attempt"`
 }
 
 type oidcAudience []string

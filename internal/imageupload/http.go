@@ -19,12 +19,12 @@ type uploadResponse struct {
 	DeploymentID string `json:"deploymentId,omitempty"`
 	PreviewID    string `json:"previewId,omitempty"`
 	Digest       string `json:"digest,omitempty"`
-	PreviewURL   string `json:"previewUrl,omitempty"`
+	URL          string `json:"url,omitempty"`
 	ErrorCode    string `json:"errorCode,omitempty"`
 	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
-func writeUploadResponse(response http.ResponseWriter, status int, upload state.ImageUpload, service state.ServiceDesired) {
+func writeUploadResponse(response http.ResponseWriter, status int, upload state.ImageUpload, service state.ServiceDesired, publicURL string) {
 	response.Header().Set("Cache-Control", "no-store")
 	response.Header().Set("Content-Type", "application/json; charset=utf-8")
 	response.Header().Set("Upload-ID", upload.ID)
@@ -36,7 +36,7 @@ func writeUploadResponse(response http.ResponseWriter, status int, upload state.
 		Offset: upload.ReceivedLength, Length: upload.ExpectedLength,
 		ProjectID: service.ProjectID, ServiceID: service.ID,
 		DeploymentID: upload.DeploymentID, PreviewID: upload.PreviewID, Digest: upload.ImageDigest,
-		PreviewURL: upload.PreviewURL, ErrorCode: upload.ErrorCode, ErrorMessage: upload.ErrorMessage,
+		URL: publicURL, ErrorCode: upload.ErrorCode, ErrorMessage: upload.ErrorMessage,
 	})
 }
 
