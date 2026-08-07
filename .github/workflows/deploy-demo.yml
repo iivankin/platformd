@@ -2,6 +2,8 @@ name: Deploy demo
 
 on:
   push:
+    branches:
+      - "**"
     paths:
       - "_frontend/**"
       - ".github/workflows/deploy-demo.yml"
