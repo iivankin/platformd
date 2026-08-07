@@ -20,6 +20,10 @@ type ResourceMetricTarget struct {
 	HTTPRoute  bool
 	TCPRoute   bool
 	UDPRoute   bool
+	// AggregatePublicTraffic is true for services and import gateways. Export
+	// gateways dual-attribute bytes to their target service, so they stay false
+	// to avoid double-counting project/installation rollups.
+	AggregatePublicTraffic bool
 }
 
 type ResourceMetricSample struct {
@@ -97,10 +101,12 @@ SELECT 'service', s.id, s.project_id,
   EXISTS (SELECT 1 FROM service_listeners l WHERE l.service_id = s.id AND l.protocol = 'tcp')
     OR EXISTS (SELECT 1 FROM network_gateways g WHERE g.target_service_id = s.id AND g.mode = 'export' AND g.protocol = 'tcp'),
   EXISTS (SELECT 1 FROM service_listeners l WHERE l.service_id = s.id AND l.protocol = 'udp')
-    OR EXISTS (SELECT 1 FROM network_gateways g WHERE g.target_service_id = s.id AND g.mode = 'export' AND g.protocol = 'udp')
+    OR EXISTS (SELECT 1 FROM network_gateways g WHERE g.target_service_id = s.id AND g.mode = 'export' AND g.protocol = 'udp'),
+  1
 FROM services s WHERE s.enabled = 1
-UNION ALL SELECT 'postgres', id, project_id, 0, 0, 0 FROM managed_postgres
-UNION ALL SELECT 'redis', id, project_id, 0, 0, 0 FROM managed_redis
+UNION ALL SELECT 'postgres', id, project_id, 0, 0, 0, 0 FROM managed_postgres
+UNION ALL SELECT 'redis', id, project_id, 0, 0, 0, 0 FROM managed_redis
+UNION ALL SELECT 'network_gateway', id, project_id, 0, protocol = 'tcp', protocol = 'udp', mode = 'import' FROM network_gateways
 ORDER BY 1, 2`)
 	if err != nil {
 		return nil, fmt.Errorf("list metric targets: %w", err)
@@ -112,6 +118,7 @@ ORDER BY 1, 2`)
 		if err := rows.Scan(
 			&target.Kind, &target.ResourceID, &target.ProjectID,
 			&target.HTTPRoute, &target.TCPRoute, &target.UDPRoute,
+			&target.AggregatePublicTraffic,
 		); err != nil {
 			return nil, fmt.Errorf("scan metric target: %w", err)
 		}
@@ -453,7 +460,7 @@ func validateResourceMetricSample(sample ResourceMetricSample) error {
 }
 
 func validMetricTarget(kind, resourceID string) bool {
-	return (kind == "service" || kind == "postgres" || kind == "redis") && resourceID != ""
+	return (kind == "service" || kind == "postgres" || kind == "redis" || kind == "network_gateway") && resourceID != ""
 }
 
 func encodeProxyMetricSample(sample *ProxyMetricSample) (any, error) {

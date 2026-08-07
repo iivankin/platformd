@@ -100,7 +100,7 @@ func (reader hostReaderStub) Read() (hostmetrics.Sample, error) {
 
 func TestDiskUsageIncludesEveryProjectVolumeWithoutBlockingLiveTargets(t *testing.T) {
 	store := &metricStoreStub{
-		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project"}},
+		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project", AggregatePublicTraffic: true}},
 		projects: []string{"project"},
 	}
 	disk := diskReaderStub{snapshot: diskusage.ResourceSnapshot{
@@ -141,7 +141,7 @@ func TestLiveSamplingUsesExactElapsedTimeAndTypedProtocolMetrics(t *testing.T) {
 	clock := time.Unix(100, 0)
 	store := &metricStoreStub{
 		targets: []state.ResourceMetricTarget{
-			{Kind: "service", ResourceID: "api", ProjectID: "project", HTTPRoute: true, UDPRoute: true},
+			{Kind: "service", ResourceID: "api", ProjectID: "project", HTTPRoute: true, UDPRoute: true, AggregatePublicTraffic: true},
 			{Kind: "redis", ResourceID: "cache", ProjectID: "project"},
 		},
 		projects: []string{"project"},
@@ -254,7 +254,7 @@ func TestProxyRatesSurviveIncompleteNftablesSampleWithoutRecoverySpike(t *testin
 	clock := time.Unix(200, 0)
 	key := metricKey{kind: "service", id: "api"}
 	store := &metricStoreStub{
-		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project"}},
+		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project", AggregatePublicTraffic: true}},
 		projects: []string{"project"},
 	}
 	usage := &mappedUsageReader{samples: map[metricKey]cgroupstats.Sample{
@@ -299,7 +299,7 @@ func TestCollectKeepsActiveResourceRollupAcrossCgroupReadFailure(t *testing.T) {
 	clock := time.Unix(250, 0)
 	key := metricKey{kind: "service", id: "api"}
 	store := &metricStoreStub{
-		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project"}},
+		targets:  []state.ResourceMetricTarget{{Kind: "service", ResourceID: "api", ProjectID: "project", AggregatePublicTraffic: true}},
 		projects: []string{"project"},
 	}
 	usage := &mappedUsageReader{

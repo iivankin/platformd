@@ -14,14 +14,19 @@ import type { AriaAttributes, ReactNode } from "react";
 import type { PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { postgresTablePageSize } from "@/postgres-data-browser-model";
+import {
+  postgresIncomingRelations,
+  postgresOutgoingRelationForColumn,
+  postgresTablePageSize,
+} from "@/postgres-data-browser-model";
 import type {
   PostgresBrowserTable,
+  PostgresTableRelation,
   PostgresTableSort,
 } from "@/postgres-data-browser-model";
+import { PostgresDataCell, PostgresRelationCell } from "@/postgres-data-cell";
 
 type PostgresStatement = PostgresQueryResult["statements"][number];
-type PostgresCell = PostgresStatement["rows"][number][number];
 
 const postgresTypeNames = new Map<number, string>([
   [16, "bool"],
@@ -43,15 +48,20 @@ const postgresTypeNames = new Map<number, string>([
   [3802, "jsonb"],
 ]);
 
-const displayCell = (cell?: PostgresCell) => {
-  if (!cell || cell.null) {
-    return { nullValue: true, text: "NULL" };
+const rowColumnValues = (
+  columns: PostgresStatement["columns"],
+  row: PostgresStatement["rows"][number]
+) => {
+  const values: Record<string, string | undefined> = {};
+  for (const [index, column] of columns.entries()) {
+    const cell = row[index];
+    if (!cell || cell.null || cell.base64 !== undefined) {
+      values[column.name] = undefined;
+      continue;
+    }
+    values[column.name] = cell.text;
   }
-  return {
-    nullValue: false,
-    text:
-      cell.base64 === undefined ? (cell.text ?? "") : `base64:${cell.base64}`,
-  };
+  return values;
 };
 
 const columnAriaSort = (
@@ -173,23 +183,40 @@ const ColumnHeader = ({
   );
 };
 
+const RelationColumnHeader = ({ label }: { label: string }) => (
+  <div className="px-3 py-2 text-left">
+    <span className="block truncate font-medium">{label}</span>
+    <span className="block text-[8px] font-normal text-muted-foreground">
+      relation
+    </span>
+  </div>
+);
+
 const PostgresGridTable = ({
   loading,
+  onOpenRelation,
   onSort,
   page,
+  relations,
   selectedTable,
   sort,
   statement,
 }: {
   loading: boolean;
+  onOpenRelation: (
+    relation: PostgresTableRelation,
+    columnValues: Record<string, string | undefined>
+  ) => void;
   onSort: (column: string, direction?: "asc" | "desc") => void;
   page: number;
+  relations: PostgresTableRelation[];
   selectedTable?: PostgresBrowserTable;
   sort?: PostgresTableSort;
   statement?: PostgresStatement;
 }) => {
   const columns = statement?.columns ?? [];
   const rows = statement?.rows.slice(0, postgresTablePageSize) ?? [];
+  const incoming = postgresIncomingRelations(relations);
   if (!(selectedTable && columns.length > 0)) {
     return <GridEmptyState loading={loading} selectedTable={selectedTable} />;
   }
@@ -215,35 +242,85 @@ const PostgresGridTable = ({
                 />
               </th>
             ))}
+            {incoming.map((relation) => (
+              <th
+                className="min-w-36 border-r border-border bg-muted/10 p-0 last:border-r-0"
+                key={relation.key}
+              >
+                <RelationColumnHeader label={relation.label} />
+              </th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr
-              className="border-b border-border last:border-b-0 hover:bg-muted/20"
-              key={(page * postgresTablePageSize + rowIndex).toString()}
-            >
-              <td className="sticky left-0 border-r border-border bg-background px-2 py-2 text-right text-[8px] text-muted-foreground tabular-nums">
-                {page * postgresTablePageSize + rowIndex + 1}
-              </td>
-              {row.map((cell, cellIndex) => {
-                const value = displayCell(cell);
-                return (
-                  <td
-                    className={cn(
-                      "max-w-80 border-r border-border px-3 py-2 last:border-r-0",
-                      value.nullValue &&
-                        "bg-muted/10 text-muted-foreground italic"
-                    )}
-                    key={cellIndex.toString()}
-                    title={value.text}
-                  >
-                    <span className="block truncate">{value.text}</span>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
+          {rows.map((row, rowIndex) => {
+            const columnValues = rowColumnValues(columns, row);
+            return (
+              <tr
+                className="border-b border-border last:border-b-0 hover:bg-muted/20"
+                key={(page * postgresTablePageSize + rowIndex).toString()}
+              >
+                <td className="sticky left-0 border-r border-border bg-background px-2 py-2 text-right text-[8px] text-muted-foreground tabular-nums">
+                  {page * postgresTablePageSize + rowIndex + 1}
+                </td>
+                {row.map((cell, cellIndex) => {
+                  const column = columns[cellIndex];
+                  if (!column) {
+                    return null;
+                  }
+                  const outgoing = postgresOutgoingRelationForColumn(
+                    relations,
+                    column.name
+                  );
+                  const canOpenOutgoing =
+                    outgoing &&
+                    outgoing.foreignKey.columns.every(
+                      (name) => columnValues[name] !== undefined
+                    );
+                  return (
+                    <td
+                      className="max-w-96 border-r border-border p-0 last:border-r-0"
+                      key={cellIndex.toString()}
+                    >
+                      <PostgresDataCell
+                        cell={cell}
+                        column={column.name}
+                        onOpenRelation={
+                          canOpenOutgoing && outgoing
+                            ? () => onOpenRelation(outgoing, columnValues)
+                            : undefined
+                        }
+                        relationLabel={outgoing?.label}
+                        typeOID={column.typeOid}
+                      />
+                    </td>
+                  );
+                })}
+                {incoming.map((relation) => {
+                  const canOpen = relation.foreignKey.foreignColumns.every(
+                    (name) => columnValues[name] !== undefined
+                  );
+                  return (
+                    <td
+                      className="border-r border-border bg-muted/5 p-0 last:border-r-0"
+                      key={relation.key}
+                    >
+                      {canOpen ? (
+                        <PostgresRelationCell
+                          label={relation.label}
+                          onOpen={() => onOpenRelation(relation, columnValues)}
+                        />
+                      ) : (
+                        <div className="px-3 py-2 text-muted-foreground italic">
+                          —
+                        </div>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {rows.length === 0 ? (
@@ -414,12 +491,14 @@ export const PostgresDataGrid = ({
   filtersActive,
   loading,
   onNextPage,
+  onOpenRelation,
   onPreviousPage,
   onRefresh,
   onRequestExactCount,
   onSort,
   onToggleFilters,
   page,
+  relations,
   selectedTable,
   sort,
   statement,
@@ -431,12 +510,17 @@ export const PostgresDataGrid = ({
   filtersActive: boolean;
   loading: boolean;
   onNextPage: () => void;
+  onOpenRelation: (
+    relation: PostgresTableRelation,
+    columnValues: Record<string, string | undefined>
+  ) => void;
   onPreviousPage: () => void;
   onRefresh: () => void;
   onRequestExactCount: () => void;
   onSort: (column: string, direction?: "asc" | "desc") => void;
   onToggleFilters: () => void;
   page: number;
+  relations: PostgresTableRelation[];
   selectedTable?: PostgresBrowserTable;
   sort?: PostgresTableSort;
   statement?: PostgresStatement;
@@ -488,8 +572,10 @@ export const PostgresDataGrid = ({
       <div className="min-h-0 flex-1 overflow-auto">
         <PostgresGridTable
           loading={loading}
+          onOpenRelation={onOpenRelation}
           onSort={onSort}
           page={page}
+          relations={relations}
           selectedTable={selectedTable}
           sort={sort}
           statement={statement}
@@ -497,7 +583,9 @@ export const PostgresDataGrid = ({
       </div>
 
       <PostgresGridStatus
-        columnCount={columns.length}
+        columnCount={
+          columns.length + postgresIncomingRelations(relations).length
+        }
         error={error}
         range={range}
         rowCount={rows.length}

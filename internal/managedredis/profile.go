@@ -16,6 +16,10 @@ dir /data
 dbfilename dump.rdb
 appendonly no
 save 300 1
+latency-tracking yes
+latency-tracking-info-percentiles 50.0 95.0 99.0
+slowlog-log-slower-than 10000
+slowlog-max-len 128
 requirepass %s
 `
 

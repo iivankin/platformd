@@ -181,6 +181,7 @@ func importNetworkGatewayRoute(effective effectiveNetworkGateway, address netip.
 	return portproxy.Route{
 		ID: networkGatewayRouteID(gateway.ID), Protocol: gateway.Protocol,
 		ListenAddress: address.String(), ListenPort: gateway.ListenPort,
+		GatewayID: gateway.ID,
 		Target: portproxy.AddressTarget{
 			Host: gateway.RemoteHost, Port: gateway.RemotePort, SourceAddress: gateway.SourceAddress,
 		},
@@ -193,6 +194,7 @@ func exportNetworkGatewayRoute(effective effectiveNetworkGateway) portproxy.Rout
 	return portproxy.Route{
 		ID: networkGatewayRouteID(gateway.ID), Protocol: gateway.Protocol,
 		ListenAddress: gateway.SourceAddress, ListenPort: gateway.ListenPort,
+		GatewayID:          gateway.ID,
 		Target:             portproxy.ServiceTarget{ServiceID: gateway.TargetServiceID, Port: gateway.TargetPort},
 		ListenNamespacePID: effective.namespacePID,
 	}

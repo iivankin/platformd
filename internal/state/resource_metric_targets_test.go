@@ -86,6 +86,18 @@ oidc_metadata_json, status, created_at
 	}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.CreateNetworkGateway(ctx, state.CreateNetworkGateway{
+		ID: "import-route", ProjectID: "project",
+		Configuration: state.NetworkGatewayConfiguration{
+			Name: "import-route", Mode: "import", Transport: "vpc", Protocol: "tcp",
+			InterfaceName: "wg0", SourceAddress: "10.0.0.1", ListenPort: 20_001,
+			RemoteHost: "db.example.com", RemotePort: 5432,
+		},
+		AuditEventID: "import-audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "actor@example.com", CreatedAtMillis: 15,
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	targets, err := store.ResourceMetricTargets(ctx)
 	if err != nil {
@@ -100,8 +112,14 @@ oidc_metadata_json, status, created_at
 		t.Fatalf("configured traffic routes = %+v", byID)
 	}
 	plain := byID["plain"]
-	if plain.HTTPRoute || plain.TCPRoute || plain.UDPRoute {
+	if plain.HTTPRoute || plain.TCPRoute || plain.UDPRoute || !plain.AggregatePublicTraffic {
 		t.Fatalf("plain service traffic routes = %+v", plain)
+	}
+	if byID["gateway-route"].AggregatePublicTraffic {
+		t.Fatalf("export gateway should not roll up public traffic: %+v", byID["gateway-route"])
+	}
+	if !byID["import-route"].AggregatePublicTraffic || !byID["import-route"].TCPRoute {
+		t.Fatalf("import gateway public traffic = %+v", byID["import-route"])
 	}
 	diskTargets, err := store.ResourceMetricDiskTargets(ctx)
 	if err != nil {

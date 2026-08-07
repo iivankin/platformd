@@ -36,17 +36,21 @@ func TestNormalizeImageSourceKinds(t *testing.T) {
 func TestNormalizeDockerImageUpload(t *testing.T) {
 	normalized, err := Normalize(Source{Type: DockerImageUpload, DockerUpload: &DockerUpload{
 		Repository: " acme/backend ", Branch: "main", Workflows: []string{"deploy.yml", "deploy.yml", "release.yaml"},
-		Previews: true,
+		Previews: true, PreviewDomain: "example.com",
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if normalized.DockerUpload == nil || normalized.DockerUpload.Repository != "acme/backend" ||
-		len(normalized.DockerUpload.Workflows) != 2 || !normalized.DockerUpload.Previews {
+		len(normalized.DockerUpload.Workflows) != 2 || !normalized.DockerUpload.Previews ||
+		normalized.DockerUpload.PreviewDomain != "example.com" {
 		t.Fatalf("normalized upload source = %+v", normalized)
 	}
 	if ImageUploadPreviewsEnabled(normalized) != true {
 		t.Fatal("expected image upload previews to be enabled")
+	}
+	if ImageUploadPreviewDomain(normalized) != "example.com" {
+		t.Fatal("expected preview domain to be example.com")
 	}
 	if ImageUploadPreviewsEnabled(Source{Type: DockerImageUpload, DockerUpload: &DockerUpload{
 		Repository: "acme/backend", Branch: "main",
@@ -57,6 +61,9 @@ func TestNormalizeDockerImageUpload(t *testing.T) {
 		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "backend", Branch: "main"}},
 		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "acme/backend", Branch: "../main"}},
 		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "acme/backend", Branch: "main", Workflows: []string{"nested/deploy.yml"}}},
+		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "acme/backend", Branch: "main", Previews: true}},
+		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "acme/backend", Branch: "main", Previews: true, PreviewDomain: "app.example.com"}},
+		{Type: DockerImageUpload, DockerUpload: &DockerUpload{Repository: "acme/backend", Branch: "main", PreviewDomain: "example.com"}},
 	} {
 		if _, err := Normalize(invalid); err == nil {
 			t.Fatalf("accepted invalid upload source: %+v", invalid)

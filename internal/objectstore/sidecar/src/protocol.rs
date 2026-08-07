@@ -3,13 +3,14 @@ use crate::{
     buffer_pool::{PooledReaderStream, SizeLimitedStream},
     data_plane::{DataPlane, MaintenanceMode, ProjectConfig},
     largest_objects::LargestObjectSearches,
+    traffic::{self, TrafficCounters, TrafficRegistry},
     usage,
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use bytes::Bytes;
 use futures_util::TryStreamExt as _;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
-use http_body_util::{BodyExt as _, Full, Limited, StreamBody, combinators::BoxBody};
+use http_body_util::{BodyExt, Full, Limited, StreamBody, combinators::BoxBody};
 use hyper::{body::Frame, body::Incoming};
 use rustfs_ecstore::api::{
     error::StorageError,
@@ -28,6 +29,7 @@ use std::{
     convert::Infallible,
     io,
     sync::Arc,
+    time::Instant,
 };
 use time::OffsetDateTime;
 use tokio_util::io::StreamReader;
@@ -75,9 +77,10 @@ pub async fn handle(
     store: Arc<ECStore>,
     data_plane: DataPlane,
     largest_objects: LargestObjectSearches,
+    traffic: Arc<TrafficRegistry>,
     request: Request<Incoming>,
 ) -> Result<Response<Body>, Infallible> {
-    let response = match dispatch(store, data_plane, largest_objects, request).await {
+    let response = match dispatch(store, data_plane, largest_objects, traffic, request).await {
         Ok(response) => response,
         Err(error) => error_response(error),
     };
@@ -88,6 +91,7 @@ async fn dispatch(
     store: Arc<ECStore>,
     data_plane: DataPlane,
     largest_objects: LargestObjectSearches,
+    traffic: Arc<TrafficRegistry>,
     request: Request<Incoming>,
 ) -> Result<Response<Body>, ApiError> {
     let method = request.method().clone();
@@ -162,6 +166,7 @@ async fn dispatch(
         return Ok(empty(StatusCode::NO_CONTENT));
     }
     let bucket = physical_bucket(request.headers())?;
+    let traffic = traffic.for_bucket(&bucket);
     match (method, path.as_str()) {
         (Method::POST, "/v1/bucket/ensure") => {
             match store
@@ -176,7 +181,7 @@ async fn dispatch(
             }
         }
         (Method::GET, "/v1/bucket/stats") => {
-            let stats = usage::bucket_stats(store, &bucket).await?;
+            let stats = usage::bucket_stats(store, &bucket, &traffic).await?;
             json_response(StatusCode::OK, &stats)
         }
         (Method::GET, "/v1/bucket/largest-objects") => {
@@ -220,23 +225,55 @@ async fn dispatch(
             }
         }
         (Method::HEAD, "/v1/object") => {
-            let key = decoded_header(request.headers(), "x-platformd-key")?;
-            let info = store
-                .get_object_info(&bucket, &key, &ObjectOptions::default())
-                .await?;
-            object_response(StatusCode::NO_CONTENT, &info)
+            with_traffic(traffic.clone(), &Method::HEAD, "/v1/object", 0, || async {
+                let key = decoded_header(request.headers(), "x-platformd-key")?;
+                let info = store
+                    .get_object_info(&bucket, &key, &ObjectOptions::default())
+                    .await?;
+                // HEAD transfers metadata only; do not attribute object size as bytes_out.
+                Ok((object_response(StatusCode::NO_CONTENT, &info)?, 0))
+            })
+            .await
         }
-        (Method::GET, "/v1/object") => get_object(store, &bucket, request).await,
-        (Method::PUT, "/v1/object") => put_object(store, &bucket, request).await,
+        (Method::GET, "/v1/object") => {
+            let range_length = integer_header(request.headers(), "x-platformd-length", -1)?;
+            with_traffic(traffic.clone(), &Method::GET, "/v1/object", 0, || async {
+                let response = get_object(store, &bucket, request).await?;
+                let bytes_out = if range_length >= 0 {
+                    range_length as u64
+                } else {
+                    header_u64(response.headers(), "x-platformd-size").unwrap_or(0)
+                };
+                Ok((response, bytes_out))
+            })
+            .await
+        }
+        (Method::PUT, "/v1/object") => {
+            let bytes_in = integer_header(request.headers(), "x-platformd-size", 0)?.max(0) as u64;
+            with_traffic(traffic.clone(), &Method::PUT, "/v1/object", bytes_in, || async {
+                let response = put_object(store, &bucket, request).await?;
+                Ok((response, 0))
+            })
+            .await
+        }
         (Method::DELETE, "/v1/object") => {
-            let key = decoded_header(request.headers(), "x-platformd-key")?;
-            let info = store
-                .delete_object(&bucket, &key, ObjectOptions::default())
-                .await?;
-            usage::record_delete(&bucket, &info).await;
-            Ok(empty(StatusCode::NO_CONTENT))
+            with_traffic(traffic.clone(), &Method::DELETE, "/v1/object", 0, || async {
+                let key = decoded_header(request.headers(), "x-platformd-key")?;
+                let info = store
+                    .delete_object(&bucket, &key, ObjectOptions::default())
+                    .await?;
+                usage::record_delete(&bucket, &info).await;
+                Ok((empty(StatusCode::NO_CONTENT), 0))
+            })
+            .await
         }
-        (Method::GET, "/v1/objects") => list_objects(store, &bucket, request.headers()).await,
+        (Method::GET, "/v1/objects") => {
+            with_traffic(traffic.clone(), &Method::GET, "/v1/objects", 0, || async {
+                let response = list_objects(store, &bucket, request.headers()).await?;
+                Ok((response, 0))
+            })
+            .await
+        }
         _ => Err(ApiError::new(
             StatusCode::NOT_FOUND,
             "not_found",
@@ -681,6 +718,55 @@ fn integer_value(value: i64) -> Result<HeaderValue, ApiError> {
 
 fn nonempty(value: String) -> Option<String> {
     (!value.is_empty()).then_some(value)
+}
+
+async fn with_traffic<F, Fut>(
+    traffic: Arc<TrafficCounters>,
+    method: &Method,
+    path: &str,
+    bytes_in: u64,
+    work: F,
+) -> Result<Response<Body>, ApiError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<(Response<Body>, u64), ApiError>>,
+{
+    let op = traffic::classify_control(method, path).unwrap_or(traffic::OpClass::Other);
+    traffic.record_start();
+    let started = Instant::now();
+    match work().await {
+        Ok((response, bytes_out)) => {
+            let error = !response.status().is_success();
+            let bytes_out = Arc::new(std::sync::atomic::AtomicU64::new(bytes_out));
+            let pending = traffic::PendingFinish::new(
+                traffic,
+                op,
+                bytes_in,
+                bytes_out,
+                started,
+                error,
+            );
+            let (parts, body) = response.into_parts();
+            // Keep pending alive until the body is dropped so active_requests and
+            // latency cover streaming control-plane downloads.
+            let body = BodyExt::boxed(body.map_frame(move |frame| {
+                let _pending = &pending;
+                frame
+            }));
+            Ok(Response::from_parts(parts, body))
+        }
+        Err(error) => {
+            traffic.record_finish(op, bytes_in, 0, started.elapsed(), true);
+            Err(error)
+        }
+    }
+}
+
+fn header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
 }
 
 struct ApiError {

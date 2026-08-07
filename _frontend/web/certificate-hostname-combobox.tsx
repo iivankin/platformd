@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 
 import { fetchInstallationSettings } from "@/api";
 import {
+  certificateApexDomainSuggestions,
   certificateHostnameSuggestionMatches,
   certificateHostnameSuggestions,
   completeCertificateHostname,
@@ -11,6 +12,7 @@ import {
 import type { CertificateHostnameSuggestion } from "@/certificate-hostname-model";
 
 export const CertificateHostnameCombobox = ({
+  apexOnly = false,
   ariaLabel = "Public hostname",
   disabled,
   id,
@@ -18,6 +20,7 @@ export const CertificateHostnameCombobox = ({
   placeholder = "api.example.com",
   value,
 }: {
+  apexOnly?: boolean;
   ariaLabel?: string;
   disabled?: boolean;
   id?: string;
@@ -34,7 +37,11 @@ export const CertificateHostnameCombobox = ({
     const load = async () => {
       try {
         const settings = await fetchInstallationSettings(controller.signal);
-        setSuggestions(certificateHostnameSuggestions(settings.certificates));
+        setSuggestions(
+          apexOnly
+            ? certificateApexDomainSuggestions(settings.certificates)
+            : certificateHostnameSuggestions(settings.certificates)
+        );
       } catch (loadError) {
         if (
           !(
@@ -47,7 +54,7 @@ export const CertificateHostnameCombobox = ({
     };
     void load();
     return () => controller.abort();
-  }, []);
+  }, [apexOnly]);
 
   return (
     <Combobox.Root<CertificateHostnameSuggestion>

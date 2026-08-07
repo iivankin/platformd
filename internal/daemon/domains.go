@@ -10,7 +10,6 @@ import (
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/publichostname"
-	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -38,9 +37,6 @@ func (repository liveDomainRepository) AttachServiceDomain(ctx context.Context, 
 		return state.ServiceDomain{}, state.ErrCertificateCoverage
 	}
 	input.Hostname = hostname
-	if err := repository.validatePreviewDomainAttach(ctx, input); err != nil {
-		return state.ServiceDomain{}, err
-	}
 	createdDNSRecord := false
 	if repository.cloudflare != nil {
 		createdDNSRecord, err = repository.cloudflare.EnsureServiceHostname(ctx, hostname, repository.adminHostname)
@@ -65,9 +61,6 @@ func (repository liveDomainRepository) AttachServiceDomain(ctx context.Context, 
 func (repository liveDomainRepository) DetachServiceDomain(ctx context.Context, input state.DetachServiceDomainInput) error {
 	repository.publicMu.Lock()
 	defer repository.publicMu.Unlock()
-	if err := repository.validatePreviewDomainDetach(ctx, input); err != nil {
-		return err
-	}
 	deletedDNSRecord := false
 	if repository.cloudflare != nil {
 		var err error
@@ -145,46 +138,5 @@ func (repository liveDomainRepository) reload(ctx context.Context) error {
 		routes[preview.Hostname] = ingress.Route{ServiceID: preview.ServiceID, PreviewID: preview.ID, TargetPort: preview.TargetPort}
 	}
 	repository.router.Reload(routes)
-	return nil
-}
-
-func (repository liveDomainRepository) validatePreviewDomainAttach(ctx context.Context, input state.AttachServiceDomainInput) error {
-	service, err := repository.store.Service(ctx, input.ProjectID, input.ServiceID)
-	if err != nil {
-		return err
-	}
-	domains, err := repository.store.ServiceDomains(ctx, input.ProjectID, input.ServiceID)
-	if err != nil {
-		return err
-	}
-	return validateImageUploadPreviewDomainAttach(service.Snapshot.Source, domains, input.Hostname)
-}
-
-// validateImageUploadPreviewDomainAttach keeps docker_image_upload services with
-// previews enabled at exactly one HTTP domain: the first attach is allowed,
-// updates to that hostname are allowed, and a second distinct hostname is rejected.
-func validateImageUploadPreviewDomainAttach(source servicesource.Source, domains []state.ServiceDomain, hostname string) error {
-	if !servicesource.ImageUploadPreviewsEnabled(source) {
-		return nil
-	}
-	for _, domain := range domains {
-		if domain.Hostname == hostname {
-			return nil
-		}
-	}
-	if len(domains) == 0 {
-		return nil
-	}
-	return state.ErrPreviewDomainCount
-}
-
-func (repository liveDomainRepository) validatePreviewDomainDetach(ctx context.Context, input state.DetachServiceDomainInput) error {
-	service, err := repository.store.Service(ctx, input.ProjectID, input.ServiceID)
-	if err != nil {
-		return err
-	}
-	if servicesource.ImageUploadPreviewsEnabled(service.Snapshot.Source) {
-		return state.ErrPreviewDomainCount
-	}
 	return nil
 }

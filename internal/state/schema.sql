@@ -475,7 +475,7 @@ CREATE INDEX audit_events_created_idx ON audit_events(created_at DESC);
 CREATE INDEX audit_events_project_created_idx ON audit_events(project_id, created_at DESC);
 
 CREATE TABLE resource_metric_samples (
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis')),
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis', 'network_gateway')),
   resource_id TEXT NOT NULL,
   observed_at INTEGER NOT NULL,
   duration_millis INTEGER NOT NULL CHECK (duration_millis > 0),
@@ -543,4 +543,14 @@ CREATE TABLE aggregate_metric_samples (
 CREATE INDEX aggregate_metric_samples_retention_idx
   ON aggregate_metric_samples(observed_at);
 
-PRAGMA user_version = 8;
+CREATE TABLE managed_stat_samples (
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('postgres', 'redis', 'object_store')),
+  resource_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  metrics_json TEXT NOT NULL CHECK (json_valid(metrics_json)),
+  PRIMARY KEY (resource_kind, resource_id, observed_at)
+) WITHOUT ROWID, STRICT;
+
+CREATE INDEX managed_stat_samples_retention_idx ON managed_stat_samples(observed_at);
+
+PRAGMA user_version = 9;

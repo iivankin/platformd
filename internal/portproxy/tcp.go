@@ -28,13 +28,13 @@ type tcpEndpoint struct {
 }
 
 type tcpFlow struct {
-	mu        sync.Mutex
-	inbound   net.Conn
-	serviceID string
-	traffic   *trafficmetrics.Registry
-	ingress   uint64
-	egress    uint64
-	finished  bool
+	mu         sync.Mutex
+	inbound    net.Conn
+	trafficIDs []string
+	traffic    *trafficmetrics.Registry
+	ingress    uint64
+	egress     uint64
+	finished   bool
 }
 
 func newTCPEndpoint(listener net.Listener, route Route, backends BackendResolver, onError func(string, error), traffic *trafficmetrics.Registry) *tcpEndpoint {
@@ -61,20 +61,26 @@ func (endpoint *tcpEndpoint) accept() {
 		}
 		select {
 		case endpoint.capacity <- struct{}{}:
-			serviceID := routeServiceID(*endpoint.route.Load())
-			endpoint.traffic.StartTCP(serviceID)
+			ids := routeTrafficIDs(*endpoint.route.Load())
+			for _, id := range ids {
+				endpoint.traffic.StartTCP(id)
+			}
 			endpoint.track(connection, true)
 			endpoint.waitGroup.Add(1)
-			go endpoint.proxy(connection, serviceID)
+			go endpoint.proxy(connection, ids)
 		default:
 			_ = connection.Close()
 		}
 	}
 }
 
-func (endpoint *tcpEndpoint) proxy(inbound net.Conn, serviceID string) {
+func (endpoint *tcpEndpoint) proxy(inbound net.Conn, trafficIDs []string) {
 	defer endpoint.waitGroup.Done()
-	defer endpoint.traffic.FinishTCP(serviceID)
+	defer func() {
+		for _, id := range trafficIDs {
+			endpoint.traffic.FinishTCP(id)
+		}
+	}()
 	defer func() {
 		endpoint.track(inbound, false)
 		<-endpoint.capacity
@@ -105,8 +111,8 @@ func (endpoint *tcpEndpoint) proxy(inbound net.Conn, serviceID string) {
 	}()
 
 	var flow *tcpFlow
-	if endpoint.traffic != nil && serviceID != "" {
-		flow = &tcpFlow{inbound: inbound, serviceID: serviceID, traffic: endpoint.traffic}
+	if endpoint.traffic != nil && len(trafficIDs) > 0 {
+		flow = &tcpFlow{inbound: inbound, trafficIDs: append([]string(nil), trafficIDs...), traffic: endpoint.traffic}
 		endpoint.trackFlow(flow, true)
 		defer endpoint.trackFlow(flow, false)
 	}
@@ -198,8 +204,10 @@ func (flow *tcpFlow) record(ingress, egress uint64) {
 	flow.ingress += ingressDelta
 	flow.egress += egressDelta
 	flow.mu.Unlock()
-	flow.traffic.AddIngress(flow.serviceID, ingressDelta)
-	flow.traffic.AddEgress(flow.serviceID, egressDelta)
+	for _, id := range flow.trafficIDs {
+		flow.traffic.AddIngress(id, ingressDelta)
+		flow.traffic.AddEgress(id, egressDelta)
+	}
 }
 
 func (flow *tcpFlow) finish(ingress, egress uint64) {
@@ -214,8 +222,10 @@ func (flow *tcpFlow) finish(ingress, egress uint64) {
 	flow.egress += egressDelta
 	flow.finished = true
 	flow.mu.Unlock()
-	flow.traffic.AddIngress(flow.serviceID, ingressDelta)
-	flow.traffic.AddEgress(flow.serviceID, egressDelta)
+	for _, id := range flow.trafficIDs {
+		flow.traffic.AddIngress(id, ingressDelta)
+		flow.traffic.AddEgress(id, egressDelta)
+	}
 }
 
 func positiveDelta(current, previous uint64) uint64 {

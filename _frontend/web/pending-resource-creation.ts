@@ -195,8 +195,7 @@ export const applyPendingResource = (
     }
     case "service": {
       const configuration = parseServiceConfiguration(
-        draft.settings.configuration,
-        draft.settings.domains.length
+        draft.settings.configuration
       );
       const mounts = new Map(
         draft.settings.volumeMounts.map((mount) => [

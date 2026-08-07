@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"golang.org/x/net/idna"
+	"golang.org/x/net/publicsuffix"
 )
 
 func Normalize(value string) (string, error) {
@@ -41,6 +42,36 @@ func NormalizeHostHeader(value string) (string, error) {
 		host = parsed
 	}
 	return Normalize(host)
+}
+
+// IsApex reports whether hostname is a registrable domain (eTLD+1), e.g.
+// example.com but not app.example.com.
+func IsApex(hostname string) (bool, error) {
+	normalized, err := Normalize(hostname)
+	if err != nil {
+		return false, err
+	}
+	root, err := publicsuffix.EffectiveTLDPlusOne(normalized)
+	if err != nil {
+		return false, err
+	}
+	return normalized == root, nil
+}
+
+// NormalizeApex normalizes a hostname and requires it to be an apex domain.
+func NormalizeApex(value string) (string, error) {
+	normalized, err := Normalize(value)
+	if err != nil {
+		return "", err
+	}
+	ok, err := IsApex(normalized)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", errors.New("preview domain must be a root domain covered by an Origin certificate")
+	}
+	return normalized, nil
 }
 
 func validLabel(label string) bool {

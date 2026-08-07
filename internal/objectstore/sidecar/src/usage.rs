@@ -1,3 +1,4 @@
+use crate::traffic::{TrafficCounters, TrafficSnapshot};
 use rustfs_ecstore::api::{
     data_usage::{
         load_data_usage_from_backend, load_data_usage_from_backend_cached,
@@ -32,6 +33,7 @@ pub struct BucketStats {
     #[serde(skip_serializing_if = "Option::is_none")]
     observed_at: Option<u64>,
     object_size_histogram: Vec<HistogramBucket>,
+    traffic: TrafficSnapshot,
 }
 
 #[derive(Debug, Serialize)]
@@ -42,25 +44,31 @@ struct HistogramBucket {
 }
 
 impl BucketStats {
-    fn warming_up() -> Self {
+    fn warming_up(traffic: TrafficSnapshot) -> Self {
         Self {
             ready: false,
             object_count: 0,
             total_bytes: 0,
             observed_at: None,
             object_size_histogram: Vec::new(),
+            traffic,
         }
     }
 }
 
-pub async fn bucket_stats(store: Arc<ECStore>, bucket: &str) -> Result<BucketStats, StorageError> {
+pub async fn bucket_stats(
+    store: Arc<ECStore>,
+    bucket: &str,
+    traffic: &TrafficCounters,
+) -> Result<BucketStats, StorageError> {
+    let traffic = traffic.snapshot();
     let info = match load_data_usage_from_backend_cached(store.clone()).await {
         Ok(info) => info,
         // A failed load is cached without its error kind. Retry directly so a
         // missing first snapshot can be distinguished from a storage failure.
         Err(_) => match load_data_usage_from_backend(store).await {
             Ok(info) => info,
-            Err(StorageError::ConfigNotFound) => return Ok(BucketStats::warming_up()),
+            Err(StorageError::ConfigNotFound) => return Ok(BucketStats::warming_up(traffic)),
             Err(error) => return Err(error),
         },
     };
@@ -68,10 +76,10 @@ pub async fn bucket_stats(store: Arc<ECStore>, bucket: &str) -> Result<BucketSta
     // usage overlay updates totals but not the size histogram, which would make
     // a single Stats response internally inconsistent until the next scan.
     if !info.usage_snapshot_complete {
-        return Ok(BucketStats::warming_up());
+        return Ok(BucketStats::warming_up(traffic));
     }
     let Some(usage) = info.buckets_usage.get(bucket) else {
-        return Ok(BucketStats::warming_up());
+        return Ok(BucketStats::warming_up(traffic));
     };
     Ok(BucketStats {
         ready: true,
@@ -79,6 +87,7 @@ pub async fn bucket_stats(store: Arc<ECStore>, bucket: &str) -> Result<BucketSta
         total_bytes: usage.size,
         observed_at: info.last_update.and_then(system_time_millis),
         object_size_histogram: object_size_histogram(&usage.object_size_histogram),
+        traffic,
     })
 }
 

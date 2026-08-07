@@ -26,7 +26,11 @@ import {
   fetchInstallationSettings,
   fetchManagedPostgres,
   fetchManagedPostgresExtensions,
+  fetchManagedPostgresStats,
+  fetchManagedPostgresStatsHistory,
   fetchManagedRedis,
+  fetchManagedRedisStats,
+  fetchManagedRedisStatsHistory,
   fetchHostNetworkAddresses,
   fetchMeta,
   fetchNetworkGateway,
@@ -393,6 +397,59 @@ describe("mock API", () => {
     expect(selectedDeploymentLogs.records[0]?.deploymentId).toBe(
       selectedDeployment.id
     );
+  });
+
+  test("mock managed stats snapshots and history are available", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+    await expect(
+      fetchManagedPostgresStats(
+        "project-demo",
+        "postgres-main",
+        undefined,
+        mockFetch
+      )
+    ).resolves.toMatchObject({
+      cacheHitPercent: 97.5,
+      queriesPerSecond: 58.2,
+      version: "PostgreSQL 17.5",
+    });
+    const postgresHistory = await fetchManagedPostgresStatsHistory(
+      "project-demo",
+      "postgres-main",
+      "1h",
+      undefined,
+      mockFetch
+    );
+    expect(postgresHistory.points.length).toBeGreaterThan(0);
+    expect(postgresHistory.points[0]?.metrics).toMatchObject({
+      queriesPerSecond: expect.any(Number),
+      transactionsPerSecond: expect.any(Number),
+    });
+
+    await expect(
+      fetchManagedRedisStats(
+        "project-demo",
+        "redis-cache",
+        undefined,
+        mockFetch
+      )
+    ).resolves.toMatchObject({
+      operationsPerSecond: 539,
+      version: "8.2.1",
+    });
+    const redisHistory = await fetchManagedRedisStatsHistory(
+      "project-demo",
+      "redis-cache",
+      "1h",
+      undefined,
+      mockFetch
+    );
+    expect(redisHistory.points.length).toBeGreaterThan(0);
+    expect(redisHistory.points[0]?.metrics).toMatchObject({
+      "cmd.get": expect.any(Number),
+      operationsPerSecond: expect.any(Number),
+      otherCommandsPerSecond: expect.any(Number),
+    });
   });
 
   test("mock PostgreSQL extensions can be installed and uninstalled", async () => {

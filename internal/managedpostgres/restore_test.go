@@ -215,6 +215,18 @@ func (*postgresRestoreConnection) Query(context.Context, string) (QueryResult, e
 	return QueryResult{}, nil
 }
 
+func (*postgresRestoreConnection) Stats(context.Context) (Stats, error) {
+	return Stats{}, nil
+}
+
+func (*postgresRestoreConnection) CollectorStats(context.Context) (Stats, error) {
+	return Stats{}, nil
+}
+
+func (*postgresRestoreConnection) EnsureStatStatements(context.Context) error {
+	return nil
+}
+
 func (connection *postgresRestoreConnection) Extensions(context.Context) ([]Extension, error) {
 	return connection.extensions, nil
 }

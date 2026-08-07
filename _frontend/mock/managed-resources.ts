@@ -1,5 +1,10 @@
 import type { ManagedPostgres, ManagedRedis, ObjectStore } from "../web/api";
 import { json, mockError, noContent } from "./http";
+import {
+  mockManagedStatsHistory,
+  mockPostgresStats,
+  mockRedisStats,
+} from "./managed-stats";
 import { handlePostgresQuery } from "./postgres-query";
 import type { MockState } from "./state";
 import { mockNow, nextMockID } from "./state";
@@ -265,6 +270,28 @@ const handleManagedDeployments = (
   return noContent();
 };
 
+const handleRedisStats = (
+  request: Request,
+  collection: string,
+  rest: string[],
+  url: URL
+): Response | undefined => {
+  if (collection !== "redis" || request.method !== "GET") {
+    return undefined;
+  }
+  const [resource, detail, ...tail] = rest;
+  if (resource !== "stats" || tail.length > 0) {
+    return undefined;
+  }
+  if (detail === "history") {
+    return mockManagedStatsHistory("redis", url.searchParams.get("range"));
+  }
+  if (detail) {
+    return undefined;
+  }
+  return mockRedisStats();
+};
+
 const handleRedisData = (
   request: Request,
   collection: string,
@@ -283,46 +310,6 @@ const handleRedisData = (
       needsAttention: false,
       observedAt: mockNow(),
       targetRpoMillis: 60_000,
-    });
-  }
-  if (request.method === "GET" && resource === "stats" && !detail) {
-    return json({
-      aofEnabled: true,
-      blockedClients: 0,
-      commands: [
-        {
-          calls: 18_700,
-          microsPerCall: 8.4,
-          name: "get",
-          totalMicros: 157_080,
-        },
-        { calls: 9500, microsPerCall: 11, name: "set", totalMicros: 104_500 },
-      ],
-      connectedClients: 12,
-      evictedKeys: 0,
-      evictionPolicy: "noeviction",
-      expiredKeys: 1300,
-      fragmentationRatio: 1.08,
-      keyspaceHits: 19_700_000,
-      keyspaceMisses: 810_000,
-      keyspaces: [
-        {
-          averageTtlMillis: 2_160_000,
-          database: "db0",
-          expires: 1300,
-          keys: 25_300,
-        },
-      ],
-      maxMemoryBytes: 0,
-      operationsPerSecond: 539,
-      peakMemoryBytes: 83_330_000,
-      rejectedConnections: 0,
-      rssMemoryBytes: 48_600_000,
-      totalCommands: 141_200_000,
-      totalConnections: 9500,
-      uptimeSeconds: 8_733_600,
-      usedMemoryBytes: 46_200_000,
-      version: "8.2.1",
     });
   }
   if (request.method === "GET" && resource === "keys" && !detail) {
@@ -356,6 +343,28 @@ const handleRedisData = (
     return json({ affected: 1, auditRecorded: true, streamId: "" });
   }
   return undefined;
+};
+
+const handlePostgresStats = (
+  request: Request,
+  collection: string,
+  rest: string[],
+  url: URL
+): Response | undefined => {
+  if (collection !== "postgres" || request.method !== "GET") {
+    return undefined;
+  }
+  const [resource, detail, ...tail] = rest;
+  if (resource !== "stats" || tail.length > 0) {
+    return undefined;
+  }
+  if (detail === "history") {
+    return mockManagedStatsHistory("postgres", url.searchParams.get("range"));
+  }
+  if (detail) {
+    return undefined;
+  }
+  return mockPostgresStats();
 };
 
 const handlePostgresExtensions = (
@@ -512,14 +521,25 @@ const handleObjectStoreStatistics = (
   request: Request,
   state: MockState,
   storeID: string,
-  rest: string[]
+  rest: string[],
+  url: URL
 ): Response | undefined => {
-  const [resource, ...tail] = rest;
+  const [resource, detail, ...tail] = rest;
   if (tail.length > 0) {
     return undefined;
   }
   const objects = state.objectMetadata[storeID] ?? [];
-  if (request.method === "GET" && resource === "stats") {
+  if (
+    request.method === "GET" &&
+    resource === "stats" &&
+    detail === "history"
+  ) {
+    return mockManagedStatsHistory(
+      "object_store",
+      url.searchParams.get("range")
+    );
+  }
+  if (request.method === "GET" && resource === "stats" && !detail) {
     const sizes = objects.map((object) => object.size);
     return json({
       objectCount: objects.length,
@@ -529,7 +549,7 @@ const handleObjectStoreStatistics = (
       totalBytes: sizes.reduce((total, size) => total + size, 0),
     });
   }
-  if (resource !== "largest-objects") {
+  if (resource !== "largest-objects" || detail) {
     return undefined;
   }
   if (request.method === "GET") {
@@ -625,11 +645,13 @@ export const handleManagedResourcesAPI = async (
     )) ??
     handleManagedDeployments(request, state, collection, resourceID, rest) ??
     handleManagedLogs(request, state, collection, resourceID, rest) ??
+    handleRedisStats(request, collection, rest, url) ??
     handleRedisData(request, collection, rest) ??
+    handlePostgresStats(request, collection, rest, url) ??
     handlePostgresExtensions(request, state, collection, resourceID, rest) ??
     (await handlePostgresQuery(request, collection, rest)) ??
     (collection === "object-stores"
-      ? (handleObjectStoreStatistics(request, state, resourceID, rest) ??
+      ? (handleObjectStoreStatistics(request, state, resourceID, rest, url) ??
         handleObjects(request, state, resourceID, rest, url))
       : undefined)
   );

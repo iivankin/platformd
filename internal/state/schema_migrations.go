@@ -315,3 +315,94 @@ ADD COLUMN received_ranges_json TEXT NOT NULL DEFAULT '[]'
 	}
 	return nil
 }
+
+func migrateSchemaVersionEight(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 8 to 9: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `CREATE TABLE managed_stat_samples (
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('postgres', 'redis', 'object_store')),
+  resource_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  metrics_json TEXT NOT NULL CHECK (json_valid(metrics_json)),
+  PRIMARY KEY (resource_kind, resource_id, observed_at)
+) WITHOUT ROWID, STRICT`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 8 to 9: %w", err), transaction.Rollback())
+	}
+	if _, err := transaction.ExecContext(ctx,
+		`CREATE INDEX managed_stat_samples_retention_idx ON managed_stat_samples(observed_at)`,
+	); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 8 to 9: %w", err), transaction.Rollback())
+	}
+	var metricKindColumn int
+	if err := transaction.QueryRowContext(ctx,
+		`SELECT count(*) FROM pragma_table_info('resource_metric_samples') WHERE name = 'resource_kind'`,
+	).Scan(&metricKindColumn); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 8 to 9: %w", err), transaction.Rollback())
+	}
+	if metricKindColumn == 1 {
+		for _, statement := range []string{
+			`ALTER TABLE resource_metric_samples RENAME TO resource_metric_samples_v8`,
+			`CREATE TABLE resource_metric_samples (
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis', 'network_gateway')),
+  resource_id TEXT NOT NULL,
+  observed_at INTEGER NOT NULL,
+  duration_millis INTEGER NOT NULL CHECK (duration_millis > 0),
+  cpu_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (cpu_duration_millis >= 0),
+  network_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (network_duration_millis >= 0),
+  proxy_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (proxy_duration_millis >= 0),
+  cpu_millicores INTEGER CHECK (cpu_millicores IS NULL OR cpu_millicores >= 0),
+  cpu_peak_millicores INTEGER CHECK (cpu_peak_millicores IS NULL OR cpu_peak_millicores >= 0),
+  memory_bytes INTEGER NOT NULL CHECK (memory_bytes >= 0),
+  memory_peak_bytes INTEGER NOT NULL CHECK (memory_peak_bytes >= memory_bytes),
+  disk_bytes INTEGER CHECK (disk_bytes IS NULL OR disk_bytes >= 0),
+  network_ingress_bytes_per_second INTEGER CHECK (network_ingress_bytes_per_second IS NULL OR network_ingress_bytes_per_second >= 0),
+  network_ingress_peak_bytes_per_second INTEGER CHECK (network_ingress_peak_bytes_per_second IS NULL OR network_ingress_peak_bytes_per_second >= 0),
+  network_egress_bytes_per_second INTEGER CHECK (network_egress_bytes_per_second IS NULL OR network_egress_bytes_per_second >= 0),
+  network_egress_peak_bytes_per_second INTEGER CHECK (network_egress_peak_bytes_per_second IS NULL OR network_egress_peak_bytes_per_second >= 0),
+  running INTEGER NOT NULL CHECK (running IN (0, 1)),
+  proxy_metrics_json TEXT CHECK (proxy_metrics_json IS NULL OR json_valid(proxy_metrics_json)),
+  CHECK (
+    (cpu_duration_millis = 0 AND cpu_millicores IS NULL AND cpu_peak_millicores IS NULL) OR
+    (cpu_duration_millis > 0 AND cpu_duration_millis <= duration_millis AND cpu_millicores IS NOT NULL AND cpu_peak_millicores IS NOT NULL)
+  ),
+  CHECK (
+    (network_duration_millis = 0 AND network_ingress_bytes_per_second IS NULL AND network_ingress_peak_bytes_per_second IS NULL AND network_egress_bytes_per_second IS NULL AND network_egress_peak_bytes_per_second IS NULL) OR
+    (network_duration_millis > 0 AND network_duration_millis <= duration_millis AND network_ingress_bytes_per_second IS NOT NULL AND network_ingress_peak_bytes_per_second IS NOT NULL AND network_egress_bytes_per_second IS NOT NULL AND network_egress_peak_bytes_per_second IS NOT NULL)
+  ),
+  CHECK (proxy_duration_millis <= duration_millis AND (proxy_duration_millis = 0 OR proxy_metrics_json IS NOT NULL)),
+  PRIMARY KEY (resource_kind, resource_id, observed_at)
+) WITHOUT ROWID, STRICT`,
+			`INSERT INTO resource_metric_samples(
+  resource_kind, resource_id, observed_at, duration_millis,
+  cpu_duration_millis, network_duration_millis, proxy_duration_millis,
+  cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes, disk_bytes,
+  network_ingress_bytes_per_second, network_ingress_peak_bytes_per_second,
+  network_egress_bytes_per_second, network_egress_peak_bytes_per_second,
+  running, proxy_metrics_json
+)
+SELECT
+  resource_kind, resource_id, observed_at, duration_millis,
+  cpu_duration_millis, network_duration_millis, proxy_duration_millis,
+  cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes, disk_bytes,
+  network_ingress_bytes_per_second, network_ingress_peak_bytes_per_second,
+  network_egress_bytes_per_second, network_egress_peak_bytes_per_second,
+  running, proxy_metrics_json
+FROM resource_metric_samples_v8`,
+			`DROP TABLE resource_metric_samples_v8`,
+			`CREATE INDEX resource_metric_samples_retention_idx ON resource_metric_samples(observed_at)`,
+		} {
+			if _, err := transaction.ExecContext(ctx, statement); err != nil {
+				return errors.Join(fmt.Errorf("migrate SQLite schema 8 to 9: %w", err), transaction.Rollback())
+			}
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, `PRAGMA user_version = 9`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 8 to 9: %w", err), transaction.Rollback())
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 8 to 9: %w", err)
+	}
+	return nil
+}

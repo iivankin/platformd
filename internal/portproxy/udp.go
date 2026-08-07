@@ -103,7 +103,9 @@ func (endpoint *udpEndpoint) forward(client *net.UDPAddr, packet []byte) {
 	if _, err := session.private.Write(packet); err != nil && !errors.Is(err, net.ErrClosed) {
 		endpoint.onError(route.ID, err)
 	} else if err == nil {
-		endpoint.traffic.AddUDPIngress(routeServiceID(*route), uint64(len(packet)))
+		for _, id := range routeTrafficIDs(*route) {
+			endpoint.traffic.AddUDPIngress(id, uint64(len(packet)))
+		}
 	}
 }
 
@@ -178,7 +180,9 @@ func (endpoint *udpEndpoint) readPrivate(key string, session *udpSession) {
 			}
 			return
 		}
-		endpoint.traffic.AddUDPEgress(routeServiceID(*endpoint.route.Load()), uint64(count))
+		for _, id := range routeTrafficIDs(*endpoint.route.Load()) {
+			endpoint.traffic.AddUDPEgress(id, uint64(count))
+		}
 		endpoint.mu.Lock()
 		if endpoint.sessions[key] == session {
 			session.lastSeen = time.Now()

@@ -6,11 +6,12 @@ import {
   serviceConfigurationDraftFromCreateInput,
 } from "@/service-configuration";
 
-const uploadDraft = (previews = false) => ({
+const uploadDraft = (previews = false, previewDomain?: string) => ({
   ...emptyServiceConfigurationDraft(),
   source: {
     dockerUpload: {
       branch: "main",
+      ...(previewDomain === undefined ? {} : { previewDomain }),
       previews,
       repository: "acme/api",
       workflows: ["deploy.yml"],
@@ -19,25 +20,32 @@ const uploadDraft = (previews = false) => ({
   },
 });
 
-test("requires exactly one HTTP domain only when image previews are enabled", () => {
-  expect(parseServiceConfiguration(uploadDraft(false), 0).source.type).toBe(
+test("requires a preview root domain when image previews are enabled", () => {
+  expect(parseServiceConfiguration(uploadDraft(false)).source.type).toBe(
     "docker_image_upload"
   );
-  expect(() => parseServiceConfiguration(uploadDraft(true), 0)).toThrow(
-    "Image upload previews require exactly one HTTP domain"
+  expect(() => parseServiceConfiguration(uploadDraft(true))).toThrow(
+    "Image upload previews require a root domain covered by an Origin certificate"
   );
-  expect(() => parseServiceConfiguration(uploadDraft(true), 2)).toThrow(
-    "Image upload previews require exactly one HTTP domain"
-  );
-  expect(parseServiceConfiguration(uploadDraft(true), 1).source.type).toBe(
-    "docker_image_upload"
-  );
+  expect(
+    parseServiceConfiguration(uploadDraft(true, "example.com")).source
+  ).toMatchObject({
+    dockerUpload: { previewDomain: "example.com", previews: true },
+    type: "docker_image_upload",
+  });
 });
 
-test("allows an incomplete upload domain while a service is still a draft", () => {
-  expect(parseServiceConfiguration(uploadDraft(true)).source.type).toBe(
-    "docker_image_upload"
+test("clears preview domain when previews are disabled in parse output", () => {
+  const { source } = parseServiceConfiguration(
+    uploadDraft(false, "example.com")
   );
+  expect(source).toMatchObject({
+    dockerUpload: { previews: false },
+    type: "docker_image_upload",
+  });
+  if (source.type === "docker_image_upload") {
+    expect(source.dockerUpload.previewDomain).toBeUndefined();
+  }
 });
 
 test("keeps private registry credentials in the service configuration", () => {

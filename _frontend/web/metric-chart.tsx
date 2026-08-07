@@ -1,25 +1,29 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import type {
+  CSSProperties,
+  PointerEvent as ReactPointerEvent,
+  ReactElement,
+} from "react";
 
-import type { ResourceUsageHistory } from "@/api";
-
-type MetricPoint = ResourceUsageHistory["points"][number];
-
-export interface MetricSeries {
-  color: string;
-  label: string;
-  points?: MetricPoint[];
-  strokeDasharray?: string;
-  value: (point: MetricPoint) => number | undefined;
+export interface MetricPoint {
+  observedAt: number;
 }
 
-interface MetricChartProps {
+export interface MetricSeries<T extends MetricPoint = MetricPoint> {
+  color: string;
+  label: string;
+  points?: T[];
+  strokeDasharray?: string;
+  value: (point: T) => number | undefined;
+}
+
+interface MetricChartProps<T extends MetricPoint = MetricPoint> {
   emptyLabel: string;
   formatValue: (value: number) => string;
   from: number;
   minimumMaximum: number;
-  points: MetricPoint[];
-  series: MetricSeries[];
+  points: T[];
+  series: MetricSeries<T>[];
   title: string;
   to: number;
 }
@@ -30,11 +34,11 @@ interface ChartCoordinate {
   y: number;
 }
 
-interface SeriesGeometry {
+interface SeriesGeometry<T extends MetricPoint = MetricPoint> {
   areas: string[];
   coordinates: (ChartCoordinate | undefined)[];
   lines: string[];
-  metric: MetricSeries;
+  metric: MetricSeries<T>;
 }
 
 interface HoverState {
@@ -101,7 +105,10 @@ const timeLabelAnchor = (index: number, lastIndex: number) => {
   return "middle";
 };
 
-const latestValue = (points: MetricPoint[], metric: MetricSeries) => {
+const latestValue = <T extends MetricPoint>(
+  points: T[],
+  metric: MetricSeries<T>
+) => {
   for (let index = points.length - 1; index >= 0; index -= 1) {
     const point = points[index];
     if (point) {
@@ -127,7 +134,7 @@ const areaPath = (coordinates: ChartCoordinate[], baseline: number) => {
   return `${linePath(coordinates)} L ${last.x} ${baseline} L ${first.x} ${baseline} Z`;
 };
 
-const geometryForSeries = ({
+const geometryForSeries = <T extends MetricPoint>({
   maximum,
   metric,
   plotLeft,
@@ -136,12 +143,12 @@ const geometryForSeries = ({
   points,
 }: {
   maximum: number;
-  metric: MetricSeries;
+  metric: MetricSeries<T>;
   plotLeft: number;
   plotHeight: number;
   plotWidth: number;
-  points: MetricPoint[];
-}): SeriesGeometry => {
+  points: T[];
+}): SeriesGeometry<T> => {
   const baseline = padding.top + plotHeight;
   const xStep = points.length > 1 ? plotWidth / (points.length - 1) : plotWidth;
   const coordinates: SeriesGeometry["coordinates"] = Array.from({
@@ -181,12 +188,12 @@ const geometryForSeries = ({
   };
 };
 
-const AnimatedMetricLine = ({
+const AnimatedMetricLine = <T extends MetricPoint>({
   d,
   metric,
 }: {
   d: string;
-  metric: MetricSeries;
+  metric: MetricSeries<T>;
 }) => {
   const pathRef = useRef<SVGPathElement>(null);
   const [length, setLength] = useState<number>();
@@ -223,7 +230,7 @@ const AnimatedMetricLine = ({
   );
 };
 
-const MetricChartComponent = ({
+const MetricChartComponent = <T extends MetricPoint>({
   emptyLabel,
   formatValue,
   from,
@@ -232,7 +239,7 @@ const MetricChartComponent = ({
   series,
   title,
   to,
-}: MetricChartProps) => {
+}: MetricChartProps<T>) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const [hover, setHover] = useState<HoverState>();
@@ -268,7 +275,7 @@ const MetricChartComponent = ({
       (first, second) => first.observedAt - second.observedAt
     );
   }, [basePoints, series]);
-  const chartSeries = useMemo<MetricSeries[]>(
+  const chartSeries = useMemo<MetricSeries<T>[]>(
     () =>
       series.map((metric) => {
         if (!metric.points) {
@@ -654,4 +661,8 @@ const MetricChartComponent = ({
   );
 };
 
-export const MetricChart = memo(MetricChartComponent);
+export const MetricChart = memo(MetricChartComponent) as <
+  T extends MetricPoint,
+>(
+  props: MetricChartProps<T>
+) => ReactElement;

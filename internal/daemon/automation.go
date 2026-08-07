@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 
+	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 	"github.com/iivankin/platformd/internal/volume"
@@ -15,6 +16,7 @@ type liveAutomationRepository struct {
 	listeners        *liveServiceListenerRepository
 	volumeFilesystem volume.Filesystem
 	traffic          *trafficmetrics.Registry
+	certificates     *origin.Selector
 	onCleanupError   func(error)
 }
 
@@ -22,7 +24,8 @@ func (repository liveAutomationRepository) services() liveServiceRepository {
 	return liveServiceRepository{
 		store: repository.store, runtime: repository.runtime, domains: repository.domains,
 		listeners: repository.listeners, volumeFilesystem: repository.volumeFilesystem,
-		traffic: repository.traffic, onCleanupError: repository.onCleanupError,
+		traffic: repository.traffic, certificates: repository.certificates,
+		onCleanupError: repository.onCleanupError,
 	}
 }
 

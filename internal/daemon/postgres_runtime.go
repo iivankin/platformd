@@ -307,6 +307,28 @@ func (stack *runtimeStack) QueryManagedPostgres(ctx context.Context, resourceID,
 	return controller.Query(ctx, resourceID, sql)
 }
 
+func (stack *runtimeStack) ManagedPostgresStats(ctx context.Context, resourceID string) (managedpostgres.Stats, error) {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedpostgres.Stats{}, errors.New("managed PostgreSQL runtime is not ready")
+	}
+	return controller.Stats(ctx, resourceID)
+}
+
+func (stack *runtimeStack) ManagedPostgresCollectorStats(ctx context.Context, resourceID string) (managedpostgres.Stats, error) {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return managedpostgres.Stats{}, errors.New("managed PostgreSQL runtime is not ready")
+	}
+	return controller.CollectorStats(ctx, resourceID)
+}
+
 func (stack *runtimeStack) ManagedPostgresExtensions(ctx context.Context, resourceID string) ([]managedpostgres.Extension, error) {
 	stack.mu.Lock()
 	controller := stack.managedPostgres

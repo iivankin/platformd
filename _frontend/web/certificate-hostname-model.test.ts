@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  certificateApexDomainSuggestions,
   certificateHostnameSuggestionMatches,
   certificateHostnameSuggestions,
   completeCertificateHostname,
@@ -29,6 +30,26 @@ test("deduplicates certificate hostname suggestions", () => {
   expect(suggestions).toEqual([
     wildcardSuggestion,
     { dnsName: "registry.example.com", wildcard: false },
+  ]);
+});
+
+test("derives apex preview domains from wildcard certificates", () => {
+  expect(
+    certificateApexDomainSuggestions([
+      {
+        createdAt: 1,
+        dnsNames: ["*.example.com", "example.com", "app.example.com"],
+        id: "certificate-1",
+      },
+      {
+        createdAt: 2,
+        dnsNames: ["*.foo.example.com", "*.example.co.uk"],
+        id: "certificate-2",
+      },
+    ])
+  ).toEqual([
+    { dnsName: "example.co.uk", wildcard: false },
+    { dnsName: "example.com", wildcard: false },
   ]);
 });
 

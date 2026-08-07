@@ -427,8 +427,12 @@ func writeServiceMutationError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrServiceChanged):
 		writeAPIError(response, http.StatusConflict, "service_changed", "Service changed; reload it before applying this action")
-	case errors.Is(err, state.ErrPreviewDomainCount):
-		writeAPIError(response, http.StatusConflict, "preview_domain_count", err.Error())
+	case errors.Is(err, state.ErrPreviewDomain):
+		writeAPIError(response, http.StatusConflict, "preview_domain", err.Error())
+	case errors.Is(err, state.ErrPreviewDomainCoverage):
+		writeAPIError(response, http.StatusUnprocessableEntity, "preview_domain_coverage", err.Error())
+	case errors.Is(err, state.ErrPreviewTargetPort):
+		writeAPIError(response, http.StatusConflict, "preview_target_port", err.Error())
 	case errors.Is(err, state.ErrDependencyMissing):
 		writeAPIError(response, http.StatusConflict, "dependency_missing", err.Error())
 	case errors.Is(err, state.ErrDeploymentNotFound):

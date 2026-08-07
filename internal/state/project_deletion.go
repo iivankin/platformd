@@ -157,7 +157,12 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			`DELETE FROM resource_metric_samples WHERE
 			 (resource_kind = 'service' AND resource_id IN (SELECT id FROM services WHERE project_id = ?)) OR
 			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
-			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?))`,
+			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?)) OR
+			 (resource_kind = 'network_gateway' AND resource_id IN (SELECT id FROM network_gateways WHERE project_id = ?))`,
+			`DELETE FROM managed_stat_samples WHERE
+			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
+			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?)) OR
+			 (resource_kind = 'object_store' AND resource_id IN (SELECT id FROM object_stores WHERE project_id = ?))`,
 			`DELETE FROM runtime_deployments WHERE
 			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
 			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?))`,
@@ -177,8 +182,13 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			`DELETE FROM services WHERE project_id = ?`,
 		}
 		arguments := [][]any{
-			{input.ID}, {input.ID, input.ID, input.ID}, {input.ID, input.ID}, {input.ID, input.ID, input.ID, input.ID},
-			{input.ID, input.ID, input.ID, input.ID, input.ID, input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID},
+			{input.ID},
+			{input.ID, input.ID, input.ID, input.ID},
+			{input.ID, input.ID, input.ID},
+			{input.ID, input.ID},
+			{input.ID, input.ID, input.ID, input.ID},
+			{input.ID, input.ID, input.ID, input.ID, input.ID, input.ID},
+			{input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID},
 		}
 		for index, statement := range statements {
 			if _, err := transaction.ExecContext(ctx, statement, arguments[index]...); err != nil {

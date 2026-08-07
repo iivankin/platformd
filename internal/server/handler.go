@@ -20,6 +20,7 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
+	"github.com/iivankin/platformd/internal/managedstats"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/projectwebhook"
 	"github.com/iivankin/platformd/internal/terminalauth"
@@ -52,6 +53,7 @@ type handlerConfig struct {
 	managedImages           ManagedImageCatalog
 	managedRedis            ManagedRedisRepository
 	managedPostgres         *managedpostgres.Application
+	managedStats            *managedstats.Application
 	objectStores            *objectstore.Application
 	installationSettings    *installationsettings.Application
 	afterInstallationChange func()
@@ -170,6 +172,12 @@ func WithManagedRedis(repository ManagedRedisRepository) Option {
 func WithManagedPostgres(application *managedpostgres.Application) Option {
 	return func(config *handlerConfig) {
 		config.managedPostgres = application
+	}
+}
+
+func WithManagedStats(application *managedstats.Application) Option {
+	return func(config *handlerConfig) {
+		config.managedStats = application
 	}
 }
 
@@ -339,13 +347,13 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		registerManagedImageRoutes(mux, config.managedImages)
 	}
 	if config.managedRedis != nil {
-		registerManagedRedisRoutes(mux, config.managedRedis)
+		registerManagedRedisRoutes(mux, config.managedRedis, config.managedStats)
 	}
 	if config.managedPostgres != nil {
-		registerManagedPostgresRoutes(mux, config.managedPostgres)
+		registerManagedPostgresRoutes(mux, config.managedPostgres, config.managedStats)
 	}
 	if config.objectStores != nil {
-		registerObjectStoreRoutes(mux, config.objectStores)
+		registerObjectStoreRoutes(mux, config.objectStores, config.managedStats)
 	}
 	if config.installationSettings != nil {
 		registerInstallationSettingsRoutes(mux, config)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
@@ -19,6 +20,7 @@ type liveServiceRepository struct {
 	listeners        *liveServiceListenerRepository
 	volumeFilesystem volume.Filesystem
 	traffic          *trafficmetrics.Registry
+	certificates     *origin.Selector
 	onCleanupError   func(error)
 }
 
@@ -166,6 +168,9 @@ func (repository liveServiceRepository) ServicePreviewDeployments(ctx context.Co
 }
 
 func (repository liveServiceRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
+	if err := repository.ensurePreviewDomainCoverage(input.Snapshot.Source); err != nil {
+		return state.ServiceDesired{}, err
+	}
 	created, err := repository.store.CreateService(ctx, input)
 	if err != nil {
 		return state.ServiceDesired{}, err
@@ -179,12 +184,25 @@ func (repository liveServiceRepository) CreateService(ctx context.Context, input
 }
 
 func (repository liveServiceRepository) UpdateService(ctx context.Context, input state.UpdateServiceInput) (state.ServiceDesired, error) {
+	if err := repository.ensurePreviewDomainCoverage(input.Snapshot.Source); err != nil {
+		return state.ServiceDesired{}, err
+	}
+	previous, err := repository.store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return state.ServiceDesired{}, err
+	}
 	updated, err := repository.store.UpdateService(ctx, input)
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}
+	previousRoot := servicesource.ImageUploadPreviewDomain(previous.Snapshot.Source)
+	updatedRoot := servicesource.ImageUploadPreviewDomain(updated.Snapshot.Source)
 	if !updated.Enabled || !servicesource.ImageUploadPreviewsEnabled(updated.Snapshot.Source) {
 		if err := repository.runtime.stopServicePreviews(ctx, updated.ID, "Image previews disabled"); err != nil {
+			return state.ServiceDesired{}, err
+		}
+	} else if previousRoot != "" && previousRoot != updatedRoot {
+		if err := repository.runtime.stopServicePreviews(ctx, updated.ID, "Preview domain changed"); err != nil {
 			return state.ServiceDesired{}, err
 		}
 	}
@@ -192,6 +210,17 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 		repository.runtime.recordServiceFailure(updated.ID, reconcileErr)
 	}
 	return repository.store.DesiredService(ctx, updated.ID)
+}
+
+func (repository liveServiceRepository) ensurePreviewDomainCoverage(source servicesource.Source) error {
+	root := servicesource.ImageUploadPreviewDomain(source)
+	if root == "" || repository.certificates == nil {
+		return nil
+	}
+	if !repository.certificates.Covers(servicesource.PreviewCoverageHostname(root)) {
+		return state.ErrPreviewDomainCoverage
+	}
+	return nil
 }
 
 func (repository liveServiceRepository) DeployServiceVersion(ctx context.Context, input state.DeployServiceVersionInput) (state.ServiceDesired, error) {

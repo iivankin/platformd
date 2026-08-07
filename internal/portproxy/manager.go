@@ -89,6 +89,7 @@ type Route struct {
 	ListenPort         int
 	ListenNamespacePID int
 	DialNamespacePID   int
+	GatewayID          string
 	Target             Target
 }
 
@@ -287,4 +288,15 @@ func routeServiceID(route Route) string {
 	default:
 		return ""
 	}
+}
+
+func routeTrafficIDs(route Route) []string {
+	ids := make([]string, 0, 2)
+	if route.GatewayID != "" {
+		ids = append(ids, route.GatewayID)
+	}
+	if serviceID := routeServiceID(route); serviceID != "" {
+		ids = append(ids, serviceID)
+	}
+	return ids
 }

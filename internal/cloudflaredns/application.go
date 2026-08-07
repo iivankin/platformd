@@ -147,9 +147,10 @@ type dnsRecord struct {
 	Comment string `json:"comment"`
 }
 
-// EnsurePreviewHostname clones the public routing records of the service's
-// only HTTP domain. This works for both tunnel CNAMEs and direct A/AAAA origins
-// without storing a second, potentially stale ingress target in platformd.
+// EnsurePreviewHostname clones the public routing records of a canonical
+// hostname in the same Cloudflare zone onto the preview hostname. The
+// canonical host is typically a service HTTP domain under the preview root,
+// or the root domain itself.
 func (application *Application) EnsurePreviewHostname(ctx context.Context, canonicalHostname, previewHostname, previewID string) ([]string, error) {
 	if strings.TrimSpace(previewID) == "" {
 		return nil, errors.New("PR preview ID is required")

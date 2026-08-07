@@ -25,10 +25,11 @@ func adminTools() []Tool {
 			"dockerUpload": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"properties": map[string]any{
-					"repository": map[string]any{"type": "string"},
-					"branch":     map[string]any{"type": "string"},
-					"workflows":  map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"previews":   map[string]any{"type": "boolean"},
+					"repository":    map[string]any{"type": "string"},
+					"branch":        map[string]any{"type": "string"},
+					"workflows":     map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"previews":      map[string]any{"type": "boolean"},
+					"previewDomain": map[string]any{"type": "string"},
 				},
 				"required": []string{"repository", "branch", "workflows", "previews"},
 			},

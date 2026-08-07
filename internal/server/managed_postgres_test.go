@@ -163,6 +163,10 @@ func (runtime *postgresRuntimeStub) QueryManagedPostgres(_ context.Context, _ st
 	}}}, nil
 }
 
+func (*postgresRuntimeStub) ManagedPostgresStats(context.Context, string) (managedpostgres.Stats, error) {
+	return managedpostgres.Stats{Version: "16.0"}, nil
+}
+
 func TestManagedPostgresQueryIsAccessOnlyAndAuditedWithoutSQL(t *testing.T) {
 	store := &postgresStoreStub{resource: state.ManagedPostgres{
 		ID: "postgres", ProjectID: "project", ProjectName: "shop", Name: "database",

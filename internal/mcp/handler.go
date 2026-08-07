@@ -42,6 +42,7 @@ type Handler struct {
 	objectStores       *automation.ObjectStoreApplication
 	managed            *automation.ManagedResourceApplication
 	managedDeployments *automation.ManagedDeploymentApplication
+	managedStats       *automation.ManagedStatsApplication
 	networkGateways    *automation.NetworkGatewayApplication
 	backups            *automation.BackupApplication
 	versions           *databaseversion.Service
@@ -71,6 +72,7 @@ type Config struct {
 	ObjectStores       *automation.ObjectStoreApplication
 	Managed            *automation.ManagedResourceApplication
 	ManagedDeployments *automation.ManagedDeploymentApplication
+	ManagedStats       *automation.ManagedStatsApplication
 	NetworkGateways    *automation.NetworkGatewayApplication
 	Backups            *automation.BackupApplication
 	Versions           *databaseversion.Service
@@ -113,13 +115,16 @@ func New(config Config) (*Handler, error) {
 	if config.Volumes != nil {
 		tools = append(tools, listVolumesTool())
 	}
+	if config.ManagedStats != nil {
+		tools = append(tools, readManagedResourceStatsTool())
+	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		projects: config.Projects, services: config.Services, domains: config.Domains,
 		logs: config.Logs, usage: config.Usage, infrastructureLogs: config.InfrastructureLogs,
 		diskPressure: config.DiskPressure, imageGC: config.ImageGC, audit: config.Audit,
 		images: config.Images, redis: config.Redis, postgres: config.Postgres, objectStores: config.ObjectStores,
-		managed: config.Managed, managedDeployments: config.ManagedDeployments,
+		managed: config.Managed, managedDeployments: config.ManagedDeployments, managedStats: config.ManagedStats,
 		networkGateways: config.NetworkGateways, backups: config.Backups, versions: config.Versions,
 		serverExec: config.ServerExec, volumes: config.Volumes, portForwards: config.PortForwards,
 		tools: tools, admission: config.Admission,

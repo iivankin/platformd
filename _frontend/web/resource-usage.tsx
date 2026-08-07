@@ -31,7 +31,9 @@ const chartColors = {
   secondary: "#fbbf24",
 } as const;
 
-const cpuSeries: MetricSeries[] = [
+type UsagePoint = ResourceUsageHistory["points"][number];
+
+const cpuSeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.primary,
     label: "Average",
@@ -45,7 +47,7 @@ const cpuSeries: MetricSeries[] = [
   },
 ];
 
-const memorySeries: MetricSeries[] = [
+const memorySeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.secondary,
     label: "Average",
@@ -59,7 +61,7 @@ const memorySeries: MetricSeries[] = [
   },
 ];
 
-const networkSeries: MetricSeries[] = [
+const networkSeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.primary,
     label: "Ingress",
@@ -84,7 +86,7 @@ const networkSeries: MetricSeries[] = [
   },
 ];
 
-const diskSeries: MetricSeries[] = [
+const diskSeries: MetricSeries<UsagePoint>[] = [
   {
     color: "#34d399",
     label: "Volumes",
@@ -103,12 +105,10 @@ const breakdownColors = [
   "#84cc16",
 ] as const;
 
-type UsagePoint = ResourceUsageHistory["points"][number];
-
 const breakdownSeriesFor = (
   history: ResourceUsageHistory | null,
   value: (point: UsagePoint) => number | undefined
-): MetricSeries[] =>
+): MetricSeries<UsagePoint>[] =>
   (history?.series ?? [])
     .filter((item) => item.points.some((point) => value(point) !== undefined))
     .map((item, index) => ({
@@ -143,7 +143,7 @@ const udpBreakdownValue = (point: UsagePoint) => {
     : ingress + egress;
 };
 
-const httpRequestSeries: MetricSeries[] = [
+const httpRequestSeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.primary,
     label: "Requests avg",
@@ -167,7 +167,7 @@ const httpRequestSeries: MetricSeries[] = [
   },
 ];
 
-const httpLatencySeries: MetricSeries[] = [
+const httpLatencySeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.primary,
     label: "p50",
@@ -185,7 +185,7 @@ const httpLatencySeries: MetricSeries[] = [
   },
 ];
 
-const tcpSeries: MetricSeries[] = [
+const tcpSeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.primary,
     label: "Connections avg",
@@ -199,7 +199,7 @@ const tcpSeries: MetricSeries[] = [
   },
 ];
 
-const udpSeries: MetricSeries[] = [
+const udpSeries: MetricSeries<UsagePoint>[] = [
   {
     color: chartColors.primary,
     label: "Ingress avg",
@@ -850,7 +850,7 @@ const VPSCharts = ({
   history: ResourceUsageHistory | null;
   historyError?: string;
 }) => {
-  const cpuSeriesForHost = useMemo<MetricSeries[]>(
+  const cpuSeriesForHost = useMemo<MetricSeries<UsagePoint>[]>(
     () => [
       {
         color: chartColors.primary,
@@ -1042,7 +1042,7 @@ export const ResourceUsage = ({
         title="Resource usage"
         usage={usage}
       />
-      {kind === "service" ? (
+      {kind === "service" || kind === "network_gateway" ? (
         <ProtocolUsage
           history={history}
           historyError={historyError}

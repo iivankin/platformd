@@ -1,3 +1,5 @@
+import { getDomain } from "tldts";
+
 import type { InstallationSettings } from "@/api";
 
 export interface CertificateHostnameSuggestion {
@@ -8,6 +10,13 @@ export interface CertificateHostnameSuggestion {
 const dnsLabelPattern = /^(?!-)[a-z\d-]{1,63}(?<!-)$/u;
 
 const normalizeInput = (value: string) => value.trim().toLowerCase();
+
+const isRegistrableApex = (hostname: string) => {
+  if (!hostname.includes(".")) {
+    return false;
+  }
+  return getDomain(hostname) === hostname;
+};
 
 export const certificateHostnameSuggestions = (
   certificates: InstallationSettings["certificates"]
@@ -23,6 +32,30 @@ export const certificateHostnameSuggestions = (
       dnsName,
       wildcard: dnsName.startsWith("*."),
     }))
+    .toSorted((left, right) => left.dnsName.localeCompare(right.dnsName));
+};
+
+// Apex preview roots come from wildcard Origin names (*.example.com → example.com)
+// so a single-label preview child is covered by the same certificate.
+export const certificateApexDomainSuggestions = (
+  certificates: InstallationSettings["certificates"]
+): CertificateHostnameSuggestion[] => {
+  const apexes = new Set<string>();
+  for (const certificate of certificates) {
+    for (const name of certificate.dnsNames) {
+      const dnsName = normalizeInput(name);
+      if (!dnsName.startsWith("*.")) {
+        continue;
+      }
+      const apex = dnsName.slice(2);
+      // Match backend NormalizeApex / IsApex: only eTLD+1 roots are usable.
+      if (isRegistrableApex(apex)) {
+        apexes.add(apex);
+      }
+    }
+  }
+  return [...apexes]
+    .map((dnsName) => ({ dnsName, wildcard: false }))
     .toSorted((left, right) => left.dnsName.localeCompare(right.dnsName));
 };
 

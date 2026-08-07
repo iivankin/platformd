@@ -37,6 +37,7 @@ const workspaces: Record<
     icon: Network,
     label: "Network gateway",
     views: [
+      { label: "Metrics", value: "metrics" },
       { label: "Variables", value: "variables" },
       { label: "Settings", value: "settings" },
     ],

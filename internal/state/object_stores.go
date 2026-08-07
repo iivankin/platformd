@@ -287,7 +287,8 @@ func (store *Store) UpdateObjectStorePortForward(ctx context.Context, input Upda
 		result, execErr := transaction.ExecContext(ctx, `
 UPDATE object_stores SET port_forward_json = ?, updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
-			portForwardJSON, input.UpdatedAtMillis, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+			portForwardJSON, monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis),
+			input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
 		)
 		if execErr != nil {
 			return fmt.Errorf("update object store port-forward settings: %w", execErr)
@@ -339,7 +340,8 @@ func (store *Store) UpdateObjectStorePublicAccess(ctx context.Context, input Upd
 		result, execErr := transaction.ExecContext(ctx, `
 UPDATE object_stores SET public_hostname = ?, cors_origins_json = ?, updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
-			nullableString(input.PublicHostname), string(corsJSON), input.UpdatedAtMillis,
+			nullableString(input.PublicHostname), string(corsJSON),
+			monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis),
 			input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
 		)
 		if execErr != nil {

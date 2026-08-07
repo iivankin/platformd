@@ -38,6 +38,16 @@ type ObjectStoreStats struct {
 	TotalBytes          uint64                      `json:"totalBytes"`
 	ObservedAtMillis    int64                       `json:"observedAt,omitempty"`
 	ObjectSizeHistogram []ObjectSizeHistogramBucket `json:"objectSizeHistogram"`
+	Traffic             *ObjectStoreTraffic         `json:"traffic,omitempty"`
+}
+
+type ObjectStoreTraffic struct {
+	Ops                map[string]uint64 `json:"ops"`
+	BytesIn            uint64            `json:"bytesIn"`
+	BytesOut           uint64            `json:"bytesOut"`
+	Errors             uint64            `json:"errors"`
+	ActiveRequests     int64             `json:"activeRequests"`
+	TotalLatencyMicros uint64            `json:"totalLatencyMicros"`
 }
 
 type ObjectSizeHistogramBucket struct {

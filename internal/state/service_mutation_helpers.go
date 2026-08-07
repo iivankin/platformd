@@ -37,13 +37,19 @@ SELECT updated_at FROM services WHERE id = ? AND project_id = ?`, serviceID, pro
 
 func validateServiceDependencies(ctx context.Context, transaction *sql.Tx, projectID, serviceID string, snapshot serviceconfig.Snapshot) error {
 	if servicesource.ImageUploadPreviewsEnabled(snapshot.Source) {
-		var domainCount int
-		if err := transaction.QueryRowContext(ctx, `
-SELECT count(*) FROM service_domains WHERE service_id = ?`, serviceID).Scan(&domainCount); err != nil {
-			return fmt.Errorf("count image upload preview domains: %w", err)
+		if servicesource.ImageUploadPreviewDomain(snapshot.Source) == "" {
+			return ErrPreviewDomain
 		}
-		if domainCount != 1 {
-			return ErrPreviewDomainCount
+		hasHealthPort := snapshot.HealthCheck != nil && snapshot.HealthCheck.Port >= 1 && snapshot.HealthCheck.Port <= 65535
+		if !hasHealthPort {
+			var domainCount int
+			if err := transaction.QueryRowContext(ctx, `
+SELECT count(*) FROM service_domains WHERE service_id = ?`, serviceID).Scan(&domainCount); err != nil {
+				return fmt.Errorf("count image upload preview target ports: %w", err)
+			}
+			if domainCount == 0 {
+				return ErrPreviewTargetPort
+			}
 		}
 	}
 	if snapshot.Source.Type == servicesource.PrivateImage {

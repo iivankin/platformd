@@ -19,7 +19,9 @@ var (
 	ErrDeploymentNotSuccess   = errors.New("deployment did not succeed")
 	ErrDeploymentIsActive     = errors.New("deployment is active")
 	ErrServiceReconcileFailed = errors.New("service reconcile failed")
-	ErrPreviewDomainCount     = errors.New("image upload previews require exactly one HTTP domain")
+	ErrPreviewDomain          = errors.New("image upload previews require a root preview domain")
+	ErrPreviewDomainCoverage  = errors.New("no configured Origin certificate covers preview hostnames under this root domain")
+	ErrPreviewTargetPort      = errors.New("image upload previews require an HTTP domain or health check port")
 )
 
 type UpdateServiceInput struct {

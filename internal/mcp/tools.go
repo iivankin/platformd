@@ -321,6 +321,12 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.readManagedResourceBackups(request.Context(), call.Arguments, identity)
+	case "read_managed_resource_stats":
+		if handler.managedStats == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.readManagedResourceStats(request.Context(), call.Arguments, identity)
 	case "read_managed_database_version_change":
 		if handler.versions == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
@@ -490,7 +496,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, automation.ErrUsageKind) || errors.Is(err, automation.ErrUsageRange) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) || errors.Is(err, portforward.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, automation.ErrUsageKind) || errors.Is(err, automation.ErrUsageRange) || errors.Is(err, automation.ErrManagedStatsKind) || errors.Is(err, automation.ErrManagedStatsRange) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) || errors.Is(err, portforward.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

@@ -10,6 +10,25 @@ export interface PostgresBrowserTable {
   schema: string;
 }
 
+export interface PostgresForeignKey {
+  columns: string[];
+  foreignColumns: string[];
+  foreignSchema: string;
+  foreignTable: string;
+  name: string;
+  schema: string;
+  table: string;
+}
+
+export type PostgresRelationDirection = "incoming" | "outgoing";
+
+export interface PostgresTableRelation {
+  direction: PostgresRelationDirection;
+  foreignKey: PostgresForeignKey;
+  key: string;
+  label: string;
+}
+
 export interface PostgresTableSort {
   column: string;
   direction: "asc" | "desc";
@@ -36,6 +55,12 @@ export interface PostgresTableFilter {
   id: string;
   operator: PostgresFilterOperator;
   value: string;
+}
+
+export interface PostgresRelationNavigation {
+  filters: PostgresTableFilter[];
+  schema: string;
+  table: string;
 }
 
 export const postgresFilterOperators: {
@@ -83,6 +108,45 @@ WHERE relation.relkind IN ('r', 'p')
   AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
 ORDER BY namespace.nspname, relation.relname
 LIMIT 500;`;
+
+export const postgresForeignKeyCatalogSQL = `/* platformd:data-browser:foreign-keys */
+SELECT
+  source_namespace.nspname AS schema,
+  source_relation.relname AS table,
+  target_namespace.nspname AS foreign_schema,
+  target_relation.relname AS foreign_table,
+  constraint_def.conname AS name,
+  COALESCE((
+    SELECT json_agg(attribute.attname ORDER BY key_column.ordinality)::text
+    FROM unnest(constraint_def.conkey)
+      WITH ORDINALITY AS key_column(attribute_number, ordinality)
+    JOIN pg_attribute AS attribute
+      ON attribute.attrelid = constraint_def.conrelid
+      AND attribute.attnum = key_column.attribute_number
+  ), '[]') AS columns,
+  COALESCE((
+    SELECT json_agg(attribute.attname ORDER BY key_column.ordinality)::text
+    FROM unnest(constraint_def.confkey)
+      WITH ORDINALITY AS key_column(attribute_number, ordinality)
+    JOIN pg_attribute AS attribute
+      ON attribute.attrelid = constraint_def.confrelid
+      AND attribute.attnum = key_column.attribute_number
+  ), '[]') AS foreign_columns
+FROM pg_constraint AS constraint_def
+JOIN pg_class AS source_relation ON source_relation.oid = constraint_def.conrelid
+JOIN pg_namespace AS source_namespace
+  ON source_namespace.oid = source_relation.relnamespace
+JOIN pg_class AS target_relation ON target_relation.oid = constraint_def.confrelid
+JOIN pg_namespace AS target_namespace
+  ON target_namespace.oid = target_relation.relnamespace
+WHERE constraint_def.contype = 'f'
+  AND source_namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND target_namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY
+  source_namespace.nspname,
+  source_relation.relname,
+  constraint_def.conname
+LIMIT 2000;`;
 
 export const quotePostgresIdentifier = (value: string) =>
   `"${value.replaceAll('"', '""')}"`;
@@ -258,4 +322,200 @@ export const postgresTablesFromResult = (
       },
     ];
   });
+};
+
+const parseStringArray = (value?: string): string[] => {
+  try {
+    const parsed = JSON.parse(value ?? "[]");
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed.filter((item): item is string => typeof item === "string");
+  } catch {
+    return [];
+  }
+};
+
+const tableMatches = (
+  schema: string,
+  name: string,
+  table: PostgresBrowserTable
+) => table.schema === schema && table.name === name;
+
+const relationTableLabel = (
+  schema: string,
+  name: string,
+  currentSchema: string
+) => (schema === currentSchema ? name : `${schema}.${name}`);
+
+export const postgresForeignKeysFromResult = (
+  result: PostgresQueryResult
+): PostgresForeignKey[] => {
+  const [statement] = result.statements;
+  if (!statement) {
+    return [];
+  }
+  const indexes = new Map(
+    statement.columns.map((column, index) => [column.name, index])
+  );
+  const schemaIndex = indexes.get("schema");
+  const tableIndex = indexes.get("table");
+  const foreignSchemaIndex = indexes.get("foreign_schema");
+  const foreignTableIndex = indexes.get("foreign_table");
+  const nameIndex = indexes.get("name");
+  const columnsIndex = indexes.get("columns");
+  const foreignColumnsIndex = indexes.get("foreign_columns");
+  if (
+    schemaIndex === undefined ||
+    tableIndex === undefined ||
+    foreignSchemaIndex === undefined ||
+    foreignTableIndex === undefined
+  ) {
+    return [];
+  }
+  return statement.rows.flatMap((row) => {
+    const schema = row[schemaIndex]?.text;
+    const table = row[tableIndex]?.text;
+    const foreignSchema = row[foreignSchemaIndex]?.text;
+    const foreignTable = row[foreignTableIndex]?.text;
+    if (!(schema && table && foreignSchema && foreignTable)) {
+      return [];
+    }
+    const columns = parseStringArray(row[columnsIndex ?? -1]?.text);
+    const foreignColumns = parseStringArray(
+      row[foreignColumnsIndex ?? -1]?.text
+    );
+    if (columns.length === 0 || columns.length !== foreignColumns.length) {
+      return [];
+    }
+    return [
+      {
+        columns,
+        foreignColumns,
+        foreignSchema,
+        foreignTable,
+        name:
+          row[nameIndex ?? -1]?.text ?? `${table}_${columns.join("_")}_fkey`,
+        schema,
+        table,
+      },
+    ];
+  });
+};
+
+export const postgresRelationsForTable = (
+  foreignKeys: PostgresForeignKey[],
+  table: PostgresBrowserTable
+): PostgresTableRelation[] => {
+  const outgoing = foreignKeys
+    .filter((foreignKey) =>
+      tableMatches(foreignKey.schema, foreignKey.table, table)
+    )
+    .map((foreignKey) => ({
+      direction: "outgoing" as const,
+      foreignKey,
+      key: `out:${foreignKey.name}`,
+      label: relationTableLabel(
+        foreignKey.foreignSchema,
+        foreignKey.foreignTable,
+        table.schema
+      ),
+    }));
+  const incomingLabelCounts = new Map<string, number>();
+  for (const foreignKey of foreignKeys) {
+    if (
+      !tableMatches(foreignKey.foreignSchema, foreignKey.foreignTable, table)
+    ) {
+      continue;
+    }
+    const label = relationTableLabel(
+      foreignKey.schema,
+      foreignKey.table,
+      table.schema
+    );
+    incomingLabelCounts.set(label, (incomingLabelCounts.get(label) ?? 0) + 1);
+  }
+  const incoming = foreignKeys
+    .filter((foreignKey) =>
+      tableMatches(foreignKey.foreignSchema, foreignKey.foreignTable, table)
+    )
+    .map((foreignKey) => {
+      const baseLabel = relationTableLabel(
+        foreignKey.schema,
+        foreignKey.table,
+        table.schema
+      );
+      const needsDisambiguation = (incomingLabelCounts.get(baseLabel) ?? 0) > 1;
+      return {
+        direction: "incoming" as const,
+        foreignKey,
+        key: `in:${foreignKey.name}`,
+        label: needsDisambiguation
+          ? `${baseLabel} (${foreignKey.columns.join(", ")})`
+          : baseLabel,
+      };
+    });
+  return [...outgoing, ...incoming];
+};
+
+export const postgresOutgoingRelationForColumn = (
+  relations: PostgresTableRelation[],
+  column: string
+): PostgresTableRelation | undefined =>
+  relations.find(
+    (relation) =>
+      relation.direction === "outgoing" &&
+      relation.foreignKey.columns.includes(column)
+  );
+
+export const postgresIncomingRelations = (
+  relations: PostgresTableRelation[]
+): PostgresTableRelation[] =>
+  relations.filter((relation) => relation.direction === "incoming");
+
+export const postgresRelationNavigation = ({
+  columnValues,
+  relation,
+}: {
+  columnValues: Record<string, string | undefined>;
+  relation: PostgresTableRelation;
+}): PostgresRelationNavigation | undefined => {
+  const { foreignKey } = relation;
+  const sourceColumns =
+    relation.direction === "outgoing"
+      ? foreignKey.columns
+      : foreignKey.foreignColumns;
+  const targetColumns =
+    relation.direction === "outgoing"
+      ? foreignKey.foreignColumns
+      : foreignKey.columns;
+  const filters: PostgresTableFilter[] = [];
+  for (const [index, sourceColumn] of sourceColumns.entries()) {
+    const targetColumn = targetColumns[index];
+    const value = columnValues[sourceColumn];
+    if (!(targetColumn && value !== undefined)) {
+      return undefined;
+    }
+    filters.push({
+      column: targetColumn,
+      connector: "and",
+      id: globalThis.crypto.randomUUID(),
+      operator: "=",
+      value,
+    });
+  }
+  if (filters.length === 0) {
+    return undefined;
+  }
+  return {
+    filters,
+    schema:
+      relation.direction === "outgoing"
+        ? foreignKey.foreignSchema
+        : foreignKey.schema,
+    table:
+      relation.direction === "outgoing"
+        ? foreignKey.foreignTable
+        : foreignKey.table,
+  };
 };

@@ -95,7 +95,6 @@ export const ServiceSettings = ({
         onDraftChange={(configuration) =>
           updateDraft({ ...draft, configuration })
         }
-        httpDomainCount={draft.domains.length}
         projectName={projectNameFromInternalHostname(internalHostname)}
         serviceName={service.name}
       />

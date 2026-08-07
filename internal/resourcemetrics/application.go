@@ -249,9 +249,9 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 		if readErr != nil {
 			onError(fmt.Errorf("read %s %s metrics: %w", target.Kind, target.ResourceID, readErr))
 			builder := projectBuilder(projectBuilders, target.ProjectID)
-			publicService := target.Kind == string(cgroupstats.Service)
-			builder.missing(publicService, trafficRoutes)
-			installation.missing(publicService, trafficRoutes)
+			publicTraffic := target.AggregatePublicTraffic
+			builder.missing(publicTraffic, trafficRoutes)
+			installation.missing(publicTraffic, trafficRoutes)
 			continue
 		}
 		usage.ObservedAtMillis = collectedAt.UnixMilli()
@@ -266,7 +266,7 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 			current.RunningResources = 1
 		}
 		counters := publicNetwork.Counters[target.ResourceID]
-		if target.Kind == string(cgroupstats.Service) {
+		if target.Kind == string(cgroupstats.Service) || target.Kind == string(cgroupstats.NetworkGateway) {
 			current.Proxy = proxyMetricsFromCounters(counters)
 			current.TrafficRoutes = trafficRoutes
 			if publicNetwork.Complete {
@@ -285,9 +285,9 @@ func (application *Application) collect(ctx context.Context, onError func(error)
 			networkAvailable: current.NetworkAvailable, running: usage.Running,
 			traffic: counters,
 		}
-		publicService := target.Kind == string(cgroupstats.Service)
-		projectBuilder(projectBuilders, target.ProjectID).add(current, publicService)
-		installation.add(current, publicService)
+		publicTraffic := target.AggregatePublicTraffic
+		projectBuilder(projectBuilders, target.ProjectID).add(current, publicTraffic)
+		installation.add(current, publicTraffic)
 	}
 	if diskReady {
 		for _, diskResource := range diskSnapshot.Resources {

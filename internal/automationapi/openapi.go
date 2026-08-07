@@ -399,8 +399,9 @@ func serviceMutationSchemas() map[string]any {
 				"properties": map[string]any{
 					"repository": map[string]string{"type": "string"},
 					"branch":     map[string]string{"type": "string"},
-					"workflows":  map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-					"previews":   map[string]string{"type": "boolean"},
+					"workflows":      map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+					"previews":       map[string]string{"type": "boolean"},
+					"previewDomain":  map[string]string{"type": "string"},
 				},
 			},
 		},

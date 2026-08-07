@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/iivankin/platformd/internal/managedstats"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
@@ -50,13 +51,16 @@ type objectMetadataResponse struct {
 	UpdatedAt   int64  `json:"updatedAt"`
 }
 
-func registerObjectStoreRoutes(mux *http.ServeMux, application *objectstore.Application) {
+func registerObjectStoreRoutes(mux *http.ServeMux, application *objectstore.Application, stats *managedstats.Application) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores", listObjectStores(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores", createObjectStore(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}", getObjectStore(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/port-forward", updateObjectStorePortForward(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/public-access", updateObjectStorePublicAccess(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/stats", getObjectStoreStats(application))
+	if stats != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/stats/history", getObjectStoreStatsHistory(application, stats))
+	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/largest-objects", manageLargestObjects(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores/{storeID}/largest-objects", manageLargestObjects(application))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/object-stores/{storeID}/largest-objects", manageLargestObjects(application))
@@ -106,6 +110,25 @@ func getObjectStoreStats(application *objectstore.Application) http.HandlerFunc 
 			return
 		}
 		writeJSON(response, http.StatusOK, stats)
+	}
+}
+
+func getObjectStoreStatsHistory(application *objectstore.Application, stats *managedstats.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		if _, err := application.Store(request.Context(), request.PathValue("projectID"), request.PathValue("storeID")); err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		history, err := stats.History(
+			request.Context(), "object_store", request.PathValue("storeID"), request.URL.Query().Get("range"),
+		)
+		if writeManagedStatsError(response, err) {
+			return
+		}
+		writeJSON(response, http.StatusOK, history)
 	}
 }
 

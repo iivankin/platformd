@@ -37,7 +37,7 @@ jobs:
 
 `url` is the HTTPS origin of the platformd admin hostname (not a secret; a repository variable is fine). `project` and `resource` are the project and service names from the admin UI. The action builds the public upload URL and uses it as the OIDC audience.
 
-`latest` is accepted only from the production branch configured on the service and deploys production. Any other valid image tag creates or replaces a preview when image previews are enabled on the service. If the service has an allowed-workflow list, the current workflow filename must be present in it.
+`latest` is accepted only from the production branch configured on the service and deploys production. Any other valid image tag creates or replaces a preview when image previews are enabled on the service (with a required root preview domain from Origin certificates; preview hostnames are `preview-{hash}.{previewDomain}`). If the service has an allowed-workflow list, the current workflow filename must be present in it.
 
 The action uploads parallel 95 MiB parts by default (concurrency 4) so large OCI
 archives saturate the link without tripping Cloudflare's 100 MiB request-body

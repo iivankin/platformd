@@ -42,6 +42,7 @@ type Runtime interface {
 	ManagedPostgresExtensions(context.Context, string) ([]Extension, error)
 	ChangeManagedPostgresExtension(context.Context, string, string, bool, func(string)) error
 	QueryManagedPostgres(context.Context, string, string) (QueryResult, error)
+	ManagedPostgresStats(context.Context, string) (Stats, error)
 	RestartManagedPostgresDeployment(context.Context, string, string) error
 	RemoveManagedPostgresDeployment(context.Context, string, string) error
 }
@@ -79,6 +80,8 @@ type Application struct {
 	slots   chan struct{}
 	mu      sync.Mutex
 	active  map[string]struct{}
+	// previousStats derives live per-second rates between successive Stats polls.
+	previousStats map[string]statsRateSnapshot
 }
 
 func NewApplication(root context.Context, store Store, runtime Runtime, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
@@ -94,6 +97,7 @@ func NewApplication(root context.Context, store Store, runtime Runtime, master c
 	return &Application{
 		context: root, store: store, runtime: runtime, master: master, random: random, now: now,
 		slots: make(chan struct{}, 4), active: make(map[string]struct{}),
+		previousStats: make(map[string]statsRateSnapshot),
 	}, nil
 }
 
@@ -255,6 +259,31 @@ func (application *Application) Extensions(ctx context.Context, projectID, resou
 	queryContext, cancel := context.WithTimeout(ctx, QueryTimeout)
 	defer cancel()
 	return application.runtime.ManagedPostgresExtensions(queryContext, resourceID)
+}
+
+func (application *Application) Stats(ctx context.Context, projectID, resourceID string) (Stats, error) {
+	if _, err := application.store.ManagedPostgresInProject(ctx, projectID, resourceID); err != nil {
+		return Stats{}, err
+	}
+	started := application.now()
+	readContext, cancel := context.WithTimeout(ctx, QueryTimeout)
+	defer cancel()
+	stats, err := application.runtime.ManagedPostgresStats(readContext, resourceID)
+	if err != nil {
+		return Stats{}, err
+	}
+	finished := application.now()
+	application.mu.Lock()
+	previous := application.previousStats[resourceID]
+	// A slower overlapping poll can finish after a newer one. Enrich against the
+	// latest baseline, but never replace it with older absolute counters.
+	if !previous.at.IsZero() && !previous.at.Before(started) {
+		_ = enrichStatsRates(&stats, previous, finished)
+	} else {
+		application.previousStats[resourceID] = enrichStatsRates(&stats, previous, finished)
+	}
+	application.mu.Unlock()
+	return stats, nil
 }
 
 func (application *Application) ChangeExtension(ctx context.Context, input ChangeExtensionInput) (ChangeExtensionOutput, error) {

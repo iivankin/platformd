@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/iivankin/platformd/internal/publichostname"
 	"go.podman.io/image/v5/docker/reference"
 )
 
@@ -39,10 +40,11 @@ type Image struct {
 }
 
 type DockerUpload struct {
-	Repository string   `json:"repository"`
-	Branch     string   `json:"branch"`
-	Workflows  []string `json:"workflows"`
-	Previews   bool     `json:"previews"`
+	Repository    string   `json:"repository"`
+	Branch        string   `json:"branch"`
+	Workflows     []string `json:"workflows"`
+	Previews      bool     `json:"previews"`
+	PreviewDomain string   `json:"previewDomain,omitempty"`
 }
 
 type Source struct {
@@ -96,6 +98,17 @@ func Normalize(input Source) (Source, error) {
 			workflows = append(workflows, name)
 		}
 		upload.Workflows = workflows
+		if upload.Previews {
+			previewDomain, err := publichostname.NormalizeApex(upload.PreviewDomain)
+			if err != nil {
+				return Source{}, err
+			}
+			upload.PreviewDomain = previewDomain
+		} else if strings.TrimSpace(upload.PreviewDomain) != "" {
+			return Source{}, errors.New("preview domain is only valid when image previews are enabled")
+		} else {
+			upload.PreviewDomain = ""
+		}
 		source.DockerUpload = &upload
 	case Unconfigured:
 		if input.Image != nil || input.DockerUpload != nil || input.AutoUpdate || input.MinimumReleaseAgeDays != 0 {
@@ -123,7 +136,21 @@ func IsRemoteImage(source Source) bool {
 }
 
 // ImageUploadPreviewsEnabled reports whether non-latest image upload tags should
-// publish ephemeral preview deployments under the service's HTTP domain.
+// publish ephemeral preview deployments under the configured preview root domain.
 func ImageUploadPreviewsEnabled(source Source) bool {
 	return source.Type == DockerImageUpload && source.DockerUpload != nil && source.DockerUpload.Previews
+}
+
+// ImageUploadPreviewDomain returns the configured apex preview domain, or empty.
+func ImageUploadPreviewDomain(source Source) string {
+	if !ImageUploadPreviewsEnabled(source) || source.DockerUpload == nil {
+		return ""
+	}
+	return source.DockerUpload.PreviewDomain
+}
+
+// PreviewCoverageHostname is a single-label child of the preview root used to
+// verify that Origin certificates cover preview deployments.
+func PreviewCoverageHostname(previewRoot string) string {
+	return "preview-coverage." + previewRoot
 }

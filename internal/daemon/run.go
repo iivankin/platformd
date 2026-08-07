@@ -42,6 +42,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/managedstats"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -389,10 +390,15 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	metricsContext, cancelMetrics := context.WithCancel(ctx)
 	metricsDone := make(chan struct{})
 	protocolRateSamplerDone := make(chan struct{})
+	managedStatsDone := make(chan struct{})
+	managedStatsStarted := false
 	defer func() {
 		cancelMetrics()
 		<-metricsDone
 		<-protocolRateSamplerDone
+		if managedStatsStarted {
+			<-managedStatsDone
+		}
 	}()
 	go func() {
 		defer close(protocolRateSamplerDone)
@@ -620,6 +626,26 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	managedStats, err := managedstats.NewApplication(store, managedstats.Config{
+		Postgres: runtime.ManagedPostgresCollectorStats,
+		Redis:    runtime.ManagedRedisStats,
+		ObjectStore: func(statsContext context.Context, storeID string) (objectstore.ObjectStoreStats, error) {
+			return objectStorage.Stats(statsContext, storeID)
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("configure managed stats: %w", err)
+	}
+	managedStatsStarted = true
+	go func() {
+		defer close(managedStatsDone)
+		err := managedStats.Run(metricsContext, func(statsErr error) {
+			log.Printf("managed stats: %v", statsErr)
+		})
+		if err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("managed stats collector stopped: %v", err)
+		}
+	}()
 	databaseVersions, err := databaseversion.New(databaseversion.Config{
 		Context: ctx, Store: store, Admission: mutationAdmission,
 		Adapters: map[string]databaseversion.Adapter{
@@ -678,7 +704,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	automationRepository := liveAutomationRepository{
 		store: store, runtime: runtime, domains: domains, listeners: liveServiceListeners,
-		volumeFilesystem: volumeFilesystem, traffic: publicTraffic, onCleanupError: volumeCleanupError,
+		volumeFilesystem: volumeFilesystem, traffic: publicTraffic, certificates: certificates,
+		onCleanupError: volumeCleanupError,
 	}
 	projectAutomation, err := automation.NewProjectApplication(automationRepository, nil)
 	if err != nil {
@@ -783,6 +810,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	managedStatsAutomation, err := automation.NewManagedStatsApplication(automation.ManagedStatsConfig{
+		Repository: automationRepository, Postgres: managedPostgresApplication,
+		Redis: managedRedisApplication, ObjectStore: objectStoreApplication, History: managedStats,
+	})
+	if err != nil {
+		return fmt.Errorf("configure managed stats automation: %w", err)
+	}
 	publicFactory, err := newPublicHandlerFactory(automationapi.Config{
 		Repository: automationRepository, Projects: projectAutomation, Services: serviceAutomation,
 		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
@@ -798,6 +832,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		Images: managedImageCatalog, Redis: redisAutomation,
 		Postgres: postgresAutomation, ObjectStores: objectStoreAutomation,
 		Managed: managedResourceAutomation, ManagedDeployments: managedDeploymentAutomation,
+		ManagedStats:    managedStatsAutomation,
 		NetworkGateways: networkGatewayAutomation, Backups: backupAutomation, Versions: databaseVersions,
 		ServerExec: serverExecAutomation, Volumes: volumeAutomation, PortForwards: portForwards,
 		Admission: mutationAdmission,
@@ -832,6 +867,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithServices(liveServiceRepository{
 			store: store, runtime: runtime, domains: domains, volumeFilesystem: volumeFilesystem,
 			onCleanupError: volumeCleanupError, listeners: liveServiceListeners, traffic: publicTraffic,
+			certificates: certificates,
 		}),
 		server.WithServiceEnvironment(resourceVariableResolver{store: store, master: key}),
 		server.WithVolumes(volumeApplication),
@@ -845,6 +881,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithManagedImages(managedImageCatalog),
 		server.WithManagedRedis(managedRedisApplication),
 		server.WithManagedPostgres(managedPostgresApplication),
+		server.WithManagedStats(managedStats),
 		server.WithObjectStores(objectStoreApplication),
 		server.WithInstallationSettings(installationSettings, cancelDaemon),
 		server.WithCloudflareDNS(cloudflareDNS),

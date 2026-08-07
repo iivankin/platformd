@@ -15,6 +15,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedredis"
+	"github.com/iivankin/platformd/internal/managedstats"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 )
@@ -67,13 +68,16 @@ type managedRedisPersistenceResponse struct {
 	NeedsAttention               bool  `json:"needsAttention"`
 }
 
-func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepository) {
+func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepository, stats *managedstats.Application) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/redis/{redisID}/port-forward", updateManagedRedisPortForward(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/persistence", getManagedRedisPersistence(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/stats", getManagedRedisStats(repository))
+	if stats != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/stats/history", getManagedRedisStatsHistory(repository, stats))
+	}
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/keys", scanManagedRedisKeys(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis/{redisID}/data/mutations", mutateManagedRedisData(repository))
@@ -91,6 +95,25 @@ func getManagedRedisStats(repository ManagedRedisRepository) http.HandlerFunc {
 			return
 		}
 		writeJSON(response, http.StatusOK, stats)
+	}
+}
+
+func getManagedRedisStatsHistory(repository ManagedRedisRepository, stats *managedstats.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		if _, err := repository.Resource(request.Context(), request.PathValue("projectID"), request.PathValue("redisID")); err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		history, err := stats.History(
+			request.Context(), "redis", request.PathValue("redisID"), request.URL.Query().Get("range"),
+		)
+		if writeManagedStatsError(response, err) {
+			return
+		}
+		writeJSON(response, http.StatusOK, history)
 	}
 }
 

@@ -36,6 +36,7 @@ FROM (
   SELECT 'service' AS kind, id, project_id, name FROM services
   UNION ALL SELECT 'postgres', id, project_id, name FROM managed_postgres
   UNION ALL SELECT 'redis', id, project_id, name FROM managed_redis
+  UNION ALL SELECT 'network_gateway', id, project_id, name FROM network_gateways
 ) resources
 JOIN resource_metric_samples m
   ON m.resource_kind = resources.kind AND m.resource_id = resources.id

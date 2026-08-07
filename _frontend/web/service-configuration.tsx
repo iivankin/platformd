@@ -6,6 +6,7 @@ import type {
   ServiceRegistryCredential,
   ServiceSource,
 } from "@/api";
+import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
@@ -103,10 +104,7 @@ const parseHealthCheck = (
   return { path: draft.healthPath.trim(), port, timeoutSeconds };
 };
 
-const validateServiceSource = (
-  draft: ServiceConfigurationDraft,
-  httpDomainCount?: number
-) => {
+const validateServiceSource = (draft: ServiceConfigurationDraft) => {
   const { source } = draft;
   if (source.type === "docker_image_upload") {
     if (
@@ -121,10 +119,11 @@ const validateServiceSource = (
     }
     if (
       source.dockerUpload.previews &&
-      httpDomainCount !== undefined &&
-      httpDomainCount !== 1
+      !source.dockerUpload.previewDomain?.trim()
     ) {
-      throw new Error("Image upload previews require exactly one HTTP domain");
+      throw new Error(
+        "Image upload previews require a root domain covered by an Origin certificate"
+      );
     }
     return;
   }
@@ -154,10 +153,25 @@ const validateServiceSource = (
 };
 
 export const parseServiceConfiguration = (
-  draft: ServiceConfigurationDraft,
-  httpDomainCount?: number
+  draft: ServiceConfigurationDraft
 ): ServiceConfigurationValues => {
-  validateServiceSource(draft, httpDomainCount);
+  validateServiceSource(draft);
+  const { source } = draft;
+  if (source.type === "docker_image_upload") {
+    const previewDomain = source.dockerUpload.previewDomain?.trim();
+    return {
+      healthCheck: parseHealthCheck(draft),
+      source: {
+        ...source,
+        dockerUpload: {
+          ...source.dockerUpload,
+          previewDomain: source.dockerUpload.previews
+            ? previewDomain
+            : undefined,
+        },
+      },
+    };
+  }
   return {
     healthCheck: parseHealthCheck(draft),
     registryCredential:
@@ -223,13 +237,11 @@ const ToggleRow = ({
 
 const DockerImageUploadFields = ({
   draft,
-  httpDomainCount,
   onSourceChange,
   projectName,
   serviceName,
 }: {
   draft: Extract<ServiceSource, { type: "docker_image_upload" }>;
-  httpDomainCount: number;
   onSourceChange: (source: ServiceSource) => void;
   projectName?: string;
   serviceName?: string;
@@ -240,7 +252,8 @@ const DockerImageUploadFields = ({
       dockerUpload: { ...draft.dockerUpload, ...values },
     });
   const previewsEnabled = draft.dockerUpload.previews;
-  const domainReady = !previewsEnabled || httpDomainCount === 1;
+  const previewDomain = draft.dockerUpload.previewDomain ?? "";
+  const domainReady = !previewsEnabled || previewDomain.trim() !== "";
 
   return (
     <div className="grid gap-3 border-t border-border p-4 md:grid-cols-2">
@@ -299,16 +312,38 @@ const DockerImageUploadFields = ({
         <ToggleRow
           enabled={previewsEnabled}
           label="Image previews for non-latest tags"
-          onChange={(previews) => update({ previews })}
+          onChange={(previews) =>
+            update(
+              previews
+                ? { previews }
+                : { previewDomain: undefined, previews: false }
+            )
+          }
         />
         {previewsEnabled ? (
-          <p
-            className={`border-t border-border px-4 py-2 text-[9px] leading-4 ${domainReady ? "text-muted-foreground" : "text-destructive"}`}
-          >
-            {domainReady
-              ? "Ready for preview URLs under the HTTP domain."
-              : "Add exactly one HTTP domain before enabling previews."}
-          </p>
+          <div className="grid gap-2 border-t border-border px-4 py-3">
+            <label
+              className="grid gap-1.5 text-[9px] text-muted-foreground"
+              htmlFor="service-upload-preview-domain"
+            >
+              Preview root domain
+              <CertificateHostnameCombobox
+                apexOnly
+                ariaLabel="Preview root domain"
+                id="service-upload-preview-domain"
+                onChange={(value) => update({ previewDomain: value })}
+                placeholder="example.com"
+                value={previewDomain}
+              />
+            </label>
+            <p
+              className={`text-[9px] leading-4 ${domainReady ? "text-muted-foreground" : "text-destructive"}`}
+            >
+              {domainReady
+                ? "Preview hostnames start with preview- under this root. Also keep a health check or HTTP domain for the target port."
+                : "Choose a root domain from your Origin certificates."}
+            </p>
+          </div>
         ) : null}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-3 md:col-span-2">
@@ -328,7 +363,7 @@ const DockerImageUploadFields = ({
             }
             steps={[
               "Allow the GitHub repository (and optional workflow files) above.",
-              "Turn on image previews and keep exactly one HTTP domain if you want non-latest tags published.",
+              "Turn on image previews and choose a root preview domain from your Origin certificates.",
               "Paste url, project, and resource into the workflow below and run it.",
             ]}
             title="Docker image upload"
@@ -354,7 +389,6 @@ const sourceForType = (
 
 const SourceFields = ({
   draft,
-  httpDomainCount,
   onRegistryCredentialChange,
   onSourceChange,
   projectName,
@@ -362,7 +396,6 @@ const SourceFields = ({
   serviceName,
 }: {
   draft: ServiceSource;
-  httpDomainCount: number;
   onRegistryCredentialChange: (
     credential: Pick<ServiceRegistryCredential, "password" | "username">
   ) => void;
@@ -382,7 +415,6 @@ const SourceFields = ({
     return (
       <DockerImageUploadFields
         draft={draft}
-        httpDomainCount={httpDomainCount}
         onSourceChange={onSourceChange}
         projectName={projectName}
         serviceName={serviceName}
@@ -457,13 +489,11 @@ const SourceFields = ({
 
 export const ServiceConfiguration = ({
   draft,
-  httpDomainCount = 0,
   onDraftChange,
   projectName,
   serviceName,
 }: {
   draft: ServiceConfigurationDraft;
-  httpDomainCount?: number;
   onDraftChange: (draft: ServiceConfigurationDraft) => void;
   projectName?: string;
   serviceName?: string;
@@ -511,7 +541,6 @@ export const ServiceConfiguration = ({
           </div>
           <SourceFields
             draft={draft.source}
-            httpDomainCount={httpDomainCount}
             onRegistryCredentialChange={(registryCredential) =>
               update({ registryCredential })
             }

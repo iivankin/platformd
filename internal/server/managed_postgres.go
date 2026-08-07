@@ -9,6 +9,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
+	"github.com/iivankin/platformd/internal/managedstats"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -37,7 +38,7 @@ type managedPostgresResponse struct {
 	UpdatedAt            int64                      `json:"updatedAt"`
 }
 
-func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostgres.Application) {
+func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostgres.Application, stats *managedstats.Application) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(application))
@@ -46,7 +47,44 @@ func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostg
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, true))
 	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, false))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres/{postgresID}/query", queryManagedPostgres(application))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}/stats", getManagedPostgresStats(application))
+	if stats != nil {
+		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}/stats/history", getManagedPostgresStatsHistory(application, stats))
+	}
 	registerManagedDeploymentRoutes(mux, "postgres", application, writeManagedPostgresError)
+}
+
+func getManagedPostgresStats(application *managedpostgres.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		stats, err := application.Stats(request.Context(), request.PathValue("projectID"), request.PathValue("postgresID"))
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, stats)
+	}
+}
+
+func getManagedPostgresStatsHistory(application *managedpostgres.Application, stats *managedstats.Application) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		if _, err := application.Resource(request.Context(), request.PathValue("projectID"), request.PathValue("postgresID")); err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		history, err := stats.History(
+			request.Context(), "postgres", request.PathValue("postgresID"), request.URL.Query().Get("range"),
+		)
+		if writeManagedStatsError(response, err) {
+			return
+		}
+		writeJSON(response, http.StatusOK, history)
+	}
 }
 
 func listManagedPostgres(application *managedpostgres.Application) http.HandlerFunc {

@@ -193,7 +193,7 @@ func TestManagerRejectsNegativeNamespacePIDsAndSeparatesListenerOwnership(t *tes
 
 func TestTCPFlowReconcilesSampledAndCopiedBytes(t *testing.T) {
 	traffic := trafficmetrics.NewRegistry()
-	flow := &tcpFlow{serviceID: "service", traffic: traffic}
+	flow := &tcpFlow{trafficIDs: []string{"service"}, traffic: traffic}
 
 	flow.record(10, 20)
 	flow.record(8, 25)

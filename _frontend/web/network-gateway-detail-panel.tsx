@@ -18,9 +18,10 @@ import { Button } from "@/components/ui/button";
 import { PageStack } from "@/components/ui/page-stack";
 import { NetworkGatewayForm } from "@/network-gateway-form";
 import { NetworkGatewayVariables } from "@/network-gateway-variables";
+import { ResourceUsage } from "@/resource-usage";
 import { WorkspaceView } from "@/workspace-view";
 
-export type NetworkGatewayWorkspaceView = "settings" | "variables";
+export type NetworkGatewayWorkspaceView = "metrics" | "settings" | "variables";
 
 const gatewayInput = (gateway: NetworkGateway): NetworkGatewayInput => ({
   interfaceName: gateway.interfaceName,
@@ -130,6 +131,9 @@ export const NetworkGatewayDetailPanel = ({
     <WorkspaceView
       active={view}
       views={{
+        metrics: (
+          <ResourceUsage kind="network_gateway" resourceID={gatewayID} />
+        ),
         settings: (
           <PageStack>
             <NetworkGatewayForm

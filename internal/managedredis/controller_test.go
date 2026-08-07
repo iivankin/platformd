@@ -239,7 +239,7 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantConfig := []byte("daemonize no\nbind 0.0.0.0\nprotected-mode yes\nport 6379\ndir /data\ndbfilename dump.rdb\nappendonly no\nsave 300 1\nrequirepass " + password + "\n")
+	wantConfig := []byte("daemonize no\nbind 0.0.0.0\nprotected-mode yes\nport 6379\ndir /data\ndbfilename dump.rdb\nappendonly no\nsave 300 1\nlatency-tracking yes\nlatency-tracking-info-percentiles 50.0 95.0 99.0\nslowlog-log-slower-than 10000\nslowlog-max-len 128\nrequirepass " + password + "\n")
 	if !reflect.DeepEqual(config, wantConfig) {
 		t.Fatalf("redis.conf = %q", config)
 	}

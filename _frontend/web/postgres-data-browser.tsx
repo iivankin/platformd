@@ -5,7 +5,11 @@ import type { PostgresQueryResult } from "@/api";
 import {
   activePostgresFilters,
   postgresCountFromResult,
+  postgresForeignKeyCatalogSQL,
+  postgresForeignKeysFromResult,
   postgresPreciseCountThreshold,
+  postgresRelationNavigation,
+  postgresRelationsForTable,
   postgresTableCatalogSQL,
   postgresTableCountSQL,
   postgresTableDataSQL,
@@ -14,7 +18,9 @@ import {
 } from "@/postgres-data-browser-model";
 import type {
   PostgresBrowserTable,
+  PostgresForeignKey,
   PostgresTableFilter,
+  PostgresTableRelation,
   PostgresTableSort,
 } from "@/postgres-data-browser-model";
 import { PostgresDataBrowserSidebar } from "@/postgres-data-browser-sidebar";
@@ -66,6 +72,7 @@ const useDebouncedPostgresFilters = (
 const usePostgresCatalog = (projectID: string, postgresID: string) => {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [tables, setTables] = useState<PostgresBrowserTable[]>([]);
+  const [foreignKeys, setForeignKeys] = useState<PostgresForeignKey[]>([]);
   const [selectedTable, setSelectedTable] = useState<PostgresBrowserTable>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -75,21 +82,41 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
     const load = async () => {
       setLoading(true);
       try {
-        const result = await queryManagedPostgres(
-          projectID,
-          postgresID,
-          postgresTableCatalogSQL,
-          controller.signal
-        );
+        const [tablesResult, foreignKeysResult] = await Promise.all([
+          queryManagedPostgres(
+            projectID,
+            postgresID,
+            postgresTableCatalogSQL,
+            controller.signal
+          ),
+          queryManagedPostgres(
+            projectID,
+            postgresID,
+            postgresForeignKeyCatalogSQL,
+            controller.signal
+          ).catch((foreignKeyError: unknown) => {
+            if (
+              foreignKeyError instanceof Error &&
+              foreignKeyError.name === "AbortError"
+            ) {
+              throw foreignKeyError;
+            }
+            return null;
+          }),
+        ]);
         if (controller.signal.aborted) {
           return;
         }
-        const loadedTables = postgresTablesFromResult(result);
+        const loadedTables = postgresTablesFromResult(tablesResult);
+        const loadedForeignKeys = foreignKeysResult
+          ? postgresForeignKeysFromResult(foreignKeysResult)
+          : [];
         const schemas = [...new Set(loadedTables.map((table) => table.schema))];
         const defaultSchema = schemas.includes("public")
           ? "public"
           : (schemas[0] ?? "");
         setTables(loadedTables);
+        setForeignKeys(loadedForeignKeys);
         setSelectedTable((current) => {
           const currentMatch = loadedTables.find(
             (table) =>
@@ -121,6 +148,7 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
 
   return {
     error,
+    foreignKeys,
     handleRefresh: () => setRefreshVersion((value) => value + 1),
     loading,
     selectedSchema: selectedTable?.schema ?? "",
@@ -384,6 +412,13 @@ export const PostgresDataBrowser = ({
           table.name.toLowerCase().includes(normalizedSearch))
     );
   }, [catalog.selectedSchema, catalog.tables, search]);
+  const relations = useMemo(
+    () =>
+      catalog.selectedTable
+        ? postgresRelationsForTable(catalog.foreignKeys, catalog.selectedTable)
+        : [],
+    [catalog.foreignKeys, catalog.selectedTable]
+  );
 
   const resetTableView = useCallback(() => {
     setFilters([]);
@@ -399,6 +434,27 @@ export const PostgresDataBrowser = ({
   const selectTable = (table: PostgresBrowserTable) => {
     catalog.setSelectedTable(table);
     resetTableView();
+  };
+  const openRelation = (
+    relation: PostgresTableRelation,
+    columnValues: Record<string, string | undefined>
+  ) => {
+    const navigation = postgresRelationNavigation({ columnValues, relation });
+    if (!navigation) {
+      return;
+    }
+    const target = catalog.tables.find(
+      (table) =>
+        table.schema === navigation.schema && table.name === navigation.table
+    );
+    if (!target) {
+      return;
+    }
+    catalog.setSelectedTable(target);
+    setFilters(navigation.filters);
+    setFiltersVisible(true);
+    setPage(0);
+    setSort(undefined);
   };
   const changeSort = (column: string, direction?: "asc" | "desc") => {
     setSort(direction ? { column, direction } : undefined);
@@ -479,12 +535,14 @@ export const PostgresDataBrowser = ({
         filtersActive={activeFilters.length > 0}
         loading={tableData.loading}
         onNextPage={() => setPage((value) => value + 1)}
+        onOpenRelation={openRelation}
         onPreviousPage={() => setPage((value) => Math.max(0, value - 1))}
         onRefresh={handleRefresh}
         onRequestExactCount={tableCount.handleRequestExact}
         onSort={changeSort}
         onToggleFilters={() => setFiltersVisible((visible) => !visible)}
         page={page}
+        relations={relations}
         selectedTable={catalog.selectedTable}
         sort={sort}
         statement={tableData.statement}

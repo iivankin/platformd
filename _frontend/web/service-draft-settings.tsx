@@ -77,7 +77,6 @@ export const ServiceDraftSettings = ({
 
       <ServiceConfiguration
         draft={draft.settings.configuration}
-        httpDomainCount={draft.settings.domains.length}
         onDraftChange={(configuration) =>
           updateSettings({ ...draft.settings, configuration })
         }

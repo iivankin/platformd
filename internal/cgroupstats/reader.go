@@ -23,9 +23,10 @@ type Kind string
 var ErrInvalidResource = errors.New("invalid cgroup resource")
 
 const (
-	Service  Kind = "service"
-	Postgres Kind = "postgres"
-	Redis    Kind = "redis"
+	Service        Kind = "service"
+	Postgres       Kind = "postgres"
+	Redis          Kind = "redis"
+	NetworkGateway Kind = "network_gateway"
 )
 
 type Sample struct {
@@ -90,6 +91,11 @@ func (reader *Reader) Read(kind Kind, resourceID string) (Sample, error) {
 	sample := Sample{
 		ObservedAtMillis: reader.now().UnixMilli(), HostCPUCores: cpuCores, HostMemoryBytes: hostMemory,
 	}
+	if kind == NetworkGateway {
+		// Gateways have no dedicated cgroup; treat configured targets as running.
+		sample.Running = true
+		return sample, nil
+	}
 	resourceRoot := filepath.Join(reader.root, component)
 	populated, err := namedValue(filepath.Join(resourceRoot, "cgroup.events"), "populated")
 	if errors.Is(err, os.ErrNotExist) {
@@ -139,7 +145,7 @@ func resourceComponent(kind Kind, resourceID string) (string, error) {
 		return "", fmt.Errorf("%w: ID", ErrInvalidResource)
 	}
 	switch kind {
-	case Service, Postgres, Redis:
+	case Service, Postgres, Redis, NetworkGateway:
 		return string(kind) + "-" + resourceID, nil
 	default:
 		return "", fmt.Errorf("%w: kind", ErrInvalidResource)

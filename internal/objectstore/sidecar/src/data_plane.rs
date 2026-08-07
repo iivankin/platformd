@@ -1,4 +1,8 @@
-use crate::{bucket::physical_bucket_name, s3_backend::S3Backend};
+use crate::{
+    bucket::physical_bucket_name,
+    s3_backend::S3Backend,
+    traffic::{self, TrafficRegistry},
+};
 use async_trait::async_trait;
 use http::{HeaderMap, HeaderValue, Method, Request, Response, StatusCode};
 use hyper::{body::Incoming, service::service_fn};
@@ -15,6 +19,7 @@ use std::{
     collections::{HashMap, HashSet},
     net::SocketAddr,
     sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock},
+    time::Instant,
 };
 use tokio::{
     net::TcpListener,
@@ -60,6 +65,7 @@ pub struct ResolvedStore(Arc<ConfiguredStore>);
 
 struct ProjectStores {
     by_access_key: HashMap<String, Arc<ConfiguredStore>>,
+    by_logical_bucket: HashMap<String, Arc<ConfiguredStore>>,
     cors_by_bucket: HashMap<String, Arc<[String]>>,
     store_ids: Vec<String>,
 }
@@ -133,6 +139,15 @@ impl ProjectState {
             .cors_by_bucket
             .get(bucket)
             .cloned()
+    }
+
+    pub fn physical_bucket_for_logical(&self, bucket: &str) -> Option<String> {
+        self.stores
+            .read()
+            .expect("project store snapshot poisoned")
+            .by_logical_bucket
+            .get(bucket)
+            .map(|store| store.physical_bucket.to_string())
     }
 
     fn store_ids(&self) -> Vec<String> {
@@ -360,15 +375,17 @@ struct Endpoint {
 #[derive(Clone)]
 pub struct DataPlane {
     store: Arc<ECStore>,
+    traffic: Arc<TrafficRegistry>,
     endpoints: Arc<Mutex<HashMap<String, Endpoint>>>,
     gates: Arc<RwLock<HashMap<String, Arc<StoreGate>>>>,
     connections: Arc<Semaphore>,
 }
 
 impl DataPlane {
-    pub fn new(store: Arc<ECStore>) -> Self {
+    pub fn new(store: Arc<ECStore>, traffic: Arc<TrafficRegistry>) -> Self {
         Self {
             store,
+            traffic,
             endpoints: Arc::new(Mutex::new(HashMap::new())),
             gates: Arc::new(RwLock::new(HashMap::new())),
             connections: Arc::new(Semaphore::new(MAX_DATA_PLANE_CONNECTIONS)),
@@ -399,6 +416,7 @@ impl DataPlane {
             listener,
             self.store.clone(),
             project.clone(),
+            self.traffic.clone(),
             cancel.clone(),
             self.connections.clone(),
         ));
@@ -551,6 +569,7 @@ async fn resolve_stores(
     ensure_store_gates(gates, &stores).await;
     let gates = gates.read().await;
     let mut by_access_key = HashMap::with_capacity(stores.len());
+    let mut by_logical_bucket = HashMap::with_capacity(stores.len());
     let mut cors_by_bucket = HashMap::with_capacity(stores.len());
     let mut store_ids = Vec::with_capacity(stores.len());
 
@@ -566,21 +585,21 @@ async fn resolve_stores(
             Arc::<[String]>::from(store.cors_origins),
         );
         store_ids.push(store_id.clone());
-        by_access_key.insert(
-            access_key,
-            Arc::new(ConfiguredStore {
-                store_id: store_id.into_boxed_str(),
-                bucket_name: store.bucket_name.into_boxed_str(),
-                physical_bucket,
-                secret: store.secret.into_boxed_str(),
-                read_write: store.permission == "read_write",
-                gate,
-            }),
-        );
+        let configured = Arc::new(ConfiguredStore {
+            store_id: store_id.into_boxed_str(),
+            bucket_name: store.bucket_name.clone().into_boxed_str(),
+            physical_bucket,
+            secret: store.secret.into_boxed_str(),
+            read_write: store.permission == "read_write",
+            gate,
+        });
+        by_logical_bucket.insert(store.bucket_name, configured.clone());
+        by_access_key.insert(access_key, configured);
     }
 
     Ok(ProjectStores {
         by_access_key,
+        by_logical_bucket,
         cors_by_bucket,
         store_ids,
     })
@@ -627,6 +646,7 @@ async fn serve_project(
     listener: TcpListener,
     store: Arc<ECStore>,
     project: Arc<ProjectState>,
+    traffic: Arc<TrafficRegistry>,
     cancel: CancellationToken,
     connection_limit: Arc<Semaphore>,
 ) {
@@ -664,10 +684,11 @@ async fn serve_project(
         };
         let service = service.clone();
         let project = project.clone();
+        let traffic = traffic.clone();
         connections.spawn(async move {
             let _permit = permit;
             let handler = service_fn(move |request| {
-                serve_s3_request(service.clone(), project.clone(), request)
+                serve_s3_request(service.clone(), project.clone(), traffic.clone(), request)
             });
             if let Err(error) = hyper::server::conn::http1::Builder::new()
                 .keep_alive(true)
@@ -694,6 +715,7 @@ async fn stop_endpoint(endpoint: Endpoint) {
 async fn serve_s3_request(
     service: S3Service,
     project: Arc<ProjectState>,
+    traffic: Arc<TrafficRegistry>,
     request: Request<Incoming>,
 ) -> Result<Response<Body>, BoxError> {
     let origin = request
@@ -701,16 +723,17 @@ async fn serve_s3_request(
         .get("origin")
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned);
-    let cors_origins = origin.as_deref().and_then(|_| {
-        let bucket = request
-            .uri()
-            .path()
-            .trim_start_matches('/')
-            .split('/')
-            .next()
-            .unwrap_or("");
-        project.cors_origins(bucket)
-    });
+    let logical_bucket = request
+        .uri()
+        .path()
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or("")
+        .to_owned();
+    let cors_origins = origin
+        .as_deref()
+        .and_then(|_| project.cors_origins(&logical_bucket));
 
     if request.method() == Method::OPTIONS {
         return Ok(cors_preflight(
@@ -720,23 +743,92 @@ async fn serve_s3_request(
         ));
     }
 
-    let mut response = hyper::service::Service::call(&service, request)
+    let physical_bucket = project.physical_bucket_for_logical(&logical_bucket);
+    // Only attribute traffic to known logical→physical mappings. Unknown path
+    // prefixes use ephemeral counters so probes cannot grow the registry or
+    // alias onto a real physical bucket name from the URL.
+    let traffic = match physical_bucket.as_deref() {
+        Some(bucket) => traffic.for_bucket(bucket),
+        None => Arc::new(traffic::TrafficCounters::default()),
+    };
+    let method = request.method().clone();
+    let op = traffic::classify_s3(&method, request.uri().path());
+    let bytes_in = request_payload_bytes(request.headers()).unwrap_or(0);
+    traffic.record_start();
+    let started = Instant::now();
+    let result = hyper::service::Service::call(&service, request)
         .await
-        .map_err(|error| -> BoxError { error.into() })?;
-    response.headers_mut().insert(
-        "cache-control",
-        HeaderValue::from_static("private, no-store"),
-    );
-    response.headers_mut().insert(
-        "cloudflare-cdn-cache-control",
-        HeaderValue::from_static("no-store"),
-    );
-    if let (Some(origin), Some(origins)) = (origin.as_deref(), cors_origins.as_deref())
-        && origins.iter().any(|allowed| allowed == origin)
-    {
-        apply_cors(response.headers_mut(), origin);
+        .map_err(|error| -> BoxError { error.into() });
+    match result {
+        Ok(mut response) => {
+            response.headers_mut().insert(
+                "cache-control",
+                HeaderValue::from_static("private, no-store"),
+            );
+            response.headers_mut().insert(
+                "cloudflare-cdn-cache-control",
+                HeaderValue::from_static("no-store"),
+            );
+            if let (Some(origin), Some(origins)) = (origin.as_deref(), cors_origins.as_deref())
+                && origins.iter().any(|allowed| allowed == origin)
+            {
+                apply_cors(response.headers_mut(), origin);
+            }
+            let error = !response.status().is_success();
+            // HEAD advertises Content-Length but transfers no body. Prefer a
+            // deferred finish so active_requests stays non-zero while streaming.
+            let known_out = response_transfer_bytes(&method, response.headers(), response.body());
+            let bytes_out = Arc::new(std::sync::atomic::AtomicU64::new(known_out.unwrap_or(0)));
+            let pending = traffic::PendingFinish::new(
+                traffic,
+                op,
+                bytes_in,
+                bytes_out.clone(),
+                started,
+                error,
+            );
+            let (parts, body) = response.into_parts();
+            let body = if known_out.is_some() {
+                traffic::hold_response_body(body, pending)
+            } else {
+                traffic::count_response_body(body, bytes_out, pending)
+            };
+            Ok(Response::from_parts(parts, body))
+        }
+        Err(error) => {
+            traffic.record_finish(op, bytes_in, 0, started.elapsed(), true);
+            Err(error)
+        }
     }
-    Ok(response)
+}
+
+fn response_transfer_bytes(
+    method: &Method,
+    headers: &HeaderMap,
+    body: &Body,
+) -> Option<u64> {
+    if *method == Method::HEAD {
+        return Some(0);
+    }
+    header_content_length(headers).or_else(|| traffic::body_size_hint(body))
+}
+
+fn request_payload_bytes(headers: &HeaderMap) -> Option<u64> {
+    // Prefer decoded object size for aws-chunked uploads; Content-Length is the
+    // encoded stream size when both headers are present.
+    header_u64(headers, "x-amz-decoded-content-length")
+        .or_else(|| header_content_length(headers))
+}
+
+fn header_content_length(headers: &HeaderMap) -> Option<u64> {
+    header_u64(headers, "content-length")
+}
+
+fn header_u64(headers: &HeaderMap, name: &str) -> Option<u64> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse().ok())
 }
 
 fn cors_preflight(
@@ -832,11 +924,29 @@ fn allowed_cors_headers(value: &str) -> bool {
 mod tests {
     #[cfg(target_os = "linux")]
     use super::bind_project_listener;
-    use super::{DataPlaneStore, MaintenanceMode, ProjectState, StoreGate};
+    use super::{
+        DataPlaneStore, MaintenanceMode, ProjectState, StoreGate, response_transfer_bytes,
+    };
     #[cfg(target_os = "linux")]
     use std::net::SocketAddr;
     use std::{collections::HashMap, sync::Arc};
+    use http::{HeaderMap, HeaderValue, Method};
+    use s3s::Body;
     use tokio::sync::RwLock;
+
+    #[test]
+    fn head_responses_transfer_zero_bytes_even_with_content_length() {
+        let mut headers = HeaderMap::new();
+        headers.insert("content-length", HeaderValue::from_static("1048576"));
+        assert_eq!(
+            response_transfer_bytes(&Method::HEAD, &headers, &Body::empty()),
+            Some(0)
+        );
+        assert_eq!(
+            response_transfer_bytes(&Method::GET, &headers, &Body::empty()),
+            Some(1_048_576)
+        );
+    }
 
     #[tokio::test]
     async fn project_snapshot_resolves_physical_bucket_once() {

@@ -77,10 +77,7 @@ export const applyServiceSettings = async (
   projectID: string,
   change: PendingServiceSettings
 ): Promise<Service> => {
-  const configuration = parseServiceConfiguration(
-    change.draft.configuration,
-    change.draft.domains.length
-  );
+  const configuration = parseServiceConfiguration(change.draft.configuration);
   const beforeDeploy = parseBeforeDeploy(
     change.draft.beforeDeploy,
     change.draft.domains

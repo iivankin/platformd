@@ -131,6 +131,11 @@ func (client *Client) Bootstrap(ctx context.Context, database, owner, password s
 	return err
 }
 
+func (client *Client) EnsureStatStatements(ctx context.Context) error {
+	_, err := client.connection.Exec(ctx, "CREATE EXTENSION IF NOT EXISTS pg_stat_statements")
+	return err
+}
+
 func (client *Client) Extensions(ctx context.Context) ([]Extension, error) {
 	rows, err := client.connection.Query(ctx, `
 SELECT available.name,

@@ -79,6 +79,9 @@ type Connection interface {
 	Bootstrap(context.Context, string, string, string) error
 	Ping(context.Context) error
 	Query(context.Context, string) (QueryResult, error)
+	Stats(context.Context) (Stats, error)
+	CollectorStats(context.Context) (Stats, error)
+	EnsureStatStatements(context.Context) error
 	Extensions(context.Context) ([]Extension, error)
 	ChangeExtension(context.Context, string, bool) error
 	Close(context.Context) error
@@ -440,6 +443,46 @@ func (controller *Controller) Query(ctx context.Context, resourceID, sql string)
 	return connection.Query(ctx, sql)
 }
 
+func (controller *Controller) Stats(ctx context.Context, resourceID string) (Stats, error) {
+	return controller.stats(ctx, resourceID, false)
+}
+
+func (controller *Controller) CollectorStats(ctx context.Context, resourceID string) (Stats, error) {
+	return controller.stats(ctx, resourceID, true)
+}
+
+func (controller *Controller) stats(ctx context.Context, resourceID string, collector bool) (Stats, error) {
+	lease, err := controller.admission.Begin("postgres_stats", resourceID)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer lease.Release()
+	active, ok, maintenance := controller.availableRuntime(resourceID)
+	if maintenance {
+		return Stats{}, ErrMaintenance
+	}
+	if !ok {
+		return Stats{}, ErrNotRunning
+	}
+	ownerPassword, err := controller.ownerPassword(active.resource)
+	if err != nil {
+		return Stats{}, err
+	}
+	address, err := controller.runtimeAddress(active)
+	if err != nil {
+		return Stats{}, err
+	}
+	connection, err := controller.dial(ctx, address, active.resource.OwnerUsername, ownerPassword, active.resource.DatabaseName)
+	if err != nil {
+		return Stats{}, err
+	}
+	defer connection.Close(context.Background())
+	if collector {
+		return connection.CollectorStats(ctx)
+	}
+	return connection.Stats(ctx)
+}
+
 func (controller *Controller) Extensions(ctx context.Context, resourceID string) ([]Extension, error) {
 	connection, cleanup, err := controller.bootstrapClient(ctx, resourceID)
 	if err != nil {
@@ -661,6 +704,7 @@ func (controller *Controller) createContainerAttempt(
 	storage := storageProfileForTag(resource.ImageTag)
 	return controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID: imageID, Name: "platformd-postgres-" + runtimeID,
+		Command: []string{"postgres", "-c", "shared_preload_libraries=pg_stat_statements"},
 		Environment: map[string]string{
 			"PGDATA": storage.pgData, "POSTGRES_USER": "postgres",
 			"POSTGRES_DB": "postgres", "POSTGRES_PASSWORD": bootstrapPassword,
@@ -721,6 +765,15 @@ func (controller *Controller) bootstrapAndProbe(ctx context.Context, address str
 	closeErr := bootstrap.Close(ctx)
 	if err != nil || closeErr != nil {
 		return errors.Join(err, closeErr)
+	}
+	extension, err := controller.dial(ctx, address, "postgres", bootstrapPassword, resource.DatabaseName)
+	if err != nil {
+		return err
+	}
+	extensionErr := extension.EnsureStatStatements(ctx)
+	closeErr = extension.Close(ctx)
+	if extensionErr != nil || closeErr != nil {
+		return errors.Join(extensionErr, closeErr)
 	}
 	owner, err := controller.dial(ctx, address, resource.OwnerUsername, ownerPassword, resource.DatabaseName)
 	if err != nil {

@@ -78,13 +78,17 @@ func sidecarEnvironment(base []string, volume, socket string) []string {
 		volumeKey     = "PLATFORMD_OBJECTSTORE_VOLUME"
 		socketKey     = "PLATFORMD_OBJECTSTORE_SOCKET"
 		durabilityKey = "RUSTFS_DURABILITY_MODE"
+		scannerSpeed  = "RUSTFS_SCANNER_SPEED"
+		scannerCycle  = "RUSTFS_SCANNER_CYCLE"
 	)
-	environment := make([]string, 0, len(base)+3)
+	environment := make([]string, 0, len(base)+5)
 	for _, value := range base {
 		name, _, _ := strings.Cut(value, "=")
-		if name != volumeKey && name != socketKey && name != durabilityKey {
-			environment = append(environment, value)
+		switch name {
+		case volumeKey, socketKey, durabilityKey, scannerSpeed, scannerCycle:
+			continue
 		}
+		environment = append(environment, value)
 	}
 	return append(environment,
 		"PLATFORMD_OBJECTSTORE_VOLUME="+volume,
@@ -92,6 +96,10 @@ func sidecarEnvironment(base []string, volume, socket string) []string {
 		// Backups are the recovery boundary. Avoid synchronous object-data
 		// durability while keeping RustFS system metadata pinned to strict.
 		"RUSTFS_DURABILITY_MODE=none",
+		// Keep usage/heal walks off the hot path: default ~1m cycles showed up as
+		// regular host CPU spikes on quiet VPSes with modest object counts.
+		"RUSTFS_SCANNER_SPEED=slow",
+		"RUSTFS_SCANNER_CYCLE=1800",
 	)
 }
 

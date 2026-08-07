@@ -223,6 +223,7 @@ const imageSourceSchema = z.discriminatedUnion("type", [
 const dockerImageUploadSourceSchema = z.object({
   dockerUpload: z.object({
     branch: z.string().min(1),
+    previewDomain: z.string().optional(),
     previews: z.boolean(),
     repository: z.string().min(1),
     workflows: z.array(z.string().min(1)),
@@ -679,7 +680,13 @@ const resourceUsageHistorySchema = z.object({
   series: z.array(
     z.object({
       id: z.string().min(1),
-      kind: z.enum(["postgres", "project", "redis", "service"]),
+      kind: z.enum([
+        "network_gateway",
+        "postgres",
+        "project",
+        "redis",
+        "service",
+      ]),
       name: z.string().min(1),
       points: z.array(resourceUsageHistoryPointSchema),
     })
@@ -690,7 +697,11 @@ const resourceUsageHistorySchema = z.object({
 
 export type ResourceUsage = z.infer<typeof resourceUsageSchema>;
 export type ResourceUsageHistory = z.infer<typeof resourceUsageHistorySchema>;
-export type ResourceUsageKind = "postgres" | "redis" | "service";
+export type ResourceUsageKind =
+  | "network_gateway"
+  | "postgres"
+  | "redis"
+  | "service";
 export type ResourceUsageRange = "1d" | "1h" | "30d" | "6h" | "7d";
 
 const selfUpdateResultSchema = z.object({
@@ -795,6 +806,9 @@ const managedRedisStatsSchema = z.object({
       calls: z.number().int().nonnegative(),
       microsPerCall: z.number().nonnegative(),
       name: z.string().min(1),
+      p50Micros: z.number().nonnegative(),
+      p95Micros: z.number().nonnegative(),
+      p99Micros: z.number().nonnegative(),
       totalMicros: z.number().int().nonnegative(),
     })
   ),
@@ -813,13 +827,27 @@ const managedRedisStatsSchema = z.object({
       keys: z.number().int().nonnegative(),
     })
   ),
+  latencyP50Micros: z.number().nonnegative(),
+  latencyP95Micros: z.number().nonnegative(),
+  latencyP99Micros: z.number().nonnegative(),
   maxMemoryBytes: z.number().int().nonnegative(),
   operationsPerSecond: z.number().int().nonnegative(),
   peakMemoryBytes: z.number().int().nonnegative(),
   rejectedConnections: z.number().int().nonnegative(),
   rssMemoryBytes: z.number().int().nonnegative(),
+  slowlog: z.array(
+    z.object({
+      client: z.string(),
+      command: z.string(),
+      durationMicros: z.number().int().nonnegative(),
+      id: z.number().int().nonnegative(),
+      timestampMillis: z.number().int().nonnegative(),
+    })
+  ),
   totalCommands: z.number().int().nonnegative(),
   totalConnections: z.number().int().nonnegative(),
+  totalNetInputBytes: z.number().int().nonnegative(),
+  totalNetOutputBytes: z.number().int().nonnegative(),
   uptimeSeconds: z.number().int().nonnegative(),
   usedMemoryBytes: z.number().int().nonnegative(),
   version: z.string().min(1),
@@ -965,7 +993,144 @@ const postgresExtensionsSchema = z.object({
   extensions: z.array(postgresExtensionSchema),
 });
 
+const managedPostgresSessionSchema = z.object({
+  clientAddr: z.string(),
+  durationMillis: z.number().nonnegative(),
+  pid: z.number().int(),
+  query: z.string(),
+  state: z.string(),
+  usename: z.string(),
+  waitEvent: z.string(),
+});
+
+const managedPostgresStatementSchema = z.object({
+  calls: z.number().int().nonnegative(),
+  maxExecTimeMillis: z.number().nonnegative(),
+  meanExecTimeMillis: z.number().nonnegative(),
+  percentOfTotalTime: z.number().nonnegative(),
+  query: z.string(),
+  queryId: z.string(),
+  rows: z.number().int().nonnegative(),
+  sharedBlksHit: z.number().int().nonnegative(),
+  sharedBlksRead: z.number().int().nonnegative(),
+  tempBlksRead: z.number().int().nonnegative(),
+  tempBlksWritten: z.number().int().nonnegative(),
+  totalExecTimeMillis: z.number().nonnegative(),
+});
+
+const managedPostgresIndexSchema = z.object({
+  idxScan: z.number().int().nonnegative(),
+  idxTupFetch: z.number().int().nonnegative(),
+  idxTupRead: z.number().int().nonnegative(),
+  index: z.string().min(1),
+  schema: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(),
+  sizePretty: z.string(),
+  table: z.string().min(1),
+});
+
+const managedPostgresSequentialScanSchema = z.object({
+  idxScan: z.number().int().nonnegative(),
+  idxTupFetch: z.number().int().nonnegative(),
+  nLiveTup: z.number().int().nonnegative(),
+  seqScan: z.number().int().nonnegative(),
+  seqTupRead: z.number().int().nonnegative(),
+  sizeBytes: z.number().int().nonnegative(),
+  sizePretty: z.string(),
+  table: z.string().min(1),
+});
+
+const managedPostgresBlockedSchema = z.object({
+  blockedForMillis: z.number().nonnegative(),
+  blockedPid: z.number().int(),
+  blockedQuery: z.string(),
+  blockedUser: z.string(),
+  blockingPid: z.number().int(),
+  blockingQuery: z.string(),
+  waitEvent: z.string(),
+  waitEventType: z.string(),
+});
+
+const managedPostgresTableSchema = z.object({
+  dataPretty: z.string(),
+  deadRows: z.number().int().nonnegative(),
+  indexesPretty: z.string(),
+  lastVacuum: z.string(),
+  rows: z.number().int().nonnegative(),
+  table: z.string().min(1),
+  totalPretty: z.string(),
+});
+
+const managedPostgresStatsSchema = z.object({
+  active: z.number().int().nonnegative(),
+  blksHit: z.number().int().nonnegative(),
+  blksRead: z.number().int().nonnegative(),
+  blockSizeBytes: z.number().int().nonnegative(),
+  blocked: z.array(managedPostgresBlockedSchema),
+  bytesHitPerSecond: z.number().nonnegative(),
+  bytesReadPerSecond: z.number().nonnegative(),
+  cacheHitPercent: z.number().nonnegative(),
+  connections: z.number().int().nonnegative(),
+  databaseSizeBytes: z.number().int().nonnegative(),
+  idle: z.number().int().nonnegative(),
+  idleInTransaction: z.number().int().nonnegative(),
+  indexes: z.array(managedPostgresIndexSchema),
+  meanQueryLatencyMillis: z.number().nonnegative(),
+  queriesPerSecond: z.number().nonnegative(),
+  rowsReadPerSecond: z.number().nonnegative(),
+  rowsWrittenPerSecond: z.number().nonnegative(),
+  sequentialScans: z.array(managedPostgresSequentialScanSchema),
+  sessions: z.array(managedPostgresSessionSchema),
+  statements: z.array(managedPostgresStatementSchema),
+  statementsCalls: z.number().int().nonnegative(),
+  statementsTotalExecTimeMillis: z.number().nonnegative(),
+  tables: z.array(managedPostgresTableSchema),
+  transactionsPerSecond: z.number().nonnegative(),
+  tupDeleted: z.number().int().nonnegative(),
+  tupFetched: z.number().int().nonnegative(),
+  tupInserted: z.number().int().nonnegative(),
+  tupReturned: z.number().int().nonnegative(),
+  tupUpdated: z.number().int().nonnegative(),
+  version: z.string().min(1),
+  xactCommit: z.number().int().nonnegative(),
+  xactRollback: z.number().int().nonnegative(),
+});
+
+const managedStatsHistoryPointSchema = z.object({
+  metrics: z.record(z.string(), z.unknown()),
+  observedAt: z.number().int().positive(),
+});
+
+const managedStatsHistoryTotalsSchema = z.object({
+  bytesHit: z.number().optional(),
+  bytesIn: z.number().optional(),
+  bytesOut: z.number().optional(),
+  bytesRead: z.number().optional(),
+  commandCount: z.number().optional(),
+  errorCount: z.number().optional(),
+  netInputBytes: z.number().optional(),
+  netOutputBytes: z.number().optional(),
+  operationCount: z.number().optional(),
+  otherQueryCount: z.number().optional(),
+  queryCount: z.number().optional(),
+  rowsRead: z.number().optional(),
+  rowsWritten: z.number().optional(),
+});
+
+const managedStatsHistorySchema = z.object({
+  from: z.number().int().positive(),
+  points: z.array(managedStatsHistoryPointSchema),
+  stepMillis: z.number().int().positive(),
+  to: z.number().int().positive(),
+  totals: managedStatsHistoryTotalsSchema,
+});
+
 export type ManagedPostgres = z.infer<typeof managedPostgresSchema>;
+export type ManagedPostgresStats = z.infer<typeof managedPostgresStatsSchema>;
+export type ManagedStatsHistory = z.infer<typeof managedStatsHistorySchema>;
+export type ManagedStatsHistoryPoint = z.infer<
+  typeof managedStatsHistoryPointSchema
+>;
 export type PostgresExtension = z.infer<typeof postgresExtensionSchema>;
 export type PostgresQueryResult = z.infer<typeof postgresQueryResultSchema>;
 
@@ -1018,6 +1183,15 @@ const objectPageSchema = z.object({
   objects: z.array(objectMetadataSchema),
 });
 
+const objectStoreTrafficSchema = z.object({
+  activeRequests: z.number().int().nonnegative(),
+  bytesIn: z.number().int().nonnegative(),
+  bytesOut: z.number().int().nonnegative(),
+  errors: z.number().int().nonnegative(),
+  ops: z.record(z.string(), z.number().int().nonnegative()),
+  totalLatencyMicros: z.number().int().nonnegative(),
+});
+
 const objectStoreStatsSchema = z.object({
   objectCount: z.number().int().nonnegative(),
   objectSizeHistogram: z.array(
@@ -1029,6 +1203,7 @@ const objectStoreStatsSchema = z.object({
   observedAt: z.number().int().positive().optional(),
   ready: z.boolean(),
   totalBytes: z.number().int().nonnegative(),
+  traffic: objectStoreTrafficSchema.optional(),
 });
 
 const largestObjectsSearchSchema = z.object({
@@ -1062,6 +1237,7 @@ export type ObjectMetadata = z.infer<typeof objectMetadataSchema>;
 export type ObjectPage = z.infer<typeof objectPageSchema>;
 export type ObjectPreview = z.infer<typeof objectPreviewSchema>;
 export type ObjectStoreStats = z.infer<typeof objectStoreStatsSchema>;
+export type ObjectStoreTraffic = z.infer<typeof objectStoreTrafficSchema>;
 export type LargestObjectsSearch = z.infer<typeof largestObjectsSearchSchema>;
 
 export interface ObjectStoreInitialCredentials {
@@ -2698,6 +2874,29 @@ export const fetchManagedRedisStats = async (
   return managedRedisStatsSchema.parse(await response.json());
 };
 
+export const fetchManagedRedisStatsHistory = async (
+  projectID: string,
+  redisID: string,
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedStatsHistory> => {
+  const response = await fetcher(
+    `${managedRedisPath(projectID, redisID)}/stats/history?range=${range}`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed Redis stats history request failed with ${response.status}`
+    );
+  }
+  return managedStatsHistorySchema.parse(await response.json());
+};
+
 export const scanManagedRedisKeys = async (
   projectID: string,
   redisID: string,
@@ -2873,6 +3072,51 @@ export const queryManagedPostgres = async (
     );
   }
   return postgresQueryResultSchema.parse(await response.json());
+};
+
+export const fetchManagedPostgresStats = async (
+  projectID: string,
+  postgresID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedPostgresStats> => {
+  const response = await fetcher(
+    `${managedPostgresPath(projectID, postgresID)}/stats`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL stats request failed with ${response.status}`
+    );
+  }
+  return managedPostgresStatsSchema.parse(await response.json());
+};
+
+export const fetchManagedPostgresStatsHistory = async (
+  projectID: string,
+  postgresID: string,
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedStatsHistory> => {
+  const response = await fetcher(
+    `${managedPostgresPath(projectID, postgresID)}/stats/history?range=${range}`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `managed PostgreSQL stats history request failed with ${response.status}`
+    );
+  }
+  return managedStatsHistorySchema.parse(await response.json());
 };
 
 export const fetchManagedPostgresExtensions = async (
@@ -3131,6 +3375,26 @@ export const fetchObjectStoreStats = async (
     );
   }
   return objectStoreStatsSchema.parse(await response.json());
+};
+
+export const fetchObjectStoreStatsHistory = async (
+  projectID: string,
+  storeID: string,
+  range: ResourceUsageRange,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ManagedStatsHistory> => {
+  const response = await fetcher(
+    `${objectStorePath(projectID, storeID)}/stats/history?range=${range}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `object store stats history request failed with ${response.status}`
+    );
+  }
+  return managedStatsHistorySchema.parse(await response.json());
 };
 
 const largestObjectsRequest = async (

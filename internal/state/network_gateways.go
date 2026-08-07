@@ -250,6 +250,12 @@ func (store *Store) DeleteNetworkGateway(ctx context.Context, input DeleteNetwor
 		if _, err := transaction.ExecContext(ctx, `DELETE FROM network_gateways WHERE id = ? AND project_id = ?`, input.ID, input.ProjectID); err != nil {
 			return fmt.Errorf("delete network gateway: %w", err)
 		}
+		if _, err := transaction.ExecContext(ctx,
+			`DELETE FROM resource_metric_samples WHERE resource_kind = 'network_gateway' AND resource_id = ?`,
+			input.ID,
+		); err != nil {
+			return fmt.Errorf("delete network gateway metric samples: %w", err)
+		}
 		return insertNetworkGatewayAudit(ctx, transaction, networkGatewayAudit{
 			ID: input.AuditEventID, ActorKind: input.ActorKind, ActorID: input.ActorID,
 			ProjectID: input.ProjectID, ActorEmail: input.ActorEmail, Action: "network_gateway.delete", GatewayID: input.ID,

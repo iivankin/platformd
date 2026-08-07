@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,9 @@ const (
 	probeInterval       = 250 * time.Millisecond
 	probeTimeout        = 2 * time.Second
 	stopTimeoutSeconds  = 10
+	// HostnamePrefix is the stable DNS label prefix for every preview hostname
+	// (preview-<hash>.<root>), so external systems can match the whole class.
+	HostnamePrefix = "preview-"
 )
 
 type Store interface {
@@ -169,22 +173,22 @@ func (application *Application) DeployUploaded(
 	lock.Lock()
 	defer lock.Unlock()
 
-	desired, domains, err := application.desiredPreview(ctx, serviceID)
+	plan, err := application.desiredPreview(ctx, serviceID)
 	if err != nil {
 		return "", err
 	}
-	hostname := previewHostname(serviceID, tag, domains[0].Hostname)
+	hostname := previewHostname(serviceID, tag, plan.root)
 	if !application.certificateCovers(hostname) {
 		return "", fmt.Errorf("origin certificate does not cover preview hostname %s", hostname)
 	}
 	if err := application.growth.PermitGrowth(ctx); err != nil {
 		return "", err
 	}
-	normalized, snapshotJSON, configHash, err := serviceconfig.Canonical(desired.Snapshot)
+	normalized, snapshotJSON, configHash, err := serviceconfig.Canonical(plan.desired.Snapshot)
 	if err != nil {
 		return "", err
 	}
-	desired.Snapshot = normalized
+	plan.desired.Snapshot = normalized
 	current, currentErr := application.store.ActivePreviewDeployment(ctx, serviceID, tag)
 	if currentErr != nil && !errors.Is(currentErr, sql.ErrNoRows) {
 		return "", currentErr
@@ -192,7 +196,7 @@ func (application *Application) DeployUploaded(
 	now := application.now()
 	if err := application.store.BeginPreviewDeployment(ctx, state.BeginPreviewDeployment{
 		ID: previewID, ServiceID: serviceID, Tag: tag, ImageRevisionID: revisionID,
-		Hostname: hostname, TargetPort: domains[0].TargetPort, ImageDigest: image.Digest,
+		Hostname: hostname, TargetPort: plan.targetPort, ImageDigest: image.Digest,
 		ImageReference: imageReference, ConfigHash: configHash, SnapshotJSON: snapshotJSON,
 		CreatedAtMillis: now.UnixMilli(), ExpiresAtMillis: now.Add(Retention).UnixMilli(),
 	}); err != nil {
@@ -202,7 +206,7 @@ func (application *Application) DeployUploaded(
 		DeploymentID: previewID, Kind: deployment.EnvironmentPreview,
 		PreviewURL: "https://" + hostname, SourceRevision: identity.SHA,
 	}
-	candidate, placement, err := application.createContainer(ctx, desired, environmentContext, image.ID)
+	candidate, placement, err := application.createContainer(ctx, plan.desired, environmentContext, image.ID)
 	if err != nil {
 		return "", application.fail(ctx, previewID, "candidate_create_failed", err)
 	}
@@ -215,11 +219,11 @@ func (application *Application) DeployUploaded(
 	if err := application.engine.StartContainer(ctx, candidate.ID); err != nil {
 		return "", application.fail(ctx, previewID, "candidate_start_failed", err)
 	}
-	ready, err := application.waitReady(ctx, desired, candidate.ID, placement.NetworkName)
+	ready, err := application.waitReady(ctx, plan.desired, candidate.ID, placement.NetworkName)
 	if err != nil {
 		return "", application.fail(ctx, previewID, "readiness_failed", err)
 	}
-	recordIDs, err := application.dns.EnsurePreviewHostname(ctx, domains[0].Hostname, hostname, previewID)
+	recordIDs, err := application.dns.EnsurePreviewHostname(ctx, plan.canonicalHostname, hostname, previewID)
 	if err != nil {
 		return "", application.fail(ctx, previewID, "cloudflare_dns_failed", err)
 	}
@@ -353,22 +357,32 @@ func (application *Application) cleanup(ctx context.Context) {
 	}
 }
 
-func (application *Application) desiredPreview(ctx context.Context, serviceID string) (state.ServiceDesired, []state.ServiceDomain, error) {
+func (application *Application) desiredPreview(ctx context.Context, serviceID string) (previewPlan, error) {
 	desired, err := application.store.DesiredService(ctx, serviceID)
 	if err != nil {
-		return state.ServiceDesired{}, nil, err
+		return previewPlan{}, err
 	}
 	if !desired.Enabled || !servicesource.ImageUploadPreviewsEnabled(desired.Snapshot.Source) {
-		return state.ServiceDesired{}, nil, errors.New("service is not configured for uploaded image previews")
+		return previewPlan{}, errors.New("service is not configured for uploaded image previews")
+	}
+	root := servicesource.ImageUploadPreviewDomain(desired.Snapshot.Source)
+	if root == "" {
+		return previewPlan{}, state.ErrPreviewDomain
 	}
 	domains, err := application.store.ServiceDomains(ctx, desired.ProjectID, serviceID)
 	if err != nil {
-		return state.ServiceDesired{}, nil, err
+		return previewPlan{}, err
 	}
-	if len(domains) != 1 {
-		return state.ServiceDesired{}, nil, state.ErrPreviewDomainCount
+	targetPort, err := previewTargetPort(desired, domains)
+	if err != nil {
+		return previewPlan{}, err
 	}
-	return desired, domains, nil
+	return previewPlan{
+		desired:            desired,
+		root:               root,
+		targetPort:         targetPort,
+		canonicalHostname:  previewDNSCanonical(root, domains),
+	}, nil
 }
 
 func (application *Application) createContainer(ctx context.Context, desired state.ServiceDesired, environmentContext deployment.EnvironmentContext, imageID string) (containerengine.Container, Placement, error) {
@@ -470,12 +484,16 @@ func (application *Application) deleteDNS(ctx context.Context, item state.Previe
 
 func (application *Application) reconcileDNS(ctx context.Context, desired state.ServiceDesired, item state.PreviewDeployment) {
 	domains, err := application.store.ServiceDomains(ctx, desired.ProjectID, desired.ID)
-	if err == nil && len(domains) != 1 {
-		err = state.ErrPreviewDomainCount
-	}
 	var records []string
 	if err == nil {
-		records, err = application.dns.EnsurePreviewHostname(ctx, domains[0].Hostname, item.Hostname, item.ID)
+		// Clone from a hostname in the preview's own zone, not the currently
+		// configured root — active previews keep the hostname they were published with.
+		canonical := previewDNSCanonicalForHostname(item.Hostname, domains)
+		if canonical == "" {
+			err = state.ErrPreviewDomain
+		} else {
+			records, err = application.dns.EnsurePreviewHostname(ctx, canonical, item.Hostname, item.ID)
+		}
 	}
 	if err == nil {
 		_ = application.store.SetPreviewDNSRecords(ctx, item.ID, records)
@@ -503,9 +521,54 @@ func (application *Application) Backend(previewID string, targetPort int) (deplo
 	return deployment.Backend{DeploymentID: previewID, Address: addresses[0], Port: targetPort}, true, nil
 }
 
-func previewHostname(serviceID, tag, productionHostname string) string {
+func previewHostname(serviceID, tag, previewRoot string) string {
 	digest := sha256.Sum256([]byte(serviceID + "\x00" + tag))
-	return hex.EncodeToString(digest[:])[:12] + "." + productionHostname
+	return HostnamePrefix + hex.EncodeToString(digest[:])[:12] + "." + previewRoot
+}
+
+// previewDNSCanonical picks a hostname in the preview zone whose A/AAAA/CNAME
+// records Cloudflare can clone onto the preview hostname.
+func previewDNSCanonical(previewRoot string, domains []state.ServiceDomain) string {
+	var fallback string
+	for _, domain := range domains {
+		if domain.Hostname == previewRoot {
+			return previewRoot
+		}
+		if strings.HasSuffix(domain.Hostname, "."+previewRoot) && fallback == "" {
+			fallback = domain.Hostname
+		}
+	}
+	if fallback != "" {
+		return fallback
+	}
+	return previewRoot
+}
+
+// previewDNSCanonicalForHostname picks a clone source in the same zone as an
+// existing preview hostname (label.previewRoot).
+func previewDNSCanonicalForHostname(previewHostname string, domains []state.ServiceDomain) string {
+	_, root, ok := strings.Cut(previewHostname, ".")
+	if !ok || root == "" {
+		return ""
+	}
+	return previewDNSCanonical(root, domains)
+}
+
+func previewTargetPort(desired state.ServiceDesired, domains []state.ServiceDomain) (int, error) {
+	if health := desired.Snapshot.HealthCheck; health != nil && health.Port >= 1 && health.Port <= 65535 {
+		return health.Port, nil
+	}
+	if len(domains) > 0 {
+		return domains[0].TargetPort, nil
+	}
+	return 0, state.ErrPreviewTargetPort
+}
+
+type previewPlan struct {
+	desired           state.ServiceDesired
+	root              string
+	targetPort        int
+	canonicalHostname string
 }
 
 func (application *Application) previewLock(serviceID, tag string) *sync.Mutex {

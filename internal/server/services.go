@@ -178,9 +178,12 @@ func createService(config handlerConfig) http.HandlerFunc {
 			enabled = *body.Enabled
 		}
 		setup := initialServiceSetup{Domains: body.Domains, Listeners: body.Listeners, Volumes: body.Volumes}
-		if servicesource.ImageUploadPreviewsEnabled(snapshot.Source) && len(setup.Domains) != 1 {
-			writeAPIError(response, http.StatusConflict, "preview_domain_count", state.ErrPreviewDomainCount.Error())
-			return
+		if servicesource.ImageUploadPreviewsEnabled(snapshot.Source) {
+			hasHealthPort := snapshot.HealthCheck != nil && snapshot.HealthCheck.Port >= 1 && snapshot.HealthCheck.Port <= 65535
+			if !hasHealthPort && len(setup.Domains) == 0 {
+				writeAPIError(response, http.StatusConflict, "preview_target_port", state.ErrPreviewTargetPort.Error())
+				return
+			}
 		}
 		if err := validateInitialBeforeDeployHostnames(snapshot.BeforeDeploy, setup.Domains); err != nil {
 			writeAPIError(response, http.StatusBadRequest, "invalid_service_config", err.Error())
@@ -232,6 +235,9 @@ func createService(config handlerConfig) http.HandlerFunc {
 		}
 		if errors.Is(err, state.ErrImageCredentialHostMismatch) {
 			writeAPIError(response, http.StatusBadRequest, "image_credential_registry_mismatch", err.Error())
+			return
+		}
+		if writeServiceMutationError(response, err) {
 			return
 		}
 		if err != nil {

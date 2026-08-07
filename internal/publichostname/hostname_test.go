@@ -19,3 +19,23 @@ func TestNormalizeCanonicalizesIDNAAndRejectsAmbiguousHosts(t *testing.T) {
 		t.Fatalf("Host header normalization = %q, %v", hostname, err)
 	}
 }
+
+func TestNormalizeApexRequiresRegistrableDomain(t *testing.T) {
+	apex, err := NormalizeApex("Example.COM")
+	if err != nil || apex != "example.com" {
+		t.Fatalf("NormalizeApex = %q, %v", apex, err)
+	}
+	ok, err := IsApex("example.com")
+	if err != nil || !ok {
+		t.Fatalf("IsApex(example.com) = %v, %v", ok, err)
+	}
+	ok, err = IsApex("app.example.com")
+	if err != nil || ok {
+		t.Fatalf("IsApex(app.example.com) = %v, %v", ok, err)
+	}
+	for _, invalid := range []string{"", "app.example.com", "localhost"} {
+		if _, err := NormalizeApex(invalid); err == nil {
+			t.Fatalf("NormalizeApex(%q) accepted", invalid)
+		}
+	}
+}

@@ -5,6 +5,7 @@ mod largest_objects;
 mod protocol;
 mod runtime;
 mod s3_backend;
+mod traffic;
 mod usage;
 
 use hyper::service::service_fn;
@@ -48,7 +49,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let runtime = StoreRuntime::open(&volume).await?;
     let store = runtime.store.clone();
-    let data_plane = data_plane::DataPlane::new(store.clone());
+    let traffic = Arc::new(traffic::TrafficRegistry::default());
+    let data_plane = data_plane::DataPlane::new(store.clone(), traffic.clone());
     let largest_objects = largest_objects::LargestObjectSearches::default();
     let listener = UnixListener::bind(&socket)?;
     tokio::fs::set_permissions(&socket, Permissions::from_mode(0o600)).await?;
@@ -74,6 +76,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 let store = store.clone();
                 let data_plane = data_plane.clone();
                 let largest_objects = largest_objects.clone();
+                let traffic = traffic.clone();
                 connections.spawn(async move {
                     let _permit = permit;
                     let service = service_fn(move |request| {
@@ -81,6 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             store.clone(),
                             data_plane.clone(),
                             largest_objects.clone(),
+                            traffic.clone(),
                             request,
                         )
                     });

@@ -83,7 +83,6 @@ export const ServiceCreatePanel = ({
         <ServiceConfiguration
           draft={configuration}
           onDraftChange={setConfiguration}
-          httpDomainCount={0}
         />
 
         {error ? (
