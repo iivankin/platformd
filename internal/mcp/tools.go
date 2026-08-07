@@ -64,6 +64,10 @@ func readTools() []Tool {
 			InputSchema: objectSchema(nil, nil),
 		},
 		{
+			Name: "get_project", Description: "Read one project summary visible to this token.",
+			InputSchema: objectSchema(projectProperty, []string{"projectId"}),
+		},
+		{
 			Name: "list_services", Description: "List services in one visible project.",
 			InputSchema: objectSchema(projectProperty, []string{"projectId"}),
 		},
@@ -87,6 +91,22 @@ func readTools() []Tool {
 				"deploymentId": map[string]any{"type": "string"}, "contains": map[string]any{"type": "string", "maxLength": 256},
 				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": containerlogs.MaximumLimit},
 			}, []string{"projectId", "serviceId"}),
+		},
+		{
+			Name: "read_resource_usage", Description: "Read live CPU/memory/disk/network usage for one service, PostgreSQL, or Redis. Set range to return rolled-up history instead of the live snapshot.",
+			InputSchema: objectSchema(map[string]any{
+				"projectId":  map[string]any{"type": "string"},
+				"kind":       map[string]any{"type": "string", "enum": []string{"service", "postgres", "redis"}},
+				"resourceId": map[string]any{"type": "string"},
+				"range":      map[string]any{"type": "string", "enum": []string{"1h", "6h", "1d", "7d", "30d"}},
+			}, []string{"projectId", "kind", "resourceId"}),
+		},
+		{
+			Name: "read_project_usage", Description: "Read aggregated live usage for one visible project. Set range to return per-resource history instead of the live snapshot.",
+			InputSchema: objectSchema(map[string]any{
+				"projectId": map[string]any{"type": "string"},
+				"range":     map[string]any{"type": "string", "enum": []string{"1h", "6h", "1d", "7d", "30d"}},
+			}, []string{"projectId"}),
 		},
 		{
 			Name: "list_managed_image_tags", Description: "List one documented Docker Hub page for official PostgreSQL or Redis tags; search filters only that page and manual tag input remains valid.",
@@ -137,11 +157,36 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 	tools := handler.tools
 	if identity.IsAdmin() {
 		tools = append(append([]Tool(nil), tools...), adminTools()...)
+		tools = append(tools, lifecycleAdminTools()...)
+		if handler.managedDeployments != nil {
+			tools = append(tools, managedDeploymentAdminTools()...)
+		}
+		if handler.projects != nil && identity.ProjectID == nil {
+			tools = append(tools, createProjectTool())
+		}
+		if handler.domains != nil {
+			tools = append(tools, domainAdminTools()...)
+		}
+		if handler.objectStores != nil {
+			tools = append(tools, objectStoreAdminTool())
+		}
 		if handler.redis != nil {
-			tools = append(tools, managedRedisAdminTool())
+			tools = append(tools, managedRedisAdminTool(), mutateRedisKeyTool())
 		}
 		if handler.postgres != nil {
-			tools = append(tools, managedPostgresAdminTool())
+			tools = append(tools, managedPostgresAdminTool(), queryManagedPostgresTool())
+		}
+		if handler.backups != nil {
+			tools = append(tools, backupAdminTools()...)
+		}
+		if handler.imageGC != nil {
+			tools = append(tools, runContainerImageGCTool())
+		}
+		if handler.networkGateways != nil {
+			tools = append(tools, networkGatewayAdminTools()...)
+		}
+		if identity.ProjectID == nil {
+			tools = append(tools, readInstallationUsageTool())
 		}
 		if handler.serverExec != nil && identity.ProjectID == nil {
 			tools = append(tools, serverExecTool())
@@ -184,14 +229,72 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 	switch call.Name {
 	case "list_projects":
 		output, err = handler.listProjects(request.Context(), call.Arguments, identity)
+	case "get_project":
+		output, err = handler.getProject(request.Context(), call.Arguments, identity)
+	case "create_project":
+		if handler.projects == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createProject(request.Context(), call.Arguments, identity)
 	case "list_services":
 		output, err = handler.listServices(request.Context(), call.Arguments, identity)
 	case "get_service":
 		output, err = handler.getService(request.Context(), call.Arguments, identity)
 	case "list_service_deployments":
 		output, err = handler.listDeployments(request.Context(), call.Arguments, identity)
+	case "list_service_domains":
+		if handler.domains == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listServiceDomains(request.Context(), call.Arguments, identity)
+	case "attach_service_domain":
+		if handler.domains == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.attachServiceDomain(request.Context(), call.Arguments, identity)
+	case "detach_service_domain":
+		if handler.domains == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.detachServiceDomain(request.Context(), call.Arguments, identity)
 	case "read_service_logs":
 		output, err = handler.readServiceLogs(request.Context(), call.Arguments, identity)
+	case "read_managed_resource_logs":
+		output, err = handler.readManagedResourceLogs(request.Context(), call.Arguments, identity)
+	case "read_resource_usage":
+		output, err = handler.readResourceUsage(request.Context(), call.Arguments, identity)
+	case "read_project_usage":
+		output, err = handler.readProjectUsage(request.Context(), call.Arguments, identity)
+	case "read_installation_usage":
+		output, err = handler.readInstallationUsage(request.Context(), call.Arguments, identity)
+	case "read_infrastructure_logs":
+		if handler.infrastructureLogs == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.readInfrastructureLogs(request.Context(), call.Arguments, identity)
+	case "read_disk_pressure":
+		if handler.diskPressure == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.readDiskPressure(request.Context(), call.Arguments, identity)
+	case "run_container_image_gc":
+		if handler.imageGC == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.runContainerImageGC(request.Context(), call.Arguments, identity)
+	case "list_audit_events":
+		if handler.audit == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listAuditEvents(request.Context(), call.Arguments, identity)
 	case "list_managed_image_tags":
 		output, err = handler.listManagedImageTags(request.Context(), call.Arguments)
 	case "list_service_volumes":
@@ -238,6 +341,108 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.redeployService(request.Context(), call.Arguments, identity)
 	case "rollback_service":
 		output, err = handler.rollbackService(request.Context(), call.Arguments, identity)
+	case "delete_service":
+		output, err = handler.deleteService(request.Context(), call.Arguments, identity)
+	case "restart_service_deployment":
+		output, err = handler.restartServiceDeployment(request.Context(), call.Arguments, identity)
+	case "remove_service_deployment":
+		output, err = handler.removeServiceDeployment(request.Context(), call.Arguments, identity)
+	case "restart_managed_deployment":
+		if handler.managedDeployments == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.restartManagedDeployment(request.Context(), call.Arguments, identity)
+	case "remove_managed_deployment":
+		if handler.managedDeployments == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.removeManagedDeployment(request.Context(), call.Arguments, identity)
+	case "list_network_gateways":
+		if handler.networkGateways == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listNetworkGateways(request.Context(), call.Arguments, identity)
+	case "get_network_gateway":
+		if handler.networkGateways == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.getNetworkGateway(request.Context(), call.Arguments, identity)
+	case "list_network_addresses":
+		if handler.networkGateways == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listNetworkAddresses(request.Context(), call.Arguments, identity)
+	case "create_network_gateway":
+		if handler.networkGateways == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createNetworkGateway(request.Context(), call.Arguments, identity)
+	case "update_network_gateway":
+		if handler.networkGateways == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.updateNetworkGateway(request.Context(), call.Arguments, identity)
+	case "delete_network_gateway":
+		if handler.networkGateways == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.deleteNetworkGateway(request.Context(), call.Arguments, identity)
+	case "set_backup_policy":
+		if handler.backups == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.setBackupPolicy(request.Context(), call.Arguments, identity)
+	case "run_backup":
+		if handler.backups == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.runBackup(request.Context(), call.Arguments, identity)
+	case "restore_backup":
+		if handler.backups == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.restoreBackup(request.Context(), call.Arguments, identity)
+	case "query_managed_postgres":
+		if handler.postgres == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.queryManagedPostgres(request.Context(), call.Arguments, identity)
+	case "scan_redis_keys":
+		if handler.redis == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.scanRedisKeys(request.Context(), call.Arguments, identity)
+	case "preview_redis_key":
+		if handler.redis == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.previewRedisKey(request.Context(), call.Arguments, identity)
+	case "mutate_redis_key":
+		if handler.redis == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.mutateRedisKey(request.Context(), call.Arguments, identity)
+	case "create_object_store":
+		if handler.objectStores == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createObjectStore(request.Context(), call.Arguments, identity)
 	case "create_service_volume":
 		if handler.volumes == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
@@ -285,7 +490,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		return
 	}
 	if err != nil {
-		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) || errors.Is(err, portforward.ErrInvalidInput) {
+		if errors.Is(err, errInvalidArguments) || errors.Is(err, automation.ErrInvalidInput) || errors.Is(err, automation.ErrManagedResourceInput) || errors.Is(err, automation.ErrUsageKind) || errors.Is(err, automation.ErrUsageRange) || errors.Is(err, databaseversion.ErrInvalidInput) || errors.Is(err, databaseversion.ErrUnsupportedKind) || errors.Is(err, containerlogs.ErrInvalidQuery) || errors.Is(err, managedimages.ErrInvalidQuery) || errors.Is(err, managedredis.ErrInvalidInput) || errors.Is(err, managedpostgres.ErrInvalidInput) || errors.Is(err, volume.ErrInvalidInput) || errors.Is(err, portforward.ErrInvalidInput) {
 			writeRPCError(response, message.ID, codeInvalidParams, err.Error())
 			return
 		}

@@ -34,7 +34,7 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 7 || state.SupportedSchemaVersion() != 7 {
+	if version != 8 || state.SupportedSchemaVersion() != 8 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int

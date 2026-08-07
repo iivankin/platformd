@@ -125,7 +125,7 @@ func TestApplicationReportsLiveRedisRPOWithoutDurableState(t *testing.T) {
 	}
 }
 
-func TestApplicationRestrictsDataMutationsToAccessAndAuditsWithoutContent(t *testing.T) {
+func TestApplicationAllowsAccessAndTokenDataMutationsAndAuditsWithoutContent(t *testing.T) {
 	t.Parallel()
 	store := &applicationStore{}
 	runtime := &applicationRuntime{}
@@ -138,9 +138,9 @@ func TestApplicationRestrictsDataMutationsToAccessAndAuditsWithoutContent(t *tes
 	}
 	mutation := Mutation{Kind: MutationStringSet, Key: []byte("secret-key"), Value: []byte("secret-value")}
 	if _, err := application.Mutate(context.Background(), DataMutationInput{
-		ProjectID: "project", ResourceID: "redis", Actor: Actor{Kind: "token", ID: "token"}, Mutation: mutation,
+		ProjectID: "project", ResourceID: "redis", Actor: Actor{Kind: "system", ID: "system"}, Mutation: mutation,
 	}); err == nil {
-		t.Fatal("token actor was allowed to mutate Redis data")
+		t.Fatal("system actor was allowed to mutate Redis data")
 	}
 	result, err := application.Mutate(context.Background(), DataMutationInput{
 		ProjectID: "project", ResourceID: "redis",
@@ -154,6 +154,16 @@ func TestApplicationRestrictsDataMutationsToAccessAndAuditsWithoutContent(t *tes
 	}
 	if store.audit.Operation != "string_set" || store.audit.ActorEmail != "user@example.com" || store.audit.Result != "succeeded" {
 		t.Fatalf("mutation audit = %+v", store.audit)
+	}
+	tokenResult, err := application.Mutate(context.Background(), DataMutationInput{
+		ProjectID: "project", ResourceID: "redis",
+		Actor: Actor{Kind: "token", ID: "token"}, Mutation: mutation,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tokenResult.Affected != 1 || !tokenResult.AuditRecorded || store.audit.ActorID != "token" || store.audit.ActorEmail != "" {
+		t.Fatalf("token mutation result/audit = %+v/%+v", tokenResult, store.audit)
 	}
 }
 

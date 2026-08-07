@@ -109,9 +109,12 @@ func (e *Engine) Pull(ctx context.Context, request PullRequest) (Image, error) {
 	if request.Reference == "" {
 		return Image{}, fmt.Errorf("image reference is empty")
 	}
-	defer e.notifyImageStorageChanged()
 	unlockImages := e.acquireImageReadLock("pull", request.Reference)
 	defer unlockImages()
+	previousID := ""
+	if existing, _, err := e.runtime.LibimageRuntime().LookupImage(request.Reference, nil); err == nil {
+		previousID = existing.ID()
+	}
 	policy := commonconfig.PullPolicyMissing
 	if request.Refresh {
 		policy = commonconfig.PullPolicyAlways
@@ -130,7 +133,11 @@ func (e *Engine) Pull(ctx context.Context, request PullRequest) (Image, error) {
 	if len(images) != 1 {
 		return Image{}, fmt.Errorf("pull image %s returned %d images", request.Reference, len(images))
 	}
-	return e.inspectImage(ctx, images[0].ID())
+	image, err := e.inspectImage(ctx, images[0].ID())
+	if err == nil && shouldNotifyImageStorageAfterPull(previousID, image.ID) {
+		e.notifyImageStorageChanged()
+	}
+	return image, err
 }
 
 func (e *Engine) InspectImage(ctx context.Context, idOrName string) (Image, error) {
@@ -170,7 +177,6 @@ func (e *Engine) CommitDerivedImage(ctx context.Context, request DerivedImageReq
 	if request.ContainerID == "" || request.BaseImageID == "" || request.Reference == "" {
 		return Image{}, errors.New("derived image request is incomplete")
 	}
-	defer e.notifyImageStorageChanged()
 	unlockImages := e.acquireImageReadLock("commit", request.Reference)
 	defer unlockImages()
 	base, _, err := e.runtime.LibimageRuntime().LookupImage(request.BaseImageID, nil)
@@ -231,7 +237,11 @@ func (e *Engine) CommitDerivedImage(ctx context.Context, request DerivedImageReq
 	if err != nil {
 		return Image{}, fmt.Errorf("commit derived image %s: %w", request.Reference, err)
 	}
-	return e.inspectImage(ctx, committed.ID())
+	image, err := e.inspectImage(ctx, committed.ID())
+	if err == nil {
+		e.notifyImageStorageChanged()
+	}
+	return image, err
 }
 
 func (e *Engine) ImagesByLabel(ctx context.Context, label string) ([]Image, error) {
@@ -259,13 +269,18 @@ func (e *Engine) RemoveImage(ctx context.Context, id string) error {
 	if id == "" {
 		return errors.New("image ID is empty")
 	}
-	defer e.notifyImageStorageChanged()
+	_, _, lookupErr := e.runtime.LibimageRuntime().LookupImage(id, nil)
+	existed := lookupErr == nil
 	_, failures := e.runtime.LibimageRuntime().RemoveImages(ctx, []string{id}, &libimage.RemoveImagesOptions{
 		Force:   false,
 		Ignore:  true,
 		NoPrune: true,
 	})
-	return errors.Join(failures...)
+	err := errors.Join(failures...)
+	if err == nil && existed {
+		e.notifyImageStorageChanged()
+	}
+	return err
 }
 
 func (e *Engine) notifyImageStorageChanged() {

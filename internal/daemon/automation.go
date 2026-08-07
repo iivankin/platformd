@@ -4,11 +4,26 @@ import (
 	"context"
 
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/trafficmetrics"
+	"github.com/iivankin/platformd/internal/volume"
 )
 
 type liveAutomationRepository struct {
-	store   *state.Store
-	runtime *runtimeStack
+	store            *state.Store
+	runtime          *runtimeStack
+	domains          *liveDomainRepository
+	listeners        *liveServiceListenerRepository
+	volumeFilesystem volume.Filesystem
+	traffic          *trafficmetrics.Registry
+	onCleanupError   func(error)
+}
+
+func (repository liveAutomationRepository) services() liveServiceRepository {
+	return liveServiceRepository{
+		store: repository.store, runtime: repository.runtime, domains: repository.domains,
+		listeners: repository.listeners, volumeFilesystem: repository.volumeFilesystem,
+		traffic: repository.traffic, onCleanupError: repository.onCleanupError,
+	}
 }
 
 func (repository liveAutomationRepository) Projects(ctx context.Context) ([]state.ProjectSummary, error) {
@@ -69,17 +84,29 @@ func (repository liveAutomationRepository) BackupHistory(ctx context.Context, qu
 }
 
 func (repository liveAutomationRepository) CreateService(ctx context.Context, input state.CreateService) (state.ServiceDesired, error) {
-	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).CreateService(ctx, input)
+	return repository.services().CreateService(ctx, input)
 }
 
 func (repository liveAutomationRepository) UpdateService(ctx context.Context, input state.UpdateServiceInput) (state.ServiceDesired, error) {
-	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).UpdateService(ctx, input)
+	return repository.services().UpdateService(ctx, input)
 }
 
 func (repository liveAutomationRepository) RollbackService(ctx context.Context, input state.RollbackServiceInput) (state.ServiceDesired, error) {
-	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).DeployServiceVersion(ctx, input)
+	return repository.services().DeployServiceVersion(ctx, input)
 }
 
 func (repository liveAutomationRepository) RedeployService(ctx context.Context, input state.RedeployServiceInput) (state.ServiceDesired, error) {
-	return (liveServiceRepository{store: repository.store, runtime: repository.runtime}).RedeployService(ctx, input)
+	return repository.services().RedeployService(ctx, input)
+}
+
+func (repository liveAutomationRepository) DeleteService(ctx context.Context, input state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	return repository.services().DeleteService(ctx, input)
+}
+
+func (repository liveAutomationRepository) RestartServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return repository.services().RestartServiceDeployment(ctx, input)
+}
+
+func (repository liveAutomationRepository) RemoveServiceDeployment(ctx context.Context, input state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return repository.services().RemoveServiceDeployment(ctx, input)
 }

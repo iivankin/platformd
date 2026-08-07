@@ -39,7 +39,17 @@ jobs:
 
 `latest` is accepted only from the production branch configured on the service and deploys production. Any other valid image tag creates or replaces a preview when image previews are enabled on the service. If the service has an allowed-workflow list, the current workflow filename must be present in it.
 
-The action uploads 8 MiB chunks by default. `chunk-size` may be changed, but platformd does not impose a total archive-size limit.
+The action uploads parallel 95 MiB parts by default (concurrency 4) so large OCI
+archives saturate the link without tripping Cloudflare's 100 MiB request-body
+limit. `chunk-size` must stay at or below 100 MiB; platformd enforces the same
+per-part cap. There is no total archive-size limit.
+
+This action requires a platformd build that accepts parallel part uploads
+(`Upload-Offset` is an absolute part start, not a sequential cursor). Older
+sequential-only platformd installs are unsupported.
+
+Progress is printed in a Docker/BuildKit style (`#1 pushing … MB/s`, then
+`#2 importing/deploying`).
 
 ## GitHub deployment UI
 

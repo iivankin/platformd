@@ -27,7 +27,6 @@ func (e *Engine) GarbageCollectImages(ctx context.Context, request ImageGarbageC
 	if request.OrphanLayerMaximumAge < 0 {
 		return ImageGarbageCollectResult{}, errors.New("orphan layer maximum age cannot be negative")
 	}
-	defer e.notifyImageStorageChanged()
 
 	e.imageOperations.Lock()
 	defer e.imageOperations.Unlock()
@@ -37,7 +36,11 @@ func (e *Engine) GarbageCollectImages(ctx context.Context, request ImageGarbageC
 	result.OrphanLayersRemoved += orphanResult.OrphanLayersRemoved
 	result.RemovedBytes += orphanResult.RemovedBytes
 	result.Skipped += orphanResult.Skipped
-	return result, errors.Join(imageErr, orphanErr)
+	err := errors.Join(imageErr, orphanErr)
+	if shouldNotifyImageStorageAfterGC(result) {
+		e.notifyImageStorageChanged()
+	}
+	return result, err
 }
 
 func (e *Engine) garbageCollectImageRecords(ctx context.Context, request ImageGarbageCollectRequest) (ImageGarbageCollectResult, error) {

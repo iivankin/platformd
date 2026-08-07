@@ -32,7 +32,7 @@ func (reader *logReader) Read(_ context.Context, query containerlogs.Query) (con
 func TestLogApplicationAuthorizesBeforeServiceLookup(t *testing.T) {
 	services := &logServices{}
 	reader := &logReader{}
-	application, err := NewLogApplication(services, reader)
+	application, err := NewLogApplication(services, reader, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

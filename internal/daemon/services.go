@@ -73,7 +73,7 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 		}
 	}
 	for _, path := range deleted.ImagePaths {
-		removeErr := os.Remove(path)
+		removeErr := os.RemoveAll(path)
 		if removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			repository.reportCleanupError(removeErr)
 		}

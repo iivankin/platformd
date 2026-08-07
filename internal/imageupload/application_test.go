@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,7 @@ func (store *uploadTestStore) BeginImageUpload(_ context.Context, input state.Be
 		ID: input.ID, ServiceID: input.ServiceID, Tag: input.Tag,
 		ExpectedLength: input.ExpectedLength, ExpectedSHA256: input.ExpectedSHA256,
 		TemporaryPath: input.TemporaryPath, Identity: input.Identity, Status: "uploading",
+		ReceivedRanges:  []state.ImageUploadByteRange{},
 		CreatedAtMillis: input.CreatedAtMillis, UpdatedAtMillis: input.CreatedAtMillis,
 		ExpiresAtMillis: input.ExpiresAtMillis,
 	}
@@ -73,13 +75,30 @@ func (store *uploadTestStore) ImageUpload(_ context.Context, uploadID, serviceID
 	return store.upload, nil
 }
 
-func (store *uploadTestStore) AdvanceImageUpload(_ context.Context, uploadID string, expectedOffset, nextOffset, updatedAtMillis int64) error {
-	if store.upload.ID != uploadID || store.upload.ReceivedLength != expectedOffset {
-		return state.ErrImageUploadChanged
+func (store *uploadTestStore) RecordImageUploadPart(
+	_ context.Context,
+	uploadID string,
+	offset, length, updatedAtMillis int64,
+) (state.ImageUpload, bool, error) {
+	if store.upload.ID != uploadID || store.upload.Status != "uploading" {
+		return state.ImageUpload{}, false, state.ErrImageUploadChanged
 	}
-	store.upload.ReceivedLength = nextOffset
+	for _, item := range store.upload.ReceivedRanges {
+		if item.Offset == offset && item.Length == length {
+			return store.upload, state.ImageUploadCoverageComplete(store.upload.ReceivedRanges, store.upload.ExpectedLength), nil
+		}
+		itemEnd := item.Offset + item.Length
+		if offset < itemEnd && offset+length > item.Offset {
+			return state.ImageUpload{}, false, state.ErrImageUploadRangeOverlap
+		}
+	}
+	store.upload.ReceivedRanges = append(store.upload.ReceivedRanges, state.ImageUploadByteRange{
+		Offset: offset, Length: length,
+	})
+	store.upload.ReceivedLength += length
 	store.upload.UpdatedAtMillis = updatedAtMillis
-	return nil
+	complete := state.ImageUploadCoverageComplete(store.upload.ReceivedRanges, store.upload.ExpectedLength)
+	return store.upload, complete, nil
 }
 
 func (*uploadTestStore) CreateImageRevision(context.Context, state.CreateImageRevisionInput) error {
@@ -134,7 +153,7 @@ func (roundTrip oidcRoundTrip) RoundTrip(request *http.Request) (*http.Response,
 	return roundTrip(request)
 }
 
-func TestChunkUploadAndStatusShareTheOIDCEndpoint(t *testing.T) {
+func TestParallelPartsAndOverlap(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0)
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -175,21 +194,40 @@ func TestChunkUploadAndStatusShareTheOIDCEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("ab"))
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Upload-ID", "upload-identifier-0001")
-	request.Header.Set("Upload-Tag", "latest")
-	request.Header.Set("Upload-Offset", "0")
-	request.Header.Set("Upload-Length", "10737418240")
-	request.Header.Set("Upload-SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	response := httptest.NewRecorder()
-	application.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted || response.Header().Get("Upload-Offset") != "2" {
-		t.Fatalf("first chunk response = %d %s", response.Code, response.Body.String())
+	second := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("cd"))
+	second.Header.Set("Authorization", "Bearer "+token)
+	second.Header.Set("Upload-ID", "upload-identifier-0001")
+	second.Header.Set("Upload-Tag", "latest")
+	second.Header.Set("Upload-Offset", "2")
+	second.Header.Set("Upload-Length", "10")
+	second.Header.Set("Upload-SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	secondResponse := httptest.NewRecorder()
+	application.Handler().ServeHTTP(secondResponse, second)
+	if secondResponse.Code != http.StatusAccepted || secondResponse.Header().Get("Upload-Offset") != "2" {
+		t.Fatalf("non-zero first part response = %d %s", secondResponse.Code, secondResponse.Body.String())
 	}
-	content, err := os.ReadFile(store.upload.TemporaryPath)
-	if err != nil || string(content) != "ab" || store.upload.ExpectedLength != 10<<30 {
-		t.Fatalf("stored chunk/length = %q/%d, error = %v", content, store.upload.ExpectedLength, err)
+
+	first := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("ab"))
+	first.Header = second.Header.Clone()
+	first.Header.Set("Upload-Offset", "0")
+	firstResponse := httptest.NewRecorder()
+	application.Handler().ServeHTTP(firstResponse, first)
+	if firstResponse.Code != http.StatusAccepted || firstResponse.Header().Get("Upload-Offset") != "4" {
+		t.Fatalf("second part response = %d %s", firstResponse.Code, firstResponse.Body.String())
+	}
+	partPath := partFilePath(store.upload.TemporaryPath, 0, 2)
+	content, err := os.ReadFile(partPath)
+	if err != nil || string(content) != "ab" {
+		t.Fatalf("stored part = %q error = %v", content, err)
+	}
+
+	overlap := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("xx"))
+	overlap.Header = second.Header.Clone()
+	overlap.Header.Set("Upload-Offset", "1")
+	overlapResponse := httptest.NewRecorder()
+	application.Handler().ServeHTTP(overlapResponse, overlap)
+	if overlapResponse.Code != http.StatusConflict || !strings.Contains(overlapResponse.Body.String(), "range_overlap") {
+		t.Fatalf("overlap response = %d %s", overlapResponse.Code, overlapResponse.Body.String())
 	}
 
 	statusRequest := httptest.NewRequest(http.MethodGet, endpoint, nil)
@@ -197,29 +235,79 @@ func TestChunkUploadAndStatusShareTheOIDCEndpoint(t *testing.T) {
 	statusRequest.Header.Set("Upload-ID", store.upload.ID)
 	statusResponse := httptest.NewRecorder()
 	application.Handler().ServeHTTP(statusResponse, statusRequest)
-	if statusResponse.Code != http.StatusOK || statusResponse.Header().Get("Upload-Offset") != "2" {
+	if statusResponse.Code != http.StatusOK || statusResponse.Header().Get("Upload-Offset") != "4" {
 		t.Fatalf("status response = %d %s", statusResponse.Code, statusResponse.Body.String())
 	}
 
-	mismatch := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("cd"))
-	mismatch.Header = request.Header.Clone()
-	mismatch.Header.Set("Upload-Offset", "0")
-	mismatchResponse := httptest.NewRecorder()
-	application.Handler().ServeHTTP(mismatchResponse, mismatch)
-	if mismatchResponse.Code != http.StatusConflict || mismatchResponse.Header().Get("Upload-Offset") != "" {
-		t.Fatalf("offset mismatch response = %d %v %s", mismatchResponse.Code, mismatchResponse.Header(), mismatchResponse.Body.String())
-	}
-	if store.upload.Status != "failed" || store.upload.ErrorCode != "offset_mismatch" {
-		t.Fatalf("upload after mismatch = %+v", store.upload)
-	}
-
 	missing := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("x"))
-	missing.Header = request.Header.Clone()
+	missing.Header = second.Header.Clone()
 	missing.Header.Del("Authorization")
 	missingResponse := httptest.NewRecorder()
 	application.Handler().ServeHTTP(missingResponse, missing)
 	if missingResponse.Code != http.StatusUnauthorized {
 		t.Fatalf("missing auth response = %d %s", missingResponse.Code, missingResponse.Body.String())
+	}
+}
+
+func TestRejectsChunkOverCloudflareBodyLimit(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"alg": "RS256", "e": base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
+		"kid": "test-key", "kty": "RSA", "n": base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: oidcRoundTrip(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Request: request,
+			Body: io.NopCloser(bytes.NewReader(jwks)),
+		}, nil
+	})}
+	const endpoint = "/public/api/v1/projects/shop/services/api/image"
+	const audience = "https://platform.example.com" + endpoint
+	token := signedUploadToken(t, privateKey, now, audience)
+	store := &uploadTestStore{service: state.ServiceDesired{
+		ID: "service-id", ProjectID: "project-id", ProjectName: "shop", Name: "api", Enabled: true,
+		Snapshot: serviceconfig.Snapshot{Source: servicesource.Source{
+			Type: servicesource.DockerImageUpload,
+			DockerUpload: &servicesource.DockerUpload{
+				Repository: "acme/backend", Branch: "main", Workflows: []string{"deploy.yml"},
+			},
+		}},
+	}}
+	application, err := New(Config{
+		Context: context.Background(), Store: store, Engine: uploadTestEngine{}, Runtime: uploadTestRuntime{},
+		Growth: uploadTestGrowth{}, Verifier: NewOIDCVerifier(client, func() time.Time { return now }),
+		PublicHostname: "platform.example.com", UploadRoot: t.TempDir(), ImageRoot: t.TempDir(),
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("x"))
+	request.ContentLength = MaximumUploadChunkBytes + 1
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Upload-ID", "upload-identifier-0002")
+	request.Header.Set("Upload-Tag", "latest")
+	request.Header.Set("Upload-Offset", "0")
+	request.Header.Set("Upload-Length", strconv.FormatInt(MaximumUploadChunkBytes+1, 10))
+	request.Header.Set("Upload-SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	response := httptest.NewRecorder()
+	application.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized chunk response = %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "chunk_too_large") {
+		t.Fatalf("expected chunk_too_large, got %s", response.Body.String())
+	}
+	if store.upload.ID != "" {
+		t.Fatalf("oversized first chunk should not begin upload: %+v", store.upload)
 	}
 }
 

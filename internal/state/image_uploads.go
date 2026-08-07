@@ -1,17 +1,20 @@
 package state
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 )
 
 var (
-	ErrImageUploadNotFound   = errors.New("image upload not found")
-	ErrImageUploadChanged    = errors.New("image upload changed")
-	ErrImageRevisionNotFound = errors.New("image revision not found")
+	ErrImageUploadNotFound     = errors.New("image upload not found")
+	ErrImageUploadChanged      = errors.New("image upload changed")
+	ErrImageUploadRangeOverlap = errors.New("image upload range overlap")
+	ErrImageRevisionNotFound   = errors.New("image revision not found")
 )
 
 type ImageUploadIdentity struct {
@@ -25,12 +28,18 @@ type ImageUploadIdentity struct {
 	RunAttempt  string `json:"runAttempt"`
 }
 
+type ImageUploadByteRange struct {
+	Offset int64 `json:"offset"`
+	Length int64 `json:"length"`
+}
+
 type ImageUpload struct {
 	ID              string
 	ServiceID       string
 	Tag             string
 	ExpectedLength  int64
 	ReceivedLength  int64
+	ReceivedRanges  []ImageUploadByteRange
 	ExpectedSHA256  string
 	TemporaryPath   string
 	Identity        ImageUploadIdentity
@@ -129,25 +138,108 @@ func (store *Store) ImageUpload(ctx context.Context, uploadID, serviceID string)
 	return upload, err
 }
 
-func (store *Store) AdvanceImageUpload(ctx context.Context, uploadID string, expectedOffset, nextOffset, updatedAtMillis int64) error {
-	if uploadID == "" || expectedOffset < 0 || nextOffset <= expectedOffset || updatedAtMillis <= 0 {
-		return errors.New("advance image upload input is incomplete")
+// RecordImageUploadPart records a non-overlapping byte range. Exact duplicate
+// ranges are idempotent. Returns the updated upload; Complete is true when the
+// union of ranges covers [0, ExpectedLength).
+func (store *Store) RecordImageUploadPart(
+	ctx context.Context,
+	uploadID string,
+	offset, length, updatedAtMillis int64,
+) (upload ImageUpload, complete bool, err error) {
+	if uploadID == "" || offset < 0 || length <= 0 || updatedAtMillis <= 0 {
+		return ImageUpload{}, false, errors.New("record image upload part input is incomplete")
 	}
-	return store.Write(ctx, func(transaction *sql.Tx) error {
-		result, err := transaction.ExecContext(ctx, `
-UPDATE service_image_uploads SET received_length = ?, updated_at = ?
-WHERE id = ? AND status = 'uploading' AND received_length = ? AND expected_length >= ?`,
-			nextOffset, updatedAtMillis, uploadID, expectedOffset, nextOffset,
-		)
-		if err != nil {
-			return err
+	err = store.Write(ctx, func(transaction *sql.Tx) error {
+		current, scanErr := scanImageUpload(transaction.QueryRowContext(ctx, imageUploadSelect+` WHERE id = ?`, uploadID))
+		if errors.Is(scanErr, sql.ErrNoRows) {
+			return ErrImageUploadNotFound
 		}
-		changed, err := result.RowsAffected()
-		if err != nil || changed != 1 {
+		if scanErr != nil {
+			return scanErr
+		}
+		if current.Status != "uploading" {
 			return ErrImageUploadChanged
 		}
+		if offset+length < offset || offset+length > current.ExpectedLength {
+			return errors.New("upload part exceeds expected length")
+		}
+		if existing := findExactRange(current.ReceivedRanges, offset, length); existing {
+			upload = current
+			complete = ImageUploadCoverageComplete(current.ReceivedRanges, current.ExpectedLength)
+			return nil
+		}
+		if rangesOverlap(current.ReceivedRanges, offset, length) {
+			return ErrImageUploadRangeOverlap
+		}
+		ranges := append(append([]ImageUploadByteRange{}, current.ReceivedRanges...), ImageUploadByteRange{
+			Offset: offset, Length: length,
+		})
+		encoded, marshalErr := json.Marshal(ranges)
+		if marshalErr != nil {
+			return marshalErr
+		}
+		received := current.ReceivedLength + length
+		result, execErr := transaction.ExecContext(ctx, `
+UPDATE service_image_uploads
+SET received_length = ?, received_ranges_json = ?, updated_at = ?
+WHERE id = ? AND status = 'uploading' AND received_length = ?`,
+			received, string(encoded), updatedAtMillis, uploadID, current.ReceivedLength,
+		)
+		if execErr != nil {
+			return execErr
+		}
+		changed, rowsErr := result.RowsAffected()
+		if rowsErr != nil || changed != 1 {
+			return ErrImageUploadChanged
+		}
+		current.ReceivedLength = received
+		current.ReceivedRanges = ranges
+		current.UpdatedAtMillis = updatedAtMillis
+		upload = current
+		complete = ImageUploadCoverageComplete(ranges, current.ExpectedLength)
 		return nil
 	})
+	return upload, complete, err
+}
+
+func findExactRange(ranges []ImageUploadByteRange, offset, length int64) bool {
+	for _, item := range ranges {
+		if item.Offset == offset && item.Length == length {
+			return true
+		}
+	}
+	return false
+}
+
+func rangesOverlap(ranges []ImageUploadByteRange, offset, length int64) bool {
+	end := offset + length
+	for _, item := range ranges {
+		itemEnd := item.Offset + item.Length
+		if offset < itemEnd && end > item.Offset {
+			return true
+		}
+	}
+	return false
+}
+
+// ImageUploadCoverageComplete reports whether ranges form a gap-free cover of
+// [0, expectedLength).
+func ImageUploadCoverageComplete(ranges []ImageUploadByteRange, expectedLength int64) bool {
+	if expectedLength <= 0 {
+		return false
+	}
+	ordered := append([]ImageUploadByteRange{}, ranges...)
+	slices.SortFunc(ordered, func(left, right ImageUploadByteRange) int {
+		return cmp.Compare(left.Offset, right.Offset)
+	})
+	var cursor int64
+	for _, item := range ordered {
+		if item.Offset != cursor || item.Length <= 0 {
+			return false
+		}
+		cursor += item.Length
+	}
+	return cursor == expectedLength
 }
 
 func (store *Store) SetImageUploadStatus(ctx context.Context, uploadID, from, to string, updatedAtMillis int64) error {
@@ -378,7 +470,7 @@ LIMIT 1`, serviceID))
 }
 
 const imageUploadSelect = `SELECT id, service_id, tag, expected_length, received_length,
-expected_sha256, temporary_path, oidc_metadata_json, status, image_revision_id,
+received_ranges_json, expected_sha256, temporary_path, oidc_metadata_json, status, image_revision_id,
 deployment_id, preview_id, preview_url, image_digest, error_code, error_message,
 created_at, updated_at, expires_at FROM service_image_uploads`
 
@@ -386,11 +478,11 @@ type rowScanner interface{ Scan(...any) error }
 
 func scanImageUpload(scanner rowScanner) (ImageUpload, error) {
 	var upload ImageUpload
-	var identityJSON string
+	var identityJSON, rangesJSON string
 	var revisionID, deploymentID, previewID, previewURL, digest, errorCode, errorMessage sql.NullString
 	if err := scanner.Scan(
 		&upload.ID, &upload.ServiceID, &upload.Tag, &upload.ExpectedLength, &upload.ReceivedLength,
-		&upload.ExpectedSHA256, &upload.TemporaryPath, &identityJSON, &upload.Status, &revisionID,
+		&rangesJSON, &upload.ExpectedSHA256, &upload.TemporaryPath, &identityJSON, &upload.Status, &revisionID,
 		&deploymentID, &previewID, &previewURL, &digest, &errorCode, &errorMessage,
 		&upload.CreatedAtMillis, &upload.UpdatedAtMillis, &upload.ExpiresAtMillis,
 	); err != nil {
@@ -398,6 +490,15 @@ func scanImageUpload(scanner rowScanner) (ImageUpload, error) {
 	}
 	if err := json.Unmarshal([]byte(identityJSON), &upload.Identity); err != nil {
 		return ImageUpload{}, fmt.Errorf("decode image upload identity: %w", err)
+	}
+	if rangesJSON == "" {
+		rangesJSON = "[]"
+	}
+	if err := json.Unmarshal([]byte(rangesJSON), &upload.ReceivedRanges); err != nil {
+		return ImageUpload{}, fmt.Errorf("decode image upload ranges: %w", err)
+	}
+	if upload.ReceivedRanges == nil {
+		upload.ReceivedRanges = []ImageUploadByteRange{}
 	}
 	upload.ImageRevisionID, upload.DeploymentID, upload.PreviewID = revisionID.String, deploymentID.String, previewID.String
 	upload.PreviewURL, upload.ImageDigest = previewURL.String, digest.String

@@ -1,8 +1,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { appendFileSync, createReadStream, readFileSync, statSync } from "node:fs";
 import type { Readable } from "node:stream";
+import { Transform } from "node:stream";
 
 const terminalStatuses = new Set(["failed", "succeeded", "superseded"]);
+
+// Cloudflare proxies reject request bodies over 100 MiB. Default just under that
+// so large OCI archives use few parallel parts without tripping the proxy.
+const CLOUDFLARE_MAX_BODY_BYTES = 100 * 1024 * 1024;
+const DEFAULT_CHUNK_BYTES = 95 * 1024 * 1024;
+const DEFAULT_CONCURRENCY = 4;
+const MAX_CONCURRENCY = 8;
+const OIDC_REFRESH_SKEW_MS = 60_000;
+const PROGRESS_INTERVAL_MS = 400;
 
 type JSONObject = Record<string, unknown>;
 
@@ -18,6 +28,14 @@ type UploadStatus = {
   url?: string;
   digest?: string;
 };
+
+type CachedOIDCToken = {
+  audience: string;
+  expiresAtMs: number;
+  token: string;
+};
+
+let cachedOIDCToken: CachedOIDCToken | undefined;
 
 function input(name: string, fallback = ""): string {
   const key = `INPUT_${name.replaceAll(" ", "_").toUpperCase()}`;
@@ -45,7 +63,30 @@ function setOutput(name: string, value: string | undefined): void {
   appendFileSync(output, `${name}=${String(value).replaceAll(/[\r\n]/gu, "")}\n`);
 }
 
+function jwtExpiryMs(token: string): number | undefined {
+  const parts = token.split(".");
+  if (parts.length < 2 || !parts[1]) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    return typeof payload.exp === "number" ? payload.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function oidcToken(audience: string): Promise<string> {
+  const now = Date.now();
+  if (
+    cachedOIDCToken &&
+    cachedOIDCToken.audience === audience &&
+    cachedOIDCToken.expiresAtMs - OIDC_REFRESH_SKEW_MS > now
+  ) {
+    return cachedOIDCToken.token;
+  }
   const requestURL = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
   const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
   if (!(requestURL && requestToken)) {
@@ -65,7 +106,148 @@ async function oidcToken(audience: string): Promise<string> {
   if (typeof body.value !== "string" || !body.value) {
     throw new Error("GitHub OIDC token response did not contain a token");
   }
+  cachedOIDCToken = {
+    audience,
+    expiresAtMs: jwtExpiryMs(body.value) ?? now + 5 * 60_000,
+    token: body.value,
+  };
   return body.value;
+}
+
+function parseChunkSize(raw: string): number {
+  const chunkSize = Number(raw);
+  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+    throw new Error("chunk-size must be a positive integer");
+  }
+  if (chunkSize > CLOUDFLARE_MAX_BODY_BYTES) {
+    throw new Error(
+      `chunk-size must be <= ${CLOUDFLARE_MAX_BODY_BYTES} bytes (Cloudflare proxied body limit)`,
+    );
+  }
+  return chunkSize;
+}
+
+function parseConcurrency(raw: string): number {
+  const concurrency = Number(raw);
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new Error("concurrency must be a positive integer");
+  }
+  return Math.min(concurrency, MAX_CONCURRENCY);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) {
+    return `${bytes}B`;
+  }
+  if (bytes < 1024 * 1024) {
+    return `${(bytes / 1024).toFixed(1)}KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatRate(bytesPerSecond: number): string {
+  return `${formatBytes(bytesPerSecond)}/s`;
+}
+
+class ProgressRenderer {
+  private readonly tty: boolean;
+  private stepStartedAt = Date.now();
+  private lastWriteAt = 0;
+  private activeLine = false;
+
+  constructor(private readonly stream: NodeJS.WriteStream = process.stderr) {
+    this.tty = Boolean(stream.isTTY);
+  }
+
+  start(step: number, title: string): void {
+    this.finishLine();
+    this.stepStartedAt = Date.now();
+    this.stream.write(`#${step} ${title}\n`);
+  }
+
+  update(step: number, verb: string, detail: string, force = false): void {
+    const now = Date.now();
+    if (!force && !this.tty && now - this.lastWriteAt < PROGRESS_INTERVAL_MS) {
+      return;
+    }
+    this.lastWriteAt = now;
+    const line = `#${step} ${verb.padEnd(10)} ${detail}`;
+    if (this.tty) {
+      this.stream.write(`\r${line}`);
+      this.stream.clearLine?.(1);
+      this.activeLine = true;
+      return;
+    }
+    this.stream.write(`${line}\n`);
+  }
+
+  done(step: number, verb: string, detail: string): void {
+    const elapsed = ((Date.now() - this.stepStartedAt) / 1000).toFixed(1);
+    this.finishLine();
+    this.stream.write(`#${step} ${verb.padEnd(10)} ${detail}  ${elapsed}s done\n`);
+  }
+
+  status(step: number, status: string): void {
+    this.finishLine();
+    this.stream.write(`#${step} ${status}\n`);
+  }
+
+  private finishLine(): void {
+    if (this.activeLine) {
+      this.stream.write("\n");
+      this.activeLine = false;
+    }
+  }
+}
+
+type UploadPart = {
+  offset: number;
+  length: number;
+};
+
+function splitParts(totalSize: number, chunkSize: number): UploadPart[] {
+  const parts: UploadPart[] = [];
+  for (let offset = 0; offset < totalSize; offset += chunkSize) {
+    parts.push({
+      offset,
+      length: Math.min(chunkSize, totalSize - offset),
+    });
+  }
+  return parts;
+}
+
+function countingStream(
+  source: Readable,
+  onBytes: (bytes: number) => void,
+): Transform {
+  const transform = new Transform({
+    transform(chunk, _encoding, callback) {
+      onBytes(chunk.length);
+      callback(null, chunk);
+    },
+  });
+  source.on("error", (error) => transform.destroy(error));
+  source.pipe(transform);
+  return transform;
+}
+
+async function mapPool<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let next = 0;
+  const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (true) {
+      const index = next;
+      next += 1;
+      if (index >= items.length) {
+        return;
+      }
+      await worker(items[index] as T);
+    }
+  });
+  await Promise.all(runners);
 }
 
 async function responseBody(response: Response): Promise<unknown> {
@@ -540,12 +722,10 @@ async function run(): Promise<void> {
   const resource = input("resource");
   const archive = input("archive");
   const tag = input("tag", "latest");
-  const chunkSize = Number(input("chunk-size", "8388608"));
+  const chunkSize = parseChunkSize(input("chunk-size", String(DEFAULT_CHUNK_BYTES)));
+  const concurrency = parseConcurrency(input("concurrency", String(DEFAULT_CONCURRENCY)));
   if (!(url && project && resource && archive && tag)) {
     throw new Error("url, project, resource, archive, and tag are required");
-  }
-  if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
-    throw new Error("chunk-size must be a positive integer");
   }
   const endpoint = uploadEndpoint(url, project, resource);
   const audience = endpoint;
@@ -557,48 +737,80 @@ async function run(): Promise<void> {
   const uploadID = randomUUID();
   const digest = await sha256File(archive);
   setOutput("upload-id", uploadID);
-  console.log(`Uploading ${fileStat.size} bytes as ${tag} in ${chunkSize}-byte chunks`);
 
-  let offset = 0;
-  let status: UploadStatus = {};
-  while (offset < fileStat.size) {
-    const length = Math.min(chunkSize, fileStat.size - offset);
-    const stream = createReadStream(archive, {
-      end: offset + length - 1,
-      start: offset,
+  const parts = splitParts(fileStat.size, chunkSize);
+  const progress = new ProgressRenderer();
+  progress.start(1, "uploading to platformd");
+
+  let sentBytes = 0;
+  let completedParts = 0;
+  const uploadStartedAt = Date.now();
+  const renderPush = (force = false) => {
+    const elapsedSeconds = Math.max((Date.now() - uploadStartedAt) / 1000, 0.001);
+    const percent = ((sentBytes / fileStat.size) * 100).toFixed(1);
+    progress.update(
+      1,
+      "pushing",
+      `${completedParts}/${parts.length} parts  ${formatBytes(sentBytes)} / ${formatBytes(fileStat.size)}  ${percent}%  ${formatRate(sentBytes / elapsedSeconds)}`,
+      force,
+    );
+  };
+
+  await mapPool(parts, concurrency, async (part) => {
+    const source = createReadStream(archive, {
+      end: part.offset + part.length - 1,
+      start: part.offset,
     });
-    status = await request(
+    const body = countingStream(source, (bytes) => {
+      sentBytes += bytes;
+      renderPush();
+    });
+    await request(
       endpoint,
       audience,
       "POST",
       {
-        "Content-Length": String(length),
+        "Content-Length": String(part.length),
         "Content-Type": "application/octet-stream",
         "Upload-ID": uploadID,
         "Upload-Length": String(fileStat.size),
-        "Upload-Offset": String(offset),
+        "Upload-Offset": String(part.offset),
         "Upload-SHA256": digest,
         "Upload-Tag": tag,
       },
-      stream,
+      body,
     );
-    if (!Number.isSafeInteger(status.offset) || (status.offset ?? 0) <= offset) {
-      throw new Error("platformd did not advance the upload offset");
-    }
-    offset = status.offset as number;
-    console.log(`Uploaded ${offset}/${fileStat.size} bytes`);
-  }
+    completedParts += 1;
+    renderPush(true);
+  });
 
+  progress.done(
+    1,
+    "pushing",
+    `${parts.length}/${parts.length} parts  ${formatBytes(fileStat.size)} / ${formatBytes(fileStat.size)}  100%`,
+  );
+
+  progress.start(2, "processing image");
+  let status: UploadStatus = await request(
+    endpoint,
+    audience,
+    "GET",
+    { "Upload-ID": uploadID },
+    undefined,
+  );
+  progress.status(2, status.status || "unknown");
   while (!terminalStatuses.has(status.status ?? "")) {
     await sleep(2000);
     status = await request(endpoint, audience, "GET", { "Upload-ID": uploadID }, undefined);
-    console.log(`platformd image status: ${status.status}`);
+    progress.status(2, status.status || "unknown");
   }
   if (status.status !== "succeeded") {
     throw new Error(
       `platformd image processing ${status.status}: ${status.errorMessage ?? status.errorCode ?? "unknown error"}`,
     );
   }
+  progress.done(2, "done", status.digest || "imported");
+
   const deploymentID = status.deploymentId || status.previewId || "";
   const publicURL = status.url || "";
   const previewURL = tag === "latest" ? "" : publicURL;

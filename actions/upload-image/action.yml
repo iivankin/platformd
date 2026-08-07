@@ -18,8 +18,15 @@ inputs:
     default: latest
     required: false
   chunk-size:
-    description: Bytes per HTTP request.
-    default: "8388608"
+    description: >-
+      Bytes per HTTP request. Defaults to 95 MiB. Must stay at or below 100 MiB
+      because Cloudflare proxies reject larger request bodies.
+    default: "99614720"
+    required: false
+  concurrency:
+    description: >-
+      Number of part uploads in flight at once (1-8). Defaults to 4.
+    default: "4"
     required: false
   github-token:
     description: >-

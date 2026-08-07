@@ -286,3 +286,32 @@ func migrateSchemaVersionSix(ctx context.Context, database *sql.DB) error {
 	}
 	return nil
 }
+
+func migrateSchemaVersionSeven(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 7 to 8: %w", err)
+	}
+	var exists int
+	if err := transaction.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'service_image_uploads'`,
+	).Scan(&exists); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 7 to 8: %w", err), transaction.Rollback())
+	}
+	if exists == 1 {
+		if _, err := transaction.ExecContext(ctx, `
+ALTER TABLE service_image_uploads
+ADD COLUMN received_ranges_json TEXT NOT NULL DEFAULT '[]'
+  CHECK (json_valid(received_ranges_json) AND json_type(received_ranges_json) = 'array')`,
+		); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 7 to 8: %w", err), transaction.Rollback())
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, `PRAGMA user_version = 8`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 7 to 8: %w", err), transaction.Rollback())
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 7 to 8: %w", err)
+	}
+	return nil
+}

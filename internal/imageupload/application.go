@@ -1,6 +1,7 @@
 package imageupload
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -11,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +27,10 @@ import (
 const (
 	UploadRetention  = 24 * time.Hour
 	PreviewRetention = 14 * 24 * time.Hour
+	// MaximumUploadChunkBytes matches Cloudflare's proxied request body limit so
+	// uploads through platform.looma.llc (and similar) fail fast instead of hanging.
+	MaximumUploadChunkBytes = 100 << 20
+	assembledArchiveName    = "archive.oci"
 )
 
 var (
@@ -40,7 +46,7 @@ type Store interface {
 	ServiceDomains(context.Context, string, string) ([]state.ServiceDomain, error)
 	BeginImageUpload(context.Context, state.BeginImageUploadInput) ([]string, error)
 	ImageUpload(context.Context, string, string) (state.ImageUpload, error)
-	AdvanceImageUpload(context.Context, string, int64, int64, int64) error
+	RecordImageUploadPart(context.Context, string, int64, int64, int64) (state.ImageUpload, bool, error)
 	CreateImageRevision(context.Context, state.CreateImageRevisionInput) error
 	SetImageRevisionImported(context.Context, string, string, string, string, int64) error
 	CompleteImageUpload(context.Context, string, string, string, int64, int64, int64) error
@@ -152,62 +158,91 @@ func (application *Application) upload(response http.ResponseWriter, request *ht
 	if !ok {
 		return
 	}
+	if request.ContentLength > MaximumUploadChunkBytes {
+		writeUploadError(
+			response,
+			http.StatusRequestEntityTooLarge,
+			"chunk_too_large",
+			fmt.Sprintf("Upload chunk exceeds %d bytes (Cloudflare proxied body limit)", MaximumUploadChunkBytes),
+		)
+		return
+	}
 	uploadID := strings.TrimSpace(request.Header.Get("Upload-ID"))
 	if !uploadIdentifier.MatchString(uploadID) {
 		writeUploadError(response, http.StatusBadRequest, "upload_id_required", "Upload-ID is required")
 		return
 	}
+	offset, err := parseNonNegativeHeader(request.Header.Get("Upload-Offset"))
+	if err != nil {
+		writeUploadError(response, http.StatusBadRequest, "invalid_offset", "Upload-Offset must be non-negative")
+		return
+	}
+	if request.ContentLength <= 0 {
+		writeUploadError(response, http.StatusBadRequest, "empty_chunk", "Upload chunk is empty")
+		return
+	}
+	partLength := request.ContentLength
+
 	lock := application.lock(service.ID + ":" + uploadID)
 	lock.Lock()
-	defer lock.Unlock()
-
 	upload, err := application.store.ImageUpload(request.Context(), uploadID, service.ID)
 	if errors.Is(err, state.ErrImageUploadNotFound) {
 		upload, err = application.begin(request.Context(), request, service, tag, identity)
 	}
 	if err != nil {
+		lock.Unlock()
 		application.writeRequestError(response, err)
 		return
 	}
 	if upload.Tag != tag || !sameRun(identity, upload.Identity) {
+		lock.Unlock()
 		writeOIDCError(response)
 		return
 	}
 	if upload.Status != "uploading" {
 		application.writeUploadResponse(response, request.Context(), http.StatusAccepted, upload, service)
+		lock.Unlock()
 		return
 	}
-	offset, err := parseNonNegativeHeader(request.Header.Get("Upload-Offset"))
-	if err != nil || offset != upload.ReceivedLength {
-		application.fail(upload.ID, "offset_mismatch", errors.New("Upload-Offset does not match the stored offset"))
-		_ = os.Remove(upload.TemporaryPath)
-		writeUploadError(response, http.StatusConflict, "offset_mismatch", "Upload-Offset does not match the stored offset")
-		return
-	}
-	if request.ContentLength == 0 {
-		writeUploadError(response, http.StatusBadRequest, "empty_chunk", "Upload chunk is empty")
-		return
-	}
-	remaining := upload.ExpectedLength - upload.ReceivedLength
-	if remaining <= 0 || (request.ContentLength > 0 && request.ContentLength > remaining) {
+	temporaryPath := upload.TemporaryPath
+	expectedLength := upload.ExpectedLength
+	lock.Unlock()
+
+	if offset >= expectedLength || partLength > expectedLength-offset {
 		writeUploadError(response, http.StatusRequestEntityTooLarge, "chunk_exceeds_upload", "Chunk exceeds Upload-Length")
 		return
 	}
-	next, err := appendChunk(upload.TemporaryPath, upload.ReceivedLength, remaining, request.Body)
-	if err != nil {
-		application.fail(upload.ID, "chunk_write_failed", err)
-		writeUploadError(response, http.StatusInternalServerError, "chunk_write_failed", "Unable to store upload chunk")
+
+	partPath := partFilePath(temporaryPath, offset, partLength)
+	if err := writePartFile(partPath, partLength, request.Body); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			writeUploadError(response, http.StatusInternalServerError, "chunk_write_failed", "Unable to store upload chunk")
+			return
+		}
+		info, statErr := os.Stat(partPath)
+		if statErr != nil || info.Size() != partLength {
+			_ = os.Remove(partPath)
+			writeUploadError(response, http.StatusConflict, "chunk_write_failed", "Incomplete upload part file; retry this part")
+			return
+		}
+	}
+
+	lock.Lock()
+	defer lock.Unlock()
+	upload, complete, err := application.store.RecordImageUploadPart(
+		request.Context(), uploadID, offset, partLength, application.now().UnixMilli(),
+	)
+	if errors.Is(err, state.ErrImageUploadRangeOverlap) {
+		_ = os.Remove(partPath)
+		writeUploadError(response, http.StatusConflict, "range_overlap", "Upload part overlaps an existing range")
 		return
 	}
-	if err := application.store.AdvanceImageUpload(request.Context(), upload.ID, upload.ReceivedLength, next, application.now().UnixMilli()); err != nil {
-		_ = os.Truncate(upload.TemporaryPath, upload.ReceivedLength)
+	if err != nil {
 		application.writeRequestError(response, err)
 		return
 	}
-	upload.ReceivedLength = next
-	upload.UpdatedAtMillis = application.now().UnixMilli()
-	if next == upload.ExpectedLength {
-		go application.process(service.ProjectID, service.ID, upload.ID)
+	if complete {
+		application.startProcess(service.ProjectID, service.ID, upload.ID)
 	}
 	application.writeUploadResponse(response, request.Context(), http.StatusAccepted, upload, service)
 }
@@ -251,9 +286,8 @@ func (application *Application) begin(
 	if err := application.growth.PermitGrowth(ctx); err != nil {
 		return state.ImageUpload{}, err
 	}
-	offset, err := parseNonNegativeHeader(request.Header.Get("Upload-Offset"))
-	if err != nil || offset != 0 {
-		return state.ImageUpload{}, requestError{"invalid_offset", "First Upload-Offset must be 0"}
+	if _, err := parseNonNegativeHeader(request.Header.Get("Upload-Offset")); err != nil {
+		return state.ImageUpload{}, requestError{"invalid_offset", "Upload-Offset must be non-negative"}
 	}
 	length, err := parsePositiveHeader(request.Header.Get("Upload-Length"))
 	if err != nil {
@@ -264,14 +298,9 @@ func (application *Application) begin(
 		return state.ImageUpload{}, requestError{"invalid_sha256", "Upload-SHA256 must be lowercase SHA-256 hex"}
 	}
 	uploadID := strings.TrimSpace(request.Header.Get("Upload-ID"))
-	temporaryPath := filepath.Join(application.uploadRoot, uploadID+".part")
-	file, err := os.OpenFile(temporaryPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return state.ImageUpload{}, fmt.Errorf("create upload file: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(temporaryPath)
-		return state.ImageUpload{}, err
+	temporaryPath := filepath.Join(application.uploadRoot, uploadID)
+	if err := os.Mkdir(temporaryPath, 0o700); err != nil {
+		return state.ImageUpload{}, fmt.Errorf("create upload directory: %w", err)
 	}
 	now := application.now()
 	superseded, err := application.store.BeginImageUpload(ctx, state.BeginImageUploadInput{
@@ -280,12 +309,12 @@ func (application *Application) begin(
 		CreatedAtMillis: now.UnixMilli(), ExpiresAtMillis: now.Add(UploadRetention).UnixMilli(),
 	})
 	if err != nil {
-		_ = os.Remove(temporaryPath)
+		_ = os.RemoveAll(temporaryPath)
 		return state.ImageUpload{}, err
 	}
 	for _, path := range superseded {
 		if path != temporaryPath {
-			_ = os.Remove(path)
+			_ = os.RemoveAll(path)
 		}
 	}
 	return application.store.ImageUpload(ctx, uploadID, service.ID)
@@ -393,7 +422,10 @@ func writeOIDCError(response http.ResponseWriter) {
 func (application *Application) process(projectID, serviceID, uploadID string) {
 	processContext, cancel := context.WithCancel(application.context)
 	done := make(chan struct{})
-	application.registerRun(uploadID, runningUpload{cancel: cancel, done: done})
+	if !application.tryRegisterRun(uploadID, runningUpload{cancel: cancel, done: done}) {
+		cancel()
+		return
+	}
 	defer func() {
 		cancel()
 		close(done)
@@ -408,16 +440,22 @@ func (application *Application) process(projectID, serviceID, uploadID string) {
 	lock.Lock()
 	defer lock.Unlock()
 	upload, err = application.store.ImageUpload(processContext, uploadID, serviceID)
-	if err != nil || upload.Status != "uploading" || upload.ReceivedLength != upload.ExpectedLength {
+	if err != nil || upload.Status != "uploading" || !state.ImageUploadCoverageComplete(upload.ReceivedRanges, upload.ExpectedLength) {
 		return
 	}
-	actualSHA, err := fileSHA256(upload.TemporaryPath)
+	assembledPath, err := assembleParts(upload.TemporaryPath, upload.ReceivedRanges, upload.ExpectedLength)
+	if err != nil {
+		application.fail(upload.ID, "assemble_failed", err)
+		_ = os.RemoveAll(upload.TemporaryPath)
+		return
+	}
+	actualSHA, err := fileSHA256(assembledPath)
 	if err != nil || actualSHA != upload.ExpectedSHA256 {
 		if err == nil {
 			err = errors.New("uploaded archive SHA-256 does not match Upload-SHA256")
 		}
 		application.fail(upload.ID, "sha256_mismatch", err)
-		_ = os.Remove(upload.TemporaryPath)
+		_ = os.RemoveAll(upload.TemporaryPath)
 		return
 	}
 	revisionID, err := application.newID()
@@ -431,10 +469,11 @@ func (application *Application) process(projectID, serviceID, uploadID string) {
 		return
 	}
 	archivePath := filepath.Join(revisionDirectory, revisionID+".oci")
-	if err := os.Rename(upload.TemporaryPath, archivePath); err != nil {
+	if err := os.Rename(assembledPath, archivePath); err != nil {
 		application.fail(upload.ID, "archive_store_failed", err)
 		return
 	}
+	_ = os.RemoveAll(upload.TemporaryPath)
 	kind := "preview"
 	expires := application.now().Add(PreviewRetention).UnixMilli()
 	if upload.Tag == "latest" {
@@ -551,15 +590,23 @@ func (application *Application) cancelUploads(ctx context.Context, expiresAtOrBe
 	}
 	paths, err := application.store.CancelImageUploads(context.WithoutCancel(ctx), expiresAtOrBefore, all, now.UnixMilli())
 	for _, path := range paths {
-		_ = os.Remove(path)
+		_ = os.RemoveAll(path)
 	}
 	return err
 }
 
-func (application *Application) registerRun(uploadID string, run runningUpload) {
+func (application *Application) startProcess(projectID, serviceID, uploadID string) {
+	go application.process(projectID, serviceID, uploadID)
+}
+
+func (application *Application) tryRegisterRun(uploadID string, run runningUpload) bool {
 	application.mu.Lock()
+	defer application.mu.Unlock()
+	if _, exists := application.runs[uploadID]; exists {
+		return false
+	}
 	application.runs[uploadID] = run
-	application.mu.Unlock()
+	return true
 }
 
 func (application *Application) unregisterRun(uploadID string) {
@@ -568,29 +615,68 @@ func (application *Application) unregisterRun(uploadID string) {
 	application.mu.Unlock()
 }
 
-func appendChunk(path string, offset, remaining int64, body io.Reader) (int64, error) {
-	file, err := os.OpenFile(path, os.O_WRONLY, 0)
+func partFilePath(directory string, offset, length int64) string {
+	return filepath.Join(directory, fmt.Sprintf("%d-%d.part", offset, length))
+}
+
+func writePartFile(path string, length int64, body io.Reader) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
-		return offset, err
+		return err
 	}
 	defer file.Close()
-	if position, err := file.Seek(offset, io.SeekStart); err != nil || position != offset {
-		return offset, errors.Join(err, errors.New("seek upload file failed"))
-	}
-	written, err := io.Copy(file, io.LimitReader(body, remaining+1))
+	written, err := io.Copy(file, io.LimitReader(body, length+1))
 	if err != nil {
-		return offset, err
+		_ = os.Remove(path)
+		return err
 	}
-	if written == 0 {
-		return offset, errors.New("upload chunk is empty")
-	}
-	if written > remaining {
-		return offset, errors.New("upload chunk exceeds declared length")
+	if written != length {
+		_ = os.Remove(path)
+		return fmt.Errorf("upload chunk length = %d, want %d", written, length)
 	}
 	if err := file.Sync(); err != nil {
-		return offset, err
+		_ = os.Remove(path)
+		return err
 	}
-	return offset + written, nil
+	return nil
+}
+
+func assembleParts(directory string, ranges []state.ImageUploadByteRange, expectedLength int64) (string, error) {
+	if !state.ImageUploadCoverageComplete(ranges, expectedLength) {
+		return "", errors.New("upload ranges are incomplete")
+	}
+	ordered := append([]state.ImageUploadByteRange{}, ranges...)
+	slices.SortFunc(ordered, func(left, right state.ImageUploadByteRange) int {
+		return cmp.Compare(left.Offset, right.Offset)
+	})
+	destination := filepath.Join(directory, assembledArchiveName)
+	file, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	for _, item := range ordered {
+		part, err := os.Open(partFilePath(directory, item.Offset, item.Length))
+		if err != nil {
+			_ = os.Remove(destination)
+			return "", err
+		}
+		copied, err := io.Copy(file, io.LimitReader(part, item.Length))
+		_ = part.Close()
+		if err != nil {
+			_ = os.Remove(destination)
+			return "", err
+		}
+		if copied != item.Length {
+			_ = os.Remove(destination)
+			return "", fmt.Errorf("part %d-%d length = %d", item.Offset, item.Length, copied)
+		}
+	}
+	if err := file.Sync(); err != nil {
+		_ = os.Remove(destination)
+		return "", err
+	}
+	return destination, nil
 }
 
 func fileSHA256(path string) (string, error) {
@@ -639,6 +725,8 @@ func (application *Application) writeRequestError(response http.ResponseWriter, 
 		writeUploadError(response, http.StatusBadRequest, invalid.code, invalid.message)
 	case errors.Is(err, ErrOIDC):
 		writeUploadError(response, http.StatusUnauthorized, "invalid_oidc", "GitHub Actions OIDC token is invalid")
+	case errors.Is(err, state.ErrImageUploadRangeOverlap):
+		writeUploadError(response, http.StatusConflict, "range_overlap", "Upload part overlaps an existing range")
 	case errors.Is(err, state.ErrImageUploadNotFound):
 		writeUploadError(response, http.StatusNotFound, "upload_not_found", "Image upload not found")
 	case errors.Is(err, state.ErrImageUploadChanged):

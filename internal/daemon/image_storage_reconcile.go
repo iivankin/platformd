@@ -96,8 +96,8 @@ func validateImageStoragePath(root, path string) error {
 		if index < len(parts)-1 && !info.IsDir() {
 			return fmt.Errorf("referenced image parent %q is not a directory", current)
 		}
-		if index == len(parts)-1 && !info.Mode().IsRegular() {
-			return fmt.Errorf("referenced image path %q is not a regular file", path)
+		if index == len(parts)-1 && !info.Mode().IsRegular() && !info.IsDir() {
+			return fmt.Errorf("referenced image path %q is not a regular file or directory", path)
 		}
 	}
 	return nil
@@ -118,9 +118,12 @@ func removeUnreferencedImageFiles(ctx context.Context, root string, references m
 		}
 		if entry.IsDir() {
 			directories = append(directories, path)
+			if _, referenced := references[path]; referenced {
+				return fs.SkipDir
+			}
 			return nil
 		}
-		if _, referenced := references[path]; referenced {
+		if imagePathReferenced(references, path) {
 			return nil
 		}
 		if err := os.Remove(path); err != nil {
@@ -139,6 +142,19 @@ func removeUnreferencedImageFiles(ctx context.Context, root string, references m
 		}
 	}
 	return removed, nil
+}
+
+func imagePathReferenced(references map[string]struct{}, path string) bool {
+	if _, referenced := references[path]; referenced {
+		return true
+	}
+	for reference := range references {
+		prefix := reference + string(filepath.Separator)
+		if strings.HasPrefix(path, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func ensureImageStorageDirectory(path string) error {

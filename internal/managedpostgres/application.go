@@ -400,8 +400,11 @@ func boundedExtensionError(err error) string {
 }
 
 func (application *Application) Query(ctx context.Context, input QueryInput) (QueryOutput, error) {
-	if input.ProjectID == "" || input.ResourceID == "" || input.Actor.Kind != "access" || input.Actor.ID == "" || input.Actor.Email == "" {
-		return QueryOutput{}, fmt.Errorf("%w: Access identity and PostgreSQL target are required", ErrInvalidInput)
+	if input.ProjectID == "" || input.ResourceID == "" || input.Actor.ID == "" || (input.Actor.Kind != "access" && input.Actor.Kind != "token") {
+		return QueryOutput{}, fmt.Errorf("%w: query identity and PostgreSQL target are required", ErrInvalidInput)
+	}
+	if input.Actor.Kind == "access" && input.Actor.Email == "" {
+		return QueryOutput{}, fmt.Errorf("%w: Access email is required", ErrInvalidInput)
 	}
 	if _, err := application.store.ManagedPostgresInProject(ctx, input.ProjectID, input.ResourceID); err != nil {
 		return QueryOutput{}, err

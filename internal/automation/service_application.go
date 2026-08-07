@@ -24,6 +24,9 @@ type ServiceMutationRepository interface {
 	UpdateService(context.Context, state.UpdateServiceInput) (state.ServiceDesired, error)
 	RollbackService(context.Context, state.RollbackServiceInput) (state.ServiceDesired, error)
 	RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error)
+	DeleteService(context.Context, state.DeleteServiceInput) (state.DeleteServiceResult, error)
+	RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error)
+	RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error)
 }
 
 type ServiceApplication struct {

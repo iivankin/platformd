@@ -127,6 +127,18 @@ func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInp
 	return state.ServiceDesired{}, nil
 }
 
+func (*repositoryStub) DeleteService(context.Context, state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	return state.DeleteServiceResult{}, nil
+}
+
+func (*repositoryStub) RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*repositoryStub) RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
 func (*repositoryStub) List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error) {
 	return managedimages.Page{Tags: []managedimages.Tag{{Name: "18.3"}}, Page: 1, PageSize: 50}, nil
 }
@@ -145,7 +157,7 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logs, err := automation.NewLogApplication(repository, logReaderStub{})
+	logs, err := automation.NewLogApplication(repository, logReaderStub{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

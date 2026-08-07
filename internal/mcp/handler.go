@@ -24,38 +24,60 @@ const (
 )
 
 type Handler struct {
-	hostname     string
-	version      string
-	repository   Repository
-	services     *automation.ServiceApplication
-	logs         *automation.LogApplication
-	images       ManagedImageCatalog
-	redis        *automation.ManagedRedisApplication
-	postgres     *automation.ManagedPostgresApplication
-	managed      *automation.ManagedResourceApplication
-	versions     *databaseversion.Service
-	serverExec   *automation.ServerExecApplication
-	volumes      *automation.VolumeApplication
-	portForwards *portforward.Application
-	tools        []Tool
-	admission    *admission.Gate
+	hostname           string
+	version            string
+	repository         Repository
+	projects           *automation.ProjectApplication
+	services           *automation.ServiceApplication
+	domains            *automation.DomainApplication
+	logs               *automation.LogApplication
+	usage              *automation.UsageApplication
+	infrastructureLogs *automation.InfrastructureLogApplication
+	diskPressure       *automation.DiskPressureApplication
+	imageGC            *automation.ImageGCApplication
+	audit              *automation.AuditApplication
+	images             ManagedImageCatalog
+	redis              *automation.ManagedRedisApplication
+	postgres           *automation.ManagedPostgresApplication
+	objectStores       *automation.ObjectStoreApplication
+	managed            *automation.ManagedResourceApplication
+	managedDeployments *automation.ManagedDeploymentApplication
+	networkGateways    *automation.NetworkGatewayApplication
+	backups            *automation.BackupApplication
+	versions           *databaseversion.Service
+	serverExec         *automation.ServerExecApplication
+	volumes            *automation.VolumeApplication
+	portForwards       *portforward.Application
+	tools              []Tool
+	admission          *admission.Gate
 }
 
 type Config struct {
-	Hostname     string
-	Version      string
-	Repository   Repository
-	Services     *automation.ServiceApplication
-	Logs         *automation.LogApplication
-	Images       ManagedImageCatalog
-	Redis        *automation.ManagedRedisApplication
-	Postgres     *automation.ManagedPostgresApplication
-	Managed      *automation.ManagedResourceApplication
-	Versions     *databaseversion.Service
-	ServerExec   *automation.ServerExecApplication
-	Volumes      *automation.VolumeApplication
-	PortForwards *portforward.Application
-	Admission    *admission.Gate
+	Hostname           string
+	Version            string
+	Repository         Repository
+	Projects           *automation.ProjectApplication
+	Services           *automation.ServiceApplication
+	Domains            *automation.DomainApplication
+	Logs               *automation.LogApplication
+	Usage              *automation.UsageApplication
+	InfrastructureLogs *automation.InfrastructureLogApplication
+	DiskPressure       *automation.DiskPressureApplication
+	ImageGC            *automation.ImageGCApplication
+	Audit              *automation.AuditApplication
+	Images             ManagedImageCatalog
+	Redis              *automation.ManagedRedisApplication
+	Postgres           *automation.ManagedPostgresApplication
+	ObjectStores       *automation.ObjectStoreApplication
+	Managed            *automation.ManagedResourceApplication
+	ManagedDeployments *automation.ManagedDeploymentApplication
+	NetworkGateways    *automation.NetworkGatewayApplication
+	Backups            *automation.BackupApplication
+	Versions           *databaseversion.Service
+	ServerExec         *automation.ServerExecApplication
+	Volumes            *automation.VolumeApplication
+	PortForwards       *portforward.Application
+	Admission          *admission.Gate
 }
 
 type ManagedImageCatalog interface {
@@ -63,19 +85,44 @@ type ManagedImageCatalog interface {
 }
 
 func New(config Config) (*Handler, error) {
-	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Images == nil || config.Admission == nil {
+	if config.Hostname == "" || config.Version == "" || config.Repository == nil || config.Services == nil || config.Logs == nil || config.Usage == nil || config.Images == nil || config.Admission == nil {
 		return nil, errors.New("MCP handler dependencies are incomplete")
 	}
 	tools := configuredReadTools(config.Managed != nil, config.Versions != nil)
+	if config.Domains != nil {
+		tools = append(tools, listServiceDomainsTool())
+	}
+	if config.Logs != nil && config.Logs.SupportsManagedResources() {
+		tools = append(tools, readManagedResourceLogsTool())
+	}
+	if config.InfrastructureLogs != nil {
+		tools = append(tools, readInfrastructureLogsTool())
+	}
+	if config.DiskPressure != nil {
+		tools = append(tools, readDiskPressureTool())
+	}
+	if config.Audit != nil {
+		tools = append(tools, listAuditEventsTool())
+	}
+	if config.NetworkGateways != nil {
+		tools = append(tools, networkGatewayReadTools()...)
+	}
+	if config.Redis != nil {
+		tools = append(tools, redisReadTools()...)
+	}
 	if config.Volumes != nil {
 		tools = append(tools, listVolumesTool())
 	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
-		services: config.Services, logs: config.Logs, images: config.Images, redis: config.Redis, postgres: config.Postgres,
-		managed: config.Managed, versions: config.Versions, serverExec: config.ServerExec, volumes: config.Volumes,
-		portForwards: config.PortForwards,
-		tools:        tools, admission: config.Admission,
+		projects: config.Projects, services: config.Services, domains: config.Domains,
+		logs: config.Logs, usage: config.Usage, infrastructureLogs: config.InfrastructureLogs,
+		diskPressure: config.DiskPressure, imageGC: config.ImageGC, audit: config.Audit,
+		images: config.Images, redis: config.Redis, postgres: config.Postgres, objectStores: config.ObjectStores,
+		managed: config.Managed, managedDeployments: config.ManagedDeployments,
+		networkGateways: config.NetworkGateways, backups: config.Backups, versions: config.Versions,
+		serverExec: config.ServerExec, volumes: config.Volumes, portForwards: config.PortForwards,
+		tools: tools, admission: config.Admission,
 	}, nil
 }
 
@@ -129,7 +176,7 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 		handler.initialize(response, message)
 	case "notifications/initialized":
 		if len(message.ID) != 0 {
-			writeRPCError(response, message.ID, codeInvalidRequest, "Initialized must be a notification")
+			writeRPCError(response, nil, codeInvalidRequest, "Initialized must be a notification")
 			return
 		}
 		response.Header().Set("Cache-Control", "private, no-store")

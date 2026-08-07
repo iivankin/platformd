@@ -35,6 +35,18 @@ func (*mutationRepository) RedeployService(context.Context, state.RedeployServic
 	return state.ServiceDesired{}, nil
 }
 
+func (*mutationRepository) DeleteService(context.Context, state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	return state.DeleteServiceResult{}, nil
+}
+
+func (*mutationRepository) RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*mutationRepository) RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
 func TestServiceApplicationAuthorizesBeforeRepositoryAndCreatesTokenAuditInput(t *testing.T) {
 	repository := &mutationRepository{}
 	application, err := NewServiceApplication(repository, func() time.Time {

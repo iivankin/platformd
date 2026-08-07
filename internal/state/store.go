@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	schemaVersion   = 7
+	schemaVersion   = 8
 	writerQueueSize = 128
 )
 
@@ -287,7 +287,12 @@ func initializeSchema(ctx context.Context, database *sql.DB) error {
 		}
 		fallthrough
 	case 6:
-		return migrateSchemaVersionSix(ctx, database)
+		if err := migrateSchemaVersionSix(ctx, database); err != nil {
+			return err
+		}
+		fallthrough
+	case 7:
+		return migrateSchemaVersionSeven(ctx, database)
 	case 0:
 		// Continue with first-time schema initialization below.
 	default:

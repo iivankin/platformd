@@ -6,11 +6,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/managedimages"
+	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -48,6 +51,18 @@ func (*repositoryStub) RedeployService(context.Context, state.RedeployServiceInp
 	return state.ServiceDesired{}, nil
 }
 
+func (*repositoryStub) DeleteService(context.Context, state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	return state.DeleteServiceResult{}, nil
+}
+
+func (*repositoryStub) RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func (*repositoryStub) RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
 func (*repositoryStub) List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error) {
 	return managedimages.Page{Tags: []managedimages.Tag{{Name: "7.4-alpine"}}, Page: 1, PageSize: 50}, nil
 }
@@ -58,7 +73,11 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logs, err := automation.NewLogApplication(repository, logReaderStub{})
+	logs, err := automation.NewLogApplication(repository, logReaderStub{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := automation.NewUsageApplication(repository, usageMetricsStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,7 +93,8 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	}
 	handler, err := New(Config{
 		Hostname: "admin.example.com", Version: "1.2.3", Repository: repository,
-		Services: services, Logs: logs, Images: repository, Volumes: volumes, Admission: admission.New(),
+		Services: services, Logs: logs, Usage: usage, Images: repository, Volumes: volumes,
+		Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +123,53 @@ func (logReaderStub) Read(context.Context, containerlogs.Query) (containerlogs.W
 	return containerlogs.Window{Records: []containerlogs.Record{{Text: "ready"}}}, nil
 }
 
+type usageMetricsStub struct{}
+
+func (usageMetricsStub) Read(cgroupstats.Kind, string) (resourcemetrics.Current, error) {
+	cpu := int64(100)
+	return resourcemetrics.Current{
+		Sample: cgroupstats.Sample{ObservedAtMillis: 1, MemoryBytes: 2048, Running: true}, CPUMillicores: &cpu,
+	}, nil
+}
+
+func (usageMetricsStub) History(context.Context, cgroupstats.Kind, string, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{
+		From: 1, To: 2, StepMillis: 60000,
+		Points: []resourcemetrics.Point{{ObservedAt: 1, MemoryBytes: 1024, Running: true}},
+	}, nil
+}
+
+func (usageMetricsStub) ReadProject(string) (resourcemetrics.Current, error) {
+	return resourcemetrics.Current{
+		Sample:           cgroupstats.Sample{ObservedAtMillis: 2, MemoryBytes: 4096, Running: true},
+		RunningResources: 1, TotalResources: 1,
+	}, nil
+}
+
+func (usageMetricsStub) ProjectHistory(context.Context, string, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{
+		From: 3, To: 4, StepMillis: 300000,
+		Series: []resourcemetrics.HistorySeries{{
+			ID: "service", Kind: "service", Name: "api",
+			Points: []resourcemetrics.Point{{ObservedAt: 3, MemoryBytes: 512, Running: true}},
+		}},
+	}, nil
+}
+
+func (usageMetricsStub) ReadInstallation() (resourcemetrics.Current, error) {
+	return resourcemetrics.Current{
+		Sample: cgroupstats.Sample{ObservedAtMillis: 5, MemoryBytes: 8192, Running: true},
+	}, nil
+}
+
+func (usageMetricsStub) InstallationHistory(context.Context, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{From: 5, To: 6, StepMillis: 60000}, nil
+}
+
+func (usageMetricsStub) HostHistory(context.Context, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{From: 7, To: 8, StepMillis: 60000}, nil
+}
+
 func (repository *repositoryStub) Projects(context.Context) ([]state.ProjectSummary, error) {
 	repository.projectsCalls++
 	return repository.projects, nil
@@ -126,6 +193,14 @@ func (repository *repositoryStub) ProjectCanvas(context.Context, string) (state.
 func (repository *repositoryStub) Service(context.Context, string, string) (state.ServiceDesired, error) {
 	repository.serviceCalls++
 	return repository.service, nil
+}
+
+func (repository *repositoryStub) ManagedPostgresInProject(context.Context, string, string) (state.ManagedPostgres, error) {
+	return state.ManagedPostgres{}, state.ErrManagedPostgresNotFound
+}
+
+func (repository *repositoryStub) ManagedRedisInProject(context.Context, string, string) (state.ManagedRedis, error) {
+	return state.ManagedRedis{}, state.ErrManagedRedisNotFound
 }
 
 func (repository *repositoryStub) CreateVolume(_ context.Context, input state.CreateVolume) (state.Volume, error) {
@@ -187,7 +262,7 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 	list = mcpRequest(`{"jsonrpc":"2.0","id":"tools","method":"tools/list","params":{}}`)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, list)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) || !strings.Contains(response.Body.String(), `"name":"get_service"`) || !strings.Contains(response.Body.String(), `"name":"read_service_logs"`) || !strings.Contains(response.Body.String(), `"name":"list_service_volumes"`) || strings.Contains(response.Body.String(), `"name":"create_service_volume"`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"name":"list_projects"`) || !strings.Contains(response.Body.String(), `"name":"get_service"`) || !strings.Contains(response.Body.String(), `"name":"read_service_logs"`) || !strings.Contains(response.Body.String(), `"name":"read_resource_usage"`) || !strings.Contains(response.Body.String(), `"name":"read_project_usage"`) || !strings.Contains(response.Body.String(), `"name":"list_service_volumes"`) || strings.Contains(response.Body.String(), `"name":"create_service_volume"`) {
 		t.Fatalf("tools/list response = %d/%s", response.Code, response.Body)
 	}
 }
@@ -274,6 +349,146 @@ func TestMCPReadServiceLogsEnforcesBoundaryBeforeLookup(t *testing.T) {
 	handler.ServeHTTP(response, call)
 	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `ready`) || repository.serviceCalls != 1 {
 		t.Fatalf("visible logs = %s calls=%d", response.Body, repository.serviceCalls)
+	}
+}
+
+func TestMCPGetProjectEnforcesBoundaryBeforeLookup(t *testing.T) {
+	repository := &repositoryStub{projects: []state.ProjectSummary{{ID: "project-a", Name: "alpha"}}}
+	handler := newTestHandler(t, repository)
+	bound := "project-a"
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_project","arguments":{"projectId":"project-b"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.projectCalls != 0 {
+		t.Fatalf("cross-project get_project = %s calls=%d", response.Body, repository.projectCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_project","arguments":{"projectId":"project-a"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `\"name\":\"alpha\"`) || repository.projectCalls != 1 {
+		t.Fatalf("visible get_project = %s calls=%d", response.Body, repository.projectCalls)
+	}
+}
+
+func TestMCPListAuditEventsEnforcesBoundaryBeforeLookup(t *testing.T) {
+	repository := &repositoryStub{projects: []state.ProjectSummary{{ID: "project-a", Name: "alpha"}}}
+	handler := newTestHandler(t, repository)
+	audit := &auditRepositoryStub{}
+	application, err := automation.NewAuditApplication(audit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.audit = application
+	handler.tools = append(handler.tools, listAuditEventsTool())
+	bound := "project-a"
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_audit_events","arguments":{"projectId":"project-b"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || audit.calls != 0 {
+		t.Fatalf("cross-project audit = %s calls=%d", response.Body, audit.calls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_audit_events","arguments":{"projectId":"project-a"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || audit.calls != 1 || audit.query.ProjectID != "project-a" {
+		t.Fatalf("visible audit = %s calls=%d query=%+v", response.Body, audit.calls, audit.query)
+	}
+}
+
+func TestMCPDeleteServiceEnforcesBoundaryBeforeLookup(t *testing.T) {
+	repository := &deleteServiceRepositoryStub{}
+	services, err := automation.NewServiceApplication(repository, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := newTestHandler(t, &repositoryStub{})
+	handler.services = services
+	bound := "project-a"
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"delete_service","arguments":{"projectId":"project-b","serviceId":"service","expectedUpdatedAt":1}}}`), automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &bound})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.deleteCalls != 0 {
+		t.Fatalf("cross-project delete = %s calls=%d", response.Body, repository.deleteCalls)
+	}
+}
+
+type auditRepositoryStub struct {
+	calls int
+	query state.AuditQuery
+}
+
+func (repository *auditRepositoryStub) AuditEvents(_ context.Context, query state.AuditQuery) (state.AuditPage, error) {
+	repository.calls++
+	repository.query = query
+	return state.AuditPage{}, nil
+}
+
+type deleteServiceRepositoryStub struct {
+	deleteCalls int
+}
+
+func (*deleteServiceRepositoryStub) CreateService(context.Context, state.CreateService) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*deleteServiceRepositoryStub) UpdateService(context.Context, state.UpdateServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*deleteServiceRepositoryStub) RollbackService(context.Context, state.RollbackServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*deleteServiceRepositoryStub) RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (repository *deleteServiceRepositoryStub) DeleteService(context.Context, state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	repository.deleteCalls++
+	return state.DeleteServiceResult{}, nil
+}
+func (*deleteServiceRepositoryStub) RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*deleteServiceRepositoryStub) RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+func TestMCPReadUsageEnforcesBoundaryBeforeLookup(t *testing.T) {
+	repository := &repositoryStub{
+		projects: []state.ProjectSummary{{ID: "project-a", Name: "alpha"}},
+		service:  state.ServiceDesired{ID: "service", ProjectID: "project-a"},
+	}
+	handler := newTestHandler(t, repository)
+	bound := "project-a"
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_resource_usage","arguments":{"projectId":"project-b","kind":"service","resourceId":"service"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.serviceCalls != 0 {
+		t.Fatalf("cross-project usage = %s calls=%d", response.Body, repository.serviceCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_resource_usage","arguments":{"projectId":"project-a","kind":"service","resourceId":"service"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `\"memoryBytes\":2048`) || repository.serviceCalls != 1 {
+		t.Fatalf("visible usage = %s calls=%d", response.Body, repository.serviceCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_project_usage","arguments":{"projectId":"project-a","range":"1h"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `\"series\"`) || repository.projectCalls != 1 {
+		t.Fatalf("project usage history = %s projectCalls=%d", response.Body, repository.projectCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"read_resource_usage","arguments":{"projectId":"project-a","kind":"bucket","resourceId":"assets"}}}`), automation.Identity{TokenID: "token", Role: "read", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"code":-32602`) {
+		t.Fatalf("invalid kind = %s", response.Body)
 	}
 }
 

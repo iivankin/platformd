@@ -64,7 +64,7 @@ func (collector *imageArchiveGarbageCollector) Cleanup(ctx context.Context, leve
 	}
 	var failures []error
 	for _, path := range append(files.UploadPaths, files.ArchivePaths...) {
-		if removeErr := os.Remove(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+		if removeErr := os.RemoveAll(path); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
 			failures = append(failures, removeErr)
 		}
 	}

@@ -299,8 +299,11 @@ type DataMutationResult struct {
 }
 
 func (application *Application) Mutate(ctx context.Context, input DataMutationInput) (DataMutationResult, error) {
-	if input.ProjectID == "" || input.ResourceID == "" || input.Actor.Kind != "access" || input.Actor.ID == "" || input.Actor.Email == "" {
-		return DataMutationResult{}, fmt.Errorf("%w: Access identity and Redis target are required", ErrInvalidInput)
+	if input.ProjectID == "" || input.ResourceID == "" || input.Actor.ID == "" || (input.Actor.Kind != "access" && input.Actor.Kind != "token") {
+		return DataMutationResult{}, fmt.Errorf("%w: mutation identity and Redis target are required", ErrInvalidInput)
+	}
+	if input.Actor.Kind == "access" && input.Actor.Email == "" {
+		return DataMutationResult{}, fmt.Errorf("%w: Access email is required", ErrInvalidInput)
 	}
 	if _, err := application.store.ManagedRedisInProject(ctx, input.ProjectID, input.ResourceID); err != nil {
 		return DataMutationResult{}, err

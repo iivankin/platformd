@@ -676,7 +676,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		runtime.startCloudflareMeshSupervisor(ctx, cloudflareMesh, liveNetworkGateways)
 		networkGateways = liveNetworkGateways
 	}
-	automationRepository := liveAutomationRepository{store: store, runtime: runtime}
+	automationRepository := liveAutomationRepository{
+		store: store, runtime: runtime, domains: domains, listeners: liveServiceListeners,
+		volumeFilesystem: volumeFilesystem, traffic: publicTraffic, onCleanupError: volumeCleanupError,
+	}
 	projectAutomation, err := automation.NewProjectApplication(automationRepository, nil)
 	if err != nil {
 		return err
@@ -686,6 +689,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	domainAutomation, err := automation.NewDomainApplication(domains, nil)
+	if err != nil {
+		return err
+	}
+	objectStoreAutomation, err := automation.NewObjectStoreApplication(objectStoreApplication)
 	if err != nil {
 		return err
 	}
@@ -705,9 +712,47 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	logAutomation, err := automation.NewLogApplication(store, logReader)
+	logAutomation, err := automation.NewLogApplication(store, logReader, logs)
 	if err != nil {
 		return err
+	}
+	usageAutomation, err := automation.NewUsageApplication(automationRepository, resourceMetrics)
+	if err != nil {
+		return err
+	}
+	infrastructureLogAutomation, err := automation.NewInfrastructureLogApplication(infrastructureLogs)
+	if err != nil {
+		return err
+	}
+	diskPressureAutomation, err := automation.NewDiskPressureApplication(capacity, capacity)
+	if err != nil {
+		return err
+	}
+	imageGCAutomation, err := automation.NewImageGCApplication(imageCollector)
+	if err != nil {
+		return err
+	}
+	auditAutomation, err := automation.NewAuditApplication(store)
+	if err != nil {
+		return err
+	}
+	managedDeploymentAutomation, err := automation.NewManagedDeploymentApplication(managedRedisApplication, managedPostgresApplication)
+	if err != nil {
+		return err
+	}
+	var networkGatewayAutomation *automation.NetworkGatewayApplication
+	if networkGateways != nil {
+		networkGatewayAutomation, err = automation.NewNetworkGatewayApplication(networkGateways, nil)
+		if err != nil {
+			return err
+		}
+	}
+	var backupAutomation *automation.BackupApplication
+	if backupResources != nil {
+		backupAutomation, err = automation.NewBackupApplication(backupResources, automationRepository)
+		if err != nil {
+			return err
+		}
 	}
 	serverExecAutomation, err := newServerExecApplication(cgroups, store)
 	if err != nil {
@@ -746,10 +791,16 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		Volumes:    volumeAutomation,
 		ServerExec: serverExecAutomation, PortForwards: portForwards, Admission: mutationAdmission,
 	}, mcp.Config{
-		Version: version.Version, Repository: automationRepository, Services: serviceAutomation,
-		Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation, Postgres: postgresAutomation,
-		Managed: managedResourceAutomation, Versions: databaseVersions, ServerExec: serverExecAutomation,
-		Volumes: volumeAutomation, PortForwards: portForwards, Admission: mutationAdmission,
+		Version: version.Version, Repository: automationRepository, Projects: projectAutomation,
+		Services: serviceAutomation, Domains: domainAutomation,
+		Logs: logAutomation, Usage: usageAutomation, InfrastructureLogs: infrastructureLogAutomation,
+		DiskPressure: diskPressureAutomation, ImageGC: imageGCAutomation, Audit: auditAutomation,
+		Images: managedImageCatalog, Redis: redisAutomation,
+		Postgres: postgresAutomation, ObjectStores: objectStoreAutomation,
+		Managed: managedResourceAutomation, ManagedDeployments: managedDeploymentAutomation,
+		NetworkGateways: networkGatewayAutomation, Backups: backupAutomation, Versions: databaseVersions,
+		ServerExec: serverExecAutomation, Volumes: volumeAutomation, PortForwards: portForwards,
+		Admission: mutationAdmission,
 	}, authenticator, portForwards, imageUploads.Handler(), !installation.RecoveryMode)
 	if err != nil {
 		return err

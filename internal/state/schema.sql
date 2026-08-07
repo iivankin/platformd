@@ -183,6 +183,7 @@ CREATE TABLE service_image_uploads (
   tag TEXT NOT NULL,
   expected_length INTEGER NOT NULL CHECK (expected_length > 0),
   received_length INTEGER NOT NULL DEFAULT 0 CHECK (received_length >= 0 AND received_length <= expected_length),
+  received_ranges_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(received_ranges_json) AND json_type(received_ranges_json) = 'array'),
   expected_sha256 TEXT NOT NULL,
   temporary_path TEXT NOT NULL UNIQUE,
   oidc_metadata_json TEXT NOT NULL CHECK (json_valid(oidc_metadata_json)),
@@ -542,4 +543,4 @@ CREATE TABLE aggregate_metric_samples (
 CREATE INDEX aggregate_metric_samples_retention_idx
   ON aggregate_metric_samples(observed_at);
 
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;

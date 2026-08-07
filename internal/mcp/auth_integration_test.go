@@ -9,15 +9,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/apitoken"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationauth"
+	"github.com/iivankin/platformd/internal/cgroupstats"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/mcp"
+	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/state"
 )
 
@@ -57,7 +60,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	serviceAutomation, err := automation.NewServiceApplication(store, nil)
+	serviceAutomation, err := automation.NewServiceApplication(&authServiceRepository{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,14 +68,18 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logAutomation, err := automation.NewLogApplication(store, logReader)
+	logAutomation, err := automation.NewLogApplication(store, logReader, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	usageAutomation, err := automation.NewUsageApplication(store, authUsageMetricsStub{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	mcpHandler, err := mcp.New(mcp.Config{
 		Hostname: "admin.example.com", Version: "test", Repository: store,
-		Services: serviceAutomation, Logs: logAutomation, Images: managedImageCatalogStub{},
-		Admission: admission.New(),
+		Services: serviceAutomation, Logs: logAutomation, Usage: usageAutomation,
+		Images: managedImageCatalogStub{}, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -107,6 +114,60 @@ type managedImageCatalogStub struct{}
 
 func (managedImageCatalogStub) List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error) {
 	return managedimages.Page{}, nil
+}
+
+type authServiceRepository struct{}
+
+func (*authServiceRepository) CreateService(context.Context, state.CreateService) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*authServiceRepository) UpdateService(context.Context, state.UpdateServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*authServiceRepository) RollbackService(context.Context, state.RollbackServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*authServiceRepository) RedeployService(context.Context, state.RedeployServiceInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*authServiceRepository) DeleteService(context.Context, state.DeleteServiceInput) (state.DeleteServiceResult, error) {
+	return state.DeleteServiceResult{}, nil
+}
+func (*authServiceRepository) RestartServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+func (*authServiceRepository) RemoveServiceDeployment(context.Context, state.DeleteServiceDeploymentInput) (state.ServiceDesired, error) {
+	return state.ServiceDesired{}, nil
+}
+
+type authUsageMetricsStub struct{}
+
+func (authUsageMetricsStub) Read(cgroupstats.Kind, string) (resourcemetrics.Current, error) {
+	return resourcemetrics.Current{}, resourcemetrics.ErrNotReady
+}
+
+func (authUsageMetricsStub) History(context.Context, cgroupstats.Kind, string, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{}, resourcemetrics.ErrNotReady
+}
+
+func (authUsageMetricsStub) ReadProject(string) (resourcemetrics.Current, error) {
+	return resourcemetrics.Current{}, resourcemetrics.ErrNotReady
+}
+
+func (authUsageMetricsStub) ProjectHistory(context.Context, string, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{}, resourcemetrics.ErrNotReady
+}
+
+func (authUsageMetricsStub) ReadInstallation() (resourcemetrics.Current, error) {
+	return resourcemetrics.Current{}, resourcemetrics.ErrNotReady
+}
+
+func (authUsageMetricsStub) InstallationHistory(context.Context, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{}, resourcemetrics.ErrNotReady
+}
+
+func (authUsageMetricsStub) HostHistory(context.Context, time.Duration) (resourcemetrics.History, error) {
+	return resourcemetrics.History{}, resourcemetrics.ErrNotReady
 }
 
 func initializeRequest(token string) *http.Request {

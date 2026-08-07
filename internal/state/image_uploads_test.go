@@ -74,7 +74,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdvanceImageUpload(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
+	if _, _, err := store.RecordImageUploadPart(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
@@ -118,7 +118,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdvanceImageUpload(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
+	if _, _, err := store.RecordImageUploadPart(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
@@ -161,7 +161,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdvanceImageUpload(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
+	if _, _, err := store.RecordImageUploadPart(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
@@ -231,7 +231,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdvanceImageUpload(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
+	if _, _, err := store.RecordImageUploadPart(ctx, "upload-identifier-one", 0, 1, 3); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
