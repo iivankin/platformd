@@ -1,4 +1,4 @@
-use crate::traffic::{TrafficCounters, TrafficSnapshot};
+use crate::traffic::TrafficSnapshot;
 use rustfs_ecstore::api::{
     data_usage::{
         load_data_usage_from_backend, load_data_usage_from_backend_cached,
@@ -59,9 +59,8 @@ impl BucketStats {
 pub async fn bucket_stats(
     store: Arc<ECStore>,
     bucket: &str,
-    traffic: &TrafficCounters,
+    traffic: TrafficSnapshot,
 ) -> Result<BucketStats, StorageError> {
-    let traffic = traffic.snapshot();
     let info = match load_data_usage_from_backend_cached(store.clone()).await {
         Ok(info) => info,
         // A failed load is cached without its error kind. Retry directly so a

@@ -166,7 +166,7 @@ async fn dispatch(
         return Ok(empty(StatusCode::NO_CONTENT));
     }
     let bucket = physical_bucket(request.headers())?;
-    let traffic = traffic.for_bucket(&bucket);
+    let traffic_counters = traffic.for_bucket(&bucket);
     match (method, path.as_str()) {
         (Method::POST, "/v1/bucket/ensure") => {
             match store
@@ -181,7 +181,7 @@ async fn dispatch(
             }
         }
         (Method::GET, "/v1/bucket/stats") => {
-            let stats = usage::bucket_stats(store, &bucket, &traffic).await?;
+            let stats = usage::bucket_stats(store, &bucket, traffic.snapshot(&bucket)).await?;
             json_response(StatusCode::OK, &stats)
         }
         (Method::GET, "/v1/bucket/largest-objects") => {
@@ -225,7 +225,7 @@ async fn dispatch(
             }
         }
         (Method::HEAD, "/v1/object") => {
-            with_traffic(traffic.clone(), &Method::HEAD, "/v1/object", 0, || async {
+            with_traffic(traffic_counters.clone(), &Method::HEAD, "/v1/object", 0, || async {
                 let key = decoded_header(request.headers(), "x-platformd-key")?;
                 let info = store
                     .get_object_info(&bucket, &key, &ObjectOptions::default())
@@ -237,7 +237,7 @@ async fn dispatch(
         }
         (Method::GET, "/v1/object") => {
             let range_length = integer_header(request.headers(), "x-platformd-length", -1)?;
-            with_traffic(traffic.clone(), &Method::GET, "/v1/object", 0, || async {
+            with_traffic(traffic_counters.clone(), &Method::GET, "/v1/object", 0, || async {
                 let response = get_object(store, &bucket, request).await?;
                 let bytes_out = if range_length >= 0 {
                     range_length as u64
@@ -250,14 +250,14 @@ async fn dispatch(
         }
         (Method::PUT, "/v1/object") => {
             let bytes_in = integer_header(request.headers(), "x-platformd-size", 0)?.max(0) as u64;
-            with_traffic(traffic.clone(), &Method::PUT, "/v1/object", bytes_in, || async {
+            with_traffic(traffic_counters.clone(), &Method::PUT, "/v1/object", bytes_in, || async {
                 let response = put_object(store, &bucket, request).await?;
                 Ok((response, 0))
             })
             .await
         }
         (Method::DELETE, "/v1/object") => {
-            with_traffic(traffic.clone(), &Method::DELETE, "/v1/object", 0, || async {
+            with_traffic(traffic_counters.clone(), &Method::DELETE, "/v1/object", 0, || async {
                 let key = decoded_header(request.headers(), "x-platformd-key")?;
                 let info = store
                     .delete_object(&bucket, &key, ObjectOptions::default())
@@ -268,7 +268,7 @@ async fn dispatch(
             .await
         }
         (Method::GET, "/v1/objects") => {
-            with_traffic(traffic.clone(), &Method::GET, "/v1/objects", 0, || async {
+            with_traffic(traffic_counters.clone(), &Method::GET, "/v1/objects", 0, || async {
                 let response = list_objects(store, &bucket, request.headers()).await?;
                 Ok((response, 0))
             })
