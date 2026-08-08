@@ -420,8 +420,8 @@ WHERE blocked.pid <> pg_backend_pid()`)
 
 func (client *Client) collectStatementStats(ctx context.Context, stats *Stats) error {
 	rows, err := client.connection.Query(ctx, `
-SELECT queryid::text,
-       query,
+SELECT COALESCE(queryid::text, ''),
+       COALESCE(query, ''),
        calls,
        total_exec_time,
        mean_exec_time,
@@ -437,7 +437,7 @@ SELECT queryid::text,
        coalesce(sum(calls) OVER (), 0),
        coalesce(sum(total_exec_time) OVER (), 0)
 FROM pg_stat_statements
-ORDER BY total_exec_time DESC
+ORDER BY (queryid IS NULL), total_exec_time DESC
 LIMIT 30`)
 	if err != nil {
 		// Extension missing or not ready — leave statements empty and counters at zero.
@@ -457,14 +457,24 @@ LIMIT 30`)
 			rows.Close()
 			return err
 		}
-		stats.StatementsCalls = totalCalls
-		stats.StatementsTotalExecTimeMillis = totalExec
-		if totalCalls > 0 {
-			stats.MeanQueryLatencyMillis = totalExec / float64(totalCalls)
-		}
-		stats.Statements = append(stats.Statements, statement)
+		recordStatementStat(stats, statement, totalCalls, totalExec)
 	}
 	err = rows.Err()
 	rows.Close()
 	return err
+}
+
+// recordStatementStat applies window totals from pg_stat_statements and keeps
+// only rows with a stable queryid. Utility statements can report NULL queryid.
+func recordStatementStat(stats *Stats, statement StatementStat, totalCalls int64, totalExec float64) {
+	stats.StatementsCalls = totalCalls
+	stats.StatementsTotalExecTimeMillis = totalExec
+	if totalCalls > 0 {
+		stats.MeanQueryLatencyMillis = totalExec / float64(totalCalls)
+	}
+	if statement.QueryID == "" {
+		return
+	}
+	statement.Query = truncateQuery(statement.Query, statsQueryTruncate)
+	stats.Statements = append(stats.Statements, statement)
 }

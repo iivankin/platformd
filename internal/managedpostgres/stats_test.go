@@ -22,6 +22,22 @@ func TestTruncateQuery(t *testing.T) {
 	}
 }
 
+func TestRecordStatementStatSkipsNullQueryID(t *testing.T) {
+	t.Parallel()
+	stats := Stats{Statements: make([]StatementStat, 0)}
+	recordStatementStat(&stats, StatementStat{QueryID: "", Query: "SET", Calls: 3}, 40, 12)
+	if stats.StatementsCalls != 40 || stats.StatementsTotalExecTimeMillis != 12 || stats.MeanQueryLatencyMillis != 0.3 {
+		t.Fatalf("window totals = calls=%d exec=%v mean=%v", stats.StatementsCalls, stats.StatementsTotalExecTimeMillis, stats.MeanQueryLatencyMillis)
+	}
+	if len(stats.Statements) != 0 {
+		t.Fatalf("null queryid must not appear in statements: %+v", stats.Statements)
+	}
+	recordStatementStat(&stats, StatementStat{QueryID: "42", Query: strings.Repeat("a", 600), Calls: 7}, 40, 12)
+	if len(stats.Statements) != 1 || stats.Statements[0].QueryID != "42" || len([]rune(stats.Statements[0].Query)) != 500 {
+		t.Fatalf("statement = %+v", stats.Statements)
+	}
+}
+
 func TestEnrichStatsRatesFromPreviousSnapshot(t *testing.T) {
 	t.Parallel()
 	previous := statsRateSnapshot{
