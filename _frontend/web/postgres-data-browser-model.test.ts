@@ -2,14 +2,22 @@ import { describe, expect, test } from "bun:test";
 
 import {
   activePostgresFilters,
+  assertPostgresMutationApplied,
+  postgresCellEditorKind,
+  postgresColumnIsRequired,
   postgresCountFromResult,
+  postgresDeleteRowsSQL,
+  postgresEnumsFromResult,
   postgresForeignKeysFromResult,
+  postgresInsertRowSQL,
+  postgresMutationRowCount,
   postgresOutgoingRelationForColumn,
   postgresRelationNavigation,
   postgresRelationsForTable,
   postgresTableCountSQL,
   postgresTableDataSQL,
   postgresTablesFromResult,
+  postgresUpdateCellSQL,
   quotePostgresIdentifier,
   quotePostgresLiteral,
 } from "@/postgres-data-browser-model";
@@ -232,7 +240,14 @@ describe("PostgreSQL data browser queries", () => {
       relation: customerRelation,
     });
     expect(navigation).toMatchObject({
-      filters: [{ column: "id", operator: "=", value: "42" }],
+      filters: [
+        {
+          column: "id",
+          id: "relation:customer_id:id",
+          operator: "=",
+          value: "42",
+        },
+      ],
       schema: "public",
       table: "customers",
     });
@@ -257,5 +272,175 @@ describe("PostgreSQL cell display", () => {
       kind: "binary",
       sizeLabel: "5 B",
     });
+  });
+
+  test("builds typed update and delete statements from primary keys", () => {
+    expect(
+      postgresUpdateCellSQL({
+        column: "status",
+        kind: "enum",
+        rowValues: { event_id: "42", tenant_id: "acme" },
+        table,
+        value: { kind: "text", text: "paid" },
+      })
+    ).toContain(
+      'UPDATE "audit"."events""archive"\nSET "status" = \'paid\'\nWHERE "tenant_id" = \'acme\' AND "event_id" = \'42\''
+    );
+    expect(
+      postgresUpdateCellSQL({
+        column: "active",
+        kind: "boolean",
+        rowValues: { event_id: "7", tenant_id: "acme" },
+        table,
+        value: { kind: "text", text: "true" },
+      })
+    ).toContain('SET "active" = TRUE');
+    expect(
+      postgresUpdateCellSQL({
+        column: "note",
+        kind: "text",
+        rowValues: { event_id: "7", tenant_id: "acme" },
+        table,
+        value: { kind: "null" },
+      })
+    ).toContain('SET "note" = NULL');
+    expect(
+      postgresDeleteRowsSQL({
+        rows: [
+          { event_id: "1", tenant_id: "acme" },
+          { event_id: "2", tenant_id: "acme" },
+        ],
+        table,
+      })
+    ).toContain(
+      "WHERE (\"tenant_id\" = 'acme' AND \"event_id\" = '1')\n   OR (\"tenant_id\" = 'acme' AND \"event_id\" = '2')"
+    );
+    expect(
+      postgresInsertRowSQL({
+        columns: [
+          {
+            column: "status",
+            kind: "enum",
+            value: { kind: "text", text: "open" },
+          },
+          { column: "note", kind: "text", value: { kind: "null" } },
+        ],
+        table,
+      })
+    ).toContain(
+      'INSERT INTO "audit"."events""archive" (\n  "status",\n  "note"\n)\nVALUES (\n  \'open\',\n  NULL\n)'
+    );
+  });
+
+  test("parses mutation command tags and rejects zero-row updates", () => {
+    expect(
+      postgresMutationRowCount(
+        {
+          auditRecorded: true,
+          statements: [
+            {
+              columns: [],
+              commandTag: "UPDATE 1",
+              rows: [],
+              truncated: false,
+            },
+          ],
+          truncated: false,
+        },
+        "UPDATE"
+      )
+    ).toBe(1);
+    expect(
+      postgresMutationRowCount(
+        {
+          auditRecorded: true,
+          statements: [
+            {
+              columns: [],
+              commandTag: "INSERT 0 1",
+              rows: [],
+              truncated: false,
+            },
+          ],
+          truncated: false,
+        },
+        "INSERT"
+      )
+    ).toBe(1);
+    expect(() =>
+      assertPostgresMutationApplied(
+        {
+          auditRecorded: true,
+          statements: [
+            {
+              columns: [],
+              commandTag: "UPDATE 0",
+              rows: [],
+              truncated: false,
+            },
+          ],
+          truncated: false,
+        },
+        "UPDATE"
+      )
+    ).toThrow("No rows were updated");
+  });
+
+  test("classifies cell editors and enum catalog rows", () => {
+    const enums = postgresEnumsFromResult({
+      auditRecorded: true,
+      statements: [
+        {
+          columns: [
+            { name: "type_oid", typeOid: 25 },
+            { name: "type_name", typeOid: 25 },
+            { name: "labels", typeOid: 25 },
+          ],
+          commandTag: "SELECT 1",
+          rows: [
+            [
+              { text: "90001" },
+              { text: "order_status" },
+              { text: '["paid","fulfilled"]' },
+            ],
+          ],
+          truncated: false,
+        },
+      ],
+      truncated: false,
+    });
+    expect(enums.get(90_001)).toEqual({
+      labels: ["paid", "fulfilled"],
+      name: "order_status",
+      typeOID: 90_001,
+    });
+    expect(postgresCellEditorKind(16)).toBe("boolean");
+    expect(postgresCellEditorKind(1082)).toBe("date");
+    expect(postgresCellEditorKind(1184)).toBe("timestamp");
+    expect(postgresCellEditorKind(90_001, enums)).toBe("enum");
+    expect(
+      postgresColumnIsRequired({
+        hasDefault: false,
+        name: "email",
+        nullable: false,
+        typeOID: 1043,
+      })
+    ).toBe(true);
+    expect(
+      postgresColumnIsRequired({
+        hasDefault: true,
+        name: "id",
+        nullable: false,
+        typeOID: 23,
+      })
+    ).toBe(false);
+    expect(
+      postgresColumnIsRequired({
+        hasDefault: false,
+        name: "note",
+        nullable: true,
+        typeOID: 25,
+      })
+    ).toBe(false);
   });
 });

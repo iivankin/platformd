@@ -20,6 +20,34 @@ export interface PostgresForeignKey {
   table: string;
 }
 
+export interface PostgresEnumType {
+  labels: string[];
+  name: string;
+  typeOID: number;
+}
+
+export interface PostgresColumnMeta {
+  hasDefault: boolean;
+  name: string;
+  nullable: boolean;
+  typeOID: number;
+}
+
+export type PostgresCellEditorKind =
+  | "binary"
+  | "boolean"
+  | "date"
+  | "enum"
+  | "json"
+  | "number"
+  | "text"
+  | "time"
+  | "timestamp";
+
+export type PostgresCellEditValue =
+  | { kind: "null" }
+  | { kind: "text"; text: string };
+
 export type PostgresRelationDirection = "incoming" | "outgoing";
 
 export interface PostgresTableRelation {
@@ -148,11 +176,285 @@ ORDER BY
   constraint_def.conname
 LIMIT 2000;`;
 
+export const postgresEnumCatalogSQL = `/* platformd:data-browser:enums */
+SELECT
+  type_def.oid::text AS type_oid,
+  CASE
+    WHEN namespace.nspname = 'public' THEN type_def.typname
+    ELSE namespace.nspname || '.' || type_def.typname
+  END AS type_name,
+  COALESCE((
+    SELECT json_agg(enum_def.enumlabel ORDER BY enum_def.enumsortorder)::text
+    FROM pg_enum AS enum_def
+    WHERE enum_def.enumtypid = type_def.oid
+  ), '[]') AS labels
+FROM pg_type AS type_def
+JOIN pg_namespace AS namespace ON namespace.oid = type_def.typnamespace
+WHERE type_def.typtype = 'e'
+  AND namespace.nspname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY namespace.nspname, type_def.typname
+LIMIT 2000;`;
+
 export const quotePostgresIdentifier = (value: string) =>
   `"${value.replaceAll('"', '""')}"`;
 
 export const quotePostgresLiteral = (value: string) =>
   `'${value.replaceAll("'", "''")}'`;
+
+export const postgresColumnMetaSQL = (table: PostgresBrowserTable) =>
+  `/* platformd:data-browser:columns */
+SELECT
+  attribute.attname AS name,
+  attribute.atttypid::text AS type_oid,
+  CASE WHEN attribute.attnotnull THEN 'false' ELSE 'true' END AS nullable,
+  CASE
+    WHEN attribute.atthasdef
+      OR attribute.attidentity <> ''
+      OR attribute.attgenerated <> ''
+    THEN 'true'
+    ELSE 'false'
+  END AS has_default
+FROM pg_attribute AS attribute
+JOIN pg_class AS relation ON relation.oid = attribute.attrelid
+JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+WHERE namespace.nspname = ${quotePostgresLiteral(table.schema)}
+  AND relation.relname = ${quotePostgresLiteral(table.name)}
+  AND attribute.attnum > 0
+  AND NOT attribute.attisdropped
+ORDER BY attribute.attnum;`;
+
+export const postgresColumnIsRequired = (column: PostgresColumnMeta) =>
+  !(column.nullable || column.hasDefault);
+
+const knownPostgresTypeNames = new Map<number, string>([
+  [16, "bool"],
+  [17, "bytea"],
+  [20, "int8"],
+  [21, "int2"],
+  [23, "int4"],
+  [25, "text"],
+  [114, "json"],
+  [700, "float4"],
+  [701, "float8"],
+  [1042, "char"],
+  [1043, "varchar"],
+  [1082, "date"],
+  [1083, "time"],
+  [1114, "timestamp"],
+  [1184, "timestamptz"],
+  [1266, "timetz"],
+  [1700, "numeric"],
+  [2950, "uuid"],
+  [3802, "jsonb"],
+]);
+
+const booleanTypeOIDs = new Set([16]);
+const numberTypeOIDs = new Set([20, 21, 23, 700, 701, 1700]);
+const dateTypeOIDs = new Set([1082]);
+const timeTypeOIDs = new Set([1083, 1266]);
+const timestampTypeOIDs = new Set([1114, 1184]);
+const jsonTypeOIDs = new Set([114, 3802]);
+const binaryTypeOIDs = new Set([17]);
+
+export const postgresTypeLabel = (
+  typeOID: number,
+  enums: ReadonlyMap<number, PostgresEnumType> = new Map()
+) =>
+  enums.get(typeOID)?.name ??
+  knownPostgresTypeNames.get(typeOID) ??
+  `oid ${typeOID.toString()}`;
+
+export const postgresCellEditorKind = (
+  typeOID: number,
+  enums: ReadonlyMap<number, PostgresEnumType> = new Map()
+): PostgresCellEditorKind => {
+  if (enums.has(typeOID)) {
+    return "enum";
+  }
+  if (booleanTypeOIDs.has(typeOID)) {
+    return "boolean";
+  }
+  if (numberTypeOIDs.has(typeOID)) {
+    return "number";
+  }
+  if (dateTypeOIDs.has(typeOID)) {
+    return "date";
+  }
+  if (timeTypeOIDs.has(typeOID)) {
+    return "time";
+  }
+  if (timestampTypeOIDs.has(typeOID)) {
+    return "timestamp";
+  }
+  if (jsonTypeOIDs.has(typeOID)) {
+    return "json";
+  }
+  if (binaryTypeOIDs.has(typeOID)) {
+    return "binary";
+  }
+  return "text";
+};
+
+const postgresSQLValue = (
+  value: PostgresCellEditValue,
+  kind: PostgresCellEditorKind
+) => {
+  if (value.kind === "null") {
+    return "NULL";
+  }
+  const { text } = value;
+  if (kind === "boolean") {
+    const normalized = text.trim().toLowerCase();
+    if (normalized === "true" || normalized === "t" || normalized === "1") {
+      return "TRUE";
+    }
+    if (normalized === "false" || normalized === "f" || normalized === "0") {
+      return "FALSE";
+    }
+  }
+  if (
+    kind === "number" &&
+    /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u.test(text.trim())
+  ) {
+    return text.trim();
+  }
+  return quotePostgresLiteral(text);
+};
+
+const primaryKeyWhereSQL = (
+  table: PostgresBrowserTable,
+  rowValues: Record<string, string | undefined>
+) => {
+  if (table.primaryKeyColumns.length === 0) {
+    throw new Error("Table has no primary key");
+  }
+  const parts = table.primaryKeyColumns.map((column) => {
+    const value = rowValues[column];
+    if (value === undefined) {
+      throw new Error(`Missing primary key value for ${column}`);
+    }
+    return `${quotePostgresIdentifier(column)} = ${quotePostgresLiteral(value)}`;
+  });
+  return parts.join(" AND ");
+};
+
+export const postgresUpdateCellSQL = ({
+  column,
+  kind,
+  rowValues,
+  table,
+  value,
+}: {
+  column: string;
+  kind: PostgresCellEditorKind;
+  rowValues: Record<string, string | undefined>;
+  table: PostgresBrowserTable;
+  value: PostgresCellEditValue;
+}) => {
+  if (kind === "binary") {
+    throw new Error("Binary values cannot be edited from the data browser");
+  }
+  return `/* platformd:data-browser:update */
+UPDATE ${quotePostgresIdentifier(table.schema)}.${quotePostgresIdentifier(table.name)}
+SET ${quotePostgresIdentifier(column)} = ${postgresSQLValue(value, kind)}
+WHERE ${primaryKeyWhereSQL(table, rowValues)};`;
+};
+
+export const postgresDeleteRowsSQL = ({
+  rows,
+  table,
+}: {
+  rows: Record<string, string | undefined>[];
+  table: PostgresBrowserTable;
+}) => {
+  if (rows.length === 0) {
+    throw new Error("No rows selected");
+  }
+  const predicates = rows.map(
+    (rowValues) => `(${primaryKeyWhereSQL(table, rowValues)})`
+  );
+  return `/* platformd:data-browser:delete */
+DELETE FROM ${quotePostgresIdentifier(table.schema)}.${quotePostgresIdentifier(table.name)}
+WHERE ${predicates.join("\n   OR ")};`;
+};
+
+export const postgresInsertRowSQL = ({
+  columns,
+  table,
+}: {
+  columns: {
+    column: string;
+    kind: PostgresCellEditorKind;
+    value: PostgresCellEditValue;
+  }[];
+  table: PostgresBrowserTable;
+}) => {
+  const qualified = `${quotePostgresIdentifier(table.schema)}.${quotePostgresIdentifier(table.name)}`;
+  if (columns.length === 0) {
+    return `/* platformd:data-browser:insert */
+INSERT INTO ${qualified}
+DEFAULT VALUES;`;
+  }
+  return `/* platformd:data-browser:insert */
+INSERT INTO ${qualified} (
+  ${columns.map((item) => quotePostgresIdentifier(item.column)).join(",\n  ")}
+)
+VALUES (
+  ${columns.map((item) => postgresSQLValue(item.value, item.kind)).join(",\n  ")}
+);`;
+};
+
+export const postgresMutationRowCount = (
+  result: PostgresQueryResult,
+  command: "DELETE" | "INSERT" | "UPDATE"
+) => {
+  const tag = result.statements[0]?.commandTag.trim() ?? "";
+  if (command === "INSERT") {
+    const match = /^INSERT\s+\d+\s+(?<count>\d+)\b/iu.exec(tag);
+    return match?.groups?.count === undefined
+      ? undefined
+      : Number(match.groups.count);
+  }
+  const match = new RegExp(`^${command}\\s+(?<count>\\d+)\\b`, "iu").exec(tag);
+  return match?.groups?.count === undefined
+    ? undefined
+    : Number(match.groups.count);
+};
+
+export const assertPostgresMutationApplied = (
+  result: PostgresQueryResult,
+  command: "DELETE" | "INSERT" | "UPDATE"
+) => {
+  const count = postgresMutationRowCount(result, command);
+  if (count === undefined) {
+    throw new Error(`Unexpected ${command} response`);
+  }
+  if (count === 0) {
+    throw new Error(
+      command === "INSERT"
+        ? "Insert did not create a row"
+        : `No rows were ${command === "UPDATE" ? "updated" : "deleted"}`
+    );
+  }
+};
+
+export const rowPrimaryKey = (
+  table: PostgresBrowserTable,
+  rowValues: Record<string, string | undefined>
+) => {
+  if (table.primaryKeyColumns.length === 0) {
+    return;
+  }
+  const parts: string[] = [];
+  for (const column of table.primaryKeyColumns) {
+    const value = rowValues[column];
+    if (value === undefined) {
+      return;
+    }
+    parts.push(`${column}=${value}`);
+  }
+  return parts.join("\u0000");
+};
 
 const filterNeedsValue = (operator: PostgresFilterOperator) =>
   operator !== "is null" && operator !== "is not null";
@@ -403,6 +705,72 @@ export const postgresForeignKeysFromResult = (
   });
 };
 
+export const postgresEnumsFromResult = (
+  result: PostgresQueryResult
+): Map<number, PostgresEnumType> => {
+  const enums = new Map<number, PostgresEnumType>();
+  const [statement] = result.statements;
+  if (!statement) {
+    return enums;
+  }
+  const indexes = new Map(
+    statement.columns.map((column, index) => [column.name, index])
+  );
+  const typeOIDIndex = indexes.get("type_oid");
+  const typeNameIndex = indexes.get("type_name");
+  const labelsIndex = indexes.get("labels");
+  if (typeOIDIndex === undefined || typeNameIndex === undefined) {
+    return enums;
+  }
+  for (const row of statement.rows) {
+    const typeOID = Number(row[typeOIDIndex]?.text);
+    const name = row[typeNameIndex]?.text;
+    if (!(Number.isSafeInteger(typeOID) && typeOID > 0 && name)) {
+      continue;
+    }
+    const labels = parseStringArray(row[labelsIndex ?? -1]?.text);
+    if (labels.length === 0) {
+      continue;
+    }
+    enums.set(typeOID, { labels, name, typeOID });
+  }
+  return enums;
+};
+
+export const postgresColumnsFromResult = (
+  result: PostgresQueryResult
+): PostgresColumnMeta[] => {
+  const [statement] = result.statements;
+  if (!statement) {
+    return [];
+  }
+  const indexes = new Map(
+    statement.columns.map((column, index) => [column.name, index])
+  );
+  const nameIndex = indexes.get("name");
+  const typeOIDIndex = indexes.get("type_oid");
+  const nullableIndex = indexes.get("nullable");
+  const hasDefaultIndex = indexes.get("has_default");
+  if (nameIndex === undefined || typeOIDIndex === undefined) {
+    return [];
+  }
+  return statement.rows.flatMap((row) => {
+    const name = row[nameIndex]?.text;
+    const typeOID = Number(row[typeOIDIndex]?.text);
+    if (!(name && Number.isSafeInteger(typeOID) && typeOID > 0)) {
+      return [];
+    }
+    return [
+      {
+        hasDefault: row[hasDefaultIndex ?? -1]?.text === "true",
+        name,
+        nullable: row[nullableIndex ?? -1]?.text !== "false",
+        typeOID,
+      },
+    ];
+  });
+};
+
 export const postgresRelationsForTable = (
   foreignKeys: PostgresForeignKey[],
   table: PostgresBrowserTable
@@ -499,7 +867,7 @@ export const postgresRelationNavigation = ({
     filters.push({
       column: targetColumn,
       connector: "and",
-      id: globalThis.crypto.randomUUID(),
+      id: `relation:${sourceColumn}:${targetColumn}`,
       operator: "=",
       value,
     });

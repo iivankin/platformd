@@ -55,7 +55,19 @@ import {
   setCloudflareAccessConfiguration,
   setManagedPostgresExtension,
   uploadContainerFile,
+  queryManagedPostgres,
 } from "../web/api";
+import {
+  postgresDeleteRowsSQL,
+  postgresEnumCatalogSQL,
+  postgresEnumsFromResult,
+  postgresForeignKeyCatalogSQL,
+  postgresForeignKeysFromResult,
+  postgresOutgoingRelationForColumn,
+  postgresRelationsForTable,
+  postgresTableDataSQL,
+  postgresUpdateCellSQL,
+} from "../web/postgres-data-browser-model";
 import { handleMockAPI } from "./router";
 import { createMockState } from "./state";
 import type { MockState } from "./state";
@@ -498,6 +510,149 @@ describe("mock API", () => {
     expect(
       removed.find((extension) => extension.name === "uuid-ossp")
     ).not.toHaveProperty("installedVersion");
+  });
+
+  test("mock PostgreSQL data browser exposes foreign-key relations", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+    const result = await queryManagedPostgres(
+      "project-demo",
+      "postgres-main",
+      postgresForeignKeyCatalogSQL,
+      undefined,
+      mockFetch
+    );
+    const foreignKeys = postgresForeignKeysFromResult(result);
+    expect(foreignKeys).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          columns: ["customer_id"],
+          foreignTable: "customers",
+          table: "orders",
+        }),
+        expect.objectContaining({
+          columns: ["order_id"],
+          foreignTable: "orders",
+          table: "order_items",
+        }),
+        expect.objectContaining({
+          columns: ["product_id"],
+          foreignTable: "products",
+          table: "order_items",
+        }),
+      ])
+    );
+
+    const orderRelations = postgresRelationsForTable(foreignKeys, {
+      name: "orders",
+      primaryKeyColumns: ["id"],
+      schema: "public",
+    });
+    expect(
+      postgresOutgoingRelationForColumn(orderRelations, "customer_id")?.label
+    ).toBe("customers");
+    expect(
+      orderRelations.some((relation) => relation.direction === "incoming")
+    ).toBe(true);
+  });
+
+  test("mock PostgreSQL data browser updates and deletes rows", async () => {
+    const { resetMockPostgresData } = await import("./postgres-query");
+    resetMockPostgresData();
+    const mockFetch = fetcher(createMockState("demo"));
+    const enums = postgresEnumsFromResult(
+      await queryManagedPostgres(
+        "project-demo",
+        "postgres-main",
+        postgresEnumCatalogSQL,
+        undefined,
+        mockFetch
+      )
+    );
+    expect(enums.get(90_001)?.labels).toEqual([
+      "paid",
+      "fulfilled",
+      "refunded",
+      "pending",
+    ]);
+
+    const update = await queryManagedPostgres(
+      "project-demo",
+      "postgres-main",
+      postgresUpdateCellSQL({
+        column: "status",
+        kind: "enum",
+        rowValues: { id: "f9a1b942-7b35-4ac5-8168-b673bf627610" },
+        table: {
+          name: "orders",
+          primaryKeyColumns: ["id"],
+          schema: "public",
+        },
+        value: { kind: "text", text: "pending" },
+      }),
+      undefined,
+      mockFetch
+    );
+    expect(update.statements[0]?.commandTag).toBe("UPDATE 1");
+
+    const rows = await queryManagedPostgres(
+      "project-demo",
+      "postgres-main",
+      postgresTableDataSQL({
+        filters: [
+          {
+            column: "id",
+            connector: "and",
+            id: "id",
+            operator: "=",
+            value: "f9a1b942-7b35-4ac5-8168-b673bf627610",
+          },
+        ],
+        page: 0,
+        table: {
+          name: "orders",
+          primaryKeyColumns: ["id"],
+          schema: "public",
+        },
+      }),
+      undefined,
+      mockFetch
+    );
+    expect(rows.statements[0]?.rows[0]?.[2]?.text).toBe("pending");
+
+    const nulled = await queryManagedPostgres(
+      "project-demo",
+      "postgres-main",
+      postgresUpdateCellSQL({
+        column: "status",
+        kind: "enum",
+        rowValues: { id: "f9a1b942-7b35-4ac5-8168-b673bf627610" },
+        table: {
+          name: "orders",
+          primaryKeyColumns: ["id"],
+          schema: "public",
+        },
+        value: { kind: "null" },
+      }),
+      undefined,
+      mockFetch
+    );
+    expect(nulled.statements[0]?.commandTag).toBe("UPDATE 1");
+
+    const deleted = await queryManagedPostgres(
+      "project-demo",
+      "postgres-main",
+      postgresDeleteRowsSQL({
+        rows: [{ id: "a46ca6d8-5a91-45f0-8ae6-b6788e139f61" }],
+        table: {
+          name: "orders",
+          primaryKeyColumns: ["id"],
+          schema: "public",
+        },
+      }),
+      undefined,
+      mockFetch
+    );
+    expect(deleted.statements[0]?.commandTag).toBe("DELETE 1");
   });
 
   test("mutations update only the in-memory state", async () => {

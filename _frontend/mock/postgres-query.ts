@@ -2,7 +2,12 @@ import type { PostgresQueryResult } from "../web/api";
 import { json, readObject, stringField } from "./http";
 
 interface MockPostgresTable {
-  columns: { name: string; typeOid: number }[];
+  columns: {
+    hasDefault?: boolean;
+    name: string;
+    nullable?: boolean;
+    typeOid: number;
+  }[];
   name: string;
   primaryKeyColumns: string[];
   rows: (null | string)[][];
@@ -28,12 +33,12 @@ const mockTables: MockPostgresTable[] = [
   },
   {
     columns: [
-      { name: "id", typeOid: 20 },
-      { name: "name", typeOid: 1043 },
-      { name: "email", typeOid: 1043 },
-      { name: "plan", typeOid: 25 },
-      { name: "active", typeOid: 16 },
-      { name: "created_at", typeOid: 1184 },
+      { hasDefault: true, name: "id", nullable: false, typeOid: 20 },
+      { name: "name", nullable: false, typeOid: 1043 },
+      { name: "email", nullable: false, typeOid: 1043 },
+      { hasDefault: true, name: "plan", nullable: false, typeOid: 90_002 },
+      { hasDefault: true, name: "active", nullable: false, typeOid: 16 },
+      { hasDefault: true, name: "created_at", nullable: false, typeOid: 1184 },
     ],
     name: "customers",
     primaryKeyColumns: ["id"],
@@ -107,12 +112,12 @@ const mockTables: MockPostgresTable[] = [
   },
   {
     columns: [
-      { name: "id", typeOid: 2950 },
-      { name: "customer_id", typeOid: 20 },
-      { name: "status", typeOid: 1043 },
-      { name: "total", typeOid: 1700 },
-      { name: "currency", typeOid: 1042 },
-      { name: "placed_at", typeOid: 1184 },
+      { hasDefault: true, name: "id", nullable: false, typeOid: 2950 },
+      { name: "customer_id", nullable: false, typeOid: 20 },
+      { name: "status", nullable: false, typeOid: 90_001 },
+      { name: "total", nullable: false, typeOid: 1700 },
+      { hasDefault: true, name: "currency", nullable: false, typeOid: 1042 },
+      { hasDefault: true, name: "placed_at", nullable: false, typeOid: 1184 },
     ],
     name: "orders",
     primaryKeyColumns: ["id"],
@@ -162,12 +167,12 @@ const mockTables: MockPostgresTable[] = [
   },
   {
     columns: [
-      { name: "id", typeOid: 23 },
-      { name: "sku", typeOid: 1043 },
-      { name: "name", typeOid: 1043 },
-      { name: "price", typeOid: 1700 },
-      { name: "inventory", typeOid: 23 },
-      { name: "metadata", typeOid: 3802 },
+      { hasDefault: true, name: "id", nullable: false, typeOid: 23 },
+      { name: "sku", nullable: false, typeOid: 1043 },
+      { name: "name", nullable: false, typeOid: 1043 },
+      { name: "price", nullable: false, typeOid: 1700 },
+      { hasDefault: true, name: "inventory", nullable: false, typeOid: 23 },
+      { name: "metadata", nullable: true, typeOid: 3802 },
     ],
     name: "products",
     primaryKeyColumns: ["id"],
@@ -187,6 +192,94 @@ const mockTables: MockPostgresTable[] = [
       ["6", "RD-610", "Uptime Pin", "6.00", "925", null],
     ],
     schema: "public",
+  },
+  {
+    columns: [
+      { name: "id", typeOid: 23 },
+      { name: "order_id", typeOid: 2950 },
+      { name: "product_id", typeOid: 23 },
+      { name: "quantity", typeOid: 23 },
+      { name: "unit_price", typeOid: 1700 },
+    ],
+    name: "order_items",
+    primaryKeyColumns: ["id"],
+    rows: [
+      ["1", "f9a1b942-7b35-4ac5-8168-b673bf627610", "2", "1", "72.00"],
+      ["2", "f9a1b942-7b35-4ac5-8168-b673bf627610", "1", "2", "18.00"],
+      ["3", "2dcb02a6-26ca-4bd7-93e8-36957d0dc28f", "3", "1", "14.50"],
+      ["4", "57399a31-fbdb-42fa-a35f-e1f6c19d1f60", "5", "1", "39.00"],
+      ["5", "d85fbff1-8ac9-4ec0-9c11-0cd2673a621c", "2", "2", "72.00"],
+    ],
+    schema: "public",
+  },
+];
+
+const mockTableSeed = mockTables.map((table) => ({
+  ...table,
+  rows: table.rows.map((row) => [...row]),
+}));
+
+export const resetMockPostgresData = () => {
+  for (const [index, table] of mockTables.entries()) {
+    const seed = mockTableSeed[index];
+    if (!seed) {
+      continue;
+    }
+    table.rows.length = 0;
+    table.rows.push(...seed.rows.map((row) => [...row]));
+  }
+};
+
+interface MockPostgresForeignKey {
+  columns: string[];
+  foreignColumns: string[];
+  foreignSchema: string;
+  foreignTable: string;
+  name: string;
+  schema: string;
+  table: string;
+}
+
+const mockForeignKeys: MockPostgresForeignKey[] = [
+  {
+    columns: ["customer_id"],
+    foreignColumns: ["id"],
+    foreignSchema: "public",
+    foreignTable: "customers",
+    name: "orders_customer_id_fkey",
+    schema: "public",
+    table: "orders",
+  },
+  {
+    columns: ["order_id"],
+    foreignColumns: ["id"],
+    foreignSchema: "public",
+    foreignTable: "orders",
+    name: "order_items_order_id_fkey",
+    schema: "public",
+    table: "order_items",
+  },
+  {
+    columns: ["product_id"],
+    foreignColumns: ["id"],
+    foreignSchema: "public",
+    foreignTable: "products",
+    name: "order_items_product_id_fkey",
+    schema: "public",
+    table: "order_items",
+  },
+];
+
+const mockEnums = [
+  {
+    labels: ["paid", "fulfilled", "refunded", "pending"],
+    name: "order_status",
+    typeOID: 90_001,
+  },
+  {
+    labels: ["starter", "pro", "scale"],
+    name: "customer_plan",
+    typeOID: 90_002,
   },
 ];
 
@@ -223,6 +316,68 @@ const catalogResult = () =>
       JSON.stringify(table.primaryKeyColumns),
     ])
   );
+
+const foreignKeyCatalogResult = () =>
+  result(
+    [
+      { name: "schema", typeOid: 25 },
+      { name: "table", typeOid: 25 },
+      { name: "foreign_schema", typeOid: 25 },
+      { name: "foreign_table", typeOid: 25 },
+      { name: "name", typeOid: 25 },
+      { name: "columns", typeOid: 25 },
+      { name: "foreign_columns", typeOid: 25 },
+    ],
+    mockForeignKeys.map((foreignKey) => [
+      foreignKey.schema,
+      foreignKey.table,
+      foreignKey.foreignSchema,
+      foreignKey.foreignTable,
+      foreignKey.name,
+      JSON.stringify(foreignKey.columns),
+      JSON.stringify(foreignKey.foreignColumns),
+    ])
+  );
+
+const enumCatalogResult = () =>
+  result(
+    [
+      { name: "type_oid", typeOid: 25 },
+      { name: "type_name", typeOid: 25 },
+      { name: "labels", typeOid: 25 },
+    ],
+    mockEnums.map((enumType) => [
+      enumType.typeOID.toString(),
+      enumType.name,
+      JSON.stringify(enumType.labels),
+    ])
+  );
+
+const columnMetaResult = (sql: string) => {
+  const source =
+    /nspname = '(?<schema>(?:[^']|'')*)'[\s\S]*?relname = '(?<table>(?:[^']|'')*)'/iu.exec(
+      sql
+    );
+  const schema = (source?.groups?.schema ?? "").replaceAll("''", "'");
+  const name = (source?.groups?.table ?? "").replaceAll("''", "'");
+  const table = mockTables.find(
+    (candidate) => candidate.schema === schema && candidate.name === name
+  );
+  return result(
+    [
+      { name: "name", typeOid: 25 },
+      { name: "type_oid", typeOid: 25 },
+      { name: "nullable", typeOid: 25 },
+      { name: "has_default", typeOid: 25 },
+    ],
+    (table?.columns ?? []).map((column) => [
+      column.name,
+      column.typeOid.toString(),
+      column.nullable === false ? "false" : "true",
+      column.hasDefault ? "true" : "false",
+    ])
+  );
+};
 
 const unquoteIdentifier = (value: string) => value.replaceAll('""', '"');
 
@@ -420,6 +575,178 @@ const countResult = (sql: string) => {
   );
 };
 
+const mutationResult = (commandTag: string): PostgresQueryResult => ({
+  auditRecorded: true,
+  statements: [
+    {
+      columns: [],
+      commandTag,
+      rows: [],
+      truncated: false,
+    },
+  ],
+  truncated: false,
+});
+
+const parseAssignmentValue = (raw: string): null | string => {
+  const trimmed = raw.trim();
+  if (trimmed.toUpperCase() === "NULL") {
+    return null;
+  }
+  if (trimmed.toUpperCase() === "TRUE") {
+    return "true";
+  }
+  if (trimmed.toUpperCase() === "FALSE") {
+    return "false";
+  }
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/u.test(trimmed)
+  ) {
+    return unquoteLiteral(trimmed);
+  }
+  return trimmed;
+};
+
+const rowMatchesMutationWhere = (
+  row: (null | string)[],
+  table: MockPostgresTable,
+  where: string
+) => {
+  const clauses = where
+    .replaceAll(/;?\s*$/gu, "")
+    .split(/\n\s*OR\s+/iu)
+    .map((clause) =>
+      clause
+        .trim()
+        .replaceAll(/^\(|\)$/gu, "")
+        .trim()
+    );
+  return clauses.some((clause) => {
+    const parts = clause.split(/\s+AND\s+/iu);
+    return parts.every(
+      (part) => rowMatchesCondition(row, table, part.trim()).matches
+    );
+  });
+};
+
+const updateResult = (sql: string) => {
+  const match =
+    /UPDATE\s+"(?<schema>(?:[^"]|"")+)"\."(?<table>(?:[^"]|"")+)"\s+SET\s+"(?<column>(?:[^"]|"")+)"\s*=\s*(?<value>NULL|TRUE|FALSE|'(?:[^']|'')*'|-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s+WHERE\s+(?<where>[\s\S]+)$/iu.exec(
+      sql
+    );
+  const groups = match?.groups;
+  if (!groups) {
+    return mutationResult("UPDATE 0");
+  }
+  const schema = unquoteIdentifier(groups.schema ?? "");
+  const name = unquoteIdentifier(groups.table ?? "");
+  const column = unquoteIdentifier(groups.column ?? "");
+  const table = mockTables.find(
+    (candidate) => candidate.schema === schema && candidate.name === name
+  );
+  if (!table) {
+    return mutationResult("UPDATE 0");
+  }
+  const columnIndex = table.columns.findIndex(
+    (candidate) => candidate.name === column
+  );
+  if (columnIndex === -1) {
+    return mutationResult("UPDATE 0");
+  }
+  const nextValue = parseAssignmentValue(groups.value ?? "");
+  let updated = 0;
+  for (const row of table.rows) {
+    if (!rowMatchesMutationWhere(row, table, groups.where ?? "")) {
+      continue;
+    }
+    row[columnIndex] = nextValue;
+    updated += 1;
+  }
+  return mutationResult(`UPDATE ${updated.toString()}`);
+};
+
+const deleteResult = (sql: string) => {
+  const match =
+    /DELETE FROM\s+"(?<schema>(?:[^"]|"")+)"\."(?<table>(?:[^"]|"")+)"\s+WHERE\s+(?<where>[\s\S]+)$/iu.exec(
+      sql
+    );
+  const groups = match?.groups;
+  if (!groups) {
+    return mutationResult("DELETE 0");
+  }
+  const schema = unquoteIdentifier(groups.schema ?? "");
+  const name = unquoteIdentifier(groups.table ?? "");
+  const table = mockTables.find(
+    (candidate) => candidate.schema === schema && candidate.name === name
+  );
+  if (!table) {
+    return mutationResult("DELETE 0");
+  }
+  const remaining = table.rows.filter(
+    (row) => !rowMatchesMutationWhere(row, table, groups.where ?? "")
+  );
+  const deleted = table.rows.length - remaining.length;
+  table.rows.length = 0;
+  table.rows.push(...remaining);
+  return mutationResult(`DELETE ${deleted.toString()}`);
+};
+
+const parseInsertValueList = (raw: string) =>
+  raw
+    .split(",")
+    .map((part) => part.trim())
+    .map((part) => parseAssignmentValue(part));
+
+const insertResult = (sql: string) => {
+  const defaultMatch =
+    /INSERT INTO\s+"(?<schema>(?:[^"]|"")+)"\."(?<table>(?:[^"]|"")+)"\s+DEFAULT VALUES/iu.exec(
+      sql
+    );
+  if (defaultMatch?.groups) {
+    const schema = unquoteIdentifier(defaultMatch.groups.schema ?? "");
+    const name = unquoteIdentifier(defaultMatch.groups.table ?? "");
+    const table = mockTables.find(
+      (candidate) => candidate.schema === schema && candidate.name === name
+    );
+    if (!table) {
+      return mutationResult("INSERT 0 0");
+    }
+    table.rows.push(table.columns.map(() => null));
+    return mutationResult("INSERT 0 1");
+  }
+
+  const match =
+    /INSERT INTO\s+"(?<schema>(?:[^"]|"")+)"\."(?<table>(?:[^"]|"")+)"\s*\(\s*(?<columns>[\s\S]*?)\s*\)\s*VALUES\s*\(\s*(?<values>[\s\S]*?)\s*\)/iu.exec(
+      sql
+    );
+  const groups = match?.groups;
+  if (!groups) {
+    return mutationResult("INSERT 0 0");
+  }
+  const schema = unquoteIdentifier(groups.schema ?? "");
+  const name = unquoteIdentifier(groups.table ?? "");
+  const table = mockTables.find(
+    (candidate) => candidate.schema === schema && candidate.name === name
+  );
+  if (!table) {
+    return mutationResult("INSERT 0 0");
+  }
+  const columnNames = (groups.columns ?? "")
+    .split(",")
+    .map((part) => unquoteIdentifier(part.trim().replaceAll(/^"|"$/gu, "")));
+  const values = parseInsertValueList(groups.values ?? "");
+  const row = table.columns.map((column) => {
+    const index = columnNames.indexOf(column.name);
+    if (index === -1) {
+      return null;
+    }
+    return values[index] ?? null;
+  });
+  table.rows.push(row);
+  return mutationResult("INSERT 0 1");
+};
+
 export const handlePostgresQuery = async (
   request: Request,
   collection: string,
@@ -438,15 +765,33 @@ export const handlePostgresQuery = async (
   const sql = stringField(input, "sql");
 
   // Tagged comments keep the demo handler deterministic without pretending to
-  // parse arbitrary SQL. Production still executes the generated SELECT query.
+  // parse arbitrary SQL. Production still executes the generated statement.
   if (sql.includes("platformd:data-browser:catalog")) {
     return json(catalogResult());
+  }
+  if (sql.includes("platformd:data-browser:foreign-keys")) {
+    return json(foreignKeyCatalogResult());
+  }
+  if (sql.includes("platformd:data-browser:enums")) {
+    return json(enumCatalogResult());
+  }
+  if (sql.includes("platformd:data-browser:columns")) {
+    return json(columnMetaResult(sql));
   }
   if (sql.includes("platformd:data-browser:table")) {
     return json(tableResult(sql));
   }
   if (sql.includes("platformd:data-browser:count")) {
     return json(countResult(sql));
+  }
+  if (sql.includes("platformd:data-browser:update")) {
+    return json(updateResult(sql));
+  }
+  if (sql.includes("platformd:data-browser:delete")) {
+    return json(deleteResult(sql));
+  }
+  if (sql.includes("platformd:data-browser:insert")) {
+    return json(insertResult(sql));
   }
   return json(
     result([{ name: "status", typeOid: 25 }], [["mock backend ready"]])

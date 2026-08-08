@@ -2,30 +2,43 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { queryManagedPostgres } from "@/api";
 import type { PostgresQueryResult } from "@/api";
+import type { PostgresInsertRowHandler } from "@/postgres-data-add-record";
 import {
   activePostgresFilters,
+  assertPostgresMutationApplied,
+  postgresColumnMetaSQL,
+  postgresColumnsFromResult,
   postgresCountFromResult,
+  postgresDeleteRowsSQL,
+  postgresEnumCatalogSQL,
+  postgresEnumsFromResult,
   postgresForeignKeyCatalogSQL,
   postgresForeignKeysFromResult,
+  postgresInsertRowSQL,
   postgresPreciseCountThreshold,
-  postgresRelationNavigation,
   postgresRelationsForTable,
   postgresTableCatalogSQL,
   postgresTableCountSQL,
   postgresTableDataSQL,
   postgresTableSelectSQL,
   postgresTablesFromResult,
+  postgresUpdateCellSQL,
 } from "@/postgres-data-browser-model";
 import type {
   PostgresBrowserTable,
+  PostgresColumnMeta,
+  PostgresEnumType,
   PostgresForeignKey,
   PostgresTableFilter,
-  PostgresTableRelation,
   PostgresTableSort,
 } from "@/postgres-data-browser-model";
 import { PostgresDataBrowserSidebar } from "@/postgres-data-browser-sidebar";
 import { PostgresDataFilters } from "@/postgres-data-filters";
 import { PostgresDataGrid } from "@/postgres-data-grid";
+import type {
+  PostgresDeleteRowsHandler,
+  PostgresUpdateCellHandler,
+} from "@/postgres-data-grid-table";
 
 type PostgresStatement = PostgresQueryResult["statements"][number];
 
@@ -73,6 +86,9 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [tables, setTables] = useState<PostgresBrowserTable[]>([]);
   const [foreignKeys, setForeignKeys] = useState<PostgresForeignKey[]>([]);
+  const [enums, setEnums] = useState<Map<number, PostgresEnumType>>(
+    () => new Map()
+  );
   const [selectedTable, setSelectedTable] = useState<PostgresBrowserTable>();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string>();
@@ -82,41 +98,66 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
     const load = async () => {
       setLoading(true);
       try {
-        const [tablesResult, foreignKeysResult] = await Promise.all([
-          queryManagedPostgres(
-            projectID,
-            postgresID,
-            postgresTableCatalogSQL,
-            controller.signal
-          ),
-          queryManagedPostgres(
-            projectID,
-            postgresID,
-            postgresForeignKeyCatalogSQL,
-            controller.signal
-          ).catch((foreignKeyError: unknown) => {
-            if (
-              foreignKeyError instanceof Error &&
-              foreignKeyError.name === "AbortError"
-            ) {
-              throw foreignKeyError;
-            }
-            return null;
-          }),
-        ]);
+        const [tablesSettled, foreignKeysSettled, enumsSettled] =
+          await Promise.all([
+            queryManagedPostgres(
+              projectID,
+              postgresID,
+              postgresTableCatalogSQL,
+              controller.signal
+            ),
+            queryManagedPostgres(
+              projectID,
+              postgresID,
+              postgresForeignKeyCatalogSQL,
+              controller.signal
+            ).then(
+              (result) => ({ ok: true as const, result }),
+              (foreignKeyError: unknown) => {
+                if (
+                  foreignKeyError instanceof Error &&
+                  foreignKeyError.name === "AbortError"
+                ) {
+                  throw foreignKeyError;
+                }
+                return { error: foreignKeyError, ok: false as const };
+              }
+            ),
+            queryManagedPostgres(
+              projectID,
+              postgresID,
+              postgresEnumCatalogSQL,
+              controller.signal
+            ).then(
+              (result) => ({ ok: true as const, result }),
+              (enumError: unknown) => {
+                if (
+                  enumError instanceof Error &&
+                  enumError.name === "AbortError"
+                ) {
+                  throw enumError;
+                }
+                return { error: enumError, ok: false as const };
+              }
+            ),
+          ]);
         if (controller.signal.aborted) {
           return;
         }
-        const loadedTables = postgresTablesFromResult(tablesResult);
-        const loadedForeignKeys = foreignKeysResult
-          ? postgresForeignKeysFromResult(foreignKeysResult)
+        const loadedTables = postgresTablesFromResult(tablesSettled);
+        const loadedForeignKeys = foreignKeysSettled.ok
+          ? postgresForeignKeysFromResult(foreignKeysSettled.result)
           : [];
+        const loadedEnums = enumsSettled.ok
+          ? postgresEnumsFromResult(enumsSettled.result)
+          : new Map<number, PostgresEnumType>();
         const schemas = [...new Set(loadedTables.map((table) => table.schema))];
         const defaultSchema = schemas.includes("public")
           ? "public"
           : (schemas[0] ?? "");
         setTables(loadedTables);
         setForeignKeys(loadedForeignKeys);
+        setEnums(loadedEnums);
         setSelectedTable((current) => {
           const currentMatch = loadedTables.find(
             (table) =>
@@ -130,7 +171,25 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
             loadedTables.find((table) => table.schema === defaultSchema)
           );
         });
-        setError(undefined);
+        if (foreignKeysSettled.ok) {
+          if (enumsSettled.ok) {
+            setError(undefined);
+          } else {
+            setError(
+              errorMessage(
+                enumsSettled.error,
+                "Unable to load PostgreSQL enums"
+              )
+            );
+          }
+        } else {
+          setError(
+            errorMessage(
+              foreignKeysSettled.error,
+              "Unable to load PostgreSQL foreign keys"
+            )
+          );
+        }
       } catch (loadError) {
         if (loadError instanceof Error && loadError.name === "AbortError") {
           return;
@@ -147,6 +206,7 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
   }, [postgresID, projectID, refreshVersion]);
 
   return {
+    enums,
     error,
     foreignKeys,
     handleRefresh: () => setRefreshVersion((value) => value + 1),
@@ -156,6 +216,55 @@ const usePostgresCatalog = (projectID: string, postgresID: string) => {
     setSelectedTable,
     tables,
   };
+};
+
+const usePostgresColumnMeta = ({
+  postgresID,
+  projectID,
+  selectedTable,
+}: {
+  postgresID: string;
+  projectID: string;
+  selectedTable?: PostgresBrowserTable;
+}) => {
+  const selectedTableID = selectedTable ? tableIdentity(selectedTable) : "";
+  const [state, setState] = useState<{
+    columns: PostgresColumnMeta[];
+    tableID: string;
+  }>({ columns: [], tableID: "" });
+
+  useEffect(() => {
+    if (!selectedTable) {
+      return;
+    }
+    const controller = new AbortController();
+    const load = async () => {
+      try {
+        const result = await queryManagedPostgres(
+          projectID,
+          postgresID,
+          postgresColumnMetaSQL(selectedTable),
+          controller.signal
+        );
+        if (controller.signal.aborted) {
+          return;
+        }
+        setState({
+          columns: postgresColumnsFromResult(result),
+          tableID: selectedTableID,
+        });
+      } catch (loadError) {
+        if (loadError instanceof Error && loadError.name === "AbortError") {
+          return;
+        }
+        setState({ columns: [], tableID: selectedTableID });
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [postgresID, projectID, selectedTable, selectedTableID]);
+
+  return state.tableID === selectedTableID ? state.columns : [];
 };
 
 const usePostgresTable = ({
@@ -398,6 +507,11 @@ export const PostgresDataBrowser = ({
     projectID,
     selectedTable: catalog.selectedTable,
   });
+  const columnMeta = usePostgresColumnMeta({
+    postgresID,
+    projectID,
+    selectedTable: catalog.selectedTable,
+  });
 
   const schemas = useMemo(
     () => [...new Set(catalog.tables.map((table) => table.schema))],
@@ -435,27 +549,6 @@ export const PostgresDataBrowser = ({
     catalog.setSelectedTable(table);
     resetTableView();
   };
-  const openRelation = (
-    relation: PostgresTableRelation,
-    columnValues: Record<string, string | undefined>
-  ) => {
-    const navigation = postgresRelationNavigation({ columnValues, relation });
-    if (!navigation) {
-      return;
-    }
-    const target = catalog.tables.find(
-      (table) =>
-        table.schema === navigation.schema && table.name === navigation.table
-    );
-    if (!target) {
-      return;
-    }
-    catalog.setSelectedTable(target);
-    setFilters(navigation.filters);
-    setFiltersVisible(true);
-    setPage(0);
-    setSort(undefined);
-  };
   const changeSort = (column: string, direction?: "asc" | "desc") => {
     setSort(direction ? { column, direction } : undefined);
     setPage(0);
@@ -471,6 +564,33 @@ export const PostgresDataBrowser = ({
   const handleRefresh = () => {
     tableData.handleRefresh();
     tableCount.handleRefresh();
+  };
+  const updateCell: PostgresUpdateCellHandler = async (input) => {
+    const result = await queryManagedPostgres(
+      projectID,
+      postgresID,
+      postgresUpdateCellSQL(input)
+    );
+    assertPostgresMutationApplied(result, "UPDATE");
+    handleRefresh();
+  };
+  const deleteRows: PostgresDeleteRowsHandler = async (input) => {
+    const result = await queryManagedPostgres(
+      projectID,
+      postgresID,
+      postgresDeleteRowsSQL(input)
+    );
+    assertPostgresMutationApplied(result, "DELETE");
+    handleRefresh();
+  };
+  const insertRow: PostgresInsertRowHandler = async (input) => {
+    const result = await queryManagedPostgres(
+      projectID,
+      postgresID,
+      postgresInsertRowSQL(input)
+    );
+    assertPostgresMutationApplied(result, "INSERT");
+    handleRefresh();
   };
   const columnNames = tableData.columns.map((column) => column.name);
   const { selectedTable } = catalog;
@@ -503,7 +623,9 @@ export const PostgresDataBrowser = ({
       />
       <PostgresDataGrid
         approximateCount={tableCount.approximate}
+        columnMeta={columnMeta}
         count={tableCount.count}
+        enums={catalog.enums}
         error={catalog.error ?? tableData.error}
         filterPanel={
           filtersVisible ? (
@@ -533,19 +655,25 @@ export const PostgresDataBrowser = ({
           ) : null
         }
         filtersActive={activeFilters.length > 0}
+        foreignKeys={catalog.foreignKeys}
         loading={tableData.loading}
+        onDeleteRows={deleteRows}
+        onInsertRow={insertRow}
         onNextPage={() => setPage((value) => value + 1)}
-        onOpenRelation={openRelation}
         onPreviousPage={() => setPage((value) => Math.max(0, value - 1))}
         onRefresh={handleRefresh}
         onRequestExactCount={tableCount.handleRequestExact}
         onSort={changeSort}
         onToggleFilters={() => setFiltersVisible((visible) => !visible)}
+        onUpdateCell={updateCell}
         page={page}
+        postgresID={postgresID}
+        projectID={projectID}
         relations={relations}
         selectedTable={catalog.selectedTable}
         sort={sort}
         statement={tableData.statement}
+        tables={catalog.tables}
       />
     </div>
   );

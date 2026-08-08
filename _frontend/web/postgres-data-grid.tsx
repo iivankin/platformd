@@ -1,334 +1,41 @@
-import { Menu } from "@base-ui/react/menu";
+import { AlertDialog } from "@base-ui/react/alert-dialog";
 import {
-  ArrowDown,
-  ArrowDownUp,
-  ArrowUp,
   ChevronLeft,
   ChevronRight,
   ListFilter,
+  Plus,
   RefreshCw,
-  Table2,
+  Trash2,
+  X,
 } from "lucide-react";
-import type { AriaAttributes, ReactNode } from "react";
+import { useState } from "react";
+import type { ReactNode } from "react";
 
 import type { PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { PostgresDataAddRecordDialog } from "@/postgres-data-add-record";
+import type { PostgresInsertRowHandler } from "@/postgres-data-add-record";
 import {
   postgresIncomingRelations,
-  postgresOutgoingRelationForColumn,
   postgresTablePageSize,
+  rowPrimaryKey,
 } from "@/postgres-data-browser-model";
 import type {
   PostgresBrowserTable,
+  PostgresColumnMeta,
+  PostgresEnumType,
+  PostgresForeignKey,
   PostgresTableRelation,
   PostgresTableSort,
 } from "@/postgres-data-browser-model";
-import { PostgresDataCell, PostgresRelationCell } from "@/postgres-data-cell";
+import { PostgresGridTable } from "@/postgres-data-grid-table";
+import type {
+  PostgresDeleteRowsHandler,
+  PostgresUpdateCellHandler,
+} from "@/postgres-data-grid-table";
 
 type PostgresStatement = PostgresQueryResult["statements"][number];
-
-const postgresTypeNames = new Map<number, string>([
-  [16, "bool"],
-  [17, "bytea"],
-  [20, "int8"],
-  [21, "int2"],
-  [23, "int4"],
-  [25, "text"],
-  [114, "json"],
-  [700, "float4"],
-  [701, "float8"],
-  [1042, "char"],
-  [1043, "varchar"],
-  [1082, "date"],
-  [1114, "timestamp"],
-  [1184, "timestamptz"],
-  [1700, "numeric"],
-  [2950, "uuid"],
-  [3802, "jsonb"],
-]);
-
-const rowColumnValues = (
-  columns: PostgresStatement["columns"],
-  row: PostgresStatement["rows"][number]
-) => {
-  const values: Record<string, string | undefined> = {};
-  for (const [index, column] of columns.entries()) {
-    const cell = row[index];
-    if (!cell || cell.null || cell.base64 !== undefined) {
-      values[column.name] = undefined;
-      continue;
-    }
-    values[column.name] = cell.text;
-  }
-  return values;
-};
-
-const columnAriaSort = (
-  column: string,
-  sort?: PostgresTableSort
-): AriaAttributes["aria-sort"] => {
-  if (sort?.column !== column) {
-    return "none";
-  }
-  return sort.direction === "asc" ? "ascending" : "descending";
-};
-
-const SortIcon = ({
-  column,
-  sort,
-}: {
-  column: string;
-  sort?: PostgresTableSort;
-}) => {
-  if (sort?.column !== column) {
-    return <ArrowDownUp className="size-3 text-muted-foreground/60" />;
-  }
-  return sort.direction === "asc" ? (
-    <ArrowUp className="size-3" />
-  ) : (
-    <ArrowDown className="size-3" />
-  );
-};
-
-const GridEmptyState = ({
-  loading,
-  selectedTable,
-}: {
-  loading: boolean;
-  selectedTable?: PostgresBrowserTable;
-}) => {
-  if (loading) {
-    return (
-      <div className="grid min-h-64 place-items-center text-[10px] text-muted-foreground">
-        Loading rows…
-      </div>
-    );
-  }
-  if (selectedTable) {
-    return (
-      <div className="grid min-h-48 place-items-center text-[10px] text-muted-foreground">
-        This table has no rows on this page.
-      </div>
-    );
-  }
-  return (
-    <div className="grid min-h-64 place-items-center px-6 text-center">
-      <div>
-        <Table2 className="mx-auto size-5 text-muted-foreground" />
-        <p className="mt-3 text-[10px] font-medium">No table selected</p>
-        <p className="mt-1 text-[9px] text-muted-foreground">
-          Choose a table from the schema browser.
-        </p>
-      </div>
-    </div>
-  );
-};
-
-const ColumnHeader = ({
-  column,
-  onSort,
-  sort,
-  typeOID,
-}: {
-  column: string;
-  onSort: (column: string, direction?: "asc" | "desc") => void;
-  sort?: PostgresTableSort;
-  typeOID: number;
-}) => {
-  const activeSort = sort?.column === column;
-  return (
-    <Menu.Root>
-      <Menu.Trigger
-        className={cn(
-          "flex w-full items-center gap-2 px-3 py-2 text-left outline-none hover:bg-muted/40 data-[popup-open]:bg-muted/40",
-          activeSort && "bg-muted/30"
-        )}
-      >
-        <span className="min-w-0 flex-1">
-          <span className="block truncate font-medium">{column}</span>
-          <span className="block text-[8px] font-normal text-muted-foreground">
-            {postgresTypeNames.get(typeOID) ?? `oid ${typeOID.toString()}`}
-          </span>
-        </span>
-        <SortIcon column={column} sort={sort} />
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner align="start" className="z-50" sideOffset={2}>
-          <Menu.Popup className="min-w-44 border border-border bg-popover p-1 text-[10px] text-popover-foreground shadow-lg">
-            {sort ? (
-              <Menu.Item
-                className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-                onClick={() => onSort(column)}
-              >
-                <ArrowDownUp className="size-3.5" /> Clear sort
-              </Menu.Item>
-            ) : null}
-            <Menu.Item
-              className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-              onClick={() => onSort(column, "asc")}
-            >
-              <ArrowUp className="size-3.5" /> Sort Ascending
-            </Menu.Item>
-            <Menu.Item
-              className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-              onClick={() => onSort(column, "desc")}
-            >
-              <ArrowDown className="size-3.5" /> Sort Descending
-            </Menu.Item>
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
-  );
-};
-
-const RelationColumnHeader = ({ label }: { label: string }) => (
-  <div className="px-3 py-2 text-left">
-    <span className="block truncate font-medium">{label}</span>
-    <span className="block text-[8px] font-normal text-muted-foreground">
-      relation
-    </span>
-  </div>
-);
-
-const PostgresGridTable = ({
-  loading,
-  onOpenRelation,
-  onSort,
-  page,
-  relations,
-  selectedTable,
-  sort,
-  statement,
-}: {
-  loading: boolean;
-  onOpenRelation: (
-    relation: PostgresTableRelation,
-    columnValues: Record<string, string | undefined>
-  ) => void;
-  onSort: (column: string, direction?: "asc" | "desc") => void;
-  page: number;
-  relations: PostgresTableRelation[];
-  selectedTable?: PostgresBrowserTable;
-  sort?: PostgresTableSort;
-  statement?: PostgresStatement;
-}) => {
-  const columns = statement?.columns ?? [];
-  const rows = statement?.rows.slice(0, postgresTablePageSize) ?? [];
-  const incoming = postgresIncomingRelations(relations);
-  if (!(selectedTable && columns.length > 0)) {
-    return <GridEmptyState loading={loading} selectedTable={selectedTable} />;
-  }
-  return (
-    <>
-      <table className="w-full min-w-max border-collapse text-left text-[10px]">
-        <thead className="sticky top-0 z-10 bg-background">
-          <tr className="border-b border-border">
-            <th className="sticky left-0 z-20 w-11 border-r border-border bg-muted/30 px-2 py-2 text-right text-[8px] font-normal text-muted-foreground">
-              #
-            </th>
-            {columns.map((column, columnIndex) => (
-              <th
-                aria-sort={columnAriaSort(column.name, sort)}
-                className="min-w-40 border-r border-border p-0 last:border-r-0"
-                key={`${columnIndex.toString()}:${column.name}`}
-              >
-                <ColumnHeader
-                  column={column.name}
-                  onSort={onSort}
-                  sort={sort}
-                  typeOID={column.typeOid}
-                />
-              </th>
-            ))}
-            {incoming.map((relation) => (
-              <th
-                className="min-w-36 border-r border-border bg-muted/10 p-0 last:border-r-0"
-                key={relation.key}
-              >
-                <RelationColumnHeader label={relation.label} />
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, rowIndex) => {
-            const columnValues = rowColumnValues(columns, row);
-            return (
-              <tr
-                className="border-b border-border last:border-b-0 hover:bg-muted/20"
-                key={(page * postgresTablePageSize + rowIndex).toString()}
-              >
-                <td className="sticky left-0 border-r border-border bg-background px-2 py-2 text-right text-[8px] text-muted-foreground tabular-nums">
-                  {page * postgresTablePageSize + rowIndex + 1}
-                </td>
-                {row.map((cell, cellIndex) => {
-                  const column = columns[cellIndex];
-                  if (!column) {
-                    return null;
-                  }
-                  const outgoing = postgresOutgoingRelationForColumn(
-                    relations,
-                    column.name
-                  );
-                  const canOpenOutgoing =
-                    outgoing &&
-                    outgoing.foreignKey.columns.every(
-                      (name) => columnValues[name] !== undefined
-                    );
-                  return (
-                    <td
-                      className="max-w-96 border-r border-border p-0 last:border-r-0"
-                      key={cellIndex.toString()}
-                    >
-                      <PostgresDataCell
-                        cell={cell}
-                        column={column.name}
-                        onOpenRelation={
-                          canOpenOutgoing && outgoing
-                            ? () => onOpenRelation(outgoing, columnValues)
-                            : undefined
-                        }
-                        relationLabel={outgoing?.label}
-                        typeOID={column.typeOid}
-                      />
-                    </td>
-                  );
-                })}
-                {incoming.map((relation) => {
-                  const canOpen = relation.foreignKey.foreignColumns.every(
-                    (name) => columnValues[name] !== undefined
-                  );
-                  return (
-                    <td
-                      className="border-r border-border bg-muted/5 p-0 last:border-r-0"
-                      key={relation.key}
-                    >
-                      {canOpen ? (
-                        <PostgresRelationCell
-                          label={relation.label}
-                          onOpen={() => onOpenRelation(relation, columnValues)}
-                        />
-                      ) : (
-                        <div className="px-3 py-2 text-muted-foreground italic">
-                          —
-                        </div>
-                      )}
-                    </td>
-                  );
-                })}
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
-      {rows.length === 0 ? (
-        <GridEmptyState loading={loading} selectedTable={selectedTable} />
-      ) : null}
-    </>
-  );
-};
 
 const postgresRangeLabel = ({
   approximateCount,
@@ -352,33 +59,76 @@ const postgresRangeLabel = ({
   return `${firstVisibleRow.toLocaleString()} - ${lastVisibleRow.toLocaleString()} of ${approximateCount ? "~" : ""}${countLabel}`;
 };
 
+const rowColumnValues = (
+  columns: PostgresStatement["columns"],
+  row: PostgresStatement["rows"][number]
+) => {
+  const values: Record<string, string | undefined> = {};
+  for (const [index, column] of columns.entries()) {
+    const cell = row[index];
+    if (!cell || cell.null || cell.base64 !== undefined) {
+      values[column.name] = undefined;
+      continue;
+    }
+    values[column.name] = cell.text;
+  }
+  return values;
+};
+
+const toolbarHint = ({
+  hasPrimaryKey,
+  sort,
+  defaultOrder,
+}: {
+  defaultOrder: string;
+  hasPrimaryKey: boolean;
+  sort?: PostgresTableSort;
+}) => {
+  const base = hasPrimaryKey
+    ? "Double-click a cell to edit"
+    : "Browse and insert · edits need a primary key";
+  if (sort) {
+    return `${base} · sorted by ${sort.column} ${sort.direction}`;
+  }
+  return `${base}${defaultOrder}`;
+};
+
 const PostgresGridToolbar = ({
   approximateCount,
   columnsAvailable,
+  deleting,
   filtersActive,
   loading,
+  onAddRecord,
+  onDeleteSelected,
   onPreviousPage,
   onRefresh,
   onRequestExactCount,
   onToggleFilters,
   page,
   range,
+  selectedCount,
   selectedTable,
   sort,
 }: {
   approximateCount: boolean;
   columnsAvailable: boolean;
+  deleting: boolean;
   filtersActive: boolean;
   loading: boolean;
+  onAddRecord: () => void;
+  onDeleteSelected: () => void;
   onPreviousPage: () => void;
   onRefresh: () => void;
   onRequestExactCount: () => void;
   onToggleFilters: () => void;
   page: number;
   range: string;
+  selectedCount: number;
   selectedTable?: PostgresBrowserTable;
   sort?: PostgresTableSort;
 }) => {
+  const canMutate = Boolean(selectedTable);
   const defaultOrder =
     !sort && selectedTable?.primaryKeyColumns.length
       ? ` · ordered by ${selectedTable.primaryKeyColumns.join(", ")}`
@@ -394,13 +144,37 @@ const PostgresGridToolbar = ({
           <span className="truncate">{selectedTable?.name ?? "table"}</span>
         </div>
         <p className="mt-0.5 text-[8px] text-muted-foreground">
-          Read-only browser
-          {sort
-            ? ` · sorted by ${sort.column} ${sort.direction}`
-            : defaultOrder}
+          {toolbarHint({
+            defaultOrder,
+            hasPrimaryKey: Boolean(selectedTable?.primaryKeyColumns.length),
+            sort,
+          })}
         </p>
       </div>
       <div className="ml-auto flex items-center gap-1">
+        {selectedCount > 0 ? (
+          <Button
+            aria-label="Delete selected rows"
+            disabled={deleting || loading}
+            onClick={onDeleteSelected}
+            size="sm"
+            variant="outline"
+          >
+            <Trash2 />
+            Delete {selectedCount.toLocaleString()}
+          </Button>
+        ) : (
+          <Button
+            aria-label="Add record"
+            disabled={!canMutate || !columnsAvailable || loading}
+            onClick={onAddRecord}
+            size="sm"
+            variant="outline"
+          >
+            <Plus />
+            Add record
+          </Button>
+        )}
         <Button
           aria-label="Toggle PostgreSQL table filters"
           className="relative"
@@ -483,47 +257,136 @@ const PostgresGridStatus = ({
   );
 };
 
+const DeleteRowsDialog = ({
+  deleting,
+  error,
+  onConfirm,
+  onOpenChange,
+  open,
+  selectedCount,
+  tableName,
+}: {
+  deleting: boolean;
+  error?: string;
+  onConfirm: () => void;
+  onOpenChange: (open: boolean) => void;
+  open: boolean;
+  selectedCount: number;
+  tableName: string;
+}) => (
+  <AlertDialog.Root
+    onOpenChange={(nextOpen) => {
+      if (deleting) {
+        return;
+      }
+      onOpenChange(nextOpen);
+    }}
+    open={open}
+  >
+    <AlertDialog.Portal>
+      <AlertDialog.Backdrop className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[1px]" />
+      <AlertDialog.Viewport className="fixed inset-0 z-50 grid place-items-center overflow-y-auto p-4">
+        <AlertDialog.Popup className="w-full max-w-md border border-border bg-background text-foreground shadow-2xl">
+          <header className="flex items-start justify-between gap-4 border-b border-border px-4 py-3">
+            <div>
+              <AlertDialog.Title className="text-sm font-medium">
+                Delete {selectedCount.toLocaleString()}{" "}
+                {selectedCount === 1 ? "row" : "rows"}
+              </AlertDialog.Title>
+              <AlertDialog.Description className="mt-1 text-xs text-muted-foreground">
+                Permanently remove the selected rows from {tableName}. This
+                cannot be undone.
+              </AlertDialog.Description>
+            </div>
+            <AlertDialog.Close
+              aria-label="Close"
+              className="grid size-8 place-items-center text-muted-foreground hover:bg-muted hover:text-foreground"
+              disabled={deleting}
+            >
+              <X className="size-4" />
+            </AlertDialog.Close>
+          </header>
+          {error ? (
+            <p className="border-b border-border px-4 py-3 text-[10px] text-destructive">
+              {error}
+            </p>
+          ) : null}
+          <footer className="flex justify-end gap-2 px-4 py-3">
+            <AlertDialog.Close
+              className="inline-flex h-8 items-center justify-center border border-border px-2.5 text-xs font-medium outline-none hover:bg-muted disabled:opacity-50"
+              disabled={deleting}
+            >
+              Cancel
+            </AlertDialog.Close>
+            <Button
+              disabled={deleting}
+              onClick={onConfirm}
+              size="sm"
+              variant="outline"
+            >
+              {deleting ? "Deleting…" : "Delete"}
+            </Button>
+          </footer>
+        </AlertDialog.Popup>
+      </AlertDialog.Viewport>
+    </AlertDialog.Portal>
+  </AlertDialog.Root>
+);
+
 export const PostgresDataGrid = ({
   approximateCount,
+  columnMeta,
   count,
-  error,
+  enums,
+  error: loadError,
   filterPanel,
   filtersActive,
+  foreignKeys,
   loading,
+  onDeleteRows,
+  onInsertRow,
   onNextPage,
-  onOpenRelation,
   onPreviousPage,
   onRefresh,
   onRequestExactCount,
   onSort,
   onToggleFilters,
+  onUpdateCell,
   page,
+  postgresID,
+  projectID,
   relations,
   selectedTable,
   sort,
   statement,
+  tables,
 }: {
   approximateCount: boolean;
+  columnMeta: readonly PostgresColumnMeta[];
   count?: number;
+  enums: ReadonlyMap<number, PostgresEnumType>;
   error?: string;
   filterPanel?: ReactNode;
   filtersActive: boolean;
+  foreignKeys: PostgresForeignKey[];
   loading: boolean;
+  onDeleteRows?: PostgresDeleteRowsHandler;
+  onInsertRow?: PostgresInsertRowHandler;
   onNextPage: () => void;
-  onOpenRelation: (
-    relation: PostgresTableRelation,
-    columnValues: Record<string, string | undefined>
-  ) => void;
   onPreviousPage: () => void;
   onRefresh: () => void;
   onRequestExactCount: () => void;
   onSort: (column: string, direction?: "asc" | "desc") => void;
   onToggleFilters: () => void;
+  onUpdateCell?: PostgresUpdateCellHandler;
   page: number;
+  postgresID: string;
+  projectID: string;
   relations: PostgresTableRelation[];
   selectedTable?: PostgresBrowserTable;
   sort?: PostgresTableSort;
   statement?: PostgresStatement;
+  tables: PostgresBrowserTable[];
 }) => {
   const columns = statement?.columns ?? [];
   const rows = statement?.rows.slice(0, postgresTablePageSize) ?? [];
@@ -536,6 +399,53 @@ export const PostgresDataGrid = ({
     page,
     rowCount: rows.length,
   });
+  const tableID = selectedTable
+    ? `${selectedTable.schema}\u0000${selectedTable.name}`
+    : "";
+  const [selection, setSelection] = useState<{
+    keys: string[];
+    page: number;
+    tableID: string;
+  }>({ keys: [], page: 0, tableID: "" });
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string>();
+  const [addOpen, setAddOpen] = useState(false);
+  const selectedRowKeys =
+    selection.tableID === tableID && selection.page === page
+      ? selection.keys
+      : [];
+  const setSelectedRowKeys = (keys: string[]) => {
+    setSelection({ keys, page, tableID });
+  };
+
+  const confirmDelete = async () => {
+    if (!(onDeleteRows && selectedTable && selectedRowKeys.length > 0)) {
+      return;
+    }
+    const wanted = new Set(selectedRowKeys);
+    const selectedRows = rows.flatMap((row) => {
+      const values = rowColumnValues(columns, row);
+      const key = rowPrimaryKey(selectedTable, values);
+      return key && wanted.has(key) ? [values] : [];
+    });
+    if (selectedRows.length === 0) {
+      return;
+    }
+    setDeleting(true);
+    setDeleteError(undefined);
+    try {
+      await onDeleteRows({ rows: selectedRows, table: selectedTable });
+      setSelectedRowKeys([]);
+      setDeleteOpen(false);
+    } catch (error) {
+      setDeleteError(
+        error instanceof Error ? error.message : "Unable to delete rows"
+      );
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <section className="flex min-w-0 flex-col bg-background">
@@ -543,14 +453,18 @@ export const PostgresDataGrid = ({
         <PostgresGridToolbar
           approximateCount={approximateCount}
           columnsAvailable={columns.length > 0}
+          deleting={deleting}
           filtersActive={filtersActive}
           loading={loading}
+          onAddRecord={() => setAddOpen(true)}
+          onDeleteSelected={() => setDeleteOpen(true)}
           onPreviousPage={onPreviousPage}
           onRefresh={onRefresh}
           onRequestExactCount={onRequestExactCount}
           onToggleFilters={onToggleFilters}
           page={page}
           range={range}
+          selectedCount={selectedRowKeys.length}
           selectedTable={selectedTable}
           sort={sort}
         />
@@ -571,14 +485,23 @@ export const PostgresDataGrid = ({
 
       <div className="min-h-0 flex-1 overflow-auto">
         <PostgresGridTable
+          columnMeta={columnMeta}
+          enums={enums}
+          foreignKeys={foreignKeys}
           loading={loading}
-          onOpenRelation={onOpenRelation}
+          onDeleteRows={onDeleteRows}
+          onSelectedRowsChange={setSelectedRowKeys}
           onSort={onSort}
+          onUpdateCell={onUpdateCell}
           page={page}
+          postgresID={postgresID}
+          projectID={projectID}
           relations={relations}
+          selectedRowKeys={selectedRowKeys}
           selectedTable={selectedTable}
           sort={sort}
           statement={statement}
+          tables={tables}
         />
       </div>
 
@@ -586,11 +509,37 @@ export const PostgresDataGrid = ({
         columnCount={
           columns.length + postgresIncomingRelations(relations).length
         }
-        error={error}
+        error={loadError}
         range={range}
         rowCount={rows.length}
         truncated={truncated}
       />
+
+      <DeleteRowsDialog
+        deleting={deleting}
+        error={deleteError}
+        onConfirm={() => void confirmDelete()}
+        onOpenChange={setDeleteOpen}
+        open={deleteOpen}
+        selectedCount={selectedRowKeys.length}
+        tableName={
+          selectedTable
+            ? `${selectedTable.schema}.${selectedTable.name}`
+            : "table"
+        }
+      />
+
+      {selectedTable && onInsertRow ? (
+        <PostgresDataAddRecordDialog
+          columnMeta={columnMeta}
+          columns={columns}
+          enums={enums}
+          onInsert={onInsertRow}
+          onOpenChange={setAddOpen}
+          open={addOpen}
+          table={selectedTable}
+        />
+      ) : null}
     </section>
   );
 };
