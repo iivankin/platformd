@@ -132,8 +132,10 @@ jobs:
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
-          workspaces: internal/objectstore/sidecar -> target
-          prefix-key: platformd-objectstore-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock') }}
+          workspaces: |
+            internal/objectstore/sidecar -> target
+            error-tracker -> target
+          prefix-key: platformd-rust-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock', 'error-tracker/Cargo.lock') }}
 
       - name: Cache pip wheels for S3 SDK checks
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -155,6 +157,8 @@ jobs:
           rm -rf "$PWD/.build/runtime-linux-amd64"
           cargo test --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
           cargo clippy --release --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
+          cargo test --release --locked --manifest-path error-tracker/Cargo.toml
+          cargo clippy --release --all-targets --locked --manifest-path error-tracker/Cargo.toml -- -D warnings
           python3 -m venv "$RUNNER_TEMP/platformd-s3-python"
           "$RUNNER_TEMP/platformd-s3-python/bin/pip" \
             --disable-pip-version-check \
@@ -171,6 +175,42 @@ jobs:
               -run 'Test(Boto3S3Contract|LanceDBS3Contract|MinIOStreamingS3Contract|BunS3Contract|RustFSRestoreReplacesObjectsAndMultipartUploads|PublicStoreHeaderCannotReachSiblingBucket|RustFSBucketReconciliationRemovesOrphans)' \
               -count=1 \
               -v
+
+      - name: Verify Sentry SDK conformance
+        env:
+          ERROR_TRACKER_ADMIN_TOKEN: release-conformance-admin-token
+          ERROR_TRACKER_CONTAINER_URL: http://host.docker.internal:18080
+          ERROR_TRACKER_URL: http://127.0.0.1:18080
+        run: |
+          tracker_volume="$RUNNER_TEMP/error-tracker-conformance"
+          mkdir -p "$tracker_volume"
+          ERROR_TRACKER_PUBLIC_URL="$ERROR_TRACKER_CONTAINER_URL" \
+          ERROR_TRACKER_LISTEN=0.0.0.0:18080 \
+          ERROR_TRACKER_VOLUME="$tracker_volume" \
+          ERROR_TRACKER_UI_ENABLED=false \
+            dist/runtime/platformd-error-tracker >"$RUNNER_TEMP/error-tracker-conformance.log" 2>&1 &
+          tracker_pid=$!
+          cleanup() {
+            kill "$tracker_pid" 2>/dev/null || true
+            wait "$tracker_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+
+          for _ in $(seq 1 50); do
+            if curl -fsS "$ERROR_TRACKER_URL/health" >/dev/null; then
+              break
+            fi
+            if ! kill -0 "$tracker_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/error-tracker-conformance.log"
+              exit 1
+            fi
+            sleep 0.2
+          done
+          curl -fsS "$ERROR_TRACKER_URL/health" >/dev/null || {
+            cat "$RUNNER_TEMP/error-tracker-conformance.log"
+            exit 1
+          }
+          ./error-tracker/conformance/run.sh
 
       - name: Verify private runtime lifecycle and isolation
         run: |
@@ -303,6 +343,7 @@ jobs:
             dist/runtime/conmon \
             dist/runtime/netavark \
             dist/runtime/catatonit \
+            dist/runtime/platformd-error-tracker \
             dist/runtime/platformd-objectstore
           go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
           python3 -m zipfile -t dist/platformd-linux-amd64
@@ -327,6 +368,7 @@ jobs:
             dist/debian-13-smoke/runtime/conmon \
             dist/debian-13-smoke/runtime/crun \
             dist/debian-13-smoke/runtime/netavark \
+            dist/debian-13-smoke/runtime/platformd-error-tracker \
             dist/debian-13-smoke/runtime/platformd-objectstore
           docker run --rm --platform linux/amd64 \
             --volume "$PWD/dist:/release:ro" \
@@ -341,7 +383,7 @@ jobs:
                 libseccomp2
               ! command -v nft
               ! command -v iptables
-              for helper in catatonit conmon crun netavark platformd-objectstore; do
+              for helper in catatonit conmon crun netavark platformd-error-tracker platformd-objectstore; do
                 env -i LC_ALL=C LANG=C "/release/debian-13-smoke/runtime/$helper" --version >/dev/null
               done
               status=0

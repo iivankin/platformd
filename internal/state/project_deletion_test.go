@@ -31,6 +31,8 @@ INSERT INTO managed_redis(id, project_id, name, image_tag, image_digest, volume_
  VALUES ('redis-delete', 'delete-me', 'cache', '8', 'sha256:redis', 'redis-volume', x'01', 1, 1);
 INSERT INTO object_stores(id, project_id, name, bucket_name, created_at, updated_at)
  VALUES ('store-delete', 'delete-me', 'assets', 'assets', 1, 1);
+INSERT INTO error_trackers(id, project_id, name, volume_id, created_at, updated_at)
+ VALUES ('tracker-delete', 'delete-me', 'errors', 'tracker-volume', 1, 1);
 INSERT INTO network_gateways(id, project_id, name, mode, transport, protocol, interface_name, source_address, listen_port, target_service_id, target_port, created_at, updated_at)
  VALUES ('gateway-delete', 'delete-me', 'export', 'export', 'vpc', 'tcp', 'wg0', '10.0.0.1', 15432, 'service-delete', 8080, 1, 1);
 INSERT INTO runtime_deployments(id, resource_kind, resource_id, image_tag, image_digest, status, created_at)
@@ -55,7 +57,7 @@ INSERT INTO operations(id, kind, target_id, status, started_at)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Services) != 1 || len(plan.Postgres) != 1 || len(plan.Redis) != 1 || len(plan.ObjectStores) != 1 || len(plan.Gateways) != 1 || len(plan.Volumes) != 1 {
+	if len(plan.Services) != 1 || len(plan.Postgres) != 1 || len(plan.Redis) != 1 || len(plan.ObjectStores) != 1 || len(plan.ErrorTrackers) != 1 || len(plan.Gateways) != 1 || len(plan.Volumes) != 1 {
 		t.Fatalf("incomplete deletion plan: %+v", plan)
 	}
 	if _, err := store.Project(context.Background(), "delete-me"); !errors.Is(err, ErrProjectNotFound) {
@@ -64,7 +66,7 @@ INSERT INTO operations(id, kind, target_id, status, started_at)
 	if _, err := store.Project(context.Background(), "keep-me"); err != nil {
 		t.Fatalf("unrelated project was changed: %v", err)
 	}
-	for _, table := range []string{"services", "volumes", "managed_postgres", "managed_redis", "object_stores", "network_gateways", "runtime_deployments", "backups", "operations"} {
+	for _, table := range []string{"services", "volumes", "managed_postgres", "managed_redis", "object_stores", "error_trackers", "network_gateways", "runtime_deployments", "backups", "operations"} {
 		var count int
 		if err := store.database.QueryRow("SELECT count(*) FROM " + table + " WHERE id LIKE '%-delete'").Scan(&count); err != nil {
 			t.Fatal(err)

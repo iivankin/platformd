@@ -1,4 +1,4 @@
-import { Box, Database, HardDrive, X } from "lucide-react";
+import { Bug, Box, Database, HardDrive, X } from "lucide-react";
 import type { ComponentType } from "react";
 import { Link, Navigate } from "react-router";
 
@@ -28,9 +28,14 @@ const definitions: Record<
   {
     icon: ComponentType<{ className?: string }>;
     label: string;
-    resourceKind: "object_store" | "postgres" | "redis";
+    resourceKind: "error_tracker" | "object_store" | "postgres" | "redis";
   }
 > = {
+  error_tracker: {
+    icon: Bug,
+    label: "Error tracker",
+    resourceKind: "error_tracker",
+  },
   postgres: { icon: Database, label: "PostgreSQL", resourceKind: "postgres" },
   redis: { icon: Box, label: "Redis", resourceKind: "redis" },
   storage: {

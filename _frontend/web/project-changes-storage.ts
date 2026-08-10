@@ -177,6 +177,11 @@ const objectStoreInputSchema = z.object({
   name: z.string(),
   publicHostname: z.string().optional(),
 });
+const errorTrackerInputSchema = z.object({
+  backupPolicy: backupPolicySchema.optional(),
+  name: z.string(),
+  publicHostname: z.string().optional(),
+});
 const networkGatewayInputSchema = z.object({
   interfaceName: z.string(),
   listenPort: z.number(),
@@ -207,6 +212,12 @@ const createServiceInputSchema = z.object({
     .optional(),
 });
 const pendingResourceCreationSchema = z.discriminatedUnion("kind", [
+  z.object({
+    backupPolicy: backupPolicySchema,
+    id: z.string(),
+    input: errorTrackerInputSchema,
+    kind: z.literal("error_tracker"),
+  }),
   z.object({
     id: z.string(),
     input: networkGatewayInputSchema,

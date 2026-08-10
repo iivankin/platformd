@@ -1,4 +1,4 @@
-import { Box, Database, HardDrive, Network } from "lucide-react";
+import { Bug, Box, Database, HardDrive, Network } from "lucide-react";
 
 import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { SectionCard } from "@/components/ui/card";
@@ -10,6 +10,10 @@ import type { PendingResourceCreation } from "@/pending-resource-creation";
 type PostgresDraft = Extract<PendingResourceCreation, { kind: "postgres" }>;
 type RedisDraft = Extract<PendingResourceCreation, { kind: "redis" }>;
 type StorageDraft = Extract<PendingResourceCreation, { kind: "storage" }>;
+type ErrorTrackerDraft = Extract<
+  PendingResourceCreation,
+  { kind: "error_tracker" }
+>;
 type ManagedDatabaseDraft = PostgresDraft | RedisDraft;
 type ManagedDraft = Exclude<
   PendingResourceCreation,
@@ -274,6 +278,96 @@ const StorageSettings = ({
   );
 };
 
+const ErrorTrackerSettings = ({
+  draft,
+  internalHostname,
+  onChange,
+}: {
+  draft: ErrorTrackerDraft;
+  internalHostname: string;
+  onChange: (draft: ErrorTrackerDraft) => void;
+}) => {
+  const updateInput = (input: ErrorTrackerDraft["input"]) =>
+    onChange({ ...draft, input });
+
+  return (
+    <PageStack>
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+        <div className="px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Bug className="size-3.5 text-muted-foreground" />
+            <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
+              Error tracker
+            </h3>
+          </div>
+          <p className="mt-2 text-[9px] leading-4 text-muted-foreground">
+            One isolated tracker process and volume inside this project.
+          </p>
+        </div>
+        <div className="border-t border-border lg:border-t-0 lg:border-l">
+          <label
+            className="block border-b border-border px-5 py-4"
+            htmlFor="draft-error-tracker-name"
+          >
+            <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+              Resource name
+            </span>
+            <Input
+              className="mt-2"
+              id="draft-error-tracker-name"
+              onChange={(event) =>
+                updateInput({ ...draft.input, name: event.target.value })
+              }
+              value={draft.input.name}
+            />
+          </label>
+          <div className="px-5 py-4">
+            <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+              Internal endpoint
+            </p>
+            <code className="mt-2 block text-[10px]">
+              http://{internalHostname}:9001
+            </code>
+          </div>
+        </div>
+      </SectionCard>
+
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+        <div className="px-5 py-4">
+          <div className="flex items-center gap-2">
+            <Network className="size-3.5 text-muted-foreground" />
+            <h3 className="text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
+              Public access
+            </h3>
+          </div>
+          <p className="mt-2 text-[9px] leading-4 text-muted-foreground">
+            Optional HTTPS endpoint used in generated application DSNs.
+          </p>
+        </div>
+        <div className="border-t border-border px-5 py-4 lg:border-t-0 lg:border-l">
+          <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+            Public hostname
+          </span>
+          <div className="mt-2">
+            <CertificateHostnameCombobox
+              ariaLabel="Error tracker public hostname"
+              id="draft-error-tracker-hostname"
+              onChange={(publicHostname) =>
+                updateInput({
+                  ...draft.input,
+                  publicHostname: publicHostname || undefined,
+                })
+              }
+              placeholder="errors.example.com"
+              value={draft.input.publicHostname ?? ""}
+            />
+          </div>
+        </div>
+      </SectionCard>
+    </PageStack>
+  );
+};
+
 export const ResourceDraftSettings = ({
   draft,
   internalHostname,
@@ -283,6 +377,15 @@ export const ResourceDraftSettings = ({
   internalHostname: string;
   onChange: (draft: ManagedDraft) => void;
 }) => {
+  if (draft.kind === "error_tracker") {
+    return (
+      <ErrorTrackerSettings
+        draft={draft}
+        internalHostname={internalHostname}
+        onChange={onChange}
+      />
+    );
+  }
   if (draft.kind === "storage") {
     return (
       <StorageSettings

@@ -1,10 +1,20 @@
-import { Box, Database, HardDrive, Network, Server, X } from "lucide-react";
+import {
+  Bug,
+  Box,
+  Database,
+  HardDrive,
+  Network,
+  Server,
+  X,
+} from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
 import type { ProjectCanvas } from "@/api";
+import { ErrorTrackerDetailPanel } from "@/error-tracker-detail-panel";
+import type { ErrorTrackerWorkspaceView } from "@/error-tracker-detail-panel";
 import { NetworkGatewayDetailPanel } from "@/network-gateway-detail-panel";
 import type { NetworkGatewayWorkspaceView } from "@/network-gateway-detail-panel";
 import { ObjectStoreDetailPanel } from "@/object-store-detail-panel";
@@ -33,6 +43,15 @@ const workspaces: Record<
   ResourceNodeData["kind"],
   ResourceWorkspaceDefinition
 > = {
+  error_tracker: {
+    icon: Bug,
+    label: "Error tracker",
+    views: [
+      { label: "Console", value: "console" },
+      { label: "Backups", value: "backups" },
+      { label: "Settings", value: "settings" },
+    ],
+  },
   network_gateway: {
     icon: Network,
     label: "Network gateway",
@@ -119,6 +138,15 @@ const ResourceWorkspace = ({
   resources: ProjectCanvas["resources"];
 }) => {
   switch (node.data.kind) {
+    case "error_tracker": {
+      return (
+        <ErrorTrackerDetailPanel
+          projectID={projectID}
+          trackerID={node.id}
+          view={view as ErrorTrackerWorkspaceView}
+        />
+      );
+    }
     case "network_gateway": {
       return (
         <NetworkGatewayDetailPanel

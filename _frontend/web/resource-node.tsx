@@ -1,6 +1,6 @@
 import { Handle, Position } from "@xyflow/react";
 import type { NodeProps } from "@xyflow/react";
-import { Box, Database, HardDrive, Network, Server } from "lucide-react";
+import { Bug, Box, Database, HardDrive, Network, Server } from "lucide-react";
 import type { ComponentType } from "react";
 import { memo } from "react";
 
@@ -10,6 +10,7 @@ const resourceKinds: Record<
   ResourceFlowNode["data"]["kind"],
   { icon: ComponentType<{ className?: string }>; label: string }
 > = {
+  error_tracker: { icon: Bug, label: "Error tracker" },
   network_gateway: { icon: Network, label: "Network gateway" },
   object_store: { icon: HardDrive, label: "Object storage" },
   postgres: { icon: Database, label: "PostgreSQL" },

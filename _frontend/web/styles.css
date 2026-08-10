@@ -3,6 +3,7 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/jetbrains-mono";
 @import "@xyflow/react/dist/style.css";
+@import "@sentry/rrweb/dist/style.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -124,6 +125,21 @@
   a {
     @apply focus-visible:outline-1 focus-visible:outline-offset-2 focus-visible:outline-ring;
   }
+}
+
+.tracker-grid {
+  background-image:
+    linear-gradient(
+      color-mix(in oklch, var(--foreground) 5%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      90deg,
+      color-mix(in oklch, var(--foreground) 5%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 40px 40px;
+  mask-image: radial-gradient(circle at center, black, transparent 72%);
 }
 
 ::selection {

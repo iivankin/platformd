@@ -66,7 +66,7 @@ func Reconcile(
 			return Result{}, fmt.Errorf("prepare project volume directory %s: %w", projectID, err)
 		}
 		for _, reference := range volumes {
-			if reference.Kind != state.PersistentVolumeOrdinary {
+			if reference.Kind != state.PersistentVolumeOrdinary && reference.Kind != state.PersistentVolumeErrorTracker {
 				continue
 			}
 			created, err := ensureOrdinary(projectRoot, reference)
@@ -88,7 +88,7 @@ func EnsureOrdinary(root string, reference state.PersistentVolumeReference) (boo
 	if err := validateReference(reference); err != nil {
 		return false, err
 	}
-	if reference.Kind != state.PersistentVolumeOrdinary {
+	if reference.Kind != state.PersistentVolumeOrdinary && reference.Kind != state.PersistentVolumeErrorTracker {
 		return false, errors.New("ordinary volume reference kind is invalid")
 	}
 	if err := ensureDirectory(root, 0o700); err != nil {
@@ -221,7 +221,7 @@ func ensureOrdinary(projectRoot string, reference state.PersistentVolumeReferenc
 
 func validateReference(reference state.PersistentVolumeReference) error {
 	switch reference.Kind {
-	case state.PersistentVolumeOrdinary:
+	case state.PersistentVolumeOrdinary, state.PersistentVolumeErrorTracker:
 	case state.PersistentVolumePostgres, state.PersistentVolumeRedis:
 	default:
 		return fmt.Errorf("persistent volume kind %q is invalid", reference.Kind)

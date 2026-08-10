@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@sentry/node": "10.69.0",
+    "express": "5.1.0"
+  }
+}

@@ -10,6 +10,7 @@ import (
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/cryptobox"
+	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/remotes3"
@@ -36,6 +37,7 @@ type recoveryConfig struct {
 	Installation state.Installation
 	Runtime      *runtimeStack
 	ObjectStore  *objectstore.Application
+	ErrorTracker *errortracker.Manager
 	Progress     *recoveryProgress
 	Remote       func(remotes3.Config) (backup.ControlRemote, error)
 	Now          func() time.Time
@@ -71,6 +73,7 @@ func (plan recoveryPlan) run(ctx context.Context) error {
 		{kind: "image", ids: resources.Images},
 		{kind: "volume", ids: resources.Volumes},
 		{kind: "object_store", ids: resources.ObjectStores},
+		{kind: "error_tracker", ids: resources.ErrorTrackers},
 		{kind: "postgres", ids: resources.Postgres},
 		{kind: "redis", ids: resources.Redis},
 	}
@@ -195,7 +198,10 @@ func recoveryRestorer(config recoveryConfig, kind string) (backup.ResourceRestor
 		volumeConfig = append(volumeConfig, ordinaryVolumeBackupConfig{Store: store, Root: config.Runtime.paths.VolumesRoot})
 	}
 	images, _ := config.Store.(imageRevisionRepository)
-	restorer := resourceRestorers(config.Runtime, images, config.ObjectStore, volumeConfig...)[kind]
+	trackerStore, _ := config.Store.(errorTrackerRestoreRepository)
+	restorer := resourceRestorers(
+		config.Runtime, images, config.ObjectStore, trackerStore, config.ErrorTracker, volumeConfig...,
+	)[kind]
 	if restorer == nil {
 		return nil, errors.New("recovery resource kind is unsupported")
 	}

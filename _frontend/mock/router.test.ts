@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createAPIToken,
   createBackupTarget,
+  createErrorTracker,
   configureCloudflareMesh,
   createNetworkGateway,
   createProject,
@@ -21,6 +22,7 @@ import {
   fetchCloudflareMeshCredential,
   fetchCloudflareMeshSettings,
   fetchDiskPressure,
+  fetchErrorTracker,
   fetchIdentity,
   fetchInfrastructureLogs,
   fetchInstallationSettings,
@@ -55,6 +57,7 @@ import {
   setCloudflareAccessConfiguration,
   setManagedPostgresExtension,
   uploadContainerFile,
+  updateErrorTrackerPublicAccess,
   queryManagedPostgres,
 } from "../web/api";
 import {
@@ -695,6 +698,47 @@ describe("mock API", () => {
     expect(settings.accessTeamDomain).toBe("preview.cloudflareaccess.com");
   });
 
+  test("mock error tracker embeds its console behind the resource route", async () => {
+    const state = createMockState("demo");
+    const mockFetch = fetcher(state);
+    const tracker = await createErrorTracker(
+      "project-demo",
+      { name: "errors" },
+      mockFetch
+    );
+
+    await expect(
+      fetchErrorTracker("project-demo", tracker.id, undefined, mockFetch)
+    ).resolves.toEqual(tracker);
+    const canvas = await fetchProjectCanvas(
+      "project-demo",
+      undefined,
+      mockFetch
+    );
+    expect(canvas.project.errorTrackerCount).toBe(1);
+    expect(canvas.resources).toContainEqual(
+      expect.objectContaining({ id: tracker.id, kind: "error_tracker" })
+    );
+
+    const updated = await updateErrorTrackerPublicAccess(
+      "project-demo",
+      tracker.id,
+      {
+        expectedUpdatedAt: tracker.updatedAt,
+        publicHostname: "errors.mock.local",
+      },
+      mockFetch
+    );
+    const consoleResponse = await mockFetch(
+      `/api/v1/projects/project-demo/error-trackers/${tracker.id}/console/api/v1/tracker`
+    );
+    expect(await consoleResponse.json()).toMatchObject({
+      name: "errors",
+      publicUrl: "https://errors.mock.local",
+    });
+    expect(updated.publicHostname).toBe("errors.mock.local");
+  });
+
   test("deletes a project and all of its mock-owned resources", async () => {
     const state = createMockState("demo");
     const mockFetch = fetcher(state);
@@ -713,6 +757,7 @@ describe("mock API", () => {
     expect(Object.keys(state.postgres)).toEqual([]);
     expect(Object.keys(state.redis)).toEqual([]);
     expect(Object.keys(state.objectStores)).toEqual([]);
+    expect(Object.keys(state.errorTrackers)).toEqual([]);
     expect(state.backupPolicies).toHaveLength(0);
   });
 

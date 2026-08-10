@@ -10,8 +10,10 @@ frontend:
 
 sidecar:
 	cargo build --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
+	cargo build --release --locked --manifest-path error-tracker/Cargo.toml
 	mkdir -p dist/runtime
 	install -m 0755 internal/objectstore/sidecar/target/release/platformd-objectstore dist/runtime/platformd-objectstore
+	install -m 0755 error-tracker/target/release/error-tracker dist/runtime/platformd-error-tracker
 
 check: frontend
 	bun --cwd=_frontend run typecheck

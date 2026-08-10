@@ -1,4 +1,5 @@
 import type { ProjectCanvas } from "@/api";
+import { ErrorTrackerCreatePanel } from "@/error-tracker-create-panel";
 import { NetworkGatewayCreatePanel } from "@/network-gateway-create-panel";
 import { ObjectStoreCreatePanel } from "@/object-store-create-panel";
 import {
@@ -19,6 +20,7 @@ import { ServiceCreatePanel } from "@/service-create-panel";
 
 export type CreateKind =
   | "picker"
+  | "error_tracker"
   | "network_gateway"
   | "postgres"
   | "redis"
@@ -31,7 +33,13 @@ interface ProjectCreateOverlaysProperties {
   onClose: () => void;
   onDrafted: (draft: PendingResourceCreation) => void;
   onSelect: (
-    kind: "network_gateway" | "postgres" | "redis" | "service" | "storage"
+    kind:
+      | "error_tracker"
+      | "network_gateway"
+      | "postgres"
+      | "redis"
+      | "service"
+      | "storage"
   ) => void;
   projectID: string;
   resources: ProjectCanvas["resources"];
@@ -60,6 +68,19 @@ export const ProjectCreateOverlays = ({
             settings: emptyPendingServiceCreationSettings(input),
           });
         }}
+      />
+    ) : null}
+    {kind === "error_tracker" ? (
+      <ErrorTrackerCreatePanel
+        onClose={onClose}
+        onDrafted={(input) =>
+          onDrafted({
+            backupPolicy: emptyPendingBackupPolicy(),
+            id: newResourceDraftID(),
+            input,
+            kind: "error_tracker",
+          })
+        }
       />
     ) : null}
     {kind === "network_gateway" ? (

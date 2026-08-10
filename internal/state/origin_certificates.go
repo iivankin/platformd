@@ -214,7 +214,8 @@ func queryPublicHostnames(ctx context.Context, querier hostnameQuerier) ([]strin
 	rows, err := querier.QueryContext(ctx, `
 SELECT admin_hostname FROM installation
 UNION SELECT hostname FROM service_domains
-UNION SELECT public_hostname FROM object_stores WHERE public_hostname IS NOT NULL`)
+UNION SELECT public_hostname FROM object_stores WHERE public_hostname IS NOT NULL
+UNION SELECT public_hostname FROM error_trackers WHERE public_hostname IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}

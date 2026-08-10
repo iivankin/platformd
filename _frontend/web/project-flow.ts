@@ -70,6 +70,7 @@ const pendingChangeRowHeight = 34;
 const volumeRowHeight = 33;
 
 const surroundSinkKinds = new Set<ProjectCanvas["resources"][number]["kind"]>([
+  "error_tracker",
   "object_store",
   "postgres",
   "redis",
@@ -158,7 +159,7 @@ const incomingDegree = (
 };
 
 // Dedicated low-degree dependency sinks go left of services; shared hubs stay
-// right. Only postgres/redis/object_store participate so service chains keep a
+// right. Only managed data resources participate so service chains keep a
 // normal left-to-right layered flow.
 const partitionLeftSinks = (
   resources: ProjectCanvas["resources"],

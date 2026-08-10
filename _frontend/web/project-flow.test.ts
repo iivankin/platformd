@@ -11,6 +11,7 @@ import type { ResourceFlowEdge, ResourceFlowNode } from "@/project-flow";
 
 const project: ProjectCanvas["project"] = {
   createdAt: 1,
+  errorTrackerCount: 0,
   hasIcon: false,
   id: "project",
   name: "shop",

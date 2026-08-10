@@ -10,6 +10,7 @@ import {
   attachServiceListener,
   createAPIToken,
   createBackupTarget,
+  createErrorTracker,
   createObjectStore,
   createManagedRedis,
   createProject,
@@ -50,6 +51,7 @@ import {
   fetchInstallationUsageHistory,
   fetchLargestObjectsSearch,
   fetchDiskPressure,
+  fetchErrorTracker,
   forceImageGarbageCollection,
   applySelfUpdate,
   fetchManagedImageTags,
@@ -91,6 +93,7 @@ import {
   restoreBackupGeneration,
   retryRecovery,
   updateService,
+  updateErrorTrackerPublicAccess,
   updateObjectStorePublicAccess,
   uploadObject,
 } from "@/api";
@@ -241,6 +244,7 @@ test("reads Access display name and picture from custom OIDC claims", async () =
 
 const project = {
   createdAt: 1,
+  errorTrackerCount: 0,
   hasIcon: false,
   id: "project-id",
   name: "shop",
@@ -1435,6 +1439,75 @@ test("creates PostgreSQL and runs bounded SQL only through the admin client", as
     ...extensionOperation,
     kind: "postgres_extension_uninstall",
   });
+});
+
+test("manages a project-scoped error tracker", async () => {
+  const resource = {
+    backupEnabled: false,
+    backupRetentionCount: 7,
+    createdAt: 1,
+    id: "tracker/id",
+    internalHostname: "errors.shop.internal",
+    internalUrl: "http://errors.shop.internal:9001",
+    name: "errors",
+    projectId: "project/id",
+    status: "running" as const,
+    updatedAt: 1,
+    volumeId: "volume/id",
+  };
+  await expect(
+    createErrorTracker(
+      resource.projectId,
+      {
+        backupPolicy: {
+          cron: "",
+          enabled: false,
+          retentionCount: 7,
+          targetId: "",
+        },
+        name: resource.name,
+      },
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/error-trackers"
+        );
+        expect(init?.method).toBe("POST");
+        return Promise.resolve(Response.json(resource, { status: 201 }));
+      }
+    )
+  ).resolves.toEqual(resource);
+
+  await expect(
+    fetchErrorTracker(resource.projectId, resource.id, undefined, (input) => {
+      expect(input.toString()).toBe(
+        "/api/v1/projects/project%2Fid/error-trackers/tracker%2Fid"
+      );
+      return Promise.resolve(Response.json(resource));
+    })
+  ).resolves.toEqual(resource);
+
+  const published = {
+    ...resource,
+    publicHostname: "errors.example.com",
+    updatedAt: 2,
+  };
+  await expect(
+    updateErrorTrackerPublicAccess(
+      resource.projectId,
+      resource.id,
+      {
+        expectedUpdatedAt: resource.updatedAt,
+        publicHostname: published.publicHostname,
+      },
+      (input, init) => {
+        expect(input.toString()).toBe(
+          "/api/v1/projects/project%2Fid/error-trackers/tracker%2Fid/public-access"
+        );
+        expect(init?.method).toBe("PUT");
+        return Promise.resolve(Response.json(published));
+      }
+    )
+  ).resolves.toEqual(published);
 });
 
 test("uses the Access-only object storage browser contract", async () => {

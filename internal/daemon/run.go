@@ -33,6 +33,7 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
+	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/hostmetrics"
 	"github.com/iivankin/platformd/internal/imageupload"
 	"github.com/iivankin/platformd/internal/ingress"
@@ -475,6 +476,32 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	errorTrackerManager, err := errortracker.NewManager(errortracker.ManagerConfig{
+		Binary:      filepath.Join(paths.Current, "runtime", "platformd-error-tracker"),
+		VolumeRoot:  paths.VolumesRoot,
+		RuntimeRoot: filepath.Join(paths.RuntimeRoot, "error-trackers"),
+		Runtime:     runtime,
+	})
+	if err != nil {
+		return fmt.Errorf("configure error tracker runtime: %w", err)
+	}
+	defer func() { returnErr = errors.Join(returnErr, errorTrackerManager.Close()) }()
+	errorTrackerRepository := &liveErrorTrackerRepository{store: store}
+	errorTrackerApplication, err := errortracker.NewApplication(
+		errorTrackerRepository, errorTrackerManager, certificates.Covers, publicMutationMu,
+	)
+	if err != nil {
+		return err
+	}
+	if !installation.RecoveryMode {
+		trackers, err := store.ErrorTrackers(ctx)
+		if err != nil {
+			return fmt.Errorf("load error trackers: %w", err)
+		}
+		if err := errorTrackerManager.Reconcile(ctx, trackers); err != nil {
+			log.Printf("error tracker startup reconcile: %v", err)
+		}
+	}
 	var disasterRecoveryProgress *recoveryProgress
 	if installation.RecoveryMode {
 		disasterRecoveryProgress = newRecoveryProgress()
@@ -482,7 +509,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
 		Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 		Admission: mutationAdmission, Master: key,
-		Restorers: resourceRestorers(runtime, store, objectStoreApplication,
+		Restorers: resourceRestorers(runtime, store, objectStoreApplication, store, errorTrackerManager,
 			ordinaryVolumeBackupConfig{Store: store, Root: paths.VolumesRoot}),
 		OnError: func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
 		OnSuccess: func(request backup.ResourceRestoreRequest) {
@@ -529,6 +556,16 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 					return backup.ResourceExport{
 						Reader: export.Reader, Release: export.Release,
 					}, err
+				}),
+				"error_tracker": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
+					tracker, err := store.ErrorTracker(exportContext, resourceID)
+					if err != nil {
+						return backup.ResourceExport{}, err
+					}
+					reader, err := volume.OpenLiveBackup(exportContext, paths.VolumesRoot, state.Volume{
+						ID: tracker.VolumeID, ProjectID: tracker.ProjectID,
+					})
+					return backup.ResourceExport{Reader: reader}, err
 				}),
 			},
 		})
@@ -588,6 +625,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	publicObjectStoreHandler, err := newAvailabilityHandler(objectStoreHandler, !installation.RecoveryMode)
+	if err != nil {
+		return err
+	}
+	publicErrorTrackerHandler, err := newAvailabilityHandler(
+		errortracker.NewPublicHandler(errorTrackerRepository, errorTrackerManager.Proxy()),
+		!installation.RecoveryMode,
+	)
 	if err != nil {
 		return err
 	}
@@ -860,6 +904,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithProjects(liveProjectRepository{
 			store: store, runtime: runtime, backups: backupResources, domains: domains,
 			objectStores: objectStoreRepository, objectStoreData: objectStoreApplication,
+			errorTrackers: errorTrackerManager, errorTrackerRoutes: errorTrackerRepository,
 			listeners: liveServiceListeners, gateways: liveNetworkGateways, traffic: publicTraffic,
 			onCleanupError: func(cleanupErr error) { log.Printf("project cleanup: %v", cleanupErr) },
 		}),
@@ -883,6 +928,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithManagedPostgres(managedPostgresApplication),
 		server.WithManagedStats(managedStats),
 		server.WithObjectStores(objectStoreApplication),
+		server.WithErrorTrackers(errorTrackerApplication, errorTrackerManager.Proxy()),
 		server.WithInstallationSettings(installationSettings, cancelDaemon),
 		server.WithCloudflareDNS(cloudflareDNS),
 		server.WithCloudflareMesh(cloudflareMesh),
@@ -915,15 +961,17 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	adminHandler := adminHostnameHandler(adminAccessHandler, publicHandler)
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
-		ObjectStoreHandler: publicObjectStoreHandler,
-		Backends:           runtime,
-		Traffic:            publicTraffic,
+		ObjectStoreHandler:  publicObjectStoreHandler,
+		ErrorTrackerHandler: publicErrorTrackerHandler,
+		Backends:            runtime,
+		Traffic:             publicTraffic,
 	})
 	if err != nil {
 		return fmt.Errorf("configure HTTPS ingress: %w", err)
 	}
 	domains.router = ingressRouter
 	objectStoreRepository.router = ingressRouter
+	errorTrackerRepository.router = ingressRouter
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
 	}
@@ -942,6 +990,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
 			return fmt.Errorf("load object store domains: %w", err)
 		}
+		if err := errorTrackerRepository.reloadPublicRoutes(ctx); err != nil {
+			return fmt.Errorf("load error tracker domains: %w", err)
+		}
 	}
 	var disasterRecovery recoveryAttempt
 	if installation.RecoveryMode {
@@ -950,6 +1001,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Admission: mutationAdmission, Master: key,
 			Installation: installation, Runtime: runtime,
 			ObjectStore: objectStoreApplication, Progress: disasterRecoveryProgress,
+			ErrorTracker: errorTrackerManager,
 		})
 		if err != nil {
 			return fmt.Errorf("configure automatic disaster recovery: %w", err)

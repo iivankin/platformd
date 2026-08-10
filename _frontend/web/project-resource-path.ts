@@ -1,6 +1,7 @@
 import type { ResourceNodeData } from "@/project-flow";
 
 export type ResourceCollection =
+  | "error-trackers"
   | "network-gateways"
   | "object-stores"
   | "postgres"
@@ -10,6 +11,7 @@ export type ResourceCollection =
 export type DeploymentWorkspaceView = "deploy-logs" | "details";
 
 const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
+  error_tracker: "error-trackers",
   network_gateway: "network-gateways",
   object_store: "object-stores",
   postgres: "postgres",
@@ -18,6 +20,7 @@ const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
 };
 
 const defaultViewByKind: Record<ResourceNodeData["kind"], string> = {
+  error_tracker: "console",
   network_gateway: "variables",
   object_store: "objects",
   postgres: "deployments",

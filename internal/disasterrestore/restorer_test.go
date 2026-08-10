@@ -285,7 +285,7 @@ func restoreReleaseSlot(t *testing.T, root string) (layout.Paths, ed25519.Public
 
 func writeRestoreRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

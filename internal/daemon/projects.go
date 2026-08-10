@@ -9,21 +9,24 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
+	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type liveProjectRepository struct {
-	store           *state.Store
-	runtime         *runtimeStack
-	backups         *backup.ResourceApplication
-	domains         *liveDomainRepository
-	objectStores    *liveObjectStoreRepository
-	objectStoreData objectStoreDataCleaner
-	listeners       *liveServiceListenerRepository
-	gateways        *liveNetworkGatewayRepository
-	traffic         *trafficmetrics.Registry
-	onCleanupError  func(error)
+	store              *state.Store
+	runtime            *runtimeStack
+	backups            *backup.ResourceApplication
+	domains            *liveDomainRepository
+	objectStores       *liveObjectStoreRepository
+	objectStoreData    objectStoreDataCleaner
+	errorTrackers      *errortracker.Manager
+	errorTrackerRoutes *liveErrorTrackerRepository
+	listeners          *liveServiceListenerRepository
+	gateways           *liveNetworkGatewayRepository
+	traffic            *trafficmetrics.Registry
+	onCleanupError     func(error)
 }
 
 type objectStoreDataCleaner interface {
@@ -57,6 +60,10 @@ func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, proje
 			resource.Status, resource.StatusMessage = repository.runtime.PostgresStatus(resource.ID)
 		case "object_store":
 			resource.Status, resource.StatusMessage = repository.runtime.ObjectStoreStatus(canvas.Project.ID)
+		case "error_tracker":
+			if repository.errorTrackers != nil {
+				resource.Status, resource.StatusMessage = repository.errorTrackers.Status(resource.ID)
+			}
 		case "network_gateway":
 			resource.Status, resource.StatusMessage = repository.runtime.NetworkGatewayStatus(resource.ID)
 		}
@@ -128,6 +135,11 @@ func (repository liveProjectRepository) DeleteProject(ctx context.Context, input
 	if err := repository.runtime.stopProjectDatabases(ctx, plan.Postgres, plan.Redis); err != nil {
 		return state.ProjectDeletionPlan{}, err
 	}
+	if repository.errorTrackers != nil {
+		if err := repository.errorTrackers.StopProject(plan.ErrorTrackers); err != nil {
+			return state.ProjectDeletionPlan{}, err
+		}
+	}
 	deleted, err := repository.store.DeleteProject(ctx, input)
 	if err != nil {
 		return state.ProjectDeletionPlan{}, err
@@ -145,6 +157,9 @@ func (repository liveProjectRepository) DeleteProject(ctx context.Context, input
 	}
 	if repository.objectStores != nil {
 		repository.reportCleanupError(repository.objectStores.reloadPublicRoutes(ctx))
+	}
+	if repository.errorTrackerRoutes != nil {
+		repository.reportCleanupError(repository.errorTrackerRoutes.reloadPublicRoutes(ctx))
 	}
 	repository.cleanupProjectFiles(deleted)
 	return deleted, nil

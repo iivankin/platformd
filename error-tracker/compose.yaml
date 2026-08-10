@@ -1,0 +1,17 @@
+services:
+  error-tracker:
+    build:
+      context: .
+    environment:
+      ERROR_TRACKER_ADMIN_TOKEN: ${ERROR_TRACKER_ADMIN_TOKEN:-}
+      ERROR_TRACKER_UI_ENABLED: ${ERROR_TRACKER_UI_ENABLED:-}
+      ERROR_TRACKER_PUBLIC_URL: ${ERROR_TRACKER_PUBLIC_URL:-http://localhost:8080}
+      ERROR_TRACKER_SLUG: ${ERROR_TRACKER_SLUG:-error-tracker}
+    ports:
+      - "8080:8080"
+    volumes:
+      - error-tracker-data:/data
+    restart: unless-stopped
+
+volumes:
+  error-tracker-data:

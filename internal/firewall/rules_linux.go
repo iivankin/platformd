@@ -40,6 +40,11 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
 			)
 		}
+		if project.ErrorTrackerEnabled {
+			compiled.rules = append(compiled.rules,
+				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ErrorTrackerPort), verdict(expr.VerdictAccept))...),
+			)
+		}
 		for _, listener := range project.GatewayListeners {
 			compiled.rules = append(compiled.rules,
 				rule(table, input, append(matchGatewayListener(project, listener), verdict(expr.VerdictAccept))...),

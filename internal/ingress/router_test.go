@@ -71,11 +71,14 @@ func TestRouterDispatchesAdminAndRejectsHostSNIMismatch(t *testing.T) {
 	}
 }
 
-func TestRouterDispatchesObjectStoreAndPreservesIndependentRouteViews(t *testing.T) {
+func TestRouterDispatchesResourceHandlersAndPreservesIndependentRouteViews(t *testing.T) {
 	router, err := New(Config{
 		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
 		ObjectStoreHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 			response.WriteHeader(http.StatusCreated)
+		}),
+		ErrorTrackerHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+			response.WriteHeader(http.StatusAccepted)
 		}),
 		Backends: backendStub{},
 	})
@@ -84,6 +87,7 @@ func TestRouterDispatchesObjectStoreAndPreservesIndependentRouteViews(t *testing
 	}
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	router.ReloadObjectStores([]string{"objects.example.com"})
+	router.ReloadErrorTrackers([]string{"errors.example.com"})
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-b", TargetPort: 8081}})
 
 	response := httptest.NewRecorder()
@@ -91,8 +95,23 @@ func TestRouterDispatchesObjectStoreAndPreservesIndependentRouteViews(t *testing
 	if response.Code != http.StatusCreated {
 		t.Fatalf("object store status = %d", response.Code)
 	}
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("errors.example.com", "errors.example.com"))
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("error tracker status = %d", response.Code)
+	}
 	if router.routes.Load().services["app.example.com"].ServiceID != "service-b" {
 		t.Fatalf("service routes were lost: %#v", router.routes.Load().services)
+	}
+
+	// Resource route removal must release the hostname for later service use.
+	// Resource routes have priority over service routes in ServeHTTP.
+	router.ReloadErrorTrackers(nil)
+	router.Reload(map[string]Route{"errors.example.com": {ServiceID: "service-c", TargetPort: 8082}})
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("errors.example.com", "errors.example.com"))
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("released error tracker hostname status = %d", response.Code)
 	}
 }
 

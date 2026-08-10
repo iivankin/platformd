@@ -335,6 +335,21 @@ CREATE TABLE object_stores (
   UNIQUE (project_id, bucket_name)
 ) STRICT;
 
+CREATE TABLE error_trackers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  volume_id TEXT NOT NULL UNIQUE,
+  public_hostname TEXT UNIQUE,
+  backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
+  backup_cron TEXT,
+  backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_id, name)
+) STRICT;
+
 CREATE TABLE s3_credentials (
   id TEXT PRIMARY KEY,
   object_store_id TEXT NOT NULL REFERENCES object_stores(id) ON DELETE CASCADE,
@@ -416,7 +431,7 @@ CREATE TABLE backup_targets (
 CREATE TABLE backups (
   id TEXT PRIMARY KEY,
   target_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'image', 'object_store', 'postgres', 'redis', 'volume')),
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'error_tracker', 'image', 'object_store', 'postgres', 'redis', 'volume')),
   resource_id TEXT NOT NULL,
   scheduled_occurrence INTEGER,
   generation_id TEXT,
@@ -553,4 +568,4 @@ CREATE TABLE managed_stat_samples (
 
 CREATE INDEX managed_stat_samples_retention_idx ON managed_stat_samples(observed_at);
 
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;

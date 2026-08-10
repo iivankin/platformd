@@ -12,6 +12,7 @@ import {
   stringField,
 } from "./http";
 import { handleManagedResourcesAPI } from "./managed-resources";
+import { handlePlatformErrorTrackers } from "./platform-error-trackers";
 import { handleResourceCreation } from "./project-resources";
 import { handleServicesAPI } from "./services";
 import type { MockState } from "./state";
@@ -35,6 +36,7 @@ const handleProjectCollection = async (
   const input = await readObject(request);
   const project: Project = {
     createdAt: mockNow(),
+    errorTrackerCount: 0,
     hasIcon: false,
     id: nextMockID(state, "project"),
     name: stringField(input, "name", "mock-project"),
@@ -292,6 +294,9 @@ const removeProjectResources = (state: MockState, projectID: string): void => {
     ...Object.values(state.objectStores)
       .filter((resource) => resource.projectId === projectID)
       .map((resource) => resource.id),
+    ...Object.values(state.errorTrackers)
+      .filter((resource) => resource.projectId === projectID)
+      .map((resource) => resource.id),
     ...Object.values(state.networkGateways)
       .filter((resource) => resource.projectId === projectID)
       .map((resource) => resource.id),
@@ -304,6 +309,11 @@ const removeProjectResources = (state: MockState, projectID: string): void => {
   state.postgres = withoutKeys(state.postgres, resourceIDs);
   state.redis = withoutKeys(state.redis, resourceIDs);
   state.objectStores = withoutKeys(state.objectStores, resourceIDs);
+  state.errorTrackers = withoutKeys(state.errorTrackers, resourceIDs);
+  state.errorTrackerConsoles = withoutKeys(
+    state.errorTrackerConsoles,
+    resourceIDs
+  );
   state.networkGateways = withoutKeys(state.networkGateways, resourceIDs);
   state.objectMetadata = withoutKeys(state.objectMetadata, resourceIDs);
   state.postgresExtensions = withoutKeys(state.postgresExtensions, resourceIDs);
@@ -380,6 +390,7 @@ export const handleProjectsAPI = async (
     (await handleProjectDelete(request, state, segments)) ??
     (await handleProjectWebhooks(request, state, segments)) ??
     handleCanvas(request, state, segments) ??
+    (await handlePlatformErrorTrackers(request, state, segments)) ??
     (await handleResourceCreation(request, state, segments)) ??
     (await handleServicesAPI(request, state, segments, url)) ??
     handleManagedResourcesAPI(request, state, segments, url)

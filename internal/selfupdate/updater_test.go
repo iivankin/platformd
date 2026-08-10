@@ -413,7 +413,7 @@ func buildRelease(t *testing.T, root, version, binaryURL string, supported []str
 
 func writeUpdateRuntimeProfile(t *testing.T, root, version string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"} {
 		value := []byte("#!/bin/sh\n# " + version + "\nexit 0\n")
 		if err := os.WriteFile(filepath.Join(root, name), value, 0o755); err != nil {
 			t.Fatal(err)

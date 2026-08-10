@@ -35,28 +35,31 @@ type Route struct {
 }
 
 type Config struct {
-	AdminHostname      string
-	AdminHandler       http.Handler
-	ObjectStoreHandler http.Handler
-	Backends           BackendResolver
-	Traffic            *trafficmetrics.Registry
+	AdminHostname       string
+	AdminHandler        http.Handler
+	ObjectStoreHandler  http.Handler
+	ErrorTrackerHandler http.Handler
+	Backends            BackendResolver
+	Traffic             *trafficmetrics.Registry
 }
 
 type routeSnapshot struct {
-	services     map[string]Route
-	objectStores map[string]struct{}
+	services      map[string]Route
+	objectStores  map[string]struct{}
+	errorTrackers map[string]struct{}
 }
 
 type Router struct {
-	adminHostname      string
-	adminHandler       http.Handler
-	objectStoreHandler http.Handler
-	backends           BackendResolver
-	reloadMu           sync.Mutex
-	routes             atomic.Pointer[routeSnapshot]
-	transport          *http.Transport
-	bufferPool         *proxyBufferPool
-	traffic            *trafficmetrics.Registry
+	adminHostname       string
+	adminHandler        http.Handler
+	objectStoreHandler  http.Handler
+	errorTrackerHandler http.Handler
+	backends            BackendResolver
+	reloadMu            sync.Mutex
+	routes              atomic.Pointer[routeSnapshot]
+	transport           *http.Transport
+	bufferPool          *proxyBufferPool
+	traffic             *trafficmetrics.Registry
 }
 
 const (
@@ -73,12 +76,13 @@ func New(config Config) (*Router, error) {
 		return nil, errors.New("ingress requires admin handler and backend resolver")
 	}
 	router := &Router{
-		adminHostname:      adminHostname,
-		adminHandler:       config.AdminHandler,
-		objectStoreHandler: config.ObjectStoreHandler,
-		backends:           config.Backends,
-		bufferPool:         newProxyBufferPool(),
-		traffic:            config.Traffic,
+		adminHostname:       adminHostname,
+		adminHandler:        config.AdminHandler,
+		objectStoreHandler:  config.ObjectStoreHandler,
+		errorTrackerHandler: config.ErrorTrackerHandler,
+		backends:            config.Backends,
+		bufferPool:          newProxyBufferPool(),
+		traffic:             config.Traffic,
 		transport: &http.Transport{
 			Proxy:                 nil,
 			DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
@@ -89,7 +93,7 @@ func New(config Config) (*Router, error) {
 			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}
-	router.routes.Store(&routeSnapshot{services: map[string]Route{}, objectStores: map[string]struct{}{}})
+	router.routes.Store(&routeSnapshot{services: map[string]Route{}, objectStores: map[string]struct{}{}, errorTrackers: map[string]struct{}{}})
 	return router, nil
 }
 
@@ -104,7 +108,7 @@ func (router *Router) Reload(routes map[string]Route) {
 	}
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
-		services: cloned, objectStores: cloneSet(current.objectStores),
+		services: cloned, objectStores: cloneSet(current.objectStores), errorTrackers: cloneSet(current.errorTrackers),
 	})
 }
 
@@ -119,7 +123,20 @@ func (router *Router) ReloadObjectStores(hostnames []string) {
 	}
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
-		services: cloneMap(current.services), objectStores: cloned,
+		services: cloneMap(current.services), objectStores: cloned, errorTrackers: cloneSet(current.errorTrackers),
+	})
+}
+
+func (router *Router) ReloadErrorTrackers(hostnames []string) {
+	router.reloadMu.Lock()
+	defer router.reloadMu.Unlock()
+	cloned := make(map[string]struct{}, len(hostnames))
+	for _, hostname := range hostnames {
+		cloned[hostname] = struct{}{}
+	}
+	current := router.routes.Load()
+	router.routes.Store(&routeSnapshot{
+		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores), errorTrackers: cloned,
 	})
 }
 
@@ -150,6 +167,14 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 			return
 		}
 		router.objectStoreHandler.ServeHTTP(response, request)
+		return
+	}
+	if _, exists := routes.errorTrackers[hostname]; exists {
+		if router.errorTrackerHandler == nil {
+			unavailable(response)
+			return
+		}
+		router.errorTrackerHandler.ServeHTTP(response, request)
 		return
 	}
 	serviceRoute, exists := routes.services[hostname]

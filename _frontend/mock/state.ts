@@ -10,6 +10,7 @@ import type {
   CloudflareMeshSettings,
   Deployment,
   DiskPressure,
+  ErrorTracker,
   Identity,
   InfrastructureLogWindow,
   InstallationSettings,
@@ -33,6 +34,7 @@ import type {
   Volume,
 } from "../web/api";
 import { mockContainerFiles } from "./container-resources";
+import type { ErrorTrackerMockState } from "./error-tracker-state";
 
 export type MockScenario = "demo" | "empty" | "error";
 
@@ -52,6 +54,8 @@ export interface MockState {
   deployments: Record<string, Deployment[]>;
   diskPressure: DiskPressure;
   domains: Record<string, ServiceDomain[]>;
+  errorTrackerConsoles: Record<string, ErrorTrackerMockState>;
+  errorTrackers: Record<string, ErrorTracker>;
   listeners: Record<string, ServiceListener[]>;
   identity: Identity;
   infrastructureLogs: InfrastructureLogWindow;
@@ -91,6 +95,7 @@ const reference = (resource: string, output: string) =>
 
 const project: Project = {
   createdAt: now - 45 * 86_400_000,
+  errorTrackerCount: 0,
   hasIcon: false,
   id: "project-demo",
   name: "storefront",
@@ -313,6 +318,8 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     totalInodes: 9_500_000,
   },
   domains: {},
+  errorTrackerConsoles: {},
+  errorTrackers: {},
   identity: {
     email: "developer@mock.local",
     name: "Mock Developer",

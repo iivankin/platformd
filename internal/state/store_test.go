@@ -34,15 +34,15 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 || state.SupportedSchemaVersion() != 9 {
+	if version != 10 || state.SupportedSchemaVersion() != 10 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int
-	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'runtime_deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'service_image_revisions', 'service_image_uploads', 'preview_deployments', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'runtime_deployments', 'object_stores', 'error_trackers', 'managed_postgres', 'managed_redis', 'service_image_revisions', 'service_image_uploads', 'preview_deployments', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount != 12 {
-		t.Fatalf("core table count = %d, want 12", tableCount)
+	if tableCount != 13 {
+		t.Fatalf("core table count = %d, want 13", tableCount)
 	}
 }
 

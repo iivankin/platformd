@@ -368,8 +368,9 @@ SELECT EXISTS(
   UNION ALL SELECT 1 FROM managed_postgres WHERE project_id = ? AND name = ?
   UNION ALL SELECT 1 FROM managed_redis WHERE project_id = ? AND name = ?
   UNION ALL SELECT 1 FROM object_stores WHERE project_id = ? AND name = ?
+	UNION ALL SELECT 1 FROM error_trackers WHERE project_id = ? AND name = ?
 	UNION ALL SELECT 1 FROM network_gateways WHERE project_id = ? AND name = ?
-)`, projectID, name, projectID, name, projectID, name, projectID, name, projectID, name).Scan(&exists)
+)`, projectID, name, projectID, name, projectID, name, projectID, name, projectID, name, projectID, name).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check project resource name: %w", err)
 	}

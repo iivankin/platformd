@@ -29,6 +29,7 @@ import { useResourceRestore } from "@/use-resource-restore";
 const recoveryPollMilliseconds = 2000;
 
 const resourcePresentation: Record<RecoveryResourceKind, { label: string }> = {
+  error_tracker: { label: "Error tracker" },
   image: { label: "Image" },
   object_store: { label: "Object Store" },
   postgres: { label: "PostgreSQL" },

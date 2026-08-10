@@ -18,10 +18,11 @@ func TestPersistentVolumeReferencesIncludesEveryAuthoritativePointer(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(references) != 3 {
+	if len(references) != 4 {
 		t.Fatalf("references = %+v", references)
 	}
 	want := []PersistentVolumeReference{
+		{ProjectID: "project", VolumeID: "error-tracker-volume", Kind: PersistentVolumeErrorTracker},
 		{ProjectID: "project", VolumeID: "ordinary-volume", Kind: PersistentVolumeOrdinary},
 		{ProjectID: "project", VolumeID: "postgres-volume", Kind: PersistentVolumePostgres},
 		{ProjectID: "project", VolumeID: "redis-volume", Kind: PersistentVolumeRedis},
@@ -84,7 +85,9 @@ INSERT INTO managed_redis(
   'redis', 'project', 'cache', '8',
   'sha256:3b26d8c8e877651e756205368bbee1163b621f62e7e09577957d6ef4d7e455a4',
   'redis-volume', x'03', 1, 1
-)`)
+);
+INSERT INTO error_trackers(id, project_id, name, volume_id, created_at, updated_at)
+VALUES ('error-tracker', 'project', 'errors', 'error-tracker-volume', 1, 1)`)
 	if err != nil {
 		t.Fatal(err)
 	}

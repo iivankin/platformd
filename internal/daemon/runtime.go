@@ -182,8 +182,10 @@ func startRuntime(
 	}
 	stack.publishedBackends.Store(&serviceBackendSnapshot{services: map[string]publishedBackend{}})
 	objectStores := make(map[string]bool, len(projects))
+	errorTrackers := make(map[string]bool, len(projects))
 	for _, project := range projects {
 		objectStores[project.ID] = project.ObjectStoreEnabled
+		errorTrackers[project.ID] = project.ErrorTrackerEnabled
 	}
 	var firewallProjects []firewall.Project
 	for _, assignment := range projectPlan.Assignments {
@@ -282,7 +284,8 @@ func startRuntime(
 		firewallProjects = append(firewallProjects, firewall.Project{
 			ID: assignment.ProjectID, Bridge: network.Interface,
 			Subnet: assignment.Subnet, Gateway: assignment.Gateway,
-			ObjectStoreEnabled: objectStores[assignment.ProjectID],
+			ObjectStoreEnabled:  objectStores[assignment.ProjectID],
+			ErrorTrackerEnabled: errorTrackers[assignment.ProjectID],
 		})
 		stack.firewallProjects[assignment.ProjectID] = firewallProjects[len(firewallProjects)-1]
 	}
@@ -477,6 +480,7 @@ func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
 	firewallProject := firewall.Project{
 		ID: project.ID, Bridge: network.Interface, Subnet: assignment.Subnet,
 		Gateway: assignment.Gateway, ObjectStoreEnabled: project.ObjectStoreEnabled,
+		ErrorTrackerEnabled: project.ErrorTrackerEnabled,
 	}
 	candidate := make([]firewall.Project, 0, len(stack.firewallProjects)+1)
 	for _, current := range stack.firewallProjects {

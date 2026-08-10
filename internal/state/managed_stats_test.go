@@ -63,8 +63,8 @@ PRAGMA user_version = 8;`); err != nil {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 9 {
-		t.Fatalf("schema version = %d, want 9", version)
+	if version != 10 {
+		t.Fatalf("schema version = %d, want 10", version)
 	}
 	var managedTable, keptRows int
 	if err := store.QueryRowContext(context.Background(),

@@ -36,6 +36,7 @@ type projectResponse struct {
 	PostgresCount       int    `json:"postgresCount"`
 	RedisCount          int    `json:"redisCount"`
 	ObjectStoreCount    int    `json:"objectStoreCount"`
+	ErrorTrackerCount   int    `json:"errorTrackerCount"`
 	NetworkGatewayCount int    `json:"networkGatewayCount"`
 	CreatedAt           int64  `json:"createdAt"`
 	UpdatedAt           int64  `json:"updatedAt"`
@@ -301,7 +302,7 @@ func publicProject(project state.ProjectSummary) projectResponse {
 	return projectResponse{
 		ID: project.ID, Name: project.Name, HasIcon: project.HasIcon,
 		ServiceCount: project.ServiceCount, PostgresCount: project.PostgresCount,
-		RedisCount: project.RedisCount, ObjectStoreCount: project.ObjectStoreCount,
+		RedisCount: project.RedisCount, ObjectStoreCount: project.ObjectStoreCount, ErrorTrackerCount: project.ErrorTrackerCount,
 		NetworkGatewayCount: project.NetworkGatewayCount,
 		CreatedAt:           project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
 	}
@@ -389,7 +390,7 @@ func deleteProjectIcon(config handlerConfig) http.HandlerFunc {
 			return
 		}
 		project, err := config.projects.ClearProjectIcon(request.Context(), state.ClearProjectIconInput{
-			ProjectID: request.PathValue("projectID"),
+			ProjectID:    request.PathValue("projectID"),
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, UpdatedAtMillis: timestamp.UnixMilli(),
 		})

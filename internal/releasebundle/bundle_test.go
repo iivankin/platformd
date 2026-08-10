@@ -152,7 +152,7 @@ func TestOpenRejectsMalformedBundleProfiles(t *testing.T) {
 
 	payload := []byte("runtime")
 	digest := sha256.Sum256(payload)
-	validManifest := `{"formatVersion":1,"files":[{"path":"runtime/helper","mode":493,"size":7,"sha256":"` +
+	validManifest := `{"formatVersion":2,"files":[{"path":"runtime/helper","mode":493,"size":7,"sha256":"` +
 		hex.EncodeToString(digest[:]) + `"}]}`
 	valid := rawBundle(t, []rawBundleEntry{
 		{name: "bundle-manifest.json", body: []byte(validManifest), mode: 0o600},
@@ -164,14 +164,14 @@ func TestOpenRejectsMalformedBundleProfiles(t *testing.T) {
 		"trailing":  append(append([]byte(nil), valid...), 0),
 		"uint overflow": rawBundle(t, []rawBundleEntry{
 			{name: "bundle-manifest.json", mode: 0o600, body: []byte(
-				`{"formatVersion":1,"files":[{"path":"runtime/helper","mode":493,"size":18446744073709551616,"sha256":"` +
+				`{"formatVersion":2,"files":[{"path":"runtime/helper","mode":493,"size":18446744073709551616,"sha256":"` +
 					hex.EncodeToString(digest[:]) + `"}]}`,
 			)},
 			{name: "runtime/helper", body: payload, mode: 0o755},
 		}),
 		"duplicate JSON key": rawBundle(t, []rawBundleEntry{
 			{name: "bundle-manifest.json", mode: 0o600, body: []byte(
-				`{"formatVersion":1,"formatVersion":1,"files":[{"path":"runtime/helper","mode":493,"size":7,"sha256":"` +
+				`{"formatVersion":2,"formatVersion":2,"files":[{"path":"runtime/helper","mode":493,"size":7,"sha256":"` +
 					hex.EncodeToString(digest[:]) + `"}]}`,
 			)},
 			{name: "runtime/helper", body: payload, mode: 0o755},
@@ -277,8 +277,8 @@ func rawBundle(t *testing.T, entries []rawBundleEntry) []byte {
 
 func rawRuntimeProfile(t *testing.T) []rawBundleEntry {
 	t.Helper()
-	entries := make([]rawBundleEntry, 0, 11)
-	manifest := releasebundle.Manifest{FormatVersion: 1}
+	entries := make([]rawBundleEntry, 0, 12)
+	manifest := releasebundle.Manifest{FormatVersion: 2}
 	add := func(name string, body []byte, mode fs.FileMode) {
 		digest := sha256.Sum256(body)
 		manifest.Files = append(manifest.Files, releasebundle.ManifestFile{
@@ -293,6 +293,7 @@ func rawRuntimeProfile(t *testing.T) []rawBundleEntry {
 	add("crun", []byte("runtime-crun"), 0o755)
 	add("mounts.conf", []byte("{}"), 0o644)
 	add("netavark", []byte("runtime-netavark"), 0o755)
+	add("platformd-error-tracker", []byte("runtime-platformd-error-tracker"), 0o755)
 	add("platformd-objectstore", []byte("runtime-platformd-objectstore"), 0o755)
 	for _, name := range []string{"policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
 		add(name, []byte("{}"), 0o644)
@@ -313,7 +314,7 @@ func writeFile(t *testing.T, path string, value []byte, mode fs.FileMode) {
 
 func writeRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	executables := []string{"catatonit", "conmon", "crun", "netavark", "platformd-objectstore"}
+	executables := []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"}
 	configurations := []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"}
 	for _, name := range executables {
 		writeFile(t, filepath.Join(root, name), []byte("runtime-"+name), 0o755)

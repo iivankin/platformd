@@ -11,6 +11,7 @@ const canvas: ProjectCanvas = {
   connections: [],
   project: {
     createdAt: 1,
+    errorTrackerCount: 0,
     hasIcon: false,
     id: "project-demo",
     name: "storefront",

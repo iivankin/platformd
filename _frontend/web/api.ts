@@ -70,6 +70,7 @@ const identityAvatarURL = (
 
 const projectSchema = z.object({
   createdAt: z.number().int().nonnegative(),
+  errorTrackerCount: z.number().int().nonnegative(),
   hasIcon: z.boolean(),
   id: z.string().min(1),
   name: z.string().min(1),
@@ -256,6 +257,7 @@ const canvasResourceSchema = z.object({
   imageReference: z.string().min(1).optional(),
   internalHostname: z.string().min(1),
   kind: z.enum([
+    "error_tracker",
     "service",
     "postgres",
     "redis",
@@ -1254,6 +1256,31 @@ export interface CreateObjectStoreInput {
   publicHostname?: string;
 }
 
+const errorTrackerSchema = z.object({
+  backupCron: z.string().optional(),
+  backupEnabled: z.boolean(),
+  backupRetentionCount: z.number().int().min(1).max(100),
+  createdAt: z.number().int().positive(),
+  id: z.string().min(1),
+  internalHostname: z.string().min(1),
+  internalUrl: z.url(),
+  name: z.string().min(1),
+  projectId: z.string().min(1),
+  publicHostname: z.string().min(1).optional(),
+  status: z.enum(["failed", "pending", "running"]),
+  statusMessage: z.string().optional(),
+  updatedAt: z.number().int().positive(),
+  volumeId: z.string().min(1),
+});
+
+export type ErrorTracker = z.infer<typeof errorTrackerSchema>;
+
+export interface CreateErrorTrackerInput {
+  backupPolicy?: CreateBackupPolicyInput;
+  name: string;
+  publicHostname?: string;
+}
+
 export interface CreateBackupPolicyInput {
   cron: string;
   enabled: boolean;
@@ -1336,6 +1363,7 @@ const databaseVersionStartSchema = databaseVersionPreviewSchema
   .extend({ operation: operationSchema });
 
 const recoveryResourceKindSchema = z.enum([
+  "error_tracker",
   "image",
   "object_store",
   "postgres",
@@ -3253,6 +3281,84 @@ const objectStorePath = (projectID: string, storeID?: string) =>
   `/api/v1/projects/${encodeURIComponent(projectID)}/object-stores${
     storeID ? `/${encodeURIComponent(storeID)}` : ""
   }`;
+
+const errorTrackerPath = (projectID: string, trackerID?: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/error-trackers${
+    trackerID ? `/${encodeURIComponent(trackerID)}` : ""
+  }`;
+
+export const createErrorTracker = async (
+  projectID: string,
+  input: CreateErrorTrackerInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ErrorTracker> => {
+  const response = await fetcher(errorTrackerPath(projectID), {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `error tracker creation failed with ${response.status}`
+    );
+  }
+  return errorTrackerSchema.parse(await response.json());
+};
+
+export const fetchErrorTracker = async (
+  projectID: string,
+  trackerID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ErrorTracker> => {
+  const response = await fetcher(errorTrackerPath(projectID, trackerID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `error tracker request failed with ${response.status}`
+    );
+  }
+  return errorTrackerSchema.parse(await response.json());
+};
+
+export const updateErrorTrackerPublicAccess = async (
+  projectID: string,
+  trackerID: string,
+  input: { expectedUpdatedAt: number; publicHostname?: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ErrorTracker> => {
+  const response = await fetcher(
+    `${errorTrackerPath(projectID, trackerID)}/public-access`,
+    {
+      body: JSON.stringify({
+        expectedUpdatedAt: input.expectedUpdatedAt,
+        publicHostname: input.publicHostname ?? "",
+      }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `error tracker public-access update failed with ${response.status}`
+    );
+  }
+  return errorTrackerSchema.parse(await response.json());
+};
+
+export const errorTrackerConsolePath = (projectID: string, trackerID: string) =>
+  `${errorTrackerPath(projectID, trackerID)}/console`;
 
 export const createObjectStore = async (
   projectID: string,

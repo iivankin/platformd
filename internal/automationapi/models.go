@@ -14,6 +14,7 @@ type projectResponse struct {
 	PostgresCount       int    `json:"postgresCount"`
 	RedisCount          int    `json:"redisCount"`
 	ObjectStoreCount    int    `json:"objectStoreCount"`
+	ErrorTrackerCount   int    `json:"errorTrackerCount"`
 	NetworkGatewayCount int    `json:"networkGatewayCount"`
 	CreatedAt           int64  `json:"createdAt"`
 	UpdatedAt           int64  `json:"updatedAt"`
@@ -60,6 +61,7 @@ func publicProject(project state.ProjectSummary) projectResponse {
 		ID: project.ID, Name: project.Name, HasIcon: project.HasIcon,
 		ServiceCount: project.ServiceCount, PostgresCount: project.PostgresCount, RedisCount: project.RedisCount,
 		ObjectStoreCount:    project.ObjectStoreCount,
+		ErrorTrackerCount:   project.ErrorTrackerCount,
 		NetworkGatewayCount: project.NetworkGatewayCount,
 		CreatedAt:           project.CreatedAtMillis, UpdatedAt: project.UpdatedAtMillis,
 	}

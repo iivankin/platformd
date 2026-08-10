@@ -26,8 +26,10 @@ SELECT id, kind, name FROM (
   UNION ALL
   SELECT id, 'object_store', name FROM object_stores WHERE project_id = ?
 	UNION ALL
+	SELECT id, 'error_tracker', name FROM error_trackers WHERE project_id = ?
+	UNION ALL
 	SELECT id, 'network_gateway', name FROM network_gateways WHERE project_id = ?
-) ORDER BY name, kind, id`, projectID, projectID, projectID, projectID, projectID)
+) ORDER BY name, kind, id`, projectID, projectID, projectID, projectID, projectID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list project resources: %w", err)
 	}
@@ -58,8 +60,10 @@ SELECT id, kind, name FROM (
   UNION ALL
   SELECT id, 'object_store', name FROM object_stores WHERE project_id = ?
 	UNION ALL
+	SELECT id, 'error_tracker', name FROM error_trackers WHERE project_id = ?
+	UNION ALL
 	SELECT id, 'network_gateway', name FROM network_gateways WHERE project_id = ?
-) WHERE name = ?`, projectID, projectID, projectID, projectID, projectID, name).Scan(
+) WHERE name = ?`, projectID, projectID, projectID, projectID, projectID, projectID, name).Scan(
 		&resource.ID, &resource.Kind, &resource.Name,
 	)
 	if errors.Is(err, sql.ErrNoRows) {

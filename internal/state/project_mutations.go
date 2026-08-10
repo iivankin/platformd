@@ -20,6 +20,7 @@ type ProjectSummary struct {
 	PostgresCount       int
 	RedisCount          int
 	ObjectStoreCount    int
+	ErrorTrackerCount   int
 	NetworkGatewayCount int
 	CreatedAtMillis     int64
 	UpdatedAtMillis     int64
@@ -62,6 +63,7 @@ SELECT p.id, p.name, CASE WHEN p.icon_bytes IS NULL THEN 0 ELSE 1 END,
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
        (SELECT count(*) FROM object_stores o WHERE o.project_id = p.id),
+	   (SELECT count(*) FROM error_trackers e WHERE e.project_id = p.id),
 	   (SELECT count(*) FROM network_gateways g WHERE g.project_id = p.id),
        p.created_at, p.updated_at
 FROM projects p
@@ -76,7 +78,7 @@ ORDER BY p.name, p.id`)
 		var hasIcon int
 		if err := rows.Scan(
 			&project.ID, &project.Name, &hasIcon, &project.ServiceCount,
-			&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
+			&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.ErrorTrackerCount, &project.NetworkGatewayCount,
 			&project.CreatedAtMillis, &project.UpdatedAtMillis,
 		); err != nil {
 			return nil, fmt.Errorf("scan project: %w", err)

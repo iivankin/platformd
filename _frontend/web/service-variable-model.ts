@@ -189,6 +189,7 @@ const staticOutputs: Record<
   Exclude<ProjectCanvas["resources"][number]["kind"], "service">,
   string[]
 > = {
+  error_tracker: [],
   network_gateway: ["HOST", "PORT", "ADDRESS"],
   object_store: [
     "S3_ENDPOINT",

@@ -9,9 +9,10 @@ import (
 type PersistentVolumeKind string
 
 const (
-	PersistentVolumeOrdinary PersistentVolumeKind = "ordinary"
-	PersistentVolumePostgres PersistentVolumeKind = "postgres"
-	PersistentVolumeRedis    PersistentVolumeKind = "redis"
+	PersistentVolumeOrdinary     PersistentVolumeKind = "ordinary"
+	PersistentVolumeErrorTracker PersistentVolumeKind = "error_tracker"
+	PersistentVolumePostgres     PersistentVolumeKind = "postgres"
+	PersistentVolumeRedis        PersistentVolumeKind = "redis"
 )
 
 type PersistentVolumeReference struct {
@@ -30,6 +31,8 @@ UNION ALL
 SELECT project_id, volume_id, 'postgres' FROM managed_postgres
 UNION ALL
 SELECT project_id, volume_id, 'redis' FROM managed_redis
+UNION ALL
+SELECT project_id, volume_id, 'error_tracker' FROM error_trackers
 ORDER BY 1, 2, 3`)
 	if err != nil {
 		return nil, fmt.Errorf("list persistent volume references: %w", err)

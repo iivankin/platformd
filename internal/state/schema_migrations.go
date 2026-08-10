@@ -406,3 +406,69 @@ FROM resource_metric_samples_v8`,
 	}
 	return nil
 }
+
+func migrateSchemaVersionNine(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 9 to 10: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, `CREATE TABLE error_trackers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  volume_id TEXT NOT NULL UNIQUE,
+  public_hostname TEXT UNIQUE,
+  backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
+  backup_cron TEXT,
+  backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
+  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_id, name)
+) STRICT`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
+	}
+	var backupsExist int
+	if err := transaction.QueryRowContext(ctx,
+		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'backups'`,
+	).Scan(&backupsExist); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
+	}
+	statements := []string{}
+	if backupsExist == 1 {
+		statements = append(statements,
+			`DROP INDEX IF EXISTS backups_resource_started_idx`,
+			`DROP INDEX IF EXISTS backups_scheduled_occurrence_idx`,
+			`ALTER TABLE backups RENAME TO backups_v9`,
+			`CREATE TABLE backups (
+  id TEXT PRIMARY KEY,
+  target_id TEXT NOT NULL,
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'error_tracker', 'image', 'object_store', 'postgres', 'redis', 'volume')),
+  resource_id TEXT NOT NULL,
+  scheduled_occurrence INTEGER,
+  generation_id TEXT,
+  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'interrupted')),
+  size_bytes INTEGER CHECK (size_bytes >= 0),
+  error_code TEXT,
+  error_message TEXT,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER
+) STRICT`,
+			`INSERT INTO backups SELECT * FROM backups_v9`,
+			`DROP TABLE backups_v9`,
+			`CREATE INDEX backups_resource_started_idx ON backups(target_id, resource_kind, resource_id, started_at DESC)`,
+			`CREATE UNIQUE INDEX backups_scheduled_occurrence_idx ON backups(resource_kind, resource_id, scheduled_occurrence) WHERE scheduled_occurrence IS NOT NULL`)
+	}
+	for _, statement := range statements {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
+		}
+	}
+	if _, err := transaction.ExecContext(ctx, `PRAGMA user_version = 10`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 9 to 10: %w", err)
+	}
+	return nil
+}

@@ -22,7 +22,7 @@ import (
 
 const (
 	manifestName          = "bundle-manifest.json"
-	formatVersion         = 1
+	formatVersion         = 2
 	maximumManifestBytes  = 1 << 20
 	maximumEntries        = 64
 	maximumFileBytes      = 256 << 20
@@ -89,7 +89,7 @@ func Open(executablePath string) (*Bundle, error) {
 			return cleanup(fmt.Errorf("runtime bundle entry %q uses unsupported compression", file.Name))
 		}
 		if file.Flags != 0x8 || file.Comment != "" || file.NonUTF8 || len(file.Extra) != 0 || file.ModifiedDate != 0 || file.ModifiedTime != 0 {
-			return cleanup(fmt.Errorf("runtime bundle entry %q violates the v1 ZIP profile", file.Name))
+			return cleanup(fmt.Errorf("runtime bundle entry %q violates the v2 ZIP profile", file.Name))
 		}
 		if _, exists := files[file.Name]; exists {
 			return cleanup(fmt.Errorf("runtime bundle has duplicate entry %q", file.Name))
