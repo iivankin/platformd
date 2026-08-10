@@ -182,6 +182,9 @@ jobs:
           ERROR_TRACKER_CONTAINER_URL: http://host.docker.internal:18080
           ERROR_TRACKER_URL: http://127.0.0.1:18080
         run: |
+          # Conformance builds many language images; reclaim Docker disk from prior
+          # SDK/runtime steps so the runner does not fail with ENOSPC mid-build.
+          docker system prune --all --force --volumes
           tracker_volume="$RUNNER_TEMP/error-tracker-conformance"
           mkdir -p "$tracker_volume"
           ERROR_TRACKER_PUBLIC_URL="$ERROR_TRACKER_CONTAINER_URL" \
