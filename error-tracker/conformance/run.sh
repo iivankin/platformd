@@ -80,6 +80,10 @@ run_case() {
     -e "SENTRY_PROJECT=$slug" \
     -e "CONFORMANCE_CASE=$case_name" \
     "$tag"
+  # Release runners share a small Docker disk across many language images.
+  # Drop build cache and dangling layers after each client so later cases fit.
+  docker builder prune --all --force >/dev/null
+  docker image rm --force "$tag" >/dev/null 2>&1 || true
 
   attempt=0
   while [ "$attempt" -lt 20 ]; do
