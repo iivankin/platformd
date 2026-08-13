@@ -133,17 +133,10 @@ jobs:
             telemetry -> target
           prefix-key: platformd-rust-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock', 'telemetry/Cargo.lock') }}
 
-      - name: Build and verify bundled runtime
+      - name: Build bundled runtime
         env:
           PLATFORMD_STRICT_TOOLCHAIN: "1"
-        run: |
-          build/runtime-linux-amd64.sh
-          rm -rf "$PWD/.build/runtime-linux-amd64"
-          export RUSTFLAGS="--remap-path-prefix=$PWD=."
-          cargo test --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
-          cargo clippy --release --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
-          cargo test --release --locked --manifest-path telemetry/Cargo.toml
-          cargo clippy --release --all-targets --locked --manifest-path telemetry/Cargo.toml -- -D warnings
+        run: build/runtime-linux-amd64.sh
 
       - name: Archive bundled runtime
         run: tar -cf dist/platformd-runtime.tar -C dist runtime
@@ -157,9 +150,69 @@ jobs:
           retention-days: 1
           compression-level: 0
 
+  verify-objectstore:
+    name: Verify object storage runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install native runtime dependencies
+        run: build/ci-install-native-dependencies.sh runtime
+
+      - name: Install the locked Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy --no-self-update
+          rustup override set 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: internal/objectstore/sidecar -> target
+          prefix-key: platformd-objectstore-rust-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock') }}
+
+      - name: Test and lint object storage runtime
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$PWD=."
+          cargo test --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
+          cargo clippy --release --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
+
+  verify-telemetry:
+    name: Verify telemetry runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install native runtime dependencies
+        run: build/ci-install-native-dependencies.sh runtime
+
+      - name: Install the locked Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy --no-self-update
+          rustup override set 1.97.1
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: telemetry -> target
+          prefix-key: platformd-telemetry-rust-${{ hashFiles('build.lock.json', 'telemetry/Cargo.lock') }}
+
+      - name: Test and lint telemetry runtime
+        run: |
+          export RUSTFLAGS="--remap-path-prefix=$PWD=."
+          cargo test --release --locked --manifest-path telemetry/Cargo.toml
+          cargo clippy --release --all-targets --locked --manifest-path telemetry/Cargo.toml -- -D warnings
+
   s3-conformance:
     name: Verify S3 clients
-    needs: [validate, build-runtime]
+    needs: [validate, build-runtime, verify-objectstore]
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
@@ -222,7 +275,7 @@ jobs:
 
   telemetry-conformance:
     name: Verify telemetry clients
-    needs: [validate, build-runtime]
+    needs: [validate, build-runtime, verify-telemetry]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
@@ -297,7 +350,7 @@ jobs:
 
   runtime-integration:
     name: Verify host integration
-    needs: [validate, build-runtime]
+    needs: [validate, build-runtime, verify-objectstore, verify-telemetry]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     steps:
