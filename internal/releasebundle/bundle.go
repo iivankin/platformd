@@ -25,8 +25,8 @@ const (
 	formatVersion         = 2
 	maximumManifestBytes  = 1 << 20
 	maximumEntries        = 64
-	maximumFileBytes      = 256 << 20
-	maximumAggregateBytes = 512 << 20
+	maximumFileBytes      = 512 << 20
+	maximumAggregateBytes = 768 << 20
 )
 
 var ErrNoBundle = errors.New("executable has no platformd runtime bundle")

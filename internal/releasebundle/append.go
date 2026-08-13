@@ -15,7 +15,7 @@ import (
 	"strings"
 )
 
-// Append writes the v1 deterministic runtime archive after an existing ELF.
+// Append writes the v2 deterministic runtime archive after an existing ELF.
 // The caller must provide an unbundled output file and a runtime directory.
 func Append(executablePath, runtimeDirectory string) error {
 	if existing, err := Open(executablePath); err == nil {
