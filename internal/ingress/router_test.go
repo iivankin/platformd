@@ -238,7 +238,7 @@ func TestRouterProxiesWebSocketAndCountsBothDirections(t *testing.T) {
 	if err != nil || messageType != websocket.MessageText || string(payload) != "echo:hello" {
 		t.Fatalf("WebSocket echo = %d %q, %v", messageType, payload, err)
 	}
-	counters := traffic.Snapshot()["service-a"]
+	counters := waitForWebSocketTraffic(t, traffic)
 	if counters.HTTPActiveRequests != 1 || counters.HTTPActiveRequestsPeak != 1 ||
 		counters.IngressBytes == 0 || counters.EgressBytes == 0 {
 		t.Fatalf("live WebSocket counters = %+v", counters)
@@ -333,6 +333,19 @@ func waitForHTTPRequests(t *testing.T, traffic *trafficmetrics.Registry, want in
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatalf("active HTTP requests = %d, want %d", traffic.Snapshot()["service-a"].HTTPActiveRequests, want)
+}
+
+func waitForWebSocketTraffic(t *testing.T, traffic *trafficmetrics.Registry) trafficmetrics.Counters {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		counters := traffic.Snapshot()["service-a"]
+		if counters.IngressBytes > 0 && counters.EgressBytes > 0 {
+			return counters
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return traffic.Snapshot()["service-a"]
 }
 
 func durationSamples(counters trafficmetrics.Counters) uint64 {
