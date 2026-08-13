@@ -48,9 +48,11 @@ impl TrafficCounters {
         latency: Duration,
         error: bool,
     ) {
-        let _ = self.active_requests.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
-            Some(n.saturating_sub(1))
-        });
+        let _ = self
+            .active_requests
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
+                Some(n.saturating_sub(1))
+            });
         match op {
             OpClass::Get => self.get.fetch_add(1, Ordering::Relaxed),
             OpClass::Put => self.put.fetch_add(1, Ordering::Relaxed),
@@ -259,16 +261,10 @@ mod tests {
 
     #[test]
     fn classifies_s3_object_and_list_paths() {
-        assert_eq!(
-            classify_s3(&Method::GET, "/bucket/key"),
-            OpClass::Get
-        );
+        assert_eq!(classify_s3(&Method::GET, "/bucket/key"), OpClass::Get);
         assert_eq!(classify_s3(&Method::GET, "/bucket"), OpClass::List);
         assert_eq!(classify_s3(&Method::PUT, "/bucket/key"), OpClass::Put);
-        assert_eq!(
-            classify_s3(&Method::DELETE, "/bucket/key"),
-            OpClass::Delete
-        );
+        assert_eq!(classify_s3(&Method::DELETE, "/bucket/key"), OpClass::Delete);
         assert_eq!(classify_s3(&Method::HEAD, "/bucket"), OpClass::Other);
     }
 
@@ -282,10 +278,7 @@ mod tests {
             classify_control(&Method::PUT, "/v1/object"),
             Some(OpClass::Put)
         );
-        assert_eq!(
-            classify_control(&Method::GET, "/v1/bucket/stats"),
-            None
-        );
+        assert_eq!(classify_control(&Method::GET, "/v1/bucket/stats"), None);
     }
 
     #[test]
@@ -295,7 +288,10 @@ mod tests {
         let right = registry.for_bucket("pd-bbbbbbbbbbbbbbbbbbbbbbbb");
         left.record_start();
         left.record_finish(OpClass::Put, 100, 0, Duration::from_millis(1), false);
-        assert_eq!(registry.snapshot("pd-aaaaaaaaaaaaaaaaaaaaaaaa").bytes_in, 100);
+        assert_eq!(
+            registry.snapshot("pd-aaaaaaaaaaaaaaaaaaaaaaaa").bytes_in,
+            100
+        );
         assert_eq!(registry.snapshot("pd-bbbbbbbbbbbbbbbbbbbbbbbb").bytes_in, 0);
         assert_eq!(right.snapshot().bytes_in, 0);
     }

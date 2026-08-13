@@ -9,6 +9,7 @@ import (
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -21,6 +22,8 @@ type liveServiceRepository struct {
 	volumeFilesystem volume.Filesystem
 	traffic          *trafficmetrics.Registry
 	certificates     *origin.Selector
+	telemetry        *telemetry.ServiceManager
+	telemetryRoutes  *liveServiceTelemetryRepository
 	onCleanupError   func(error)
 }
 
@@ -56,16 +59,33 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 			return state.DeleteServiceResult{}, errors.Join(err, repository.runtime.DeployService(ctx, service.ID, false))
 		}
 	}
+	removedTelemetryDNS := false
+	if repository.telemetryRoutes != nil {
+		removedTelemetryDNS, err = repository.telemetryRoutes.withdrawServiceDNS(ctx, service)
+		if err != nil {
+			return state.DeleteServiceResult{}, errors.Join(err, repository.runtime.DeployService(ctx, service.ID, false))
+		}
+	}
 	deleted, err := repository.store.DeleteService(ctx, input)
 	if err != nil {
 		var restoreListeners error
 		if repository.listeners != nil {
 			restoreListeners = repository.listeners.Restore(ctx)
 		}
-		return state.DeleteServiceResult{}, errors.Join(err, restoreListeners, repository.runtime.DeployService(ctx, service.ID, false))
+		var restoreTelemetryDNS error
+		if removedTelemetryDNS {
+			restoreTelemetryDNS = repository.telemetryRoutes.restoreServiceDNS(ctx, service)
+		}
+		return state.DeleteServiceResult{}, errors.Join(err, restoreListeners, restoreTelemetryDNS, repository.runtime.DeployService(ctx, service.ID, false))
 	}
 	if repository.domains != nil {
 		repository.reportCleanupError(repository.domains.reload(ctx))
+	}
+	if repository.telemetry != nil {
+		repository.reportCleanupError(cleanupServiceTelemetry(repository.telemetry, service))
+	}
+	if repository.telemetryRoutes != nil {
+		repository.reportCleanupError(repository.telemetryRoutes.reloadPublicRoutes(ctx))
 	}
 	repository.traffic.Forget(service.ID)
 	repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
@@ -175,6 +195,13 @@ func (repository liveServiceRepository) CreateService(ctx context.Context, input
 	if err != nil {
 		return state.ServiceDesired{}, err
 	}
+	if repository.telemetry != nil {
+		if err := repository.telemetry.Ensure(ctx, created); err != nil {
+			// The service is already committed. Keep creation retryable and let the
+			// next daemon reconcile recreate this derived telemetry route.
+			repository.reportCleanupError(fmt.Errorf("configure service telemetry: %w", err))
+		}
+	}
 	if created.Enabled {
 		if reconcileErr := repository.runtime.ReconcileService(ctx, created.ID); reconcileErr != nil {
 			repository.runtime.recordServiceFailure(created.ID, reconcileErr)
@@ -194,6 +221,13 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 	updated, err := repository.store.UpdateService(ctx, input)
 	if err != nil {
 		return state.ServiceDesired{}, err
+	}
+	if repository.telemetry != nil {
+		if err := repository.telemetry.Ensure(ctx, updated); err != nil {
+			// Telemetry routing is derived runtime state; failing the request here
+			// would report a committed service update as unsuccessful.
+			repository.reportCleanupError(fmt.Errorf("configure service telemetry: %w", err))
+		}
 	}
 	previousRoot := servicesource.ImageUploadPreviewDomain(previous.Snapshot.Source)
 	updatedRoot := servicesource.ImageUploadPreviewDomain(updated.Snapshot.Source)

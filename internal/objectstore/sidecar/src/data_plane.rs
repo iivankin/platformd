@@ -802,11 +802,7 @@ async fn serve_s3_request(
     }
 }
 
-fn response_transfer_bytes(
-    method: &Method,
-    headers: &HeaderMap,
-    body: &Body,
-) -> Option<u64> {
+fn response_transfer_bytes(method: &Method, headers: &HeaderMap, body: &Body) -> Option<u64> {
     if *method == Method::HEAD {
         return Some(0);
     }
@@ -816,8 +812,7 @@ fn response_transfer_bytes(
 fn request_payload_bytes(headers: &HeaderMap) -> Option<u64> {
     // Prefer decoded object size for aws-chunked uploads; Content-Length is the
     // encoded stream size when both headers are present.
-    header_u64(headers, "x-amz-decoded-content-length")
-        .or_else(|| header_content_length(headers))
+    header_u64(headers, "x-amz-decoded-content-length").or_else(|| header_content_length(headers))
 }
 
 fn header_content_length(headers: &HeaderMap) -> Option<u64> {
@@ -927,11 +922,11 @@ mod tests {
     use super::{
         DataPlaneStore, MaintenanceMode, ProjectState, StoreGate, response_transfer_bytes,
     };
+    use http::{HeaderMap, HeaderValue, Method};
+    use s3s::Body;
     #[cfg(target_os = "linux")]
     use std::net::SocketAddr;
     use std::{collections::HashMap, sync::Arc};
-    use http::{HeaderMap, HeaderValue, Method};
-    use s3s::Body;
     use tokio::sync::RwLock;
 
     #[test]

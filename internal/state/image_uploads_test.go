@@ -80,7 +80,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
 		ID: "revision", UploadID: "upload-identifier-one", ServiceID: "service", Tag: "latest",
 		Kind: "production", ArchivePath: "/images/revision.oci",
-		ArchiveSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ArchiveSHA256:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		CreatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
@@ -124,7 +124,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
 		ID: "revision", UploadID: "upload-identifier-one", ServiceID: "service", Tag: "latest",
 		Kind: "production", ArchivePath: "/images/revision.oci",
-		ArchiveSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ArchiveSHA256:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		CreatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
@@ -237,7 +237,7 @@ VALUES ('service', 'project', 'service', '{"type":"docker_image_upload","dockerU
 	if err := store.CreateImageRevision(ctx, CreateImageRevisionInput{
 		ID: "revision", UploadID: "upload-identifier-one", ServiceID: "service", Tag: "latest",
 		Kind: "production", ArchivePath: "/images/revision.oci",
-		ArchiveSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ArchiveSHA256:   "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		CreatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)

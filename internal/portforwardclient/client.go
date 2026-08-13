@@ -7,8 +7,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 	"github.com/iivankin/platformd/internal/portforwardprotocol"
@@ -18,12 +21,16 @@ type Config struct {
 	URL       string
 	Ticket    string
 	LocalPort int
+	HTTPHost  string
 	Output    io.Writer
 }
 
 func Run(ctx context.Context, config Config) error {
 	if err := validate(config); err != nil {
 		return err
+	}
+	if config.HTTPHost != "" {
+		return runHTTP(ctx, config)
 	}
 	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", config.LocalPort))
 	if err != nil {
@@ -60,24 +67,73 @@ func Run(ctx context.Context, config Config) error {
 
 func forward(ctx context.Context, config Config, local net.Conn) error {
 	defer local.Close()
+	remote, err := dialTunnel(ctx, ctx, config)
+	if err != nil {
+		return err
+	}
+	bridge(local, remote)
+	return nil
+}
+
+func dialTunnel(dialCtx, lifetimeCtx context.Context, config Config) (net.Conn, error) {
 	header := make(http.Header)
 	header.Set("Authorization", "Bearer "+config.Ticket)
-	connection, response, err := websocket.Dial(ctx, config.URL, &websocket.DialOptions{
+	connection, response, err := websocket.Dial(dialCtx, config.URL, &websocket.DialOptions{
 		HTTPHeader: header, Subprotocols: []string{portforwardprotocol.WebSocketProtocol},
 	})
 	if err != nil {
 		if response != nil {
-			return fmt.Errorf("connect WSS tunnel: server returned %s: %w", response.Status, err)
+			return nil, fmt.Errorf("connect WSS tunnel: server returned %s: %w", response.Status, err)
 		}
-		return fmt.Errorf("connect WSS tunnel: %w", err)
+		return nil, fmt.Errorf("connect WSS tunnel: %w", err)
 	}
 	if connection.Subprotocol() != portforwardprotocol.WebSocketProtocol {
 		_ = connection.Close(websocket.StatusProtocolError, "required protocol was not negotiated")
-		return errors.New("server did not negotiate the platformd port forward protocol")
+		return nil, errors.New("server did not negotiate the platformd port forward protocol")
 	}
-	remote := websocket.NetConn(ctx, connection, websocket.MessageBinary)
-	bridge(local, remote)
-	return nil
+	return websocket.NetConn(lifetimeCtx, connection, websocket.MessageBinary), nil
+}
+
+func runHTTP(ctx context.Context, config Config) error {
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", config.LocalPort))
+	if err != nil {
+		return fmt.Errorf("listen on localhost: %w", err)
+	}
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(dialCtx context.Context, _, _ string) (net.Conn, error) {
+			return dialTunnel(dialCtx, ctx, config)
+		},
+		ForceAttemptHTTP2: false,
+	}
+	server := &http.Server{
+		Handler: httpProxy(config.HTTPHost, transport), ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout: 120 * time.Second, MaxHeaderBytes: 64 << 10,
+	}
+	if config.Output != nil {
+		_, _ = fmt.Fprintf(config.Output, "Forwarding %s to the platformd resource\n", listener.Addr())
+	}
+	go func() {
+		<-ctx.Done()
+		_ = server.Close()
+	}()
+	err = server.Serve(listener)
+	transport.CloseIdleConnections()
+	if errors.Is(err, http.ErrServerClosed) && ctx.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+func httpProxy(host string, transport http.RoundTripper) *httputil.ReverseProxy {
+	target := &url.URL{Scheme: "http", Host: host}
+	return &httputil.ReverseProxy{
+		Rewrite: func(request *httputil.ProxyRequest) {
+			request.SetURL(target)
+			request.Out.Host = host
+		},
+		Transport: transport,
+	}
 }
 
 func bridge(left, right net.Conn) {
@@ -104,6 +160,14 @@ func validate(config Config) error {
 	}
 	if config.LocalPort < 1 || config.LocalPort > 65535 {
 		return errors.New("--local-port must be from 1 to 65535")
+	}
+	if config.HTTPHost != "" {
+		parsed, err := url.Parse("http://" + config.HTTPHost)
+		if err != nil || parsed.Host != config.HTTPHost || parsed.Hostname() == "" || parsed.Port() != "" ||
+			parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" ||
+			strings.ContainsAny(config.HTTPHost, " \t\r\n") {
+			return errors.New("--http-host must be a hostname without a port")
+		}
 	}
 	return nil
 }

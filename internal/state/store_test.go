@@ -34,19 +34,19 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 10 || state.SupportedSchemaVersion() != 10 {
+	if version != 15 || state.SupportedSchemaVersion() != 15 {
 		t.Fatalf("schema version = %d", version)
 	}
 	var tableCount int
-	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'runtime_deployments', 'object_stores', 'error_trackers', 'managed_postgres', 'managed_redis', 'service_image_revisions', 'service_image_uploads', 'preview_deployments', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
+	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'runtime_deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'service_image_revisions', 'service_image_uploads', 'preview_deployments', 'operations', 'audit_events')").Scan(&tableCount); err != nil {
 		t.Fatal(err)
 	}
-	if tableCount != 13 {
-		t.Fatalf("core table count = %d, want 13", tableCount)
+	if tableCount != 12 {
+		t.Fatalf("core table count = %d, want 12", tableCount)
 	}
 }
 
-func TestOpenMigratesSchemaVersionOneWithoutLosingMetricRows(t *testing.T) {
+func TestOpenMigratesSchemaVersionOneAndDropsLegacyMetricTables(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "platformd.db")
@@ -71,6 +71,7 @@ CREATE TABLE installation (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
 CREATE TABLE services (id TEXT PRIMARY KEY, active_deployment_id TEXT, enabled INTEGER NOT NULL, source_json TEXT NOT NULL, build_environment_json TEXT NOT NULL) STRICT;
 CREATE TABLE deployments (id TEXT PRIMARY KEY, service_id TEXT NOT NULL) STRICT;
 CREATE TABLE preview_deployments (id TEXT PRIMARY KEY) STRICT;
@@ -130,22 +131,15 @@ PRAGMA user_version = 1;`); err != nil {
 	if version != state.SupportedSchemaVersion() {
 		t.Fatalf("schema version = %d, want %d", version, state.SupportedSchemaVersion())
 	}
-	for _, table := range []string{"resource_metric_samples", "aggregate_metric_samples"} {
-		var diskColumns int
+	for _, table := range []string{"resource_metric_samples", "aggregate_metric_samples", "managed_stat_samples"} {
+		var exists int
 		if err := store.QueryRowContext(context.Background(),
-			"SELECT count(*) FROM pragma_table_info(?) WHERE name = 'disk_bytes'", table,
-		).Scan(&diskColumns); err != nil {
+			"SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = ?", table,
+		).Scan(&exists); err != nil {
 			t.Fatal(err)
 		}
-		if diskColumns != 1 {
-			t.Fatalf("%s disk column count = %d, want 1", table, diskColumns)
-		}
-		var rows int
-		if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM "+table).Scan(&rows); err != nil {
-			t.Fatal(err)
-		}
-		if rows != 1 {
-			t.Fatalf("%s row count = %d, want 1", table, rows)
+		if exists != 0 {
+			t.Fatalf("legacy table %s still exists", table)
 		}
 	}
 	for _, serviceID := range []string{"github-service", "registry-service"} {

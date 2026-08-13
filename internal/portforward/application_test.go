@@ -38,9 +38,55 @@ type resolverStub struct {
 	calls   int
 }
 
-func (resolver *resolverStub) ResolveResourceAddress(string, string, string, int) (string, error) {
+func (resolver *resolverStub) ResolveResourceAddress(string, string, string, string, int) (string, error) {
 	resolver.calls++
 	return resolver.address, resolver.err
+}
+
+func TestCreateErrorsEndpointTargetsServiceGateway(t *testing.T) {
+	resolver := &resolverStub{address: "10.42.0.1:9001"}
+	audit := &auditStub{}
+	application, err := New(Config{
+		Repository: resourceRepositoryStub{kind: "service"}, Resolver: resolver, Audit: audit,
+		NewID: func() (string, error) { return "ticket-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grant, err := application.Create(context.Background(), automation.Identity{TokenID: "admin", Role: "admin"}, CreateInput{
+		Project: "shop", Resource: "api", Endpoint: EndpointErrors,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Port != 9001 || grant.Endpoint != EndpointErrors || grant.EndpointHost != "errors-api.shop.internal" || audit.record.Endpoint != EndpointErrors {
+		t.Fatalf("errors grant/audit = %+v / %+v", grant, audit.record)
+	}
+	session, err := application.Acquire(grant.Ticket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Release()
+	if session.Target != "10.42.0.1:9001" {
+		t.Fatalf("errors target = %s", session.Target)
+	}
+}
+
+func TestCreateErrorsEndpointRejectsNonServiceResource(t *testing.T) {
+	application, err := New(Config{
+		Repository: resourceRepositoryStub{kind: "postgres"},
+		Resolver:   &resolverStub{address: "10.42.0.1:9001"}, Audit: &auditStub{},
+		NewID: func() (string, error) { return "ticket-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = application.Create(context.Background(), automation.Identity{TokenID: "admin", Role: "admin"}, CreateInput{
+		Project: "shop", Resource: "database", Endpoint: EndpointErrors,
+	})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("non-service errors endpoint = %v", err)
+	}
 }
 
 type auditStub struct {

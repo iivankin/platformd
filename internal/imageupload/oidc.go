@@ -94,7 +94,7 @@ func (verifier *OIDCVerifier) Verify(ctx context.Context, request OIDCRequest) (
 func (verifier *OIDCVerifier) validateClaims(claims oidcClaims, request OIDCRequest) error {
 	now := verifier.now()
 	if claims.Issuer != githubIssuer || !claims.Audience.Contains(request.Audience) ||
-		strings.ToLower(claims.Repository) != strings.ToLower(request.Repository) ||
+		!strings.EqualFold(claims.Repository, request.Repository) ||
 		claims.ExpiresAt == 0 || claims.IssuedAt == 0 || claims.Ref == "" || claims.SHA == "" ||
 		claims.WorkflowRef == "" || claims.Actor == "" || claims.RunID == "" || claims.RunAttempt == "" {
 		return ErrOIDC

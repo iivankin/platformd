@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -27,6 +28,10 @@ type GrowthGate interface {
 
 type ControlRemoteFactory func(remotes3.Config) (ControlRemote, error)
 
+type ControlSnapshotter interface {
+	Snapshot(context.Context, string) error
+}
+
 type ControlJobConfig struct {
 	Store          *state.Store
 	Target         *TargetApplication
@@ -39,6 +44,7 @@ type ControlJobConfig struct {
 	ExpectedUID    int
 	PublicKey      ed25519.PublicKey
 	ReleaseSlot    func() (string, error)
+	Telemetry      ControlSnapshotter
 	RemoteFactory  ControlRemoteFactory
 	Now            func() time.Time
 	Random         io.Reader
@@ -49,7 +55,7 @@ type ControlJob struct{ config ControlJobConfig }
 func NewControlJob(config ControlJobConfig) (*ControlJob, error) {
 	if config.Store == nil || config.Target == nil || config.TargetGate == nil || config.Admission == nil || config.Growth == nil ||
 		config.InstallationID == "" || !safeBackupRoot(config.WorkRoot) || config.ExpectedUID < 0 ||
-		len(config.PublicKey) != ed25519.PublicKeySize || config.ReleaseSlot == nil {
+		len(config.PublicKey) != ed25519.PublicKeySize || config.ReleaseSlot == nil || config.Telemetry == nil {
 		return nil, errors.New("control backup job configuration is incomplete")
 	}
 	if config.RemoteFactory == nil {
@@ -104,11 +110,19 @@ func (job *ControlJob) RunControl(ctx context.Context) error {
 	if err != nil {
 		return job.fail(ctx, backupID, err)
 	}
+	if err := os.MkdirAll(job.config.WorkRoot, 0o700); err != nil {
+		return job.fail(ctx, backupID, err)
+	}
+	telemetryPath := filepath.Join(job.config.WorkRoot, "telemetry-"+generationID+".tar")
+	if err := job.config.Telemetry.Snapshot(ctx, telemetryPath); err != nil {
+		return job.fail(ctx, backupID, err)
+	}
+	defer os.Remove(telemetryPath)
 	built, err := BuildControl(ctx, ControlBuildConfig{
 		Store: job.config.Store, Master: job.config.Master, InstallationID: job.config.InstallationID,
 		GenerationID: generationID, ReleaseSlot: releaseSlot, WorkRoot: job.config.WorkRoot,
 		ExpectedUID: job.config.ExpectedUID, PublicKey: job.config.PublicKey,
-		CreatedAt: startedAt, Random: job.config.Random,
+		CreatedAt: startedAt, Random: job.config.Random, TelemetryPath: telemetryPath,
 	})
 	if err != nil {
 		return job.fail(ctx, backupID, err)

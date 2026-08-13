@@ -284,13 +284,6 @@ func nullableString(value string) any {
 	return value
 }
 
-func nullableInt(value *int) any {
-	if value == nil {
-		return nil
-	}
-	return *value
-}
-
 func nullablePositive(value int64) any {
 	if value <= 0 {
 		return nil

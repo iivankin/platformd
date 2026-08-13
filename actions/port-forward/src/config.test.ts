@@ -8,6 +8,7 @@ function inputs(overrides: Record<string, string> = {}): (name: string) => strin
     token: "secret",
     project: "shop",
     resource: "backend",
+    endpoint: "",
     port: "8080",
     "local-port": "",
     "expires-in-seconds": "900",
@@ -26,6 +27,7 @@ test("reads a complete service tunnel configuration", () => {
     token: "secret",
     project: "shop",
     resource: "backend",
+    endpoint: "",
     port: 8080,
     localPort: 8080,
     expiresInSeconds: 900,
@@ -35,6 +37,17 @@ test("reads a complete service tunnel configuration", () => {
     connectionEnv: "",
     target: { os: "linux", arch: "amd64" },
   });
+});
+
+test("uses the fixed port for a service errors endpoint", () => {
+  const config = readConfig(inputs({ endpoint: "errors", port: "" }));
+  assert.equal(config.endpoint, "errors");
+  assert.equal(config.port, 9001);
+  assert.equal(config.localPort, 9001);
+  assert.throws(
+    () => readConfig(inputs({ endpoint: "errors", port: "9001" })),
+    /port must be omitted/,
+  );
 });
 
 test("accepts a local forward binary path", () => {

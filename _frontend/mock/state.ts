@@ -10,7 +10,6 @@ import type {
   CloudflareMeshSettings,
   Deployment,
   DiskPressure,
-  ErrorTracker,
   Identity,
   InfrastructureLogWindow,
   InstallationSettings,
@@ -29,12 +28,14 @@ import type {
   PreviewDeployment,
   RuntimeDeployment,
   Service,
+  ServiceMetricChart,
+  ServiceTelemetry,
   ServiceDomain,
   ServiceListener,
   Volume,
 } from "../web/api";
 import { mockContainerFiles } from "./container-resources";
-import type { ErrorTrackerMockState } from "./error-tracker-state";
+import type { ErrorsMockState } from "./errors-state";
 
 export type MockScenario = "demo" | "empty" | "error";
 
@@ -54,11 +55,9 @@ export interface MockState {
   deployments: Record<string, Deployment[]>;
   diskPressure: DiskPressure;
   domains: Record<string, ServiceDomain[]>;
-  errorTrackerConsoles: Record<string, ErrorTrackerMockState>;
-  errorTrackers: Record<string, ErrorTracker>;
-  listeners: Record<string, ServiceListener[]>;
   identity: Identity;
   infrastructureLogs: InfrastructureLogWindow;
+  listeners: Record<string, ServiceListener[]>;
   logs: Record<string, LogWindow>;
   meta: Meta;
   networkGateways: Record<string, NetworkGateway>;
@@ -74,7 +73,10 @@ export interface MockState {
   runtimeDeployments: Record<string, RuntimeDeployment[]>;
   scenario: MockScenario;
   sequence: number;
+  serviceErrors: Record<string, ErrorsMockState>;
+  metricCharts: Record<string, ServiceMetricChart[]>;
   services: Record<string, Service>;
+  serviceTelemetry: Record<string, ServiceTelemetry>;
   settings: InstallationSettings;
   tokens: APIToken[];
   volumes: Record<string, Volume[]>;
@@ -95,7 +97,6 @@ const reference = (resource: string, output: string) =>
 
 const project: Project = {
   createdAt: now - 45 * 86_400_000,
-  errorTrackerCount: 0,
   hasIcon: false,
   id: "project-demo",
   name: "storefront",
@@ -318,8 +319,6 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     totalInodes: 9_500_000,
   },
   domains: {},
-  errorTrackerConsoles: {},
-  errorTrackers: {},
   identity: {
     email: "developer@mock.local",
     name: "Mock Developer",
@@ -334,6 +333,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     status: "ready",
     version: "0.1.0-mock",
   },
+  metricCharts: {},
   networkGateways: {},
   objectMetadata: {},
   objectStores: {},
@@ -347,6 +347,8 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   runtimeDeployments: {},
   scenario,
   sequence: 100,
+  serviceErrors: {},
+  serviceTelemetry: {},
   services: {},
   settings: {
     accessAudience: "mock-audience",

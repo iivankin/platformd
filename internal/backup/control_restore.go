@@ -41,6 +41,7 @@ type FetchedControl struct {
 	DatabasePath        string
 	ReleaseManifestPath string
 	ReleaseBinaryPath   string
+	TelemetryPath       string
 	Release             bootstrap.VerifiedRelease
 	WorkDirectory       string
 }
@@ -125,6 +126,10 @@ func FetchControl(ctx context.Context, config ControlFetchConfig) (FetchedContro
 	if err := extractControlEntry(archive, releaseBinaryName, 0o755, manifest.ReleaseBinary, releaseBinaryPath); err != nil {
 		return cleanup(err)
 	}
+	telemetryPath := filepath.Join(workDirectory, telemetryBackupName)
+	if err := extractControlEntry(archive, telemetryBackupName, 0o600, manifest.Telemetry, telemetryPath); err != nil {
+		return cleanup(err)
+	}
 	if header, nextErr := archive.Next(); nextErr != io.EOF || header != nil {
 		return cleanup(errors.Join(nextErr, errors.New("control archive contains trailing entries")))
 	}
@@ -157,7 +162,8 @@ func FetchControl(ctx context.Context, config ControlFetchConfig) (FetchedContro
 	return FetchedControl{
 		Completion: completion, Envelope: envelope, Manifest: manifest,
 		DatabasePath: databasePath, ReleaseManifestPath: releaseManifestPath,
-		ReleaseBinaryPath: releaseBinaryPath, Release: release, WorkDirectory: workDirectory,
+		ReleaseBinaryPath: releaseBinaryPath, TelemetryPath: telemetryPath,
+		Release: release, WorkDirectory: workDirectory,
 	}, nil
 }
 
@@ -178,7 +184,8 @@ func decodeControlManifest(value []byte) (ControlManifest, error) {
 		!validControlIdentifier(manifest.GenerationID) || manifest.CreatedAtMillis <= 0 || manifest.OS != "linux" ||
 		manifest.Architecture != "amd64" || manifest.PlatformVersion == "" || manifest.SchemaVersion < 1 ||
 		!validControlFile(manifest.Database) || !validControlFile(manifest.ReleaseManifest) ||
-		!validControlFile(manifest.ReleaseBinary) || manifest.ReleaseManifest.Size > 64<<10 ||
+		!validControlFile(manifest.ReleaseBinary) || !validControlFile(manifest.Telemetry) ||
+		manifest.ReleaseManifest.Size > 64<<10 ||
 		!validControlResourceIDs(manifest.Resources) {
 		return ControlManifest{}, errors.New("control manifest fields are invalid")
 	}
@@ -215,7 +222,7 @@ func nextControlEntry(archive *tar.Reader, name string, mode int64) (*tar.Header
 	}
 	if header.Name != name || header.Mode != mode || header.Size < 0 ||
 		(header.Typeflag != tar.TypeReg && header.Typeflag != 0) || header.Linkname != "" ||
-		len(header.PAXRecords) != 0 || len(header.Xattrs) != 0 {
+		len(header.PAXRecords) != 0 {
 		return nil, fmt.Errorf("control archive entry %q metadata is invalid", name)
 	}
 	return header, nil

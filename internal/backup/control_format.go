@@ -24,11 +24,12 @@ import (
 )
 
 const (
-	ControlFormatVersion = 1
+	ControlFormatVersion = 2
 	controlManifestName  = "control-manifest.json"
 	controlDatabaseName  = "platformd.db"
 	releaseManifestName  = "release-manifest.json"
 	releaseBinaryName    = "platformd"
+	telemetryBackupName  = "telemetry.tar"
 	maximumEnvelopeSize  = 1 << 20
 )
 
@@ -49,6 +50,7 @@ type ControlManifest struct {
 	Database        ControlFile              `json:"database"`
 	ReleaseManifest ControlFile              `json:"releaseManifest"`
 	ReleaseBinary   ControlFile              `json:"releaseBinary"`
+	Telemetry       ControlFile              `json:"telemetry"`
 	Resources       state.ControlResourceIDs `json:"resources"`
 }
 
@@ -74,6 +76,7 @@ type ControlBuildConfig struct {
 	InstallationID string
 	GenerationID   string
 	ReleaseSlot    string
+	TelemetryPath  string
 	WorkRoot       string
 	ExpectedUID    int
 	PublicKey      ed25519.PublicKey
@@ -93,7 +96,7 @@ type ControlBuild struct {
 
 func BuildControl(ctx context.Context, config ControlBuildConfig) (ControlBuild, error) {
 	if config.Store == nil || !validControlIdentifier(config.InstallationID) || !validControlIdentifier(config.GenerationID) ||
-		!safeBackupRoot(config.ReleaseSlot) || !safeBackupRoot(config.WorkRoot) || config.ExpectedUID < 0 ||
+		!safeBackupRoot(config.ReleaseSlot) || !safeBackupRoot(config.WorkRoot) || !safeControlFile(config.TelemetryPath) || config.ExpectedUID < 0 ||
 		len(config.PublicKey) != ed25519.PublicKeySize || config.CreatedAt.IsZero() {
 		return ControlBuild{}, errors.New("control backup build configuration is incomplete")
 	}
@@ -149,12 +152,17 @@ func BuildControl(ctx context.Context, config ControlBuildConfig) (ControlBuild,
 	if err != nil {
 		return cleanup(err)
 	}
+	telemetryFile, err := inspectControlFile(config.TelemetryPath)
+	if err != nil {
+		return cleanup(err)
+	}
 	manifest := ControlManifest{
 		FormatVersion: ControlFormatVersion, InstallationID: config.InstallationID,
 		GenerationID: config.GenerationID, CreatedAtMillis: config.CreatedAt.UnixMilli(),
 		OS: release.OS, Architecture: release.Architecture, PlatformVersion: release.Version,
 		SchemaVersion: schemaVersion, Database: databaseFile,
-		ReleaseManifest: releaseManifestFile, ReleaseBinary: releaseBinaryFile, Resources: resources,
+		ReleaseManifest: releaseManifestFile, ReleaseBinary: releaseBinaryFile,
+		Telemetry: telemetryFile, Resources: resources,
 	}
 	manifestBytes, err := json.Marshal(manifest)
 	if err != nil {
@@ -179,6 +187,7 @@ func BuildControl(ctx context.Context, config ControlBuildConfig) (ControlBuild,
 		{name: controlDatabaseName, path: snapshotPath, mode: 0o600},
 		{name: releaseManifestName, path: releaseManifestPath, mode: 0o644},
 		{name: releaseBinaryName, path: releaseBinaryPath, mode: 0o755},
+		{name: telemetryBackupName, path: config.TelemetryPath, mode: 0o600},
 	}
 	for _, file := range files {
 		if err := writeControlTarFile(archive, file.name, file.path, file.content, file.mode); err != nil {
@@ -225,6 +234,10 @@ func BuildControl(ctx context.Context, config ControlBuildConfig) (ControlBuild,
 		Completion: completion, CompletionBytes: completionBytes,
 		Chunks: chunks, WorkDirectory: workDirectory,
 	}, nil
+}
+
+func safeControlFile(path string) bool {
+	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != string(filepath.Separator)
 }
 
 func inspectControlFile(path string) (ControlFile, error) {

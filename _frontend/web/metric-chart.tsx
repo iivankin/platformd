@@ -3,6 +3,7 @@ import type {
   CSSProperties,
   PointerEvent as ReactPointerEvent,
   ReactElement,
+  ReactNode,
 } from "react";
 
 export interface MetricPoint {
@@ -18,6 +19,7 @@ export interface MetricSeries<T extends MetricPoint = MetricPoint> {
 }
 
 interface MetricChartProps<T extends MetricPoint = MetricPoint> {
+  actions?: ReactNode;
   emptyLabel: string;
   formatValue: (value: number) => string;
   from: number;
@@ -26,6 +28,7 @@ interface MetricChartProps<T extends MetricPoint = MetricPoint> {
   series: MetricSeries<T>[];
   title: string;
   to: number;
+  visualization?: "area" | "bar" | "line";
 }
 
 interface ChartCoordinate {
@@ -231,6 +234,7 @@ const AnimatedMetricLine = <T extends MetricPoint>({
 };
 
 const MetricChartComponent = <T extends MetricPoint>({
+  actions,
   emptyLabel,
   formatValue,
   from,
@@ -239,6 +243,7 @@ const MetricChartComponent = <T extends MetricPoint>({
   series,
   title,
   to,
+  visualization = "area",
 }: MetricChartProps<T>) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
@@ -477,6 +482,7 @@ const MetricChartComponent = <T extends MetricPoint>({
             </span>
           );
         })}
+        {actions}
       </header>
       <div className="relative h-60 min-w-0 select-none" ref={containerRef}>
         {width > 0 ? (
@@ -514,7 +520,7 @@ const MetricChartComponent = <T extends MetricPoint>({
             })}
 
             {geometry.map(({ areas, metric }) =>
-              metric.strokeDasharray
+              metric.strokeDasharray || visualization !== "area"
                 ? null
                 : areas.map((area, segmentIndex) => (
                     <path
@@ -527,15 +533,41 @@ const MetricChartComponent = <T extends MetricPoint>({
                   ))
             )}
 
-            {geometry.map(({ lines, metric }) =>
-              lines.map((line, segmentIndex) => (
-                <AnimatedMetricLine
-                  d={line}
-                  key={`${metric.label}-line-${segmentIndex}`}
-                  metric={metric}
-                />
-              ))
-            )}
+            {visualization === "bar"
+              ? geometry.flatMap(({ coordinates, metric }, seriesIndex) =>
+                  coordinates.map((coordinate, pointIndex) =>
+                    coordinate ? (
+                      <rect
+                        fill={metric.color}
+                        fillOpacity="0.65"
+                        height={padding.top + plotHeight - coordinate.y}
+                        key={`${metric.label}-bar-${pointIndex}`}
+                        width={Math.max(
+                          1,
+                          (plotWidth / Math.max(1, points.length)) *
+                            (0.72 / Math.max(1, chartSeries.length))
+                        )}
+                        x={
+                          coordinate.x -
+                          (plotWidth / Math.max(1, points.length)) * 0.36 +
+                          seriesIndex *
+                            ((plotWidth / Math.max(1, points.length)) *
+                              (0.72 / Math.max(1, chartSeries.length)))
+                        }
+                        y={coordinate.y}
+                      />
+                    ) : null
+                  )
+                )
+              : geometry.map(({ lines, metric }) =>
+                  lines.map((line, segmentIndex) => (
+                    <AnimatedMetricLine
+                      d={line}
+                      key={`${metric.label}-line-${segmentIndex}`}
+                      metric={metric}
+                    />
+                  ))
+                )}
 
             {crosshairX === undefined ? null : (
               <line

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/iivankin/platformd/internal/automation"
+	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 )
 
@@ -63,20 +64,24 @@ func (application *Application) CreateOIDC(
 	if resource.ID == "" || resource.Name != input.Resource {
 		return Grant{}, errors.New("resolved port forward resource is invalid")
 	}
+	port, endpointHost, err := resolveEndpoint(project, resource, input)
+	if err != nil {
+		return Grant{}, err
+	}
 	identity, err := application.oidc.Verify(
 		ctx, token, audience, resource.PortForward.Repository, resource.PortForward.Workflows,
 	)
 	if err != nil {
 		return Grant{}, ErrOIDCUnauthorized
 	}
-	if _, err := application.resolver.ResolveResourceAddress(project.ID, resource.Kind, resource.ID, input.Port); err != nil {
+	if _, err := application.resolver.ResolveResourceAddress(project.ID, resource.Kind, resource.ID, input.Endpoint, port); err != nil {
 		return Grant{}, fmt.Errorf("%w: %v", ErrTargetUnavailable, err)
 	}
 	actor := "oidc:" + strings.TrimSpace(identity.RunID)
 	if actor == "oidc:" {
 		actor = "oidc:" + strings.TrimSpace(identity.Repository)
 	}
-	return application.issueTicket(ctx, project, resource, input.Port, lifetime, actor)
+	return application.issueTicket(ctx, project, resource, input.Endpoint, endpointHost, port, lifetime, actor)
 }
 
 func (application *Application) Create(ctx context.Context, identity automation.Identity, input CreateInput) (Grant, error) {
@@ -109,8 +114,23 @@ func (application *Application) Create(ctx context.Context, identity automation.
 	if resource.ID == "" || resource.Name != input.Resource {
 		return Grant{}, errors.New("resolved port forward resource is invalid")
 	}
-	if _, err := application.resolver.ResolveResourceAddress(project.ID, resource.Kind, resource.ID, input.Port); err != nil {
+	port, endpointHost, err := resolveEndpoint(project, resource, input)
+	if err != nil {
+		return Grant{}, err
+	}
+	if _, err := application.resolver.ResolveResourceAddress(project.ID, resource.Kind, resource.ID, input.Endpoint, port); err != nil {
 		return Grant{}, fmt.Errorf("%w: %v", ErrTargetUnavailable, err)
 	}
-	return application.issueTicket(ctx, project, resource, input.Port, lifetime, identity.TokenID)
+	return application.issueTicket(ctx, project, resource, input.Endpoint, endpointHost, port, lifetime, identity.TokenID)
+}
+
+func resolveEndpoint(project ResolvedProject, resource ResolvedResource, input CreateInput) (int, string, error) {
+	if input.Endpoint == "" {
+		return input.Port, "", nil
+	}
+	if input.Endpoint != EndpointErrors || resource.Kind != "service" {
+		return 0, "", ErrInvalidInput
+	}
+	return firewall.ServiceTelemetryPort,
+		"errors-" + resource.Name + "." + project.Name + ".internal", nil
 }

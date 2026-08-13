@@ -19,6 +19,7 @@ export type PortForwardGrant = {
   websocketUrl: string;
   expiresAt: string;
   resourceKind: ResourceKind;
+  endpointHost: string;
 };
 
 export type PreparedBinary = {
@@ -36,6 +37,7 @@ export type BinaryOptions = {
 type PortForwardConfig = Pick<
   ActionConfig,
   "baseUrl" | "token" | "project" | "resource" | "port" | "localPort" | "expiresInSeconds"
+  | "endpoint"
 >;
 
 type DownloadConfig = {
@@ -55,6 +57,8 @@ type PortForwardResponse = {
   project?: unknown;
   resource?: unknown;
   resourceKind?: unknown;
+  endpoint?: unknown;
+  endpointHost?: unknown;
   instructions?: { websocketUrl?: unknown };
   error?: { message?: unknown };
 };
@@ -112,7 +116,8 @@ export async function createPortForward(
       "content-type": "application/json",
     },
     body: JSON.stringify({
-      port: config.port,
+      port: config.endpoint ? undefined : config.port,
+      endpoint: config.endpoint || undefined,
       localPort: config.localPort,
       expiresInSeconds: config.expiresInSeconds,
     }),
@@ -131,6 +136,8 @@ export async function createPortForward(
   const websocketUrl = body?.instructions?.websocketUrl;
   const expiresAt = body?.expiresAt;
   const resourceKind = body?.resourceKind;
+  const responseEndpoint = body?.endpoint;
+  const endpointHost = body?.endpointHost;
   if (
     typeof ticket !== "string" ||
     !ticket.startsWith("pft_") ||
@@ -140,7 +147,10 @@ export async function createPortForward(
     body?.project !== config.project ||
     body?.resource !== config.resource ||
     typeof resourceKind !== "string" ||
-    !SUPPORTED_RESOURCE_KINDS.has(resourceKind as ResourceKind)
+    !SUPPORTED_RESOURCE_KINDS.has(resourceKind as ResourceKind) ||
+    (config.endpoint === "errors" &&
+      (resourceKind !== "service" || responseEndpoint !== "errors" || typeof endpointHost !== "string" || !endpointHost)) ||
+    (!config.endpoint && (responseEndpoint !== undefined || endpointHost !== undefined))
   ) {
     throw new Error("platformd returned an invalid port forward response");
   }
@@ -149,6 +159,7 @@ export async function createPortForward(
     websocketUrl: websocketUrl as string,
     expiresAt,
     resourceKind: resourceKind as ResourceKind,
+    endpointHost: typeof endpointHost === "string" ? endpointHost : "",
   };
 }
 

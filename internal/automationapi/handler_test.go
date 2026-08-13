@@ -44,7 +44,7 @@ func (*repositoryStub) ResolveResource(_ context.Context, _ string, name string)
 	return portforward.ResolvedResource{ID: "database-id", Kind: "postgres", Name: name}, nil
 }
 
-func (*repositoryStub) ResolveResourceAddress(string, string, string, int) (string, error) {
+func (*repositoryStub) ResolveResourceAddress(string, string, string, string, int) (string, error) {
 	return "10.42.0.4:5432", nil
 }
 
@@ -144,6 +144,10 @@ func (*repositoryStub) List(context.Context, managedimages.Engine, int, int, str
 }
 
 func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
+	return automationHandlerWithTelemetry(t, repository, nil)
+}
+
+func automationHandlerWithTelemetry(t *testing.T, repository *repositoryStub, telemetry ServiceTelemetry) http.Handler {
 	t.Helper()
 	projects, err := automation.NewProjectApplication(repository, nil)
 	if err != nil {
@@ -181,12 +185,30 @@ func automationHandler(t *testing.T, repository *repositoryStub) http.Handler {
 	handler, err := Handler(Config{
 		Hostname: "admin.example.com", Repository: repository, Projects: projects,
 		Services: services, Domains: domains, Logs: logs, Images: repository, ObjectStores: repository,
-		Volumes: volumes, PortForwards: portForwards, Admission: admission.New(),
+		Volumes: volumes, PortForwards: portForwards, Telemetry: telemetry, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+type serviceTelemetryStub struct {
+	calls         int
+	method        string
+	path          string
+	query         string
+	authorization string
+}
+
+func (telemetry *serviceTelemetryStub) ServeService(response http.ResponseWriter, request *http.Request, serviceID string) {
+	telemetry.calls++
+	telemetry.method = request.Method
+	telemetry.path = request.URL.Path
+	telemetry.query = request.URL.RawQuery
+	telemetry.authorization = request.Header.Get("Authorization")
+	response.Header().Set("Content-Type", "application/json")
+	_, _ = response.Write([]byte(`{"serviceId":"` + serviceID + `"}`))
 }
 
 type automationVolumeFilesystem struct{}
@@ -439,6 +461,44 @@ func TestAutomationAPIReadsLogsWithinTokenProjectBoundary(t *testing.T) {
 	handler.ServeHTTP(response, automationRequest("/public/api/v1/projects/project-a/services/service/logs?limit=10", identity))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.serviceCalls != 1 {
 		t.Fatalf("visible logs = %d/%s calls=%d", response.Code, response.Body, repository.serviceCalls)
+	}
+}
+
+func TestAutomationAPIMergesServiceTelemetryUnderCommonTokenBoundary(t *testing.T) {
+	repository := &repositoryStub{service: state.ServiceDesired{ID: "service", ProjectID: "project-a"}}
+	telemetry := &serviceTelemetryStub{}
+	handler := automationHandlerWithTelemetry(t, repository, telemetry)
+	bound := "project-a"
+	read := automation.Identity{TokenID: "read", Role: "read", ProjectID: &bound}
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, automationRequest("/public/api/v1/projects/project-b/services/service/errors/issues", read))
+	if response.Code != http.StatusForbidden || telemetry.calls != 0 || repository.serviceCalls != 0 {
+		t.Fatalf("cross-project telemetry = %d/%s calls=%d/%d", response.Code, response.Body, repository.serviceCalls, telemetry.calls)
+	}
+
+	request := automationRequest("/public/api/v1/projects/project-a/services/service/errors/issues?limit=5", read)
+	request.Header.Set("Authorization", "Bearer must-not-reach-data-plane")
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || telemetry.calls != 1 || telemetry.method != http.MethodGet || telemetry.path != "/issues" || telemetry.query != "limit=5" || telemetry.authorization != "" {
+		t.Fatalf("read telemetry = %d/%s forwarded=%s %s?%s auth=%q", response.Code, response.Body, telemetry.method, telemetry.path, telemetry.query, telemetry.authorization)
+	}
+
+	request = httptest.NewRequest(http.MethodPatch, "https://admin.example.com/public/api/v1/projects/project-a/services/service/errors/issues/issue", strings.NewReader(`{"status":"resolved"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request = request.WithContext(automation.WithIdentity(request.Context(), read))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusForbidden || telemetry.calls != 1 {
+		t.Fatalf("read telemetry mutation = %d/%s calls=%d", response.Code, response.Body, telemetry.calls)
+	}
+
+	request = request.Clone(automation.WithIdentity(request.Context(), automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &bound}))
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK || telemetry.calls != 2 || telemetry.method != http.MethodPatch || telemetry.path != "/issues/issue" {
+		t.Fatalf("admin telemetry mutation = %d/%s forwarded=%s %s", response.Code, response.Body, telemetry.method, telemetry.path)
 	}
 }
 

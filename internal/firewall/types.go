@@ -9,10 +9,11 @@ import (
 )
 
 const (
-	TableName        = "platformd"
-	DNSPort          = 53
-	ObjectStorePort  = 9000
-	ErrorTrackerPort = 9001
+	TableName            = "platformd"
+	DNSPort              = 53
+	ObjectStorePort      = 9000
+	ServiceTelemetryPort = 9001
+	OTLPHTTPPort         = 4318
 )
 
 // Project describes only inspected runtime network facts. It is deliberately
@@ -23,7 +24,7 @@ type Project struct {
 	Subnet                   netip.Prefix
 	Gateway                  netip.Addr
 	ObjectStoreEnabled       bool
-	ErrorTrackerEnabled      bool
+	ServiceTelemetryEnabled  bool
 	BlockedDatabaseEndpoints []DatabaseEndpoint
 	GatewayListeners         []GatewayListener
 	PublicTrafficEndpoints   []PublicTrafficEndpoint

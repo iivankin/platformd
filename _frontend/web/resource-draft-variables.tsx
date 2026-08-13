@@ -29,15 +29,6 @@ const draftVariables = (
 ): DraftVariable[] => {
   const hostname = `${draft.input.name}.${projectName}.internal`;
   switch (draft.kind) {
-    case "error_tracker": {
-      return [
-        { name: "SENTRY_URL", value: `http://${hostname}:9001` },
-        {
-          name: "SENTRY_DSN",
-          value: "Created per application in the tracker console",
-        },
-      ];
-    }
     case "postgres": {
       const { databaseName, ownerPassword, ownerUsername } =
         draft.input.credentials;

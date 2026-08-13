@@ -10,6 +10,7 @@ import { useState } from "react";
 
 import type { Project } from "@/api";
 import { APITokenCreateDialog } from "@/api-token-create-dialog";
+import { APITokensPage } from "@/api-tokens-page";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { PageStack } from "@/components/ui/page-stack";
@@ -210,6 +211,8 @@ export const SettingsMCPPage = ({ projects }: { projects: Project[] }) => {
           {copyError}
         </p>
       ) : null}
+
+      <APITokensPage projects={projects} />
     </PageStack>
   );
 };

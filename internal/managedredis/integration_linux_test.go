@@ -5,6 +5,7 @@ package managedredis
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"errors"
 	"net/netip"
 	"os"
@@ -108,7 +109,7 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = engine.RemoveNetwork(network.Name) })
-	password, err := GeneratePassword()
+	password, err := GeneratePasswordWith(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}

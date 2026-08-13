@@ -406,11 +406,9 @@ export const ObjectStoreDetailPanel = ({
 
       {view === "logs" ? (
         <ResourceLogs
-          description="Audited storage activity, refreshed every two seconds."
           kind="object_store"
           projectID={projectID}
           resourceID={storeID}
-          title="Storage activity logs"
         />
       ) : null}
 

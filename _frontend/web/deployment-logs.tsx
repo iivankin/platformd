@@ -14,11 +14,9 @@ export const DeploymentLogs = ({
 }) => (
   <ResourceLogs
     deploymentID={deploymentID}
-    description="Runtime output from this deployment only."
     key={deploymentID}
     kind={kind}
     projectID={projectID}
     resourceID={resourceID}
-    title="Deploy logs"
   />
 );

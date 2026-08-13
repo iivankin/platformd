@@ -198,7 +198,7 @@ SELECT EXISTS(
 
 func validBackupResourceKind(value string) bool {
 	switch value {
-	case "control", "error_tracker", "image", "object_store", "postgres", "redis", "volume":
+	case "control", "image", "object_store", "postgres", "redis", "volume":
 		return true
 	default:
 		return false

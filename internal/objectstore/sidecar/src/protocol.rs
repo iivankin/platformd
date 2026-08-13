@@ -225,53 +225,83 @@ async fn dispatch(
             }
         }
         (Method::HEAD, "/v1/object") => {
-            with_traffic(traffic_counters.clone(), &Method::HEAD, "/v1/object", 0, || async {
-                let key = decoded_header(request.headers(), "x-platformd-key")?;
-                let info = store
-                    .get_object_info(&bucket, &key, &ObjectOptions::default())
-                    .await?;
-                // HEAD transfers metadata only; do not attribute object size as bytes_out.
-                Ok((object_response(StatusCode::NO_CONTENT, &info)?, 0))
-            })
+            with_traffic(
+                traffic_counters.clone(),
+                &Method::HEAD,
+                "/v1/object",
+                0,
+                || async {
+                    let key = decoded_header(request.headers(), "x-platformd-key")?;
+                    let info = store
+                        .get_object_info(&bucket, &key, &ObjectOptions::default())
+                        .await?;
+                    // HEAD transfers metadata only; do not attribute object size as bytes_out.
+                    Ok((object_response(StatusCode::NO_CONTENT, &info)?, 0))
+                },
+            )
             .await
         }
         (Method::GET, "/v1/object") => {
             let range_length = integer_header(request.headers(), "x-platformd-length", -1)?;
-            with_traffic(traffic_counters.clone(), &Method::GET, "/v1/object", 0, || async {
-                let response = get_object(store, &bucket, request).await?;
-                let bytes_out = if range_length >= 0 {
-                    range_length as u64
-                } else {
-                    header_u64(response.headers(), "x-platformd-size").unwrap_or(0)
-                };
-                Ok((response, bytes_out))
-            })
+            with_traffic(
+                traffic_counters.clone(),
+                &Method::GET,
+                "/v1/object",
+                0,
+                || async {
+                    let response = get_object(store, &bucket, request).await?;
+                    let bytes_out = if range_length >= 0 {
+                        range_length as u64
+                    } else {
+                        header_u64(response.headers(), "x-platformd-size").unwrap_or(0)
+                    };
+                    Ok((response, bytes_out))
+                },
+            )
             .await
         }
         (Method::PUT, "/v1/object") => {
             let bytes_in = integer_header(request.headers(), "x-platformd-size", 0)?.max(0) as u64;
-            with_traffic(traffic_counters.clone(), &Method::PUT, "/v1/object", bytes_in, || async {
-                let response = put_object(store, &bucket, request).await?;
-                Ok((response, 0))
-            })
+            with_traffic(
+                traffic_counters.clone(),
+                &Method::PUT,
+                "/v1/object",
+                bytes_in,
+                || async {
+                    let response = put_object(store, &bucket, request).await?;
+                    Ok((response, 0))
+                },
+            )
             .await
         }
         (Method::DELETE, "/v1/object") => {
-            with_traffic(traffic_counters.clone(), &Method::DELETE, "/v1/object", 0, || async {
-                let key = decoded_header(request.headers(), "x-platformd-key")?;
-                let info = store
-                    .delete_object(&bucket, &key, ObjectOptions::default())
-                    .await?;
-                usage::record_delete(&bucket, &info).await;
-                Ok((empty(StatusCode::NO_CONTENT), 0))
-            })
+            with_traffic(
+                traffic_counters.clone(),
+                &Method::DELETE,
+                "/v1/object",
+                0,
+                || async {
+                    let key = decoded_header(request.headers(), "x-platformd-key")?;
+                    let info = store
+                        .delete_object(&bucket, &key, ObjectOptions::default())
+                        .await?;
+                    usage::record_delete(&bucket, &info).await;
+                    Ok((empty(StatusCode::NO_CONTENT), 0))
+                },
+            )
             .await
         }
         (Method::GET, "/v1/objects") => {
-            with_traffic(traffic_counters.clone(), &Method::GET, "/v1/objects", 0, || async {
-                let response = list_objects(store, &bucket, request.headers()).await?;
-                Ok((response, 0))
-            })
+            with_traffic(
+                traffic_counters.clone(),
+                &Method::GET,
+                "/v1/objects",
+                0,
+                || async {
+                    let response = list_objects(store, &bucket, request.headers()).await?;
+                    Ok((response, 0))
+                },
+            )
             .await
         }
         _ => Err(ApiError::new(
@@ -738,14 +768,8 @@ where
         Ok((response, bytes_out)) => {
             let error = !response.status().is_success();
             let bytes_out = Arc::new(std::sync::atomic::AtomicU64::new(bytes_out));
-            let pending = traffic::PendingFinish::new(
-                traffic,
-                op,
-                bytes_in,
-                bytes_out,
-                started,
-                error,
-            );
+            let pending =
+                traffic::PendingFinish::new(traffic, op, bytes_in, bytes_out, started, error);
             let (parts, body) = response.into_parts();
             // Keep pending alive until the body is dropped so active_requests and
             // latency cover streaming control-plane downloads.

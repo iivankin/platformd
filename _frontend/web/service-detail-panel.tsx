@@ -22,12 +22,14 @@ import type {
   ServiceListener,
   Volume,
 } from "@/api";
+import { ContainerFileBrowser } from "@/container-file-browser";
+import { ContainerTerminalOverlay } from "@/container-terminal-overlay";
 import { DeploymentHistory } from "@/deployment-history";
+import { Modal } from "@/errors/dialog-frame";
 import { PreviewDeploymentHistory } from "@/preview-deployment-history";
 import type { ResourceNodeData } from "@/project-flow";
-import { deploymentPath } from "@/project-resource-path";
-import { ResourceConsole } from "@/resource-console";
-import { ResourceUsage } from "@/resource-usage";
+import { serviceTelemetryLogsPath } from "@/project-resource-path";
+import { ServiceTelemetryWorkspace } from "@/service-errors";
 import { ServiceSettings } from "@/service-settings";
 import {
   createPendingServiceSettings,
@@ -39,10 +41,11 @@ import { WorkspaceView } from "@/workspace-view";
 
 export type ServiceWorkspaceView =
   | "deployments"
-  | "metrics"
+  | "telemetry"
   | "variables"
-  | "console"
   | "settings";
+
+type RuntimeTool = "console" | "files";
 
 interface ServiceDetailPanelProperties {
   data: ResourceNodeData;
@@ -92,6 +95,7 @@ export const ServiceDetailPanel = ({
     useState<number>();
   const [busy, setBusy] = useState<string>();
   const [error, setError] = useState<string | null>(null);
+  const [runtimeTool, setRuntimeTool] = useState<RuntimeTool>();
 
   const load = useCallback(
     async (signal?: AbortSignal) => {
@@ -315,14 +319,6 @@ export const ServiceDetailPanel = ({
       <WorkspaceView
         active={view}
         views={{
-          console: (
-            <ResourceConsole
-              projectID={projectID}
-              resourceID={serviceID}
-              resourceKind="service"
-              resourceName={data.name}
-            />
-          ),
           deployments: (
             <div className="grid gap-3">
               <DeploymentHistory
@@ -343,6 +339,8 @@ export const ServiceDetailPanel = ({
                   }
                 }}
                 onLoadOlder={() => void loadOlder()}
+                onOpenConsole={() => setRuntimeTool("console")}
+                onOpenFiles={() => setRuntimeTool("files")}
                 onRedeploy={() => {
                   if (service) {
                     void apply("redeploy", () =>
@@ -376,27 +374,23 @@ export const ServiceDetailPanel = ({
                 }}
                 onViewLogs={(deployment) =>
                   void navigate(
-                    deploymentPath(projectID, serviceID, deployment.id)
+                    serviceTelemetryLogsPath(
+                      projectID,
+                      serviceID,
+                      deployment.id
+                    )
                   )
                 }
               />
               <PreviewDeploymentHistory
                 onViewLogs={(preview) =>
                   void navigate(
-                    deploymentPath(projectID, serviceID, preview.id)
+                    serviceTelemetryLogsPath(projectID, serviceID, preview.id)
                   )
                 }
                 previews={previews}
               />
             </div>
-          ),
-          metrics: (
-            <ResourceUsage
-              cpuMillicores={service?.cpuMillicores}
-              kind="service"
-              memoryBytes={service?.memoryMaxBytes}
-              resourceID={serviceID}
-            />
           ),
           settings: service ? (
             <ServiceSettings
@@ -416,6 +410,14 @@ export const ServiceDetailPanel = ({
               volumes={volumes}
             />
           ) : null,
+          telemetry: (
+            <ServiceTelemetryWorkspace
+              cpuMillicores={service?.cpuMillicores}
+              memoryBytes={service?.memoryMaxBytes}
+              projectID={projectID}
+              serviceID={serviceID}
+            />
+          ),
           variables: service ? (
             <ServiceVariables
               busy={Boolean(busy)}
@@ -435,6 +437,36 @@ export const ServiceDetailPanel = ({
         }}
       />
       <ServicePanelError error={error} hidden={view === "settings"} />
+      <Modal
+        className="max-w-[min(76rem,calc(100vw-2rem))]"
+        description={`Interactive shell for ${data.name}'s current deployment.`}
+        onOpenChange={(open) => setRuntimeTool(open ? "console" : undefined)}
+        open={runtimeTool === "console"}
+        title="Container console"
+      >
+        <ContainerTerminalOverlay
+          className="border-0 ring-0"
+          embedded
+          projectID={projectID}
+          resourceID={serviceID}
+          resourceKind="service"
+          resourceName={data.name}
+        />
+      </Modal>
+      <Modal
+        className="max-w-[min(92rem,calc(100vw-2rem))]"
+        description="Browse and transfer files in the currently running container."
+        onOpenChange={(open) => setRuntimeTool(open ? "files" : undefined)}
+        open={runtimeTool === "files"}
+        title={`${data.name} container files`}
+      >
+        <ContainerFileBrowser
+          className="border-0 ring-0"
+          projectID={projectID}
+          resourceID={serviceID}
+          resourceKind="service"
+        />
+      </Modal>
     </div>
   );
 };

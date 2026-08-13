@@ -27,7 +27,6 @@ const projectResourceCount = (project: Project) =>
   project.serviceCount +
   project.postgresCount +
   project.redisCount +
-  project.errorTrackerCount +
   project.objectStoreCount +
   project.networkGatewayCount;
 

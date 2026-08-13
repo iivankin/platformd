@@ -24,14 +24,13 @@ func TestReconcileRemovesOrphansAndCreatesMissingOrdinaryVolumes(t *testing.T) {
 	result, err := Reconcile(context.Background(), root, []state.PersistentVolumeReference{
 		{ProjectID: "project", VolumeID: "ordinary-existing", Kind: state.PersistentVolumeOrdinary},
 		{ProjectID: "project", VolumeID: "ordinary-missing", Kind: state.PersistentVolumeOrdinary},
-		{ProjectID: "project", VolumeID: "error-tracker", Kind: state.PersistentVolumeErrorTracker},
 		{ProjectID: "project", VolumeID: "postgres-active", Kind: state.PersistentVolumePostgres},
 		{ProjectID: "project", VolumeID: "redis-missing", Kind: state.PersistentVolumeRedis},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Created != 2 || result.Removed != 2 {
+	if result.Created != 1 || result.Removed != 2 {
 		t.Fatalf("reconcile result = %+v", result)
 	}
 	if content, err := os.ReadFile(contentPath); err != nil || string(content) != "preserved" {
@@ -48,9 +47,6 @@ func TestReconcileRemovesOrphansAndCreatesMissingOrdinaryVolumes(t *testing.T) {
 		t.Fatal(err)
 	} else if uid, gid := fileOwner(info); uid != os.Geteuid() || gid != os.Getegid() {
 		t.Fatalf("created ordinary volume owner = %d:%d", uid, gid)
-	}
-	if info, err := os.Stat(filepath.Join(root, "project", "error-tracker")); err != nil || info.Mode().Perm() != 0o700 {
-		t.Fatalf("created error tracker volume = %v, %v", info, err)
 	}
 	for _, removed := range []string{
 		filepath.Join(root, "project", "restore-candidate"),

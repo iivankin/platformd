@@ -296,7 +296,7 @@ func getManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
 
 func updateManagedRedisPortForward(repository ManagedRedisRepository) http.HandlerFunc {
 	type requestBody struct {
-		ExpectedUpdatedAt int64                     `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt int64                      `json:"expectedUpdatedAt"`
 		PortForward       *serviceconfig.PortForward `json:"portForward"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
@@ -398,7 +398,7 @@ func publicManagedRedis(resource state.ManagedRedis, password string) managedRed
 		Hostname: resource.Name + "." + resource.ProjectName + ".internal", Port: managedredis.Port,
 		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest,
 		CPUMillicores: resource.CPUMillicores, MemoryBytes: resource.MemoryMaxBytes,
-		PortForward: resource.PortForward,
+		PortForward:   resource.PortForward,
 		BackupEnabled: resource.BackupEnabled, BackupCron: resource.BackupCron,
 		BackupRetentionCount: resource.BackupRetentionCount, Password: password,
 		CreatedAt: resource.CreatedAtMillis, UpdatedAt: resource.UpdatedAtMillis,

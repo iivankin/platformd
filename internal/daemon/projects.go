@@ -9,24 +9,24 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
-	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
 type liveProjectRepository struct {
-	store              *state.Store
-	runtime            *runtimeStack
-	backups            *backup.ResourceApplication
-	domains            *liveDomainRepository
-	objectStores       *liveObjectStoreRepository
-	objectStoreData    objectStoreDataCleaner
-	errorTrackers      *errortracker.Manager
-	errorTrackerRoutes *liveErrorTrackerRepository
-	listeners          *liveServiceListenerRepository
-	gateways           *liveNetworkGatewayRepository
-	traffic            *trafficmetrics.Registry
-	onCleanupError     func(error)
+	store            *state.Store
+	runtime          *runtimeStack
+	backups          *backup.ResourceApplication
+	domains          *liveDomainRepository
+	objectStores     *liveObjectStoreRepository
+	objectStoreData  objectStoreDataCleaner
+	serviceTelemetry *telemetry.ServiceManager
+	telemetryRoutes  *liveServiceTelemetryRepository
+	listeners        *liveServiceListenerRepository
+	gateways         *liveNetworkGatewayRepository
+	traffic          *trafficmetrics.Registry
+	onCleanupError   func(error)
 }
 
 type objectStoreDataCleaner interface {
@@ -60,10 +60,6 @@ func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, proje
 			resource.Status, resource.StatusMessage = repository.runtime.PostgresStatus(resource.ID)
 		case "object_store":
 			resource.Status, resource.StatusMessage = repository.runtime.ObjectStoreStatus(canvas.Project.ID)
-		case "error_tracker":
-			if repository.errorTrackers != nil {
-				resource.Status, resource.StatusMessage = repository.errorTrackers.Status(resource.ID)
-			}
 		case "network_gateway":
 			resource.Status, resource.StatusMessage = repository.runtime.NetworkGatewayStatus(resource.ID)
 		}
@@ -135,31 +131,42 @@ func (repository liveProjectRepository) DeleteProject(ctx context.Context, input
 	if err := repository.runtime.stopProjectDatabases(ctx, plan.Postgres, plan.Redis); err != nil {
 		return state.ProjectDeletionPlan{}, err
 	}
-	if repository.errorTrackers != nil {
-		if err := repository.errorTrackers.StopProject(plan.ErrorTrackers); err != nil {
+	var deletedTelemetryHostnames []string
+	if repository.telemetryRoutes != nil {
+		deletedTelemetryHostnames, err = repository.telemetryRoutes.deleteProjectDNS(ctx, plan.Services)
+		if err != nil {
 			return state.ProjectDeletionPlan{}, err
 		}
 	}
+	restoreTelemetryHostnames := func(cause error) error {
+		if repository.telemetryRoutes == nil {
+			return cause
+		}
+		return errors.Join(cause, repository.telemetryRoutes.restoreDNS(ctx, deletedTelemetryHostnames))
+	}
 	deleted, err := repository.store.DeleteProject(ctx, input)
 	if err != nil {
-		return state.ProjectDeletionPlan{}, err
+		return state.ProjectDeletionPlan{}, restoreTelemetryHostnames(err)
 	}
 	// Keep the Rust project endpoint alive while its per-store maintenance gates
 	// drain requests and delete the physical buckets. Removing it first would
 	// make DeleteStoreData unable to acquire the restore gate.
 	repository.cleanupObjectStoreData(deleted.ObjectStores)
+	for _, service := range deleted.Services {
+		if repository.serviceTelemetry != nil {
+			repository.reportCleanupError(cleanupServiceTelemetry(repository.serviceTelemetry, service))
+		}
+		repository.traffic.Forget(service.ID)
+	}
 	repository.reportCleanupError(repository.runtime.RemoveProject(input.ID))
 	if repository.domains != nil {
 		repository.reportCleanupError(repository.domains.reload(ctx))
 	}
-	for _, service := range deleted.Services {
-		repository.traffic.Forget(service.ID)
-	}
 	if repository.objectStores != nil {
 		repository.reportCleanupError(repository.objectStores.reloadPublicRoutes(ctx))
 	}
-	if repository.errorTrackerRoutes != nil {
-		repository.reportCleanupError(repository.errorTrackerRoutes.reloadPublicRoutes(ctx))
+	if repository.telemetryRoutes != nil {
+		repository.reportCleanupError(repository.telemetryRoutes.reloadPublicRoutes(ctx))
 	}
 	repository.cleanupProjectFiles(deleted)
 	return deleted, nil

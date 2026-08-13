@@ -19,6 +19,7 @@ test("creates a ticket using the platformd public API", async () => {
     token: "admin-token",
     project: "project-name",
     resource: "database-name",
+    endpoint: "",
     port: 5432,
     localPort: 15432,
     expiresInSeconds: 900,
@@ -55,6 +56,7 @@ test("creates a ticket using the platformd public API", async () => {
     websocketUrl: "wss://admin.example.com/public/api/v1/port-forward",
     expiresAt: "2026-07-26T12:00:00Z",
     resourceKind: "postgres",
+    endpointHost: "",
   });
 });
 
@@ -64,6 +66,7 @@ test("reports a safe API error without returning the response body", async () =>
     token: "admin-token",
     project: "project",
     resource: "backend",
+    endpoint: "",
     port: 8080,
     localPort: 8080,
     expiresInSeconds: 900,
@@ -79,6 +82,42 @@ test("reports a safe API error without returning the response body", async () =>
     ),
     /HTTP 409: Target is not running/,
   );
+});
+
+test("creates a service errors endpoint tunnel", async () => {
+  const grant = await createPortForward(
+    {
+      baseUrl: "https://admin.example.com",
+      token: "admin-token",
+      project: "shop",
+      resource: "api",
+      endpoint: "errors",
+      port: 9001,
+      localPort: 9001,
+      expiresInSeconds: 900,
+    },
+    async (_url, options) => {
+      assert.deepEqual(JSON.parse(String(options?.body)), {
+        endpoint: "errors",
+        localPort: 9001,
+        expiresInSeconds: 900,
+      });
+      return new Response(
+        JSON.stringify({
+          ticket: "pft_ticket",
+          project: "shop",
+          resource: "api",
+          resourceKind: "service",
+          endpoint: "errors",
+          endpointHost: "errors-api.shop.internal",
+          expiresAt: "2026-07-26T12:00:00Z",
+          instructions: { websocketUrl: "wss://admin.example.com/public/api/v1/port-forward" },
+        }),
+        { status: 201 },
+      );
+    },
+  );
+  assert.equal(grant.endpointHost, "errors-api.shop.internal");
 });
 
 test("validates the fixed WSS endpoint", () => {

@@ -41,11 +41,12 @@ func TestBuildControlEncryptsConsistentSQLiteAndExactRelease(t *testing.T) {
 	}
 	paths, publicKey := controlReleaseSlot(t, root)
 	master := cryptobox.MasterKey{1, 2, 3, 4}
+	telemetryPath := controlTelemetryFixture(t, root)
 	built, err := BuildControl(ctx, ControlBuildConfig{
 		Store: store, Master: master, InstallationID: "installation", GenerationID: "generation",
 		ReleaseSlot: filepath.Join(paths.ReleasesRoot, "1.2.3"), WorkRoot: filepath.Join(root, "work"),
 		ExpectedUID: os.Geteuid(), PublicKey: publicKey, CreatedAt: time.Unix(10, 0),
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x55}, 24*32)),
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x55}, 24*32)), TelemetryPath: telemetryPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +80,7 @@ func TestBuildControlEncryptsConsistentSQLiteAndExactRelease(t *testing.T) {
 		clear(opened)
 	}
 	archive := tar.NewReader(&plaintext)
-	wantNames := []string{controlManifestName, controlDatabaseName, releaseManifestName, releaseBinaryName}
+	wantNames := []string{controlManifestName, controlDatabaseName, releaseManifestName, releaseBinaryName, telemetryBackupName}
 	for _, want := range wantNames {
 		header, err := archive.Next()
 		if err != nil || header.Name != want {
@@ -103,6 +104,15 @@ func TestBuildControlEncryptsConsistentSQLiteAndExactRelease(t *testing.T) {
 	if err != nil || decoded.GenerationID != "generation" {
 		t.Fatalf("decoded envelope = %+v, %v", decoded, err)
 	}
+}
+
+func controlTelemetryFixture(t *testing.T, root string) string {
+	t.Helper()
+	path := filepath.Join(root, "telemetry-fixture.tar")
+	if err := os.WriteFile(path, []byte("telemetry snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 func TestControlMetadataRejectsDuplicateKeysAndUnsafeIdentity(t *testing.T) {
@@ -163,7 +173,7 @@ func controlReleaseSlot(t *testing.T, root string) (layout.Paths, ed25519.Public
 
 func writeControlRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-telemetry", "platformd-objectstore"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -18,7 +18,7 @@ func (portForwardResourceStub) ResolveProject(_ context.Context, name string) (p
 func (portForwardResourceStub) ResolveResource(_ context.Context, _ string, name string) (portforward.ResolvedResource, error) {
 	return portforward.ResolvedResource{ID: "database-id", Kind: "postgres", Name: name}, nil
 }
-func (portForwardResourceStub) ResolveResourceAddress(string, string, string, int) (string, error) {
+func (portForwardResourceStub) ResolveResourceAddress(string, string, string, string, int) (string, error) {
 	return "10.42.0.5:5432", nil
 }
 func (portForwardResourceStub) RecordPortForwardTicket(context.Context, portforward.AuditRecord) error {

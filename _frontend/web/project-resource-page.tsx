@@ -1,20 +1,10 @@
-import {
-  Bug,
-  Box,
-  Database,
-  HardDrive,
-  Network,
-  Server,
-  X,
-} from "lucide-react";
+import { Box, Database, HardDrive, Network, Server, X } from "lucide-react";
 import type { ComponentType } from "react";
 import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
 import type { ProjectCanvas } from "@/api";
-import { ErrorTrackerDetailPanel } from "@/error-tracker-detail-panel";
-import type { ErrorTrackerWorkspaceView } from "@/error-tracker-detail-panel";
 import { NetworkGatewayDetailPanel } from "@/network-gateway-detail-panel";
 import type { NetworkGatewayWorkspaceView } from "@/network-gateway-detail-panel";
 import { ObjectStoreDetailPanel } from "@/object-store-detail-panel";
@@ -43,15 +33,6 @@ const workspaces: Record<
   ResourceNodeData["kind"],
   ResourceWorkspaceDefinition
 > = {
-  error_tracker: {
-    icon: Bug,
-    label: "Error tracker",
-    views: [
-      { label: "Console", value: "console" },
-      { label: "Backups", value: "backups" },
-      { label: "Settings", value: "settings" },
-    ],
-  },
   network_gateway: {
     icon: Network,
     label: "Network gateway",
@@ -104,9 +85,8 @@ const workspaces: Record<
     label: "Service",
     views: [
       { label: "Deployments", value: "deployments" },
+      { label: "Telemetry", value: "telemetry" },
       { label: "Variables", value: "variables" },
-      { label: "Metrics", value: "metrics" },
-      { label: "Console", value: "console" },
       { label: "Settings", value: "settings" },
     ],
   },
@@ -138,15 +118,6 @@ const ResourceWorkspace = ({
   resources: ProjectCanvas["resources"];
 }) => {
   switch (node.data.kind) {
-    case "error_tracker": {
-      return (
-        <ErrorTrackerDetailPanel
-          projectID={projectID}
-          trackerID={node.id}
-          view={view as ErrorTrackerWorkspaceView}
-        />
-      );
-    }
     case "network_gateway": {
       return (
         <NetworkGatewayDetailPanel
@@ -223,8 +194,10 @@ export const ProjectResourcePage = () => {
   const [projectName, setProjectName] = useState("");
   const [error, setError] = useState<string>();
   const [loading, setLoading] = useState(true);
+  const [loadedRoute, setLoadedRoute] = useState("");
   const [refreshVersion, setRefreshVersion] = useState(0);
   const [resources, setResources] = useState<ProjectCanvas["resources"]>([]);
+  const routeKey = `${projectID}:${kind ?? "unknown"}:${resourceID}`;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -249,6 +222,7 @@ export const ProjectResourcePage = () => {
             loadError instanceof DOMException && loadError.name === "AbortError"
           )
         ) {
+          setNode(undefined);
           setError(
             loadError instanceof Error
               ? loadError.message
@@ -258,14 +232,15 @@ export const ProjectResourcePage = () => {
       } finally {
         if (!controller.signal.aborted) {
           setLoading(false);
+          setLoadedRoute(routeKey);
         }
       }
     };
     void load();
     return () => controller.abort();
-  }, [kind, projectID, refreshVersion, resourceID]);
+  }, [kind, projectID, refreshVersion, resourceID, routeKey]);
 
-  if (loading) {
+  if (loading || loadedRoute !== routeKey) {
     return (
       <ResourceDrawer closePath={projectPath} label="Loading resource">
         <div className="grid h-full place-items-center text-[10px] text-muted-foreground">
@@ -354,6 +329,7 @@ export const ProjectResourcePage = () => {
       <PageTabs label={`${node.data.name} resource pages`} tabs={tabs} />
       <div className="min-h-0 flex-1 overflow-auto">
         <ResourceWorkspace
+          key={`${kind}:${resourceID}`}
           node={node}
           onChanged={() => setRefreshVersion((value) => value + 1)}
           onPendingSettingsChange={(change) =>

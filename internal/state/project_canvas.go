@@ -86,13 +86,12 @@ SELECT p.id, p.name, CASE WHEN p.icon_bytes IS NULL THEN 0 ELSE 1 END,
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
        (SELECT count(*) FROM object_stores o WHERE o.project_id = p.id),
-	   (SELECT count(*) FROM error_trackers e WHERE e.project_id = p.id),
 	   (SELECT count(*) FROM network_gateways g WHERE g.project_id = p.id),
        p.created_at, p.updated_at
 FROM projects p
 WHERE p.id = ?`, projectID).Scan(
 		&project.ID, &project.Name, &hasIcon, &project.ServiceCount,
-		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.ErrorTrackerCount, &project.NetworkGatewayCount,
+		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 		&project.CreatedAtMillis, &project.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -114,13 +113,12 @@ SELECT p.id, p.name, CASE WHEN p.icon_bytes IS NULL THEN 0 ELSE 1 END,
        (SELECT count(*) FROM managed_postgres pg WHERE pg.project_id = p.id),
        (SELECT count(*) FROM managed_redis r WHERE r.project_id = p.id),
        (SELECT count(*) FROM object_stores o WHERE o.project_id = p.id),
-	   (SELECT count(*) FROM error_trackers e WHERE e.project_id = p.id),
 	   (SELECT count(*) FROM network_gateways g WHERE g.project_id = p.id),
        p.created_at, p.updated_at
 FROM projects p
 WHERE p.name = ?`, name).Scan(
 		&project.ID, &project.Name, &hasIcon, &project.ServiceCount,
-		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.ErrorTrackerCount, &project.NetworkGatewayCount,
+		&project.PostgresCount, &project.RedisCount, &project.ObjectStoreCount, &project.NetworkGatewayCount,
 		&project.CreatedAtMillis, &project.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -173,13 +171,8 @@ FROM (
          bucket_name, 1 AS enabled,
          '', '', 'pending', ''
   FROM object_stores WHERE project_id = ?
-	UNION ALL
-  SELECT id, 'error_tracker' AS kind, name, '' AS image_reference,
-         '' AS bucket_name, 1 AS enabled,
-         '', '', 'pending', ''
-  FROM error_trackers WHERE project_id = ?
 )
-ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID, project.ID)
+ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 	if err != nil {
 		return nil, fmt.Errorf("list project canvas resources: %w", err)
 	}

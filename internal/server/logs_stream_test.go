@@ -64,19 +64,19 @@ func (*liveLogRepository) ResourceLogs(context.Context, string, string, string, 
 	return containerlogs.Window{}, nil
 }
 
-func (repository *liveLogRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {
+func (repository *liveLogRepository) ServiceLogRevision(context.Context, string, containerlogs.Query) (string, error) {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	return fmt.Sprint(repository.revision), nil
 }
 
-func (repository *liveLogRepository) ServiceLogs(_ context.Context, _, _, _, _ string, limit int) (containerlogs.Window, error) {
+func (repository *liveLogRepository) ServiceLogs(_ context.Context, _ string, query containerlogs.Query) (containerlogs.Window, error) {
 	repository.mu.Lock()
 	defer repository.mu.Unlock()
 	repository.queries++
 	records := append([]containerlogs.Record(nil), repository.records...)
-	if limit > 0 && len(records) > limit {
-		records = records[len(records)-limit:]
+	if query.Limit > 0 && len(records) > query.Limit {
+		records = records[len(records)-query.Limit:]
 	}
 	return containerlogs.Window{Records: records}, nil
 }

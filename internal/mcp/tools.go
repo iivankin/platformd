@@ -30,9 +30,19 @@ type Repository interface {
 }
 
 type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	InputSchema map[string]any `json:"inputSchema"`
+	Name        string           `json:"name"`
+	Description string           `json:"description"`
+	InputSchema map[string]any   `json:"inputSchema"`
+	Annotations *ToolAnnotations `json:"annotations,omitempty"`
+}
+
+// ToolAnnotations are MCP-standard safety hints for clients. Authorization is
+// still enforced server-side; these fields only help an agent plan tool calls.
+type ToolAnnotations struct {
+	ReadOnlyHint    bool `json:"readOnlyHint"`
+	DestructiveHint bool `json:"destructiveHint"`
+	IdempotentHint  bool `json:"idempotentHint"`
+	OpenWorldHint   bool `json:"openWorldHint"`
 }
 
 type toolCallParams struct {
@@ -85,10 +95,20 @@ func readTools() []Tool {
 			}, []string{"projectId", "serviceId"}),
 		},
 		{
-			Name: "read_service_logs", Description: "Read a bounded recent service log window with optional deployment and contains filters.",
+			Name: "read_service_logs", Description: "Read a bounded, chronological service log window. Use traceId or spanId from an error event or get_service_trace to correlate logs; order selects which matching window is returned.",
 			InputSchema: objectSchema(map[string]any{
 				"projectId": map[string]any{"type": "string"}, "serviceId": map[string]any{"type": "string"},
-				"deploymentId": map[string]any{"type": "string"}, "contains": map[string]any{"type": "string", "maxLength": 256},
+				"deploymentId": map[string]any{"type": "string", "description": "Exact deployment ID from list_service_deployments"},
+				"contains":     map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive message text search"},
+				"severityText": map[string]any{"type": "string", "maxLength": 64, "description": "Exact normalized severity such as ERROR, WARN, or INFO"},
+				"traceId":      map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{32}$", "description": "Exact 32-hex trace ID"},
+				"spanId":       map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{16}$", "description": "Exact 16-hex span ID"},
+				"from":         map[string]any{"type": "integer", "minimum": 0, "description": "Inclusive Unix timestamp in milliseconds"},
+				"to":           map[string]any{"type": "integer", "minimum": 0, "description": "Inclusive Unix timestamp in milliseconds"},
+				"order": map[string]any{
+					"type": "string", "enum": []string{"desc", "asc"},
+					"description": "Select the latest (desc) or earliest (asc) matching window; returned records stay chronological",
+				},
 				"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": containerlogs.MaximumLimit},
 			}, []string{"projectId", "serviceId"}),
 		},
@@ -154,9 +174,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 			return
 		}
 	}
-	tools := handler.tools
+	tools := append([]Tool(nil), handler.tools...)
 	if identity.IsAdmin() {
-		tools = append(append([]Tool(nil), tools...), adminTools()...)
+		tools = append(tools, adminTools()...)
 		tools = append(tools, lifecycleAdminTools()...)
 		if handler.managedDeployments != nil {
 			tools = append(tools, managedDeploymentAdminTools()...)
@@ -200,8 +220,45 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		if handler.portForwards != nil {
 			tools = append(tools, portForwardAdminTool())
 		}
+		if handler.telemetry != nil {
+			tools = append(tools, serviceTelemetryAdminTools()...)
+		}
 	}
+	annotateTools(tools)
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
+}
+
+func annotateTools(tools []Tool) {
+	for index := range tools {
+		readOnly := !isAdminMutationTool(tools[index].Name) || tools[index].Name == "preview_managed_database_version_change"
+		tools[index].Annotations = &ToolAnnotations{
+			ReadOnlyHint: readOnly, DestructiveHint: !readOnly && destructiveTool(tools[index].Name),
+			IdempotentHint: readOnly, OpenWorldHint: openWorldTool(tools[index].Name),
+		}
+	}
+}
+
+func destructiveTool(name string) bool {
+	switch name {
+	case "create_project", "create_service", "create_service_telemetry_webhook", "create_metric_chart",
+		"attach_service_domain", "create_object_store", "create_network_gateway", "run_backup",
+		"create_managed_redis", "create_managed_postgres", "create_service_volume", "create_port_forward":
+		return false
+	default:
+		return true
+	}
+}
+
+func openWorldTool(name string) bool {
+	switch name {
+	case "list_managed_image_tags", "create_service", "update_service", "redeploy_service", "rollback_service",
+		"attach_service_domain", "detach_service_domain", "set_service_telemetry_domain",
+		"create_managed_redis", "create_managed_postgres", "preview_managed_database_version_change",
+		"start_managed_database_version_change", "create_service_telemetry_webhook":
+		return true
+	default:
+		return false
+	}
 }
 
 func (handler *Handler) callTool(response http.ResponseWriter, request *http.Request, message requestMessage, identity automation.Identity) {
@@ -263,6 +320,28 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 		output, err = handler.detachServiceDomain(request.Context(), call.Arguments, identity)
 	case "read_service_logs":
 		output, err = handler.readServiceLogs(request.Context(), call.Arguments, identity)
+	case "list_service_issues", "get_service_issue", "list_service_error_events", "get_service_error_event",
+		"list_service_replays", "get_service_replay", "get_service_replay_recording", "list_service_artifacts",
+		"list_service_traces", "get_service_trace", "update_service_issue_status":
+		if handler.telemetry == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.callServiceTelemetry(request.Context(), call.Name, call.Arguments, identity)
+	case "get_service_telemetry", "set_service_telemetry_domain", "rotate_service_artifact_token",
+		"create_service_telemetry_webhook", "delete_service_telemetry_webhook":
+		if handler.telemetry == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.callServiceTelemetryControl(request.Context(), call.Name, call.Arguments, identity)
+	case "get_metric_catalog", "query_metrics", "list_metric_charts",
+		"create_metric_chart", "update_metric_chart", "delete_metric_chart":
+		if handler.telemetry == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.callMetricTool(request.Context(), call.Name, call.Arguments, identity)
 	case "read_managed_resource_logs":
 		output, err = handler.readManagedResourceLogs(request.Context(), call.Arguments, identity)
 	case "read_resource_usage":
@@ -660,7 +739,6 @@ type projectOutput struct {
 	PostgresCount       int    `json:"postgresCount"`
 	RedisCount          int    `json:"redisCount"`
 	ObjectStoreCount    int    `json:"objectStoreCount"`
-	ErrorTrackerCount   int    `json:"errorTrackerCount"`
 	NetworkGatewayCount int    `json:"networkGatewayCount"`
 }
 
@@ -703,7 +781,6 @@ func publicProject(project state.ProjectSummary) projectOutput {
 		ID: project.ID, Name: project.Name, HasIcon: project.HasIcon,
 		ServiceCount: project.ServiceCount, PostgresCount: project.PostgresCount, RedisCount: project.RedisCount,
 		ObjectStoreCount:    project.ObjectStoreCount,
-		ErrorTrackerCount:   project.ErrorTrackerCount,
 		NetworkGatewayCount: project.NetworkGatewayCount,
 	}
 }

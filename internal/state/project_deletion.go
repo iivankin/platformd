@@ -11,14 +11,13 @@ import (
 var ErrProjectChanged = errors.New("project changed")
 
 type ProjectDeletionPlan struct {
-	Project       ProjectSummary
-	Services      []ServiceDesired
-	Postgres      []ManagedPostgres
-	Redis         []ManagedRedis
-	ObjectStores  []ObjectStore
-	ErrorTrackers []ErrorTracker
-	Gateways      []NetworkGateway
-	Volumes       []Volume
+	Project      ProjectSummary
+	Services     []ServiceDesired
+	Postgres     []ManagedPostgres
+	Redis        []ManagedRedis
+	ObjectStores []ObjectStore
+	Gateways     []NetworkGateway
+	Volumes      []Volume
 }
 
 type ProjectBackupResource struct {
@@ -39,7 +38,7 @@ type DeleteProjectInput struct {
 }
 
 func (plan ProjectDeletionPlan) BackupResources() []ProjectBackupResource {
-	resources := make([]ProjectBackupResource, 0, len(plan.Postgres)+len(plan.Redis)+len(plan.ObjectStores)+len(plan.ErrorTrackers)+len(plan.Volumes))
+	resources := make([]ProjectBackupResource, 0, len(plan.Postgres)+len(plan.Redis)+len(plan.ObjectStores)+len(plan.Volumes))
 	for _, resource := range plan.Postgres {
 		resources = append(resources, ProjectBackupResource{Kind: "postgres", ID: resource.ID})
 	}
@@ -48,9 +47,6 @@ func (plan ProjectDeletionPlan) BackupResources() []ProjectBackupResource {
 	}
 	for _, resource := range plan.ObjectStores {
 		resources = append(resources, ProjectBackupResource{Kind: "object_store", ID: resource.ID})
-	}
-	for _, resource := range plan.ErrorTrackers {
-		resources = append(resources, ProjectBackupResource{Kind: "error_tracker", ID: resource.ID})
 	}
 	for _, resource := range plan.Volumes {
 		resources = append(resources, ProjectBackupResource{Kind: "volume", ID: resource.ID})
@@ -94,9 +90,6 @@ func (store *Store) ProjectDeletionPlan(ctx context.Context, projectID string) (
 		return ProjectDeletionPlan{}, err
 	}
 	if plan.ObjectStores, err = store.ObjectStoresByProject(ctx, projectID); err != nil {
-		return ProjectDeletionPlan{}, err
-	}
-	if plan.ErrorTrackers, err = store.ErrorTrackersByProject(ctx, projectID); err != nil {
 		return ProjectDeletionPlan{}, err
 	}
 	if plan.Gateways, err = store.NetworkGateways(ctx, projectID); err != nil {
@@ -144,7 +137,7 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 		"actorEmail": input.ActorEmail, "projectName": plan.Project.Name,
 		"deleteBackups": input.DeleteBackups, "services": len(plan.Services),
 		"postgres": len(plan.Postgres), "redis": len(plan.Redis),
-		"objectStores": len(plan.ObjectStores), "errorTrackers": len(plan.ErrorTrackers), "networkGateways": len(plan.Gateways), "volumes": len(plan.Volumes),
+		"objectStores": len(plan.ObjectStores), "networkGateways": len(plan.Gateways), "volumes": len(plan.Volumes),
 	})
 	if err != nil {
 		return ProjectDeletionPlan{}, err
@@ -160,16 +153,6 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			return ErrProjectChanged
 		}
 		statements := []string{
-			`DELETE FROM aggregate_metric_samples WHERE scope_kind = 'project' AND scope_id = ?`,
-			`DELETE FROM resource_metric_samples WHERE
-			 (resource_kind = 'service' AND resource_id IN (SELECT id FROM services WHERE project_id = ?)) OR
-			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
-			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?)) OR
-			 (resource_kind = 'network_gateway' AND resource_id IN (SELECT id FROM network_gateways WHERE project_id = ?))`,
-			`DELETE FROM managed_stat_samples WHERE
-			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
-			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?)) OR
-			 (resource_kind = 'object_store' AND resource_id IN (SELECT id FROM object_stores WHERE project_id = ?))`,
 			`DELETE FROM runtime_deployments WHERE
 			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
 			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?))`,
@@ -177,12 +160,11 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			 (resource_kind = 'postgres' AND resource_id IN (SELECT id FROM managed_postgres WHERE project_id = ?)) OR
 			 (resource_kind = 'redis' AND resource_id IN (SELECT id FROM managed_redis WHERE project_id = ?)) OR
 			 (resource_kind = 'object_store' AND resource_id IN (SELECT id FROM object_stores WHERE project_id = ?)) OR
-			 (resource_kind = 'error_tracker' AND resource_id IN (SELECT id FROM error_trackers WHERE project_id = ?)) OR
 			 (resource_kind = 'volume' AND resource_id IN (SELECT id FROM volumes WHERE project_id = ?))`,
 			`DELETE FROM operations WHERE target_id IN (
 			 SELECT id FROM services WHERE project_id = ? UNION SELECT id FROM managed_postgres WHERE project_id = ?
 			 UNION SELECT id FROM managed_redis WHERE project_id = ? UNION SELECT id FROM object_stores WHERE project_id = ?
-			 UNION SELECT id FROM error_trackers WHERE project_id = ? UNION SELECT id FROM volumes WHERE project_id = ?
+			 UNION SELECT id FROM volumes WHERE project_id = ?
 			 UNION SELECT id FROM network_gateways WHERE project_id = ?)`,
 			`DELETE FROM network_gateways WHERE project_id = ?`,
 			`DELETE FROM service_secret_refs WHERE service_id IN (SELECT id FROM services WHERE project_id = ?)`,
@@ -191,12 +173,9 @@ func (store *Store) DeleteProject(ctx context.Context, input DeleteProjectInput)
 			`DELETE FROM services WHERE project_id = ?`,
 		}
 		arguments := [][]any{
-			{input.ID},
-			{input.ID, input.ID, input.ID, input.ID},
-			{input.ID, input.ID, input.ID},
 			{input.ID, input.ID},
-			{input.ID, input.ID, input.ID, input.ID, input.ID},
-			{input.ID, input.ID, input.ID, input.ID, input.ID, input.ID, input.ID},
+			{input.ID, input.ID, input.ID, input.ID},
+			{input.ID, input.ID, input.ID, input.ID, input.ID, input.ID},
 			{input.ID}, {input.ID}, {input.ID}, {input.ID}, {input.ID},
 		}
 		for index, statement := range statements {

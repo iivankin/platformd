@@ -126,7 +126,7 @@ func getManagedPostgres(application *managedpostgres.Application) http.HandlerFu
 
 func updateManagedPostgresPortForward(application *managedpostgres.Application) http.HandlerFunc {
 	type requestBody struct {
-		ExpectedUpdatedAt int64                     `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt int64                      `json:"expectedUpdatedAt"`
 		PortForward       *serviceconfig.PortForward `json:"portForward"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
@@ -289,7 +289,7 @@ func publicManagedPostgres(resource state.ManagedPostgres, password string) mana
 		ImageTag: resource.ImageTag, ImageDigest: resource.ImageDigest,
 		DatabaseName: resource.DatabaseName, OwnerUsername: resource.OwnerUsername, OwnerPassword: password,
 		CPUMillicores: resource.CPUMillicores, MemoryBytes: resource.MemoryMaxBytes,
-		PortForward: resource.PortForward,
+		PortForward:   resource.PortForward,
 		BackupEnabled: resource.BackupEnabled, BackupCron: resource.BackupCron,
 		BackupRetentionCount: resource.BackupRetentionCount,
 		CreatedAt:            resource.CreatedAtMillis, UpdatedAt: resource.UpdatedAtMillis,

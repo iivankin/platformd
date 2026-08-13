@@ -6,17 +6,15 @@ import (
 )
 
 type RuntimeProject struct {
-	ID                  string
-	Name                string
-	ObjectStoreEnabled  bool
-	ErrorTrackerEnabled bool
+	ID                 string
+	Name               string
+	ObjectStoreEnabled bool
 }
 
 func (store *Store) RuntimeProjects(ctx context.Context) ([]RuntimeProject, error) {
 	rows, err := store.database.QueryContext(ctx, `
 SELECT p.id, p.name,
-       EXISTS(SELECT 1 FROM object_stores o WHERE o.project_id = p.id),
-       EXISTS(SELECT 1 FROM error_trackers e WHERE e.project_id = p.id)
+       EXISTS(SELECT 1 FROM object_stores o WHERE o.project_id = p.id)
 FROM projects p
 ORDER BY p.id`)
 	if err != nil {
@@ -26,12 +24,11 @@ ORDER BY p.id`)
 	var result []RuntimeProject
 	for rows.Next() {
 		var project RuntimeProject
-		var objectStoreEnabled, errorTrackerEnabled int
-		if err := rows.Scan(&project.ID, &project.Name, &objectStoreEnabled, &errorTrackerEnabled); err != nil {
+		var objectStoreEnabled int
+		if err := rows.Scan(&project.ID, &project.Name, &objectStoreEnabled); err != nil {
 			return nil, fmt.Errorf("scan runtime project: %w", err)
 		}
 		project.ObjectStoreEnabled = objectStoreEnabled == 1
-		project.ErrorTrackerEnabled = errorTrackerEnabled == 1
 		result = append(result, project)
 	}
 	if err := rows.Err(); err != nil {

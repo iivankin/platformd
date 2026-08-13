@@ -15,6 +15,7 @@ type RecordPortForwardTicket struct {
 	ProjectID       string
 	ResourceKind    string
 	ResourceID      string
+	Endpoint        string
 	Port            int
 	CreatedAtMillis int64
 	ExpiresAtMillis int64
@@ -31,11 +32,15 @@ func (store *Store) RecordPortForwardTicket(ctx context.Context, input RecordPor
 	default:
 		return errors.New("port forward ticket audit resource kind is invalid")
 	}
-	metadata, err := json.Marshal(map[string]any{
+	metadataValue := map[string]any{
 		"ticketId": input.TicketID, "projectId": input.ProjectID,
 		"resourceKind": input.ResourceKind, "resourceId": input.ResourceID,
 		"port": input.Port, "expiresAt": input.ExpiresAtMillis,
-	})
+	}
+	if input.Endpoint != "" {
+		metadataValue["endpoint"] = input.Endpoint
+	}
+	metadata, err := json.Marshal(metadataValue)
 	if err != nil {
 		return fmt.Errorf("encode port forward ticket audit: %w", err)
 	}

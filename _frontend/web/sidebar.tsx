@@ -369,8 +369,7 @@ export const Sidebar = ({
               <div className="my-1.5 border-t border-border" />
               {globalNavigation.map((item) => {
                 const Icon = item.icon;
-                const showUpdate =
-                  item.path === "/monitoring" && updateAvailable;
+                const showUpdate = item.path === "/settings" && updateAvailable;
                 return (
                   <NavLink
                     aria-label={

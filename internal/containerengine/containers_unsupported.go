@@ -16,6 +16,10 @@ func (*Engine) StartContainer(context.Context, string) error {
 	return ErrUnsupported
 }
 
+func (*Engine) StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error) {
+	return nil, ErrUnsupported
+}
+
 func (*Engine) StopContainer(string, uint) error {
 	return ErrUnsupported
 }

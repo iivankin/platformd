@@ -1,5 +1,4 @@
 import {
-  createErrorTracker,
   createManagedPostgres,
   createManagedRedis,
   createNetworkGateway,
@@ -8,7 +7,6 @@ import {
 } from "@/api";
 import type {
   CreateBackupPolicyInput,
-  CreateErrorTrackerInput,
   CreateManagedPostgresInput,
   CreateManagedRedisInput,
   NetworkGatewayInput,
@@ -54,12 +52,6 @@ export const emptyPendingServiceCreationSettings = (
 export type PendingResourceCreation =
   | {
       id: string;
-      input: CreateErrorTrackerInput;
-      kind: "error_tracker";
-      backupPolicy: PendingBackupPolicy;
-    }
-  | {
-      id: string;
       input: NetworkGatewayInput;
       kind: "network_gateway";
     }
@@ -91,7 +83,6 @@ export type PendingResourceCreation =
 export const newResourceDraftID = () => `draft:${newID()}`;
 
 const resourceLabels: Record<PendingResourceCreation["kind"], string> = {
-  error_tracker: "Error tracker",
   network_gateway: "Network gateway",
   postgres: "PostgreSQL",
   redis: "Redis",
@@ -187,12 +178,6 @@ export const applyPendingResource = (
   draft: PendingResourceCreation
 ) => {
   switch (draft.kind) {
-    case "error_tracker": {
-      return createErrorTracker(projectID, {
-        ...draft.input,
-        backupPolicy: createBackupPolicyInput(draft.backupPolicy),
-      });
-    }
     case "postgres": {
       return createManagedPostgres(projectID, {
         ...draft.input,
@@ -262,9 +247,6 @@ export const pendingCanvasResource = (
     volumes: [],
   };
   switch (draft.kind) {
-    case "error_tracker": {
-      return { ...common, kind: "error_tracker" };
-    }
     case "postgres": {
       return {
         ...common,

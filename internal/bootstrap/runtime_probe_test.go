@@ -15,7 +15,7 @@ func TestProbeReleaseRuntimeExecutesEveryRequiredHelper(t *testing.T) {
 	if err := os.Mkdir(runtimeRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-telemetry", "platformd-objectstore"} {
 		if err := os.WriteFile(filepath.Join(runtimeRoot, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

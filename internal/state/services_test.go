@@ -176,12 +176,7 @@ VALUES ('deployment', 'service', 'sha256:image', 'docker.io/library/alpine:lates
 INSERT INTO service_domains(hostname, service_id, target_port, created_at)
 VALUES ('api.example.com', 'service', 8080, 3);
 INSERT INTO service_listeners(protocol, public_port, service_id, target_port, created_at)
-VALUES ('tcp', 3000, 'service', 8080, 3);
-INSERT INTO resource_metric_samples(
-  resource_kind, resource_id, observed_at, duration_millis,
-  cpu_duration_millis, cpu_millicores, cpu_peak_millicores, memory_bytes, memory_peak_bytes, running
-)
-VALUES ('service', 'service', 3, 1, 1, 10, 10, 20, 20, 1)`); err != nil {
+VALUES ('tcp', 3000, 'service', 8080, 3)`); err != nil {
 		t.Fatal(err)
 	}
 	deleted, err := store.DeleteService(context.Background(), DeleteServiceInput{
@@ -195,7 +190,7 @@ VALUES ('service', 'service', 3, 1, 1, 10, 10, 20, 20, 1)`); err != nil {
 	if len(deleted.Volumes) != 1 || deleted.Volumes[0].ID != "volume" {
 		t.Fatalf("deleted volumes = %+v", deleted.Volumes)
 	}
-	for _, table := range []string{"services", "volumes", "deployments", "service_domains", "service_listeners", "resource_metric_samples"} {
+	for _, table := range []string{"services", "volumes", "deployments", "service_domains", "service_listeners"} {
 		var count int
 		if err := store.database.QueryRow("SELECT count(*) FROM " + table).Scan(&count); err != nil || count != 0 {
 			t.Fatalf("%s count = %d, %v", table, count, err)

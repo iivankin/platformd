@@ -15,8 +15,8 @@ import (
 )
 
 var (
-	ErrManagedPostgresNotFound  = errors.New("managed PostgreSQL resource not found")
-	ErrManagedPostgresChanged   = errors.New("managed PostgreSQL resource changed")
+	ErrManagedPostgresNotFound = errors.New("managed PostgreSQL resource not found")
+	ErrManagedPostgresChanged  = errors.New("managed PostgreSQL resource changed")
 )
 
 type ManagedPostgres struct {

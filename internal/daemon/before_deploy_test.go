@@ -59,10 +59,6 @@ func (stub *beforeDeployCloudflareStub) PurgeHostnames(_ context.Context, hostna
 	return nil
 }
 
-type unexpectedBeforeDeployCall struct{ value string }
-
-func (err *unexpectedBeforeDeployCall) Error() string { return "unexpected " + err.value }
-
 func beforeDeployTestRequest(t *testing.T) deployment.BeforeDeployRequest {
 	t.Helper()
 	return deployment.BeforeDeployRequest{

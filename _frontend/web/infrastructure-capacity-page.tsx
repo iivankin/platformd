@@ -5,6 +5,7 @@ import { fetchDiskPressure } from "@/api";
 import type { DiskPressure } from "@/api";
 import { SectionCard } from "@/components/ui/card";
 import { PageStack } from "@/components/ui/page-stack";
+import { ImageGarbageCollectionOperation } from "@/image-garbage-collection-operation";
 import { cn } from "@/lib/utils";
 
 const levelColor: Record<DiskPressure["level"], string> = {
@@ -263,6 +264,8 @@ export const InfrastructureCapacityPage = () => {
           })}
         </div>
       </SectionCard>
+
+      <ImageGarbageCollectionOperation />
     </PageStack>
   );
 };

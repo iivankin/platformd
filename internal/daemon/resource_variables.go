@@ -18,6 +18,7 @@ import (
 	"github.com/iivankin/platformd/internal/objectstore"
 	"github.com/iivankin/platformd/internal/resourcevariables"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 	"github.com/iivankin/platformd/internal/variableexpression"
 )
 
@@ -105,6 +106,7 @@ func (resolver resourceVariableResolver) addRuntimeEnvironment(
 	if _, configured := result["NODE_ENV"]; !configured {
 		result["NODE_ENV"] = "production"
 	}
+	addTelemetryEnvironmentDefaults(desired, environmentContext, result)
 	addEnvironmentIdentity(desired, environmentContext, result)
 	publicURLs, err := resolver.publicURLs(ctx, desired, environmentContext)
 	if err != nil {
@@ -116,6 +118,39 @@ func (resolver resourceVariableResolver) addRuntimeEnvironment(
 		result["PLATFORMD_PREVIEW_URL"] = environmentContext.PreviewURL
 	}
 	return nil
+}
+
+func addTelemetryEnvironmentDefaults(
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+	result map[string]string,
+) {
+	defaults := map[string]string{
+		"SENTRY_DSN":                  telemetry.InternalDSN(desired),
+		"OTEL_EXPORTER_OTLP_ENDPOINT": telemetry.InternalOTLPEndpoint(desired),
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		"OTEL_SERVICE_NAME":           desired.Name,
+		"OTEL_RESOURCE_ATTRIBUTES":    telemetryResourceAttributes(desired, environmentContext),
+	}
+	for name, value := range defaults {
+		if _, configured := result[name]; !configured {
+			result[name] = value
+		}
+	}
+}
+
+func telemetryResourceAttributes(
+	desired state.ServiceDesired,
+	environmentContext deployment.EnvironmentContext,
+) string {
+	attributes := []string{
+		"service.namespace=" + desired.ProjectName,
+		"deployment.environment.name=" + string(environmentContext.Kind),
+	}
+	if environmentContext.DeploymentID != "" {
+		attributes = append(attributes, "deployment.id="+environmentContext.DeploymentID)
+	}
+	return strings.Join(attributes, ",")
 }
 
 func (resolver resourceVariableResolver) resolution(ctx context.Context, desired state.ServiceDesired) (*environmentResolution, error) {

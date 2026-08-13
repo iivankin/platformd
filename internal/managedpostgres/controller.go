@@ -673,10 +673,6 @@ func (controller *Controller) bootstrapClient(ctx context.Context, resourceID st
 	return connection, cleanup, nil
 }
 
-func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedPostgres, imageID string, placement Placement, volume, bootstrapPassword string) (containerengine.Container, error) {
-	return controller.createContainerAttempt(ctx, resource, resource.ID, imageID, placement, volume, bootstrapPassword)
-}
-
 func (controller *Controller) createContainerAttempt(
 	ctx context.Context,
 	resource state.ManagedPostgres,

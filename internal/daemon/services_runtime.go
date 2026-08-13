@@ -38,7 +38,7 @@ type serviceBackendSnapshot struct {
 	services map[string]publishedBackend
 }
 
-func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, cloudflareApplication *cloudflaredns.Application, webhooks *projectwebhook.Application) error {
+func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *state.Store, master cryptobox.MasterKey, credentials deployment.CredentialResolver, cloudflareApplication *cloudflaredns.Application, webhooks *projectwebhook.Application, containerLogs deployment.ContainerLogSink) error {
 	controller, err := deployment.New(deployment.Config{
 		Store: store, Engine: stack.engine, Publisher: stack, Credentials: credentials,
 		Environment: resourceVariableResolver{store: store, master: master},
@@ -51,7 +51,7 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 		},
 		Placement: stack.servicePlacement,
 		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
-		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,
+		ContainerLogs: containerLogs,
 	})
 	if err != nil {
 		return err

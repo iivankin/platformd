@@ -1,12 +1,4 @@
-import {
-  Bug,
-  Box,
-  Database,
-  HardDrive,
-  Network,
-  Server,
-  X,
-} from "lucide-react";
+import { Box, Database, HardDrive, Network, Server, X } from "lucide-react";
 import type { ComponentType } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,13 +6,7 @@ import { Button } from "@/components/ui/button";
 interface ResourceCreatePanelProperties {
   onClose: () => void;
   onSelect: (
-    kind:
-      | "error_tracker"
-      | "network_gateway"
-      | "postgres"
-      | "redis"
-      | "service"
-      | "storage"
+    kind: "network_gateway" | "postgres" | "redis" | "service" | "storage"
   ) => void;
 }
 
@@ -28,23 +14,9 @@ export const resourceCreateOptions: {
   description: string;
   enabled: boolean;
   icon: ComponentType<{ className?: string }>;
-  kind:
-    | "error_tracker"
-    | "network_gateway"
-    | "postgres"
-    | "redis"
-    | "service"
-    | "storage";
+  kind: "network_gateway" | "postgres" | "redis" | "service" | "storage";
   label: string;
 }[] = [
-  {
-    description:
-      "Receive Sentry envelopes, replays, source maps, and native symbols.",
-    enabled: true,
-    icon: Bug,
-    kind: "error_tracker",
-    label: "Error tracker",
-  },
   {
     description: "Run an OCI image with environment, health, and domains.",
     enabled: true,
@@ -116,7 +88,6 @@ export const ResourceCreatePanel = ({
               key={option.kind}
               onClick={() => {
                 if (
-                  option.kind === "error_tracker" ||
                   option.kind === "network_gateway" ||
                   option.kind === "postgres" ||
                   option.kind === "redis" ||

@@ -11,7 +11,6 @@ import {
 import type { InstallationSettings } from "@/api";
 import { Button } from "@/components/ui/button";
 import { FormCard, SectionCard } from "@/components/ui/card";
-import { PageStack } from "@/components/ui/page-stack";
 import { SettingsCertificateRow } from "@/settings-certificate-row";
 import { SettingsError } from "@/settings-error";
 
@@ -96,7 +95,7 @@ export const SettingsCertificatesPage = () => {
   };
 
   return (
-    <PageStack>
+    <>
       <SettingsError message={error} />
 
       <SectionCard className="flex items-center justify-between gap-4 px-5 py-4">
@@ -197,6 +196,6 @@ export const SettingsCertificatesPage = () => {
           </div>
         </FormCard>
       ) : null}
-    </PageStack>
+    </>
   );
 };

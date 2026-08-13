@@ -27,6 +27,10 @@ type ManagedImageCatalog interface {
 	List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error)
 }
 
+type ServiceTelemetry interface {
+	ServeService(http.ResponseWriter, *http.Request, string)
+}
+
 type Config struct {
 	Hostname      string
 	Repository    Repository
@@ -46,6 +50,7 @@ type Config struct {
 	Volumes       *automation.VolumeApplication
 	PortForwards  *portforward.Application
 	Admission     *admission.Gate
+	Telemetry     ServiceTelemetry
 }
 
 func Handler(config Config) (http.Handler, error) {
@@ -59,6 +64,7 @@ func Handler(config Config) (http.Handler, error) {
 		projects: config.Projects != nil, objectStores: config.ObjectStores != nil,
 		domains:      config.Domains != nil,
 		portForwards: config.PortForwards != nil,
+		telemetry:    config.Telemetry != nil,
 	}))
 	mux.HandleFunc("GET /public/api/v1/me", serveIdentity)
 	mux.HandleFunc("GET /public/api/v1/projects", listProjects(config.Repository))
@@ -70,6 +76,9 @@ func Handler(config Config) (http.Handler, error) {
 	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}", getService(config.Repository))
 	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/deployments", listDeployments(config.Repository))
 	mux.HandleFunc("GET /public/api/v1/projects/{projectID}/services/{serviceID}/logs", readServiceLogs(config.Logs))
+	if config.Telemetry != nil {
+		mux.Handle("/public/api/v1/projects/{projectID}/services/{serviceID}/errors/{path...}", serviceTelemetry(config.Repository, config.Telemetry))
+	}
 	mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services", createService(config.Services))
 	mux.HandleFunc("PUT /public/api/v1/projects/{projectID}/services/{serviceID}", updateService(config.Services))
 	mux.HandleFunc("POST /public/api/v1/projects/{projectID}/services/{serviceID}/redeploy", redeployService(config.Services))
@@ -115,6 +124,31 @@ func Handler(config Config) (http.Handler, error) {
 		mux.HandleFunc("GET /public/api/v1/projects/{projectID}/managed-databases/{kind}/{resourceID}/version-change/{operationID}", readDatabaseVersionChange(config.Versions))
 	}
 	return noStore(admission.WrapHTTPMutations(config.Admission, "automation_request", "", nil, mux)), nil
+}
+
+func serviceTelemetry(repository Repository, telemetry ServiceTelemetry) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		projectID := request.PathValue("projectID")
+		if request.Method == http.MethodPatch {
+			if _, ok := requireAdminProject(response, request, projectID); !ok {
+				return
+			}
+		} else if request.Method != http.MethodGet || !requireProject(response, request, projectID) {
+			http.NotFound(response, request)
+			return
+		}
+		serviceID := request.PathValue("serviceID")
+		if _, err := repository.Service(request.Context(), projectID, serviceID); err != nil {
+			writeRepositoryError(response, err)
+			return
+		}
+		forwarded := request.Clone(request.Context())
+		forwarded.URL.Path = "/" + request.PathValue("path")
+		forwarded.URL.RawPath = ""
+		forwarded.Header = request.Header.Clone()
+		forwarded.Header.Del("Authorization")
+		telemetry.ServeService(response, forwarded, serviceID)
+	})
 }
 
 func serveIdentity(response http.ResponseWriter, request *http.Request) {

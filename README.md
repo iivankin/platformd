@@ -2,6 +2,13 @@
 
 `platformd` is a self-hosted application platform for one VPS. It deploys services, PostgreSQL, Redis, object storage, domains, backups, logs, metrics, terminals, and private networking from one project canvas.
 
+Every service also gets an internal Sentry DSN and an OTLP HTTP/protobuf
+endpoint. Container stdout/stderr, SDK logs, traces, metrics, and Sentry events
+flow into the always-running embedded telemetry process and are stored in chDB.
+Versioned issue state lives beside its events, so telemetry has one source of
+truth. A service can expose its Sentry receiver on a public domain, while
+OTLP remains private to the project network.
+
 The server, admin UI, and container runtime are distributed as one `platformd` release executable. `platformd-forward` is a small local helper that connects short-lived API/MCP port-forward tickets to a localhost TCP port.
 
 ## Demo

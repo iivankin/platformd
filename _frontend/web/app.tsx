@@ -286,12 +286,14 @@ export const App = () => {
                   }
                   path="/projects/:projectID"
                 />
+                <Route element={<InfrastructurePage />} path="/monitoring/*" />
                 <Route
-                  element={<InfrastructurePage update={data.update} />}
-                  path="/monitoring/*"
-                />
-                <Route
-                  element={<SettingsPage projects={data.projects} />}
+                  element={
+                    <SettingsPage
+                      projects={data.projects}
+                      update={data.update}
+                    />
+                  }
                   path="/settings/*"
                 />
                 {globalNavigation

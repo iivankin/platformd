@@ -113,28 +113,60 @@ func TestResourceVariableResolverExpandsServiceVariablesAndDomainOutputs(t *test
 		t.Fatal(err)
 	}
 	want := map[string]string{
-		"UPSTREAM":                 "https://backend/v1/ready",
-		"UPSTREAM_PUBLIC":          "https://api.example.com",
-		"UPSTREAM_INTERNAL":        "http://api.shop.internal:8080/health",
-		"UPSTREAM_PROJECT_ID":      "project",
-		"UPSTREAM_PROJECT_NAME":    "shop",
-		"UPSTREAM_SERVICE_ID":      "api",
-		"UPSTREAM_SERVICE_NAME":    "api",
-		"UPSTREAM_PRIVATE_DOMAIN":  "api.shop.internal",
-		"UPSTREAM_PUBLIC_URLS":     "https://api.example.com",
-		"NODE_ENV":                 "production",
-		"PLATFORMD_ENVIRONMENT":    "production",
-		"PLATFORMD_PROJECT_ID":     "project",
-		"PLATFORMD_PROJECT_NAME":   "shop",
-		"PLATFORMD_SERVICE_ID":     "worker",
-		"PLATFORMD_SERVICE_NAME":   "worker",
-		"PLATFORMD_DEPLOYMENT_ID":  "deployment",
-		"PLATFORMD_PRIVATE_DOMAIN": "worker.shop.internal",
-		"PLATFORMD_PUBLIC_URLS":    "",
+		"UPSTREAM":                    "https://backend/v1/ready",
+		"UPSTREAM_PUBLIC":             "https://api.example.com",
+		"UPSTREAM_INTERNAL":           "http://api.shop.internal:8080/health",
+		"UPSTREAM_PROJECT_ID":         "project",
+		"UPSTREAM_PROJECT_NAME":       "shop",
+		"UPSTREAM_SERVICE_ID":         "api",
+		"UPSTREAM_SERVICE_NAME":       "api",
+		"UPSTREAM_PRIVATE_DOMAIN":     "api.shop.internal",
+		"UPSTREAM_PUBLIC_URLS":        "https://api.example.com",
+		"NODE_ENV":                    "production",
+		"SENTRY_DSN":                  "http://worker@errors-worker.shop.internal:9001/1",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "http://otel-worker.shop.internal:4318",
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		"OTEL_SERVICE_NAME":           "worker",
+		"OTEL_RESOURCE_ATTRIBUTES":    "service.namespace=shop,deployment.environment.name=production,deployment.id=deployment",
+		"PLATFORMD_ENVIRONMENT":       "production",
+		"PLATFORMD_PROJECT_ID":        "project",
+		"PLATFORMD_PROJECT_NAME":      "shop",
+		"PLATFORMD_SERVICE_ID":        "worker",
+		"PLATFORMD_SERVICE_NAME":      "worker",
+		"PLATFORMD_DEPLOYMENT_ID":     "deployment",
+		"PLATFORMD_PRIVATE_DOMAIN":    "worker.shop.internal",
+		"PLATFORMD_PUBLIC_URLS":       "",
 	}
 	for name, value := range want {
 		if resolved[name] != value {
 			t.Fatalf("resolved %s = %q, want %q", name, resolved[name], value)
+		}
+	}
+}
+
+func TestTelemetryEnvironmentDefaultsAllowExplicitOverrides(t *testing.T) {
+	service := state.ServiceDesired{
+		ID: "service", Name: "api", ProjectID: "project", ProjectName: "shop",
+	}
+	environment := map[string]string{
+		"SENTRY_DSN":                  "",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example.com",
+		"OTEL_SERVICE_NAME":           "checkout",
+	}
+	addTelemetryEnvironmentDefaults(service, deployment.EnvironmentContext{
+		DeploymentID: "preview-1", Kind: deployment.EnvironmentPreview,
+	}, environment)
+
+	want := map[string]string{
+		"SENTRY_DSN":                  "",
+		"OTEL_EXPORTER_OTLP_ENDPOINT": "https://collector.example.com",
+		"OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+		"OTEL_SERVICE_NAME":           "checkout",
+		"OTEL_RESOURCE_ATTRIBUTES":    "service.namespace=shop,deployment.environment.name=preview,deployment.id=preview-1",
+	}
+	for name, value := range want {
+		if environment[name] != value {
+			t.Fatalf("resolved %s = %q, want %q", name, environment[name], value)
 		}
 	}
 }

@@ -9,7 +9,6 @@ export const touchProject = (
   state: MockState,
   projectID: string,
   field?:
-    | "errorTrackerCount"
     | "networkGatewayCount"
     | "objectStoreCount"
     | "postgresCount"

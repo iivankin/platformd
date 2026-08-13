@@ -711,10 +711,6 @@ func (controller *Controller) Mutate(ctx context.Context, resourceID string, mut
 	return connection.Mutate(ctx, mutation)
 }
 
-func (controller *Controller) createContainer(ctx context.Context, resource state.ManagedRedis, imageID string, placement Placement, volume, configPath string) (containerengine.Container, error) {
-	return controller.createContainerAttempt(ctx, resource, resource.ID, imageID, placement, volume, configPath)
-}
-
 func (controller *Controller) createContainerAttempt(
 	ctx context.Context,
 	resource state.ManagedRedis,

@@ -1,5 +1,4 @@
 import {
-  Bug,
   Boxes,
   Database,
   HardDrive,
@@ -24,7 +23,6 @@ const resourceCount = (project: Project) =>
   project.serviceCount +
   project.postgresCount +
   project.redisCount +
-  project.errorTrackerCount +
   project.objectStoreCount +
   project.networkGatewayCount;
 
@@ -117,13 +115,6 @@ export const ProjectsPage = ({
                 </div>
               </div>
               <div className="flex items-center gap-4 text-[10px] text-muted-foreground">
-                <span
-                  className="flex items-center gap-1.5"
-                  title="Error trackers"
-                >
-                  <Bug className="size-3" />
-                  {project.errorTrackerCount}
-                </span>
                 <span className="flex items-center gap-1.5" title="Services">
                   <Server className="size-3" />
                   {project.serviceCount}

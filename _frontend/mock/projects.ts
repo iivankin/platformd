@@ -12,8 +12,8 @@ import {
   stringField,
 } from "./http";
 import { handleManagedResourcesAPI } from "./managed-resources";
-import { handlePlatformErrorTrackers } from "./platform-error-trackers";
 import { handleResourceCreation } from "./project-resources";
+import { handleMetricScopeTelemetry } from "./service-telemetry";
 import { handleServicesAPI } from "./services";
 import type { MockState } from "./state";
 import { mockNow, nextMockID } from "./state";
@@ -36,7 +36,6 @@ const handleProjectCollection = async (
   const input = await readObject(request);
   const project: Project = {
     createdAt: mockNow(),
-    errorTrackerCount: 0,
     hasIcon: false,
     id: nextMockID(state, "project"),
     name: stringField(input, "name", "mock-project"),
@@ -74,6 +73,36 @@ const handleCanvas = (
   return state.canvases[projectID]
     ? json(state.canvases[projectID])
     : mockError("not_found", "Project not found", 404);
+};
+
+const handleScopedTelemetry = (
+  request: Request,
+  state: MockState,
+  segments: string[]
+): Promise<Response | undefined> | Response | undefined => {
+  const [root, projectID, resource, ...rest] = segments;
+  if (root === "telemetry") {
+    return handleMetricScopeTelemetry(
+      request,
+      state,
+      "installation",
+      [projectID, resource, ...rest].filter(
+        (segment): segment is string => segment !== undefined
+      )
+    );
+  }
+  if (root !== "projects" || !projectID || resource !== "telemetry") {
+    return undefined;
+  }
+  if (!state.projects.some((project) => project.id === projectID)) {
+    return mockError("project_not_found", "Project not found", 404);
+  }
+  return handleMetricScopeTelemetry(
+    request,
+    state,
+    `project:${projectID}`,
+    rest
+  );
 };
 
 // 1x1 PNG
@@ -294,9 +323,6 @@ const removeProjectResources = (state: MockState, projectID: string): void => {
     ...Object.values(state.objectStores)
       .filter((resource) => resource.projectId === projectID)
       .map((resource) => resource.id),
-    ...Object.values(state.errorTrackers)
-      .filter((resource) => resource.projectId === projectID)
-      .map((resource) => resource.id),
     ...Object.values(state.networkGateways)
       .filter((resource) => resource.projectId === projectID)
       .map((resource) => resource.id),
@@ -309,11 +335,12 @@ const removeProjectResources = (state: MockState, projectID: string): void => {
   state.postgres = withoutKeys(state.postgres, resourceIDs);
   state.redis = withoutKeys(state.redis, resourceIDs);
   state.objectStores = withoutKeys(state.objectStores, resourceIDs);
-  state.errorTrackers = withoutKeys(state.errorTrackers, resourceIDs);
-  state.errorTrackerConsoles = withoutKeys(
-    state.errorTrackerConsoles,
-    resourceIDs
+  state.serviceErrors = withoutKeys(state.serviceErrors, serviceIDs);
+  state.metricCharts = withoutKeys(
+    state.metricCharts,
+    new Set([...serviceIDs, `project:${projectID}`])
   );
+  state.serviceTelemetry = withoutKeys(state.serviceTelemetry, serviceIDs);
   state.networkGateways = withoutKeys(state.networkGateways, resourceIDs);
   state.objectMetadata = withoutKeys(state.objectMetadata, resourceIDs);
   state.postgresExtensions = withoutKeys(state.postgresExtensions, resourceIDs);
@@ -389,8 +416,8 @@ export const handleProjectsAPI = async (
     (await handleProjectIcon(request, state, segments)) ??
     (await handleProjectDelete(request, state, segments)) ??
     (await handleProjectWebhooks(request, state, segments)) ??
+    (await handleScopedTelemetry(request, state, segments)) ??
     handleCanvas(request, state, segments) ??
-    (await handlePlatformErrorTrackers(request, state, segments)) ??
     (await handleResourceCreation(request, state, segments)) ??
     (await handleServicesAPI(request, state, segments, url)) ??
     handleManagedResourcesAPI(request, state, segments, url)

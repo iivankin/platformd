@@ -46,6 +46,25 @@ test("builds a Postgres migration port-forward example", () => {
   expect(example).not.toContain("secrets.PLATFORMD");
 });
 
+test("builds a service errors port-forward example", () => {
+  const example = portForwardActionExample({
+    kind: "errors",
+    origin: "https://admin.example.com",
+    port: 9001,
+    projectName: "storefront",
+    resourceName: "api",
+    sentryProject: "service-id",
+  });
+  expect(example).toContain("endpoint: errors");
+  expect(example).toContain(
+    `SENTRY_URL: \${{ steps.sentry.outputs.sentry-url }}`
+  );
+  expect(example).toContain("SENTRY_PROJECT: service-id");
+  expect(example).toContain("SENTRY_AUTH_TOKEN: internal");
+  expect(example).not.toContain("secrets.SENTRY_AUTH_TOKEN");
+  expect(example).not.toContain("port: 9001");
+});
+
 test("tokenizes one YAML key per line and leaves URL colons alone", () => {
   expect(tokenizeYamlLine("  # tunnel postgres")).toEqual([
     { kind: "punctuation", text: "  " },

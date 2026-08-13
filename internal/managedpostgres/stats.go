@@ -247,7 +247,10 @@ SELECT pid,
        COALESCE(usename, ''),
        COALESCE(state, ''),
        COALESCE(wait_event, ''),
-       EXTRACT(EPOCH FROM (now() - COALESCE(xact_start, query_start, backend_start))) * 1000,
+       COALESCE(
+         EXTRACT(EPOCH FROM (now() - COALESCE(xact_start, query_start, backend_start))) * 1000,
+         0
+       )::float8,
        COALESCE(query, ''),
        COALESCE(client_addr::text, '')
 FROM pg_stat_activity
@@ -383,7 +386,7 @@ WHERE blocked.pid <> pg_backend_pid()
 	blocked, err := client.connection.Query(ctx, `
 SELECT blocked.pid,
        COALESCE(blocked.usename, ''),
-       EXTRACT(EPOCH FROM (now() - blocked.query_start)) * 1000,
+       COALESCE(EXTRACT(EPOCH FROM (now() - blocked.query_start)) * 1000, 0)::float8,
        COALESCE(blocked.query, ''),
        blocking.pid,
        COALESCE(blocking.query, ''),

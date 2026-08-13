@@ -158,11 +158,12 @@ func TestFetchControlStreamsAndVerifiesCompleteBackup(t *testing.T) {
 	defer store.Close()
 	paths, publicKey := controlReleaseSlot(t, root)
 	master := cryptobox.MasterKey{7, 8, 9}
+	telemetryPath := controlTelemetryFixture(t, root)
 	built, err := BuildControl(ctx, ControlBuildConfig{
 		Store: store, Master: master, InstallationID: "installation", GenerationID: "generation",
 		ReleaseSlot: filepath.Join(paths.ReleasesRoot, "1.2.3"), WorkRoot: filepath.Join(root, "build"),
 		ExpectedUID: os.Geteuid(), PublicKey: publicKey, CreatedAt: time.Unix(20, 0),
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x55}, 24*64)),
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x55}, 24*64)), TelemetryPath: telemetryPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -201,6 +202,7 @@ func TestFetchControlRejectsArchitectureBeforeLeavingFiles(t *testing.T) {
 		Database:        ControlFile{Size: 1, SHA256: strings.Repeat("a", 64)},
 		ReleaseManifest: ControlFile{Size: 1, SHA256: strings.Repeat("b", 64)},
 		ReleaseBinary:   ControlFile{Size: 1, SHA256: strings.Repeat("c", 64)},
+		Telemetry:       ControlFile{Size: 1, SHA256: strings.Repeat("d", 64)},
 	})
 	if err != nil {
 		t.Fatal(err)

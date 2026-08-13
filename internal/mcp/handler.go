@@ -49,6 +49,7 @@ type Handler struct {
 	serverExec         *automation.ServerExecApplication
 	volumes            *automation.VolumeApplication
 	portForwards       *portforward.Application
+	telemetry          ServiceTelemetry
 	tools              []Tool
 	admission          *admission.Gate
 }
@@ -79,6 +80,7 @@ type Config struct {
 	ServerExec         *automation.ServerExecApplication
 	Volumes            *automation.VolumeApplication
 	PortForwards       *portforward.Application
+	Telemetry          ServiceTelemetry
 	Admission          *admission.Gate
 }
 
@@ -118,6 +120,9 @@ func New(config Config) (*Handler, error) {
 	if config.ManagedStats != nil {
 		tools = append(tools, readManagedResourceStatsTool())
 	}
+	if config.Telemetry != nil {
+		tools = append(tools, serviceTelemetryReadTools()...)
+	}
 	return &Handler{
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		projects: config.Projects, services: config.Services, domains: config.Domains,
@@ -127,7 +132,7 @@ func New(config Config) (*Handler, error) {
 		managed: config.Managed, managedDeployments: config.ManagedDeployments, managedStats: config.ManagedStats,
 		networkGateways: config.NetworkGateways, backups: config.Backups, versions: config.Versions,
 		serverExec: config.ServerExec, volumes: config.Volumes, portForwards: config.PortForwards,
-		tools: tools, admission: config.Admission,
+		telemetry: config.Telemetry, tools: tools, admission: config.Admission,
 	}, nil
 }
 

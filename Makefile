@@ -1,4 +1,4 @@
-.PHONY: build check frontend sidecar test
+.PHONY: build check frontend runtime test
 
 VERSION ?= 0.1.0-dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf development)
@@ -8,12 +8,12 @@ GO_TAGS = containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver
 frontend:
 	bun --cwd=_frontend run build:web
 
-sidecar:
+runtime:
 	cargo build --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
-	cargo build --release --locked --manifest-path error-tracker/Cargo.toml
+	cargo build --release --locked --manifest-path telemetry/Cargo.toml
 	mkdir -p dist/runtime
 	install -m 0755 internal/objectstore/sidecar/target/release/platformd-objectstore dist/runtime/platformd-objectstore
-	install -m 0755 error-tracker/target/release/error-tracker dist/runtime/platformd-error-tracker
+	install -m 0755 telemetry/target/release/platformd-telemetry dist/runtime/platformd-telemetry
 
 check: frontend
 	bun --cwd=_frontend run typecheck
@@ -25,7 +25,7 @@ test: frontend
 	go test -tags "$(GO_TAGS)" ./...
 	go test -race -tags "$(GO_TAGS)" ./...
 
-build: frontend sidecar
+build: frontend runtime
 	mkdir -p dist
 	CGO_ENABLED=1 go build -trimpath -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o dist/platformd .
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/platformd-forward ./cmd/platformd-forward

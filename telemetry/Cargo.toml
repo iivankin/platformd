@@ -1,0 +1,60 @@
+[package]
+name = "platformd-telemetry"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+license = "Apache-2.0"
+description = "Embedded OpenTelemetry and Sentry telemetry runtime for platformd"
+autobins = false
+
+[[bin]]
+name = "platformd-telemetry"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "=1.0.102"
+apple-crash-report-parser = "=0.6.0"
+axum = { version = "=0.8.9", features = ["http1", "json", "multipart", "tokio"] }
+base64 = "=0.22.1"
+brotli = "=8.0.2"
+chdb-rust = { version = "=1.4.0", default-features = false, features = ["static"] }
+flate2 = "=1.1.9"
+jiff = "=0.2.35"
+maxminddb = "=0.30.0"
+minidump = "=0.26.1"
+minidump-processor = "=0.26.1"
+minidump-unwind = "=0.26.1"
+opentelemetry-proto = { version = "=0.32.0", default-features = false, features = ["gen-tonic", "logs", "metrics", "trace", "with-serde"] }
+prost = "=0.14.4"
+proguard = "=5.10.4"
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+sha1 = "=0.10.6"
+sha2 = "=0.10.9"
+sqlparser = { version = "=0.62.0", features = ["visitor"] }
+symbolic-common = "=12.17.3"
+symbolic-debuginfo = "=12.17.3"
+symbolic-sourcemapcache = "=12.17.3"
+symbolic-symcache = "=12.17.3"
+tar = "=0.4.46"
+thiserror = "=2.0.20"
+tokio = { version = "=1.53.1", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "=0.7.19", features = ["io"] }
+tonic = { version = "=0.14.6", default-features = false, features = ["codegen", "router", "transport"] }
+tower = { version = "=0.5.3", features = ["limit"] }
+tower-http = { version = "=0.7.0", features = ["cors", "limit", "trace"] }
+tracing = "=0.1.44"
+tracing-subscriber = { version = "=0.3.23", features = ["env-filter", "fmt"] }
+url = "=2.5.8"
+uuid = { version = "=1.24.0", features = ["v4"] }
+zstd = "=0.13.3"
+
+[dev-dependencies]
+tempfile = "=3.27.0"
+tower = { version = "=0.5.3", features = ["util"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

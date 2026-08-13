@@ -16,20 +16,23 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release
   cancel-in-progress: false
 
-jobs:
-  linux-amd64:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 360
-    env:
-      VERSION: ${{ inputs.version }}
-      SUPPORTED_FROM: ${{ inputs.supported_from }}
+env:
+  GO_TAGS: containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension
+  INTEGRATION_TAGS: containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration
+  SUPPORTED_FROM: ${{ inputs.supported_from }}
+  VERSION: ${{ inputs.version }}
 
+jobs:
+  validate:
+    name: Validate source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
     steps:
       - name: Check out the exact source revision
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
@@ -47,43 +50,13 @@ jobs:
         with:
           bun-version: "1.3.14"
 
-      - name: Install native build dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes --no-install-recommends \
-            autoconf \
-            automake \
-            build-essential \
-            curl \
-            gcc-13 \
-            gperf \
-            libcap-dev \
-            libglib2.0-dev \
-            libjson-c-dev \
-            libseccomp-dev \
-            libtool \
-            meson \
-            ninja-build \
-            pkg-config \
-            protobuf-compiler \
-            python3 \
-            python3-venv
-          mkdir -p "$RUNNER_TEMP/platformd-toolchain"
-          ln -s /usr/bin/gcc-13 "$RUNNER_TEMP/platformd-toolchain/gcc"
-          echo "$RUNNER_TEMP/platformd-toolchain" >> "$GITHUB_PATH"
-
-      - name: Install the locked Rust toolchain
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component clippy --no-self-update
-          rustup override set 1.97.1
+      - name: Install native Go dependencies
+        run: build/ci-install-native-dependencies.sh go
 
       - name: Verify locked toolchain versions
         run: |
           test "$(go version | awk '{print $3}')" = "go1.26.3"
           test "$(bun --version)" = "1.3.14"
-          test "$(rustc --version | awk '{print $2}')" = "1.97.1"
-          test "$(protoc --version | awk '{print $2}')" = "3.21.12"
-          test "gcc-$(gcc -dumpfullversion)" = "gcc-13.3.0"
 
       - name: Reject an existing release
         env:
@@ -118,47 +91,121 @@ jobs:
 
       - name: Verify Go code
         run: |
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
-          go test -race -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
-          go vet -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./...
-          go test -run '^$' -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" ./...
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" ./internal/mcp
+          go test -race -tags "$GO_TAGS" ./...
+          go vet -tags "$GO_TAGS" ./...
+          go test -run '^$' -tags "$INTEGRATION_TAGS" ./...
+          go test -tags "$INTEGRATION_TAGS" ./internal/mcp
 
       - name: Fuzz public protocol boundaries
         run: |
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/internaldns -run '^$' -fuzz '^FuzzDNSInputs$' -fuzztime 10s
-          go test -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" ./internal/ingress -run '^$' -fuzz '^FuzzProxyInputs$' -fuzztime 10s
+          go test -tags "$GO_TAGS" ./internal/internaldns -run '^$' -fuzz '^FuzzDNSInputs$' -fuzztime 10s
+          go test -tags "$GO_TAGS" ./internal/ingress -run '^$' -fuzz '^FuzzProxyInputs$' -fuzztime 10s
+
+  build-runtime:
+    name: Build bundled runtime
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install native runtime dependencies
+        run: build/ci-install-native-dependencies.sh runtime
+
+      - name: Install the locked Rust toolchain
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy --no-self-update
+          rustup override set 1.97.1
+
+      - name: Verify locked toolchain versions
+        run: |
+          test "$(rustc --version | awk '{print $2}')" = "1.97.1"
+          test "$(protoc --version | awk '{print $2}')" = "3.21.12"
+          test "gcc-$(gcc -dumpfullversion)" = "gcc-13.3.0"
 
       - name: Cache Rust build artifacts
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: |
             internal/objectstore/sidecar -> target
-            error-tracker -> target
-          prefix-key: platformd-rust-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock', 'error-tracker/Cargo.lock') }}
+            telemetry -> target
+          prefix-key: platformd-rust-${{ hashFiles('build.lock.json', 'internal/objectstore/sidecar/Cargo.lock', 'telemetry/Cargo.lock') }}
 
-      - name: Cache pip wheels for S3 SDK checks
+      - name: Build and verify bundled runtime
+        env:
+          PLATFORMD_STRICT_TOOLCHAIN: "1"
+        run: |
+          build/runtime-linux-amd64.sh
+          rm -rf "$PWD/.build/runtime-linux-amd64"
+          export RUSTFLAGS="--remap-path-prefix=$PWD=."
+          cargo test --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
+          cargo clippy --release --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
+          cargo test --release --locked --manifest-path telemetry/Cargo.toml
+          cargo clippy --release --all-targets --locked --manifest-path telemetry/Cargo.toml -- -D warnings
+
+      - name: Archive bundled runtime
+        run: tar -cf dist/platformd-runtime.tar -C dist runtime
+
+      - name: Upload bundled runtime
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: platformd-runtime-linux-amd64
+          path: dist/platformd-runtime.tar
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  s3-conformance:
+    name: Verify S3 clients
+    needs: [validate, build-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the locked Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: go.sum
+
+      - name: Install the locked Bun toolchain
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install native Go dependencies
+        run: build/ci-install-native-dependencies.sh s3
+
+      - name: Cache pip wheels
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: ${{ runner.temp }}/platformd-pip-cache
           key: platformd-s3-pip-boto3-1.40.18-lancedb-0.34.0
 
-      - name: Build and verify bundled runtime
-        env:
-          PLATFORMD_STRICT_TOOLCHAIN: "1"
-        run: build/runtime-linux-amd64.sh
+      - name: Download bundled runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platformd-runtime-linux-amd64
+          path: dist
 
-      - name: Verify Rust S3 and SDK conformance
-        env:
-          # Match build/runtime-linux-amd64.sh so cargo reuses the release target.
-          RUSTFLAGS: --remap-path-prefix=${{ github.workspace }}=.
-          PIP_CACHE_DIR: ${{ runner.temp }}/platformd-pip-cache
+      - name: Extract bundled runtime
         run: |
-          rm -rf "$PWD/.build/runtime-linux-amd64"
-          cargo test --release --locked --manifest-path internal/objectstore/sidecar/Cargo.toml
-          cargo clippy --release --all-targets --locked --manifest-path internal/objectstore/sidecar/Cargo.toml -- -D warnings
-          cargo test --release --locked --manifest-path error-tracker/Cargo.toml
-          cargo clippy --release --all-targets --locked --manifest-path error-tracker/Cargo.toml -- -D warnings
+          tar -xf dist/platformd-runtime.tar -C dist
+          test -x dist/runtime/platformd-objectstore
+
+      - name: Verify S3 SDK contracts
+        env:
+          PIP_CACHE_DIR: ${{ runner.temp }}/platformd-pip-cache
+          PLATFORMD_LANCEDB_SDK_INTEGRATION: "1"
+          PLATFORMD_OBJECTSTORE_SIDECAR_BINARY: ${{ github.workspace }}/dist/runtime/platformd-objectstore
+          PLATFORMD_S3_SDK_INTEGRATION: "1"
+        run: |
           python3 -m venv "$RUNNER_TEMP/platformd-s3-python"
           "$RUNNER_TEMP/platformd-s3-python/bin/pip" \
             --disable-pip-version-check \
@@ -166,56 +213,118 @@ jobs:
             boto3==1.40.18 \
             lancedb==0.34.0
           PATH="$RUNNER_TEMP/platformd-s3-python/bin:$PATH" \
-            PLATFORMD_S3_SDK_INTEGRATION=1 \
-            PLATFORMD_LANCEDB_SDK_INTEGRATION=1 \
-            PLATFORMD_OBJECTSTORE_SIDECAR_BINARY="$PWD/dist/runtime/platformd-objectstore" \
             go test \
-              -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" \
+              -tags "$INTEGRATION_TAGS" \
               ./internal/objectstore \
               -run 'Test(Boto3S3Contract|LanceDBS3Contract|MinIOStreamingS3Contract|BunS3Contract|RustFSRestoreReplacesObjectsAndMultipartUploads|PublicStoreHeaderCannotReachSiblingBucket|RustFSBucketReconciliationRemovesOrphans)' \
               -count=1 \
               -v
 
-      - name: Verify Sentry SDK conformance
-        env:
-          ERROR_TRACKER_ADMIN_TOKEN: release-conformance-admin-token
-          ERROR_TRACKER_CONTAINER_URL: http://host.docker.internal:18080
-          ERROR_TRACKER_URL: http://127.0.0.1:18080
+  telemetry-conformance:
+    name: Verify telemetry clients
+    needs: [validate, build-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the locked Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: go.sum
+
+      - name: Download bundled runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platformd-runtime-linux-amd64
+          path: dist
+
+      - name: Extract bundled runtime
         run: |
-          # Conformance builds many language images; reclaim Docker/apt/tooling disk
-          # from prior SDK/runtime steps so the runner does not fail with ENOSPC.
-          docker system prune --all --force --volumes
-          sudo rm -rf /var/lib/apt/lists/* /tmp/pip-cache "$HOME/.cache/go-build" "$HOME/.cargo/registry/cache" || true
-          df -h / /var/lib/docker || true
-          tracker_volume="$RUNNER_TEMP/error-tracker-conformance"
-          mkdir -p "$tracker_volume"
-          ERROR_TRACKER_PUBLIC_URL="$ERROR_TRACKER_CONTAINER_URL" \
-          ERROR_TRACKER_LISTEN=0.0.0.0:18080 \
-          ERROR_TRACKER_VOLUME="$tracker_volume" \
-          ERROR_TRACKER_UI_ENABLED=false \
-            dist/runtime/platformd-error-tracker >"$RUNNER_TEMP/error-tracker-conformance.log" 2>&1 &
-          tracker_pid=$!
+          tar -xf dist/platformd-runtime.tar -C dist
+          test -x dist/runtime/platformd-telemetry
+
+      - name: Verify telemetry client conformance
+        env:
+          PLATFORMD_TELEMETRY_TEST_API_TOKEN: conformance-read-token
+          PLATFORMD_TELEMETRY_TEST_API_URL: http://127.0.0.1:18080/errors
+          PLATFORMD_TELEMETRY_TEST_ARTIFACT_TOKEN: conformance-artifact-token
+          PLATFORMD_TELEMETRY_TEST_DSN: http://conformanceservice000001@host.docker.internal:18080/1
+          PLATFORMD_TELEMETRY_TEST_HOST_DSN: http://conformanceservice000001@127.0.0.1:18080/1
+          PLATFORMD_TELEMETRY_TEST_SERVICE_ID: conformanceservice000001
+        run: |
+          telemetry_volume="$RUNNER_TEMP/telemetry-conformance"
+          mkdir -p "$telemetry_volume"
+          PLATFORMD_TELEMETRY_GEOIP_SOURCE=cloudflare \
+          PLATFORMD_TELEMETRY_SENTRY_LISTEN=127.0.0.1:18081 \
+          PLATFORMD_TELEMETRY_VOLUME="$telemetry_volume" \
+            dist/runtime/platformd-telemetry >"$RUNNER_TEMP/telemetry-conformance.log" 2>&1 &
+          telemetry_pid=$!
+          PLATFORMD_CONFORMANCE_LISTEN=0.0.0.0:18080 \
+          PLATFORMD_CONFORMANCE_SERVICE_ID="$PLATFORMD_TELEMETRY_TEST_SERVICE_ID" \
+          PLATFORMD_CONFORMANCE_UPSTREAM=http://127.0.0.1:18081 \
+            go run ./telemetry/conformance >"$RUNNER_TEMP/telemetry-gateway.log" 2>&1 &
+          gateway_pid=$!
           cleanup() {
-            kill "$tracker_pid" 2>/dev/null || true
-            wait "$tracker_pid" 2>/dev/null || true
+            kill "$gateway_pid" 2>/dev/null || true
+            kill "$telemetry_pid" 2>/dev/null || true
+            wait "$gateway_pid" 2>/dev/null || true
+            wait "$telemetry_pid" 2>/dev/null || true
           }
           trap cleanup EXIT
 
           for _ in $(seq 1 50); do
-            if curl -fsS "$ERROR_TRACKER_URL/health" >/dev/null; then
+            if curl -fsS http://127.0.0.1:18080/health >/dev/null; then
               break
             fi
-            if ! kill -0 "$tracker_pid" 2>/dev/null; then
-              cat "$RUNNER_TEMP/error-tracker-conformance.log"
+            if ! kill -0 "$telemetry_pid" 2>/dev/null || ! kill -0 "$gateway_pid" 2>/dev/null; then
+              cat "$RUNNER_TEMP/telemetry-conformance.log"
+              cat "$RUNNER_TEMP/telemetry-gateway.log"
               exit 1
             fi
             sleep 0.2
           done
-          curl -fsS "$ERROR_TRACKER_URL/health" >/dev/null || {
-            cat "$RUNNER_TEMP/error-tracker-conformance.log"
+          curl -fsS http://127.0.0.1:18080/health >/dev/null || {
+            cat "$RUNNER_TEMP/telemetry-conformance.log"
+            cat "$RUNNER_TEMP/telemetry-gateway.log"
             exit 1
           }
-          ./error-tracker/conformance/run.sh
+          ./telemetry/conformance/run.sh
+
+  runtime-integration:
+    name: Verify host integration
+    needs: [validate, build-runtime]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the locked Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: go.sum
+
+      - name: Install native Go dependencies
+        run: build/ci-install-native-dependencies.sh go
+
+      - name: Download bundled runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platformd-runtime-linux-amd64
+          path: dist
+
+      - name: Extract bundled runtime
+        run: |
+          tar -xf dist/platformd-runtime.tar -C dist
+          test -x dist/runtime/crun
 
       - name: Verify private runtime lifecycle and isolation
         run: |
@@ -227,7 +336,7 @@ jobs:
           }
           trap cleanup_runtime_integration EXIT
           go test -c \
-            -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration" \
+            -tags "$INTEGRATION_TAGS" \
             -o dist/containerengine-integration.test \
             ./internal/containerengine
           cleanup_runtime_integration
@@ -267,10 +376,9 @@ jobs:
           sudo cp -a dist/runtime /var/lib/platformd/releases/current/runtime
           trap 'sudo rm -rf /var/lib/platformd/releases/current' EXIT
 
-          integration_tags="containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension integration"
           for package in managedpostgres managedredis daemon rootexec hostterminal portproxy; do
             go test -c \
-              -tags "$integration_tags" \
+              -tags "$INTEGRATION_TAGS" \
               -o "dist/$package-integration.test" \
               "./internal/$package"
           done
@@ -334,11 +442,55 @@ jobs:
               -test.timeout=1m \
               -test.v
 
+  publish:
+    name: Package and publish release
+    needs: [s3-conformance, telemetry-conformance, runtime-integration]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out the exact source revision
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+
+      - name: Install the locked Go toolchain
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26.3"
+          cache-dependency-path: go.sum
+
+      - name: Install the locked Bun toolchain
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: "1.3.14"
+
+      - name: Install native Go dependencies
+        run: build/ci-install-native-dependencies.sh go
+
+      - name: Build frontend
+        run: |
+          bun --cwd=_frontend install --frozen-lockfile
+          bun --cwd=_frontend run build:web
+
+      - name: Download bundled runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: platformd-runtime-linux-amd64
+          path: dist
+
+      - name: Extract bundled runtime
+        run: |
+          tar -xf dist/platformd-runtime.tar -C dist
+          test -x dist/runtime/platformd-telemetry
+          test -x dist/runtime/platformd-objectstore
+
       - name: Build self-contained release
         run: |
           CGO_ENABLED=1 go build \
             -trimpath \
-            -tags "containers_image_openpgp exclude_graphdriver_btrfs exclude_graphdriver_zfs grpcnotrace seccomp sqlite_omit_load_extension" \
+            -tags "$GO_TAGS" \
             -ldflags "-X github.com/iivankin/platformd/internal/version.Version=$VERSION -X github.com/iivankin/platformd/internal/version.Commit=$GITHUB_SHA" \
             -o dist/platformd-linux-amd64 \
             .
@@ -348,7 +500,7 @@ jobs:
             dist/runtime/conmon \
             dist/runtime/netavark \
             dist/runtime/catatonit \
-            dist/runtime/platformd-error-tracker \
+            dist/runtime/platformd-telemetry \
             dist/runtime/platformd-objectstore
           go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
           python3 -m zipfile -t dist/platformd-linux-amd64
@@ -373,7 +525,7 @@ jobs:
             dist/debian-13-smoke/runtime/conmon \
             dist/debian-13-smoke/runtime/crun \
             dist/debian-13-smoke/runtime/netavark \
-            dist/debian-13-smoke/runtime/platformd-error-tracker \
+            dist/debian-13-smoke/runtime/platformd-telemetry \
             dist/debian-13-smoke/runtime/platformd-objectstore
           docker run --rm --platform linux/amd64 \
             --volume "$PWD/dist:/release:ro" \
@@ -385,10 +537,11 @@ jobs:
                 libgcc-s1 \
                 libglib2.0-0t64 \
                 libjson-c5 \
-                libseccomp2
+                libseccomp2 \
+                libstdc++6
               ! command -v nft
               ! command -v iptables
-              for helper in catatonit conmon crun netavark platformd-error-tracker platformd-objectstore; do
+              for helper in catatonit conmon crun netavark platformd-telemetry platformd-objectstore; do
                 env -i LC_ALL=C LANG=C "/release/debian-13-smoke/runtime/$helper" --version >/dev/null
               done
               status=0

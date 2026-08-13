@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import type { ReplayRecording } from "@/errors/types";
+
 const metaSchema = z.object({
   architecture: z.string(),
   os: z.string(),
@@ -70,7 +72,6 @@ const identityAvatarURL = (
 
 const projectSchema = z.object({
   createdAt: z.number().int().nonnegative(),
-  errorTrackerCount: z.number().int().nonnegative(),
   hasIcon: z.boolean(),
   id: z.string().min(1),
   name: z.string().min(1),
@@ -257,7 +258,6 @@ const canvasResourceSchema = z.object({
   imageReference: z.string().min(1).optional(),
   internalHostname: z.string().min(1),
   kind: z.enum([
-    "error_tracker",
     "service",
     "postgres",
     "redis",
@@ -352,6 +352,142 @@ const serviceSchema = z.object({
 });
 
 export type Service = z.infer<typeof serviceSchema>;
+
+const serviceTelemetrySchema = z.object({
+  internalDsn: z.string().url(),
+  internalHostname: z.string().min(1),
+  internalOtlpEndpoint: z.string().url(),
+  publicDsn: z.string().url().optional(),
+  publicHostname: z.string().min(1).optional(),
+  serviceId: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+  webhooks: z.array(
+    z.object({
+      createdAt: z.number().int().positive(),
+      enabled: z.boolean(),
+      events: z.array(
+        z.enum([
+          "event_received",
+          "issue_created",
+          "issue_regressed",
+          "issue_resolved",
+        ])
+      ),
+      id: z.string().min(1),
+      updatedAt: z.number().int().positive(),
+      url: z.string().url(),
+    })
+  ),
+});
+
+export type ServiceTelemetry = z.infer<typeof serviceTelemetrySchema>;
+
+const serviceTraceSummarySchema = z.object({
+  aiAgent: z.string(),
+  aiAgentRunCount: z.number().int().nonnegative(),
+  aiCacheReadTokens: z.number().int().nonnegative().nullable(),
+  aiCacheWriteTokens: z.number().int().nonnegative().nullable(),
+  aiCostUsd: z.number().nonnegative().nullable(),
+  aiInputTokens: z.number().int().nonnegative().nullable(),
+  aiModel: z.string(),
+  aiModelCallCount: z.number().int().nonnegative(),
+  aiOutputTokens: z.number().int().nonnegative().nullable(),
+  aiProvider: z.string(),
+  aiReasoningTokens: z.number().int().nonnegative().nullable(),
+  aiTokensPerSecond: z.number().nonnegative().nullable(),
+  aiToolCallCount: z.number().int().nonnegative(),
+  aiTtftSeconds: z.number().nonnegative().nullable(),
+  durationNano: z.string().regex(/^\d+$/u),
+  errorSpanCount: z.number().int().nonnegative(),
+  isAi: z.boolean(),
+  name: z.string(),
+  sources: z.array(z.string()),
+  spanCount: z.number().int().nonnegative(),
+  startedAtUnixNano: z.string().regex(/^\d+$/u),
+  traceId: z.string().length(32),
+});
+
+const serviceTraceSpanSchema = z.object({
+  aiAgent: z.string(),
+  aiCacheReadTokens: z.number().int().nonnegative().nullable(),
+  aiCacheWriteTokens: z.number().int().nonnegative().nullable(),
+  aiCostUsd: z.number().nonnegative().nullable(),
+  aiInputTokens: z.number().int().nonnegative().nullable(),
+  aiKind: z.string(),
+  aiModel: z.string(),
+  aiOperation: z.string(),
+  aiOutputTokens: z.number().int().nonnegative().nullable(),
+  aiProvider: z.string(),
+  aiReasoningTokens: z.number().int().nonnegative().nullable(),
+  aiTokensPerSecond: z.number().nonnegative().nullable(),
+  aiTtftSeconds: z.number().nonnegative().nullable(),
+  durationNano: z.string().regex(/^\d+$/u),
+  endTimeUnixNano: z.string().regex(/^\d+$/u),
+  flags: z.number().int().nonnegative(),
+  kind: z.number().int(),
+  name: z.string(),
+  parentSpanId: z.string(),
+  receivedAtUnixNano: z.string().regex(/^\d+$/u),
+  resource: z.unknown(),
+  scope: z.unknown(),
+  source: z.string(),
+  span: z.unknown(),
+  spanId: z.string().length(16),
+  startTimeUnixNano: z.string().regex(/^\d+$/u),
+  statusCode: z.number().int(),
+  statusMessage: z.string(),
+  traceId: z.string().length(32),
+  traceState: z.string(),
+});
+
+const serviceTraceDetailSchema = z.object({
+  spans: z.array(serviceTraceSpanSchema),
+  traceId: z.string().length(32),
+});
+
+const serviceMetricDescriptorSchema = z.object({
+  attributeKeys: z.array(z.string()),
+  description: z.string(),
+  kind: z.string(),
+  lastSeenUnixNano: z.string().regex(/^\d+$/u),
+  name: z.string().min(1),
+  unit: z.string(),
+});
+
+const serviceMetricPointSchema = z.object({
+  timeUnixNano: z.string().regex(/^\d+$/u),
+  value: z.number(),
+});
+
+const serviceMetricSqlRowSchema = serviceMetricPointSchema.extend({
+  series: z.string().optional(),
+});
+
+const serviceMetricChartSchema = z.object({
+  createdAt: z.number().int().positive(),
+  id: z.string().min(1),
+  legend: z.string(),
+  sql: z.string().min(1).max(16_384),
+  title: z.string().min(1),
+  unit: z.string().optional(),
+  updatedAt: z.number().int().positive(),
+  visualization: z.enum(["line", "area", "bar", "value"]),
+});
+
+export type ServiceTraceSummary = z.infer<typeof serviceTraceSummarySchema>;
+export type ServiceTraceSpan = z.infer<typeof serviceTraceSpanSchema>;
+export type ServiceTraceDetail = z.infer<typeof serviceTraceDetailSchema>;
+export type ServiceMetricDescriptor = z.infer<
+  typeof serviceMetricDescriptorSchema
+>;
+export type ServiceMetricPoint = z.infer<typeof serviceMetricPointSchema>;
+export type ServiceMetricSqlRow = z.infer<typeof serviceMetricSqlRowSchema>;
+export type ServiceMetricChart = z.infer<typeof serviceMetricChartSchema>;
+export type ServiceMetricVisualization = ServiceMetricChart["visualization"];
+export type MetricScope =
+  | { kind: "installation" }
+  | { kind: "project"; projectID: string }
+  | { kind: "service"; projectID: string; serviceID: string };
 
 const volumeSchema = z.object({
   createdAt: z.number().int().positive(),
@@ -481,12 +617,16 @@ export type RuntimeDeployment = z.infer<typeof runtimeDeploymentSchema>;
 export type RuntimeDeploymentPage = z.infer<typeof runtimeDeploymentPageSchema>;
 
 const logRecordSchema = z.object({
-  attemptId: z.string().min(1),
-  deploymentId: z.string().min(1),
+  attemptId: z.string(),
+  deploymentId: z.string(),
   partial: z.boolean().optional(),
-  stream: z.enum(["stdout", "stderr"]),
+  severityNumber: z.number().int().optional(),
+  severityText: z.string().optional(),
+  spanId: z.string().optional(),
+  stream: z.enum(["stdout", "stderr", "otel"]),
   text: z.string(),
   timestamp: z.iso.datetime({ offset: true }),
+  traceId: z.string().optional(),
   truncated: z.boolean().optional(),
 });
 
@@ -495,24 +635,10 @@ const logWindowSchema = z.object({
   truncated: z.boolean(),
 });
 
-const logStreamMessageSchema = z.discriminatedUnion("type", [
-  z.object({
-    records: z.array(logRecordSchema),
-    truncated: z.boolean().optional().default(false),
-    type: z.literal("snapshot"),
-  }),
-  z.object({ records: z.array(logRecordSchema), type: z.literal("records") }),
-  z.object({ type: z.literal("gap") }),
-]);
-
 export type LogRecord = z.infer<typeof logRecordSchema>;
-export type LogStreamMessage = z.infer<typeof logStreamMessageSchema>;
 export type LogWindow = z.infer<typeof logWindowSchema>;
 
 const buildLogSchema = z.object({ text: z.string() });
-
-export const parseLogStreamMessage = (value: unknown): LogStreamMessage =>
-  logStreamMessageSchema.parse(value);
 
 const terminalShellsSchema = z.object({
   shells: z.array(z.enum(["/bin/sh", "/bin/bash"])),
@@ -1256,31 +1382,6 @@ export interface CreateObjectStoreInput {
   publicHostname?: string;
 }
 
-const errorTrackerSchema = z.object({
-  backupCron: z.string().optional(),
-  backupEnabled: z.boolean(),
-  backupRetentionCount: z.number().int().min(1).max(100),
-  createdAt: z.number().int().positive(),
-  id: z.string().min(1),
-  internalHostname: z.string().min(1),
-  internalUrl: z.url(),
-  name: z.string().min(1),
-  projectId: z.string().min(1),
-  publicHostname: z.string().min(1).optional(),
-  status: z.enum(["failed", "pending", "running"]),
-  statusMessage: z.string().optional(),
-  updatedAt: z.number().int().positive(),
-  volumeId: z.string().min(1),
-});
-
-export type ErrorTracker = z.infer<typeof errorTrackerSchema>;
-
-export interface CreateErrorTrackerInput {
-  backupPolicy?: CreateBackupPolicyInput;
-  name: string;
-  publicHostname?: string;
-}
-
 export interface CreateBackupPolicyInput {
   cron: string;
   enabled: boolean;
@@ -1363,7 +1464,6 @@ const databaseVersionStartSchema = databaseVersionPreviewSchema
   .extend({ operation: operationSchema });
 
 const recoveryResourceKindSchema = z.enum([
-  "error_tracker",
   "image",
   "object_store",
   "postgres",
@@ -1885,6 +1985,313 @@ export const fetchService = async (
   return serviceSchema.parse(await response.json());
 };
 
+const serviceTelemetryPath = (projectID: string, serviceID: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/telemetry`;
+
+const metricScopePath = (scope: MetricScope) => {
+  if (scope.kind === "installation") {
+    return "/api/v1/telemetry";
+  }
+  if (scope.kind === "project") {
+    return `/api/v1/projects/${encodeURIComponent(scope.projectID)}/telemetry`;
+  }
+  return serviceTelemetryPath(scope.projectID, scope.serviceID);
+};
+
+export const fetchServiceTelemetry = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceTelemetry> => {
+  const response = await fetcher(serviceTelemetryPath(projectID, serviceID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "service telemetry request failed");
+  }
+  return serviceTelemetrySchema.parse(await response.json());
+};
+
+export const updateServiceTelemetryPublicAccess = async (
+  projectID: string,
+  serviceID: string,
+  input: { expectedUpdatedAt: number; publicHostname: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceTelemetry> => {
+  const response = await fetcher(
+    `${serviceTelemetryPath(projectID, serviceID)}/public-access`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service telemetry update failed");
+  }
+  return serviceTelemetrySchema.parse(await response.json());
+};
+
+export const fetchServiceTraces = async (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch,
+  bounds: { from?: number; query?: string; to?: number } = {}
+): Promise<ServiceTraceSummary[]> => {
+  const query = new URLSearchParams({ limit: "200" });
+  if (bounds.from !== undefined) {
+    query.set("from", String(bounds.from));
+  }
+  if (bounds.to !== undefined) {
+    query.set("to", String(bounds.to));
+  }
+  if (bounds.query) {
+    query.set("query", bounds.query);
+  }
+  const response = await fetcher(
+    `${serviceTelemetryPath(projectID, serviceID)}/traces?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service traces request failed");
+  }
+  return z.array(serviceTraceSummarySchema).parse(await response.json());
+};
+
+export const fetchServiceTrace = async (
+  projectID: string,
+  serviceID: string,
+  traceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceTraceDetail> => {
+  const response = await fetcher(
+    `${serviceTelemetryPath(projectID, serviceID)}/traces/${encodeURIComponent(traceID)}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service trace request failed");
+  }
+  return serviceTraceDetailSchema.parse(await response.json());
+};
+
+export const fetchServiceReplayRecording = async (
+  projectID: string,
+  serviceID: string,
+  replayID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ReplayRecording> => {
+  const response = await fetcher(
+    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/errors/replays/${encodeURIComponent(replayID)}/recording`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service replay request failed");
+  }
+  return (await response.json()) as ReplayRecording;
+};
+
+export const fetchMetricCatalog = async (
+  scope: MetricScope,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricDescriptor[]> => {
+  const response = await fetcher(`${metricScopePath(scope)}/metrics/catalog`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "service metric catalog request failed");
+  }
+  return z.array(serviceMetricDescriptorSchema).parse(await response.json());
+};
+
+export const fetchServiceMetricCatalog = (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricDescriptor[]> =>
+  fetchMetricCatalog(
+    { kind: "service", projectID, serviceID },
+    signal,
+    fetcher
+  );
+
+export const fetchMetricQuery = async (
+  scope: MetricScope,
+  input: {
+    from: number;
+    sql: string;
+    step: number;
+    to: number;
+  },
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricSqlRow[]> => {
+  const response = await fetcher(`${metricScopePath(scope)}/metrics/query`, {
+    body: JSON.stringify({
+      from: Math.floor(input.from),
+      sql: input.sql,
+      step: Math.floor(input.step),
+      to: Math.floor(input.to),
+    }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "service metric SQL request failed");
+  }
+  return z.array(serviceMetricSqlRowSchema).parse(await response.json());
+};
+
+export const fetchServiceMetricQuery = (
+  projectID: string,
+  serviceID: string,
+  input: {
+    from: number;
+    sql: string;
+    step: number;
+    to: number;
+  },
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricSqlRow[]> =>
+  fetchMetricQuery(
+    { kind: "service", projectID, serviceID },
+    input,
+    signal,
+    fetcher
+  );
+
+export const fetchMetricCharts = async (
+  scope: MetricScope,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricChart[]> => {
+  const response = await fetcher(`${metricScopePath(scope)}/metric-charts`, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "service metric charts request failed");
+  }
+  return z.array(serviceMetricChartSchema).parse(await response.json());
+};
+
+export const fetchServiceMetricCharts = (
+  projectID: string,
+  serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricChart[]> =>
+  fetchMetricCharts({ kind: "service", projectID, serviceID }, signal, fetcher);
+
+export const createMetricChart = async (
+  scope: MetricScope,
+  input: Omit<ServiceMetricChart, "createdAt" | "id" | "updatedAt">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricChart> => {
+  const response = await fetcher(`${metricScopePath(scope)}/metric-charts`, {
+    body: JSON.stringify(input),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "service metric chart creation failed");
+  }
+  return serviceMetricChartSchema.parse(await response.json());
+};
+
+export const createServiceMetricChart = (
+  projectID: string,
+  serviceID: string,
+  input: Omit<ServiceMetricChart, "createdAt" | "id" | "updatedAt">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricChart> =>
+  createMetricChart({ kind: "service", projectID, serviceID }, input, fetcher);
+
+export const updateMetricChart = async (
+  scope: MetricScope,
+  chartID: string,
+  input: Omit<ServiceMetricChart, "createdAt" | "id" | "updatedAt"> & {
+    expectedUpdatedAt: number;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricChart> => {
+  const response = await fetcher(
+    `${metricScopePath(scope)}/metric-charts/${encodeURIComponent(chartID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service metric chart update failed");
+  }
+  return serviceMetricChartSchema.parse(await response.json());
+};
+
+export const updateServiceMetricChart = (
+  projectID: string,
+  serviceID: string,
+  chartID: string,
+  input: Omit<ServiceMetricChart, "createdAt" | "id" | "updatedAt"> & {
+    expectedUpdatedAt: number;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceMetricChart> =>
+  updateMetricChart(
+    { kind: "service", projectID, serviceID },
+    chartID,
+    input,
+    fetcher
+  );
+
+export const deleteMetricChart = async (
+  scope: MetricScope,
+  chartID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${metricScopePath(scope)}/metric-charts/${encodeURIComponent(chartID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service metric chart deletion failed");
+  }
+};
+
+export const deleteServiceMetricChart = (
+  projectID: string,
+  serviceID: string,
+  chartID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> =>
+  deleteMetricChart(
+    { kind: "service", projectID, serviceID },
+    chartID,
+    fetcher
+  );
+
 const resolvedEnvironmentSchema = z.object({
   environment: z.record(z.string(), z.string()),
 });
@@ -2301,7 +2708,13 @@ export const removeRuntimeDeployment = (
 export const fetchServiceLogs = async (
   projectID: string,
   serviceID: string,
-  filters: { contains?: string; deploymentId?: string; limit?: number } = {},
+  filters: {
+    contains?: string;
+    deploymentId?: string;
+    from?: number;
+    limit?: number;
+    to?: number;
+  } = {},
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<LogWindow> => {
@@ -2311,6 +2724,12 @@ export const fetchServiceLogs = async (
   }
   if (filters.contains) {
     query.set("contains", filters.contains);
+  }
+  if (filters.from !== undefined) {
+    query.set("from", String(filters.from));
+  }
+  if (filters.to !== undefined) {
+    query.set("to", String(filters.to));
   }
   const response = await fetcher(
     `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/logs?${query.toString()}`,
@@ -2358,7 +2777,13 @@ export const fetchResourceLogs = async (
   projectID: string,
   kind: ResourceLogKind,
   resourceID: string,
-  options: { contains?: string; deploymentId?: string; limit?: number } = {},
+  options: {
+    contains?: string;
+    deploymentId?: string;
+    from?: number;
+    limit?: number;
+    to?: number;
+  } = {},
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<LogWindow> => {
@@ -2368,6 +2793,12 @@ export const fetchResourceLogs = async (
   }
   if (options.deploymentId) {
     query.set("deploymentId", options.deploymentId);
+  }
+  if (options.from !== undefined) {
+    query.set("from", String(options.from));
+  }
+  if (options.to !== undefined) {
+    query.set("to", String(options.to));
   }
   const response = await fetcher(
     `/api/v1/projects/${encodeURIComponent(projectID)}/${resourceLogCollection[kind]}/${encodeURIComponent(resourceID)}/logs?${query.toString()}`,
@@ -3281,84 +3712,6 @@ const objectStorePath = (projectID: string, storeID?: string) =>
   `/api/v1/projects/${encodeURIComponent(projectID)}/object-stores${
     storeID ? `/${encodeURIComponent(storeID)}` : ""
   }`;
-
-const errorTrackerPath = (projectID: string, trackerID?: string) =>
-  `/api/v1/projects/${encodeURIComponent(projectID)}/error-trackers${
-    trackerID ? `/${encodeURIComponent(trackerID)}` : ""
-  }`;
-
-export const createErrorTracker = async (
-  projectID: string,
-  input: CreateErrorTrackerInput,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<ErrorTracker> => {
-  const response = await fetcher(errorTrackerPath(projectID), {
-    body: JSON.stringify(input),
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-    },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `error tracker creation failed with ${response.status}`
-    );
-  }
-  return errorTrackerSchema.parse(await response.json());
-};
-
-export const fetchErrorTracker = async (
-  projectID: string,
-  trackerID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<ErrorTracker> => {
-  const response = await fetcher(errorTrackerPath(projectID, trackerID), {
-    headers: { Accept: "application/json" },
-    signal,
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `error tracker request failed with ${response.status}`
-    );
-  }
-  return errorTrackerSchema.parse(await response.json());
-};
-
-export const updateErrorTrackerPublicAccess = async (
-  projectID: string,
-  trackerID: string,
-  input: { expectedUpdatedAt: number; publicHostname?: string },
-  fetcher: Fetcher = globalThis.fetch
-): Promise<ErrorTracker> => {
-  const response = await fetcher(
-    `${errorTrackerPath(projectID, trackerID)}/public-access`,
-    {
-      body: JSON.stringify({
-        expectedUpdatedAt: input.expectedUpdatedAt,
-        publicHostname: input.publicHostname ?? "",
-      }),
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-      },
-      method: "PUT",
-    }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `error tracker public-access update failed with ${response.status}`
-    );
-  }
-  return errorTrackerSchema.parse(await response.json());
-};
-
-export const errorTrackerConsolePath = (projectID: string, trackerID: string) =>
-  `${errorTrackerPath(projectID, trackerID)}/console`;
 
 export const createObjectStore = async (
   projectID: string,

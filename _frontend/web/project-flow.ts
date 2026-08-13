@@ -70,7 +70,6 @@ const pendingChangeRowHeight = 34;
 const volumeRowHeight = 33;
 
 const surroundSinkKinds = new Set<ProjectCanvas["resources"][number]["kind"]>([
-  "error_tracker",
   "object_store",
   "postgres",
   "redis",

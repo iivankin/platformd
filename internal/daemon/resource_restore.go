@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
-	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -34,16 +33,10 @@ type imageRevisionRepository interface {
 	ImageRevision(context.Context, string) (state.ImageRevision, error)
 }
 
-type errorTrackerRestoreRepository interface {
-	ErrorTracker(context.Context, string) (state.ErrorTracker, error)
-}
-
 func resourceRestorers(
 	runtime *runtimeStack,
 	images imageRevisionRepository,
 	objectStoreApplication *objectstore.Application,
-	errorTrackers errorTrackerRestoreRepository,
-	errorTrackerRuntime *errortracker.Manager,
 	volumeConfigs ...ordinaryVolumeBackupConfig,
 ) map[string]backup.ResourceRestorer {
 	result := map[string]backup.ResourceRestorer{
@@ -136,24 +129,6 @@ func resourceRestorers(
 			})
 			return err
 		}),
-	}
-	if errorTrackers != nil && errorTrackerRuntime != nil {
-		result["error_tracker"] = backup.ResourceRestorerFunc(func(
-			ctx context.Context,
-			request backup.ResourceRestoreRequest,
-		) error {
-			if err := requireConfirmedResourceReplacement(request.Options, "Error tracker"); err != nil {
-				return err
-			}
-			if err := requireNoResourceAttachments(request.Source.Envelope); err != nil {
-				return err
-			}
-			tracker, err := errorTrackers.ErrorTracker(ctx, request.ResourceID)
-			if err != nil {
-				return err
-			}
-			return errorTrackerRuntime.RestoreVolume(ctx, tracker, request.Source.Reader)
-		})
 	}
 	if len(volumeConfigs) == 1 && volumeConfigs[0].Store != nil && volumeConfigs[0].Root != "" {
 		config := volumeConfigs[0]

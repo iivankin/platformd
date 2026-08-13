@@ -22,15 +22,19 @@ type Instructions struct {
 	WebSocketURL   string `json:"websocketUrl"`
 }
 
-func ConnectionInstructions(hostname, ticket string, localPort int) Instructions {
+func ConnectionInstructions(hostname, ticket string, localPort int, endpointHost string) Instructions {
 	websocketURL := (&url.URL{Scheme: "wss", Host: hostname, Path: EndpointPath}).String()
+	hostOption := ""
+	if endpointHost != "" {
+		hostOption = " --http-host '" + endpointHost + "'"
+	}
 	return Instructions{
 		InstallerURL:   InstallerURL,
 		ReleaseURL:     ReleaseDownloadURL,
 		InstallCommand: "curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 " + InstallerURL + " | sh -s -- forward",
 		ConnectCommand: fmt.Sprintf(
-			"PLATFORMD_FORWARD_TICKET='%s' platformd-forward --url '%s' --local-port %d",
-			ticket, websocketURL, localPort,
+			"PLATFORMD_FORWARD_TICKET='%s' platformd-forward --url '%s' --local-port %d%s",
+			ticket, websocketURL, localPort, hostOption,
 		),
 		WebSocketURL: websocketURL,
 	}

@@ -16,6 +16,31 @@ const systemVariables: SystemVariableDefinition[] = [
     value: "production",
   },
   {
+    condition: "Default; service variable wins",
+    name: "SENTRY_DSN",
+    value: "Internal service DSN",
+  },
+  {
+    condition: "Default; service variable wins",
+    name: "OTEL_EXPORTER_OTLP_ENDPOINT",
+    value: "Internal service OTLP endpoint",
+  },
+  {
+    condition: "Default; service variable wins",
+    name: "OTEL_EXPORTER_OTLP_PROTOCOL",
+    value: "http/protobuf",
+  },
+  {
+    condition: "Default; service variable wins",
+    name: "OTEL_SERVICE_NAME",
+    value: "Current service name",
+  },
+  {
+    condition: "Default; service variable wins",
+    name: "OTEL_RESOURCE_ATTRIBUTES",
+    value: "Project and deployment identity",
+  },
+  {
     condition: "Always",
     name: "PLATFORMD_ENVIRONMENT",
     value: "production or preview",
@@ -126,8 +151,9 @@ export const ServiceSystemVariablesDialog = () => (
 
           <footer className="border-t border-border bg-muted/15 px-5 py-3 text-[9px] leading-4 text-muted-foreground">
             <code>PLATFORMD_*</code> names are reserved and always win over
-            configured values. <code>NODE_ENV</code> is a default: defining it
-            as a service variable overrides that default.
+            configured values. <code>NODE_ENV</code>, <code>SENTRY_DSN</code>,
+            and <code>OTEL_*</code> are defaults: defining them as service
+            variables overrides the generated values.
           </footer>
         </Dialog.Popup>
       </Dialog.Viewport>

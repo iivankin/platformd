@@ -44,6 +44,8 @@ jobs:
           file: _frontend/Dockerfile
           platforms: linux/amd64
           outputs: type=oci,dest=${{ runner.temp }}/demo.oci
+          cache-from: type=gha,scope=platformd-demo
+          cache-to: type=gha,mode=max,scope=platformd-demo
 
       - name: Upload image
         uses: loomatech/platformd-temp/actions/upload-image@v1

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
@@ -57,12 +58,16 @@ type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
 	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
-	StartContainer(context.Context, string) error
+	StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error)
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	InspectContainer(string) (containerengine.Container, error)
 	ExecContainer(context.Context, string, containerengine.ExecRequest) (int, error)
 	ExecTerminalContainer(context.Context, string, containerengine.TerminalExecRequest) (int, error)
+}
+
+type ContainerLogSink interface {
+	ContainerWriter(serviceID, serviceName, deploymentID, attemptID, stream string) io.WriteCloser
 }
 
 type Placement struct {
@@ -140,23 +145,22 @@ type WebhookDispatcher interface {
 }
 
 type Config struct {
-	Store        Store
-	Engine       Engine
-	Publisher    Publisher
-	Credentials  CredentialResolver
-	Environment  EnvironmentResolver
-	BeforeDeploy BeforeDeployExecutor
-	Growth       GrowthGate
-	Webhooks     WebhookDispatcher
-	Admission    *admission.Gate
-	Placement    func(state.ServiceDesired) (Placement, error)
-	LogRoot      string
-	VolumeRoot   string
-	LogSizeBytes int64
-	LogMaxFiles  uint
-	Now          func() time.Time
-	NewID        func() (string, error)
-	HTTPClient   *http.Client
+	Store         Store
+	Engine        Engine
+	Publisher     Publisher
+	Credentials   CredentialResolver
+	Environment   EnvironmentResolver
+	BeforeDeploy  BeforeDeployExecutor
+	Growth        GrowthGate
+	Webhooks      WebhookDispatcher
+	Admission     *admission.Gate
+	Placement     func(state.ServiceDesired) (Placement, error)
+	LogRoot       string
+	VolumeRoot    string
+	ContainerLogs ContainerLogSink
+	Now           func() time.Time
+	NewID         func() (string, error)
+	HTTPClient    *http.Client
 }
 
 type activeContainer struct {
@@ -166,23 +170,22 @@ type activeContainer struct {
 }
 
 type Controller struct {
-	store        Store
-	engine       Engine
-	publisher    Publisher
-	credentials  CredentialResolver
-	environment  EnvironmentResolver
-	beforeDeploy BeforeDeployExecutor
-	growth       GrowthGate
-	webhooks     WebhookDispatcher
-	admission    *admission.Gate
-	placement    func(state.ServiceDesired) (Placement, error)
-	logRoot      string
-	volumeRoot   string
-	logSizeBytes int64
-	logMaxFiles  uint
-	now          func() time.Time
-	newID        func() (string, error)
-	httpClient   *http.Client
+	store         Store
+	engine        Engine
+	publisher     Publisher
+	credentials   CredentialResolver
+	environment   EnvironmentResolver
+	beforeDeploy  BeforeDeployExecutor
+	growth        GrowthGate
+	webhooks      WebhookDispatcher
+	admission     *admission.Gate
+	placement     func(state.ServiceDesired) (Placement, error)
+	logRoot       string
+	volumeRoot    string
+	containerLogs ContainerLogSink
+	now           func() time.Time
+	newID         func() (string, error)
+	httpClient    *http.Client
 
 	mu     sync.Mutex
 	locks  map[string]*sync.Mutex
@@ -196,8 +199,8 @@ func New(config Config) (*Controller, error) {
 	if !safeRoot(config.LogRoot) || !safeRoot(config.VolumeRoot) {
 		return nil, errors.New("deployment controller roots must be canonical absolute non-root paths")
 	}
-	if config.LogSizeBytes <= 0 || config.LogMaxFiles == 0 {
-		return nil, errors.New("deployment controller log rotation must be positive")
+	if config.ContainerLogs == nil {
+		return nil, errors.New("deployment controller container log sink is required")
 	}
 	now := config.Now
 	if now == nil {
@@ -229,8 +232,8 @@ func New(config Config) (*Controller, error) {
 		webhooks:     config.Webhooks,
 		admission:    config.Admission,
 		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
-		logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
-		now: now, newID: newID, httpClient: httpClient,
+		containerLogs: config.ContainerLogs,
+		now:           now, newID: newID, httpClient: httpClient,
 		locks: make(map[string]*sync.Mutex), active: make(map[string]activeContainer),
 	}, nil
 }
@@ -837,7 +840,7 @@ func (controller *Controller) resumeService(ctx context.Context, service quiesce
 	if _, active := controller.activeContainer(service.desired.ID); active {
 		return nil
 	}
-	if err := controller.engine.StartContainer(ctx, service.active.container.ID); err != nil {
+	if err := controller.startContainer(ctx, service.desired, service.active.container.ID, service.active.deploymentID); err != nil {
 		return err
 	}
 	ready, err := controller.waitReady(ctx, service.desired, service.active.container.ID, service.active.networkName)
@@ -894,7 +897,7 @@ func (controller *Controller) restoreCurrentLocked(ctx context.Context, serviceI
 			_ = controller.engine.RemoveContainer(context.Background(), container.ID, true)
 		}
 	}()
-	if err := controller.engine.StartContainer(ctx, container.ID); err != nil {
+	if err := controller.startContainer(ctx, desired, container.ID, activeDeployment.ID); err != nil {
 		return false, fmt.Errorf("start active service container: %w", err)
 	}
 	if err := controller.recordVolumeInitializations(ctx, desired); err != nil {
@@ -1092,7 +1095,7 @@ func (controller *Controller) runDeployment(
 			return controller.fail(deploymentID, "old_stop_failed", err)
 		}
 	}
-	if err := controller.engine.StartContainer(ctx, candidate.ID); err != nil {
+	if err := controller.startContainer(ctx, desired, candidate.ID, deploymentID); err != nil {
 		controller.restoreOld(desired, old, hasOld)
 		return controller.fail(deploymentID, "candidate_start_failed", err)
 	}
@@ -1136,14 +1139,6 @@ func (controller *Controller) createRuntimeContainer(
 	if err != nil {
 		return containerengine.Container{}, Placement{}, fmt.Errorf("place service runtime: %w", err)
 	}
-	attemptID, err := controller.newID()
-	if err != nil {
-		return containerengine.Container{}, Placement{}, fmt.Errorf("allocate runtime attempt ID: %w", err)
-	}
-	logPath := filepath.Join(controller.logRoot, "services", desired.ID, deploymentID, attemptID+".log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return containerengine.Container{}, Placement{}, fmt.Errorf("create service log directory: %w", err)
-	}
 	volumes := make([]containerengine.ManagedVolumeMount, 0, len(desired.Snapshot.VolumeMounts))
 	for _, mount := range desired.Snapshot.VolumeMounts {
 		volumePath := filepath.Join(controller.volumeRoot, desired.ProjectID, mount.VolumeID)
@@ -1176,7 +1171,7 @@ func (controller *Controller) createRuntimeContainer(
 		},
 		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
 		DNSSearch: []string{placement.DNSSearch}, ManagedVolumes: volumes,
-		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
+		LogDriver:     containerengine.ContainerLogNone,
 		CgroupParent:  placement.CgroupParent,
 		CPUMillicores: desired.Snapshot.CPUMillicores, MemoryMaxBytes: desired.Snapshot.MemoryMaxBytes,
 	})
@@ -1184,6 +1179,34 @@ func (controller *Controller) createRuntimeContainer(
 		return containerengine.Container{}, Placement{}, err
 	}
 	return container, placement, nil
+}
+
+func (controller *Controller) startContainer(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	containerID string,
+	deploymentID string,
+) error {
+	stdout := controller.containerLogs.ContainerWriter(
+		desired.ID, desired.Name, deploymentID, containerID, "stdout",
+	)
+	stderr := controller.containerLogs.ContainerWriter(
+		desired.ID, desired.Name, deploymentID, containerID, "stderr",
+	)
+	attached, err := controller.engine.StartContainerAttached(ctx, containerID, stdout, stderr)
+	if err != nil {
+		return err
+	}
+	go func() {
+		if attachErr, ok := <-attached; ok && attachErr != nil {
+			systemevent.Failure(
+				"service_log_attach_failed", attachErr,
+				systemevent.String("service_id", desired.ID),
+				systemevent.String("deployment_id", deploymentID),
+			)
+		}
+	}()
+	return nil
 }
 
 func (controller *Controller) recordVolumeInitializations(ctx context.Context, desired state.ServiceDesired) error {
@@ -1315,7 +1338,7 @@ func (controller *Controller) restoreOld(desired state.ServiceDesired, old activ
 	if !exists {
 		return
 	}
-	if err := controller.engine.StartContainer(context.Background(), old.container.ID); err != nil {
+	if err := controller.startContainer(context.Background(), desired, old.container.ID, old.deploymentID); err != nil {
 		return
 	}
 	container, err := controller.engine.InspectContainer(old.container.ID)

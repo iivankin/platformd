@@ -13,10 +13,6 @@ var outputs = map[string][]string{
 	},
 }
 
-func OutputNames(kind string) []string {
-	return append([]string(nil), outputs[kind]...)
-}
-
 func Supports(kind, outputName string) bool {
 	return slices.Contains(outputs[kind], outputName)
 }

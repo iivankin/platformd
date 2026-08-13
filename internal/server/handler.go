@@ -18,7 +18,6 @@ import (
 	"github.com/iivankin/platformd/internal/containerfiles"
 	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
-	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedstats"
@@ -41,6 +40,7 @@ type handlerConfig struct {
 	projects                ProjectRepository
 	projectWebhooks         *projectwebhook.Application
 	services                ServiceRepository
+	serviceTelemetry        ServiceTelemetryRepository
 	serviceEnvironment      ServiceEnvironmentResolver
 	volumes                 *volume.Application
 	domains                 DomainRepository
@@ -56,8 +56,6 @@ type handlerConfig struct {
 	managedPostgres         *managedpostgres.Application
 	managedStats            *managedstats.Application
 	objectStores            *objectstore.Application
-	errorTrackers           *errortracker.Application
-	errorTrackerProxy       *errortracker.Proxy
 	installationSettings    *installationsettings.Application
 	afterInstallationChange func()
 	cloudflareDNS           *cloudflaredns.Application
@@ -108,6 +106,12 @@ func WithServiceImageCredentials(manager ServiceImageCredentialManager) Option {
 func WithServices(repository ServiceRepository) Option {
 	return func(config *handlerConfig) {
 		config.services = repository
+	}
+}
+
+func WithServiceTelemetry(repository ServiceTelemetryRepository) Option {
+	return func(config *handlerConfig) {
+		config.serviceTelemetry = repository
 	}
 }
 
@@ -187,13 +191,6 @@ func WithManagedStats(application *managedstats.Application) Option {
 func WithObjectStores(application *objectstore.Application) Option {
 	return func(config *handlerConfig) {
 		config.objectStores = application
-	}
-}
-
-func WithErrorTrackers(application *errortracker.Application, proxy *errortracker.Proxy) Option {
-	return func(config *handlerConfig) {
-		config.errorTrackers = application
-		config.errorTrackerProxy = proxy
 	}
 }
 
@@ -330,6 +327,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	if config.services != nil {
 		registerServiceRoutes(mux, config)
 	}
+	if config.serviceTelemetry != nil {
+		registerServiceTelemetryRoutes(mux, config)
+	}
 	if config.volumes != nil {
 		registerVolumeRoutes(mux, config.volumes)
 	}
@@ -364,9 +364,6 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.objectStores != nil {
 		registerObjectStoreRoutes(mux, config.objectStores, config.managedStats)
-	}
-	if config.errorTrackers != nil {
-		registerErrorTrackerRoutes(mux, config.errorTrackers, config.errorTrackerProxy)
 	}
 	if config.installationSettings != nil {
 		registerInstallationSettingsRoutes(mux, config)

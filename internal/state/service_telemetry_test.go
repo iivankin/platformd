@@ -1,0 +1,100 @@
+package state
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/iivankin/platformd/internal/serviceconfig"
+)
+
+func TestServiceTelemetryStateUsesServiceForeignKey(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.database.Exec(`INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateService(ctx, CreateService{
+		ID: "service", ProjectID: "project", Name: "api", Enabled: true,
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine:3.22")},
+		AuditEventID: "audit", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	hash := bytes.Repeat([]byte{0x42}, 32)
+	if err := store.SetServiceArtifactTokenHash(ctx, "service", hash, 3); err != nil {
+		t.Fatal(err)
+	}
+	loadedHash, err := store.ServiceArtifactTokenHash(ctx, "service")
+	if err != nil || !bytes.Equal(loadedHash, hash) {
+		t.Fatalf("artifact hash = %x, %v", loadedHash, err)
+	}
+	webhook := ServiceTelemetryWebhook{
+		ID: "webhook", ServiceID: "service", URL: "https://example.com/errors",
+		EventTypes: []string{"event_received", "issue_created"}, SecretEncrypted: []byte("sealed"),
+		Enabled: true, CreatedAtMillis: 4, UpdatedAtMillis: 4,
+	}
+	if err := store.CreateServiceTelemetryWebhook(ctx, webhook); err != nil {
+		t.Fatal(err)
+	}
+	webhooks, err := store.ServiceTelemetryWebhooks(ctx, "service")
+	if err != nil || len(webhooks) != 1 || !bytes.Equal(webhooks[0].SecretEncrypted, webhook.SecretEncrypted) {
+		t.Fatalf("webhooks = %+v, %v", webhooks, err)
+	}
+	if err := store.DeleteServiceTelemetryWebhook(ctx, "service", "webhook"); err != nil {
+		t.Fatal(err)
+	}
+	webhooks, err = store.ServiceTelemetryWebhooks(ctx, "service")
+	if err != nil || len(webhooks) != 0 {
+		t.Fatalf("deleted webhooks = %+v, %v", webhooks, err)
+	}
+	serviceScope := MetricScope{Kind: MetricScopeService, ProjectID: "project", ServiceID: "service"}
+	chart := MetricChart{
+		ID: "chart", Scope: serviceScope, Title: "Queue depth",
+		SQL:           "SELECT bucket AS time, avg(value) AS value FROM metrics GROUP BY bucket",
+		Visualization: "area", Legend: "Depth", Unit: "{job}",
+		CreatedAtMillis: 5, UpdatedAtMillis: 5,
+	}
+	if err := store.CreateMetricChart(ctx, chart); err != nil {
+		t.Fatal(err)
+	}
+	charts, err := store.MetricCharts(ctx, serviceScope)
+	if err != nil || len(charts) != 1 || charts[0].SQL != chart.SQL {
+		t.Fatalf("metric charts = %+v, %v", charts, err)
+	}
+	chart.Title = "Queue depth by queue"
+	chart.UpdatedAtMillis = 6
+	if err := store.UpdateMetricChart(ctx, chart, 5); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateMetricChart(ctx, chart, 5); !errors.Is(err, ErrMetricChartChanged) {
+		t.Fatalf("stale metric chart update = %v", err)
+	}
+	if err := store.DeleteMetricChart(ctx, serviceScope, "chart"); err != nil {
+		t.Fatal(err)
+	}
+	for index, scope := range []MetricScope{
+		{Kind: MetricScopeProject, ProjectID: "project"},
+		{Kind: MetricScopeInstallation},
+	} {
+		chart.ID = []string{"project-chart", "installation-chart"}[index]
+		chart.Scope = scope
+		chart.CreatedAtMillis++
+		chart.UpdatedAtMillis = chart.CreatedAtMillis
+		if err := store.CreateMetricChart(ctx, chart); err != nil {
+			t.Fatal(err)
+		}
+		serviceIDs, err := store.MetricScopeServiceIDs(ctx, scope)
+		if err != nil || len(serviceIDs) != 1 || serviceIDs[0] != "service" {
+			t.Fatalf("metric scope services = %v, %v", serviceIDs, err)
+		}
+	}
+}

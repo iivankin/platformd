@@ -7,6 +7,7 @@ import type {
   ResourceUsageKind,
   ResourceUsageRange,
 } from "@/api";
+import { CustomMetrics } from "@/custom-metrics";
 import { MetricChart } from "@/metric-chart";
 import type { MetricSeries } from "@/metric-chart";
 import {
@@ -1077,6 +1078,7 @@ export const ProjectUsage = ({ projectID }: { projectID: string }) => {
           title="Project resources"
           usage={metrics.usage}
         />
+        <CustomMetrics scope={{ kind: "project", projectID }} />
         <ProtocolUsage
           aggregate
           history={metrics.history}
@@ -1125,6 +1127,7 @@ export const InstallationUsage = () => {
         historyError={metrics.historyError}
         usage={metrics.usage}
       />
+      <CustomMetrics scope={{ kind: "installation" }} />
     </main>
   );
 };

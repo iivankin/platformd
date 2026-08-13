@@ -25,9 +25,10 @@ func run() error {
 	flags.SetOutput(os.Stderr)
 	endpoint := flags.String("url", "", "WSS endpoint returned by platformd")
 	localPort := flags.Int("local-port", 0, "localhost TCP port to listen on")
+	httpHost := flags.String("http-host", "", "HTTP Host header for a virtual resource endpoint")
 	showVersion := flags.Bool("version", false, "print version")
 	flags.Usage = func() {
-		_, _ = fmt.Fprintln(flags.Output(), "usage: platformd-forward --url <wss-url> --local-port <port>")
+		_, _ = fmt.Fprintln(flags.Output(), "usage: platformd-forward --url <wss-url> --local-port <port> [--http-host <hostname>]")
 		_, _ = fmt.Fprintln(flags.Output(), "The ticket is read from PLATFORMD_FORWARD_TICKET.")
 		flags.PrintDefaults()
 	}
@@ -46,6 +47,6 @@ func run() error {
 	defer stop()
 	return portforwardclient.Run(ctx, portforwardclient.Config{
 		URL: *endpoint, Ticket: os.Getenv("PLATFORMD_FORWARD_TICKET"),
-		LocalPort: *localPort, Output: os.Stderr,
+		LocalPort: *localPort, HTTPHost: *httpHost, Output: os.Stderr,
 	})
 }

@@ -11,12 +11,18 @@ import { CertificateHostnameCombobox } from "@/certificate-hostname-combobox";
 import { Button } from "@/components/ui/button";
 import { FormCard, SectionCard } from "@/components/ui/card";
 import { PageStack } from "@/components/ui/page-stack";
+import { InfrastructureOperationsPage } from "@/infrastructure-operations-page";
 import { SettingsError } from "@/settings-error";
+import type { UpdateStatusState } from "@/use-update-status";
 
 const errorText = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
-export const SettingsGeneralPage = () => {
+export const SettingsGeneralPage = ({
+  update,
+}: {
+  update: UpdateStatusState;
+}) => {
   const [settings, setSettings] = useState<InstallationSettings>();
   const [adminHostname, setAdminHostname] = useState("");
   const [savingAdmin, setSavingAdmin] = useState(false);
@@ -150,6 +156,8 @@ export const SettingsGeneralPage = () => {
           </div>
         </div>
       </SectionCard>
+
+      <InfrastructureOperationsPage update={update} />
     </PageStack>
   );
 };

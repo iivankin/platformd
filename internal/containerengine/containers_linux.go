@@ -51,6 +51,8 @@ func (e *Engine) CreateContainer(ctx context.Context, input ContainerSpec) (Cont
 	spec.CgroupsMode = "enabled"
 	if input.LogDriver == ContainerLogJournald {
 		spec.LogConfiguration = &specgen.LogConfig{Driver: define.JournaldLogging}
+	} else if input.LogDriver == ContainerLogNone {
+		spec.LogConfiguration = &specgen.LogConfig{Driver: define.NoLogging}
 	} else {
 		spec.LogConfiguration = &specgen.LogConfig{
 			Driver: define.KubernetesLogging,
@@ -130,6 +132,44 @@ func (e *Engine) StartContainer(ctx context.Context, id string) error {
 		return fmt.Errorf("start container %s: %w", id, err)
 	}
 	return nil
+}
+
+// StartContainerAttached attaches stdout and stderr before starting the
+// container, so even output emitted by the first process instruction is kept.
+func (e *Engine) StartContainerAttached(
+	ctx context.Context,
+	id string,
+	stdout io.WriteCloser,
+	stderr io.WriteCloser,
+) (<-chan error, error) {
+	container, err := e.lookupContainer(id)
+	if err != nil {
+		return nil, err
+	}
+	streams := &define.AttachStreams{
+		OutputStream: stdout, ErrorStream: stderr,
+		AttachOutput: true, AttachError: true,
+	}
+	// A deployment request can finish while the container keeps running. Keep
+	// the attachment alive until libpod closes it with the container instead of
+	// accidentally tying log delivery to the request context lifetime.
+	attached, err := container.Attach(context.WithoutCancel(ctx), streams, "", nil, true)
+	if err != nil {
+		stdout.Close()
+		stderr.Close()
+		return nil, fmt.Errorf("attach and start container %s: %w", id, err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		attachErr, ok := <-attached
+		if !ok {
+			attachErr = nil
+		}
+		closeErr := errors.Join(stdout.Close(), stderr.Close())
+		done <- errors.Join(attachErr, closeErr)
+		close(done)
+	}()
+	return done, nil
 }
 
 func (e *Engine) StopContainer(id string, timeoutSeconds uint) error {
@@ -358,12 +398,12 @@ func (e *Engine) validateContainerSpec(spec ContainerSpec) error {
 	if spec.ImageID == "" || spec.Name == "" {
 		return fmt.Errorf("container image ID and name are required")
 	}
-	if spec.LogDriver != ContainerLogFile && spec.LogDriver != ContainerLogJournald {
+	if spec.LogDriver != ContainerLogFile && spec.LogDriver != ContainerLogJournald && spec.LogDriver != ContainerLogNone {
 		return fmt.Errorf("unknown container log driver %q", spec.LogDriver)
 	}
-	if spec.LogDriver == ContainerLogJournald {
+	if spec.LogDriver == ContainerLogJournald || spec.LogDriver == ContainerLogNone {
 		if spec.LogPath != "" || spec.LogSizeBytes != 0 || spec.LogMaxFiles != 0 {
-			return fmt.Errorf("journald container logs cannot use file rotation settings")
+			return fmt.Errorf("non-file container logs cannot use file rotation settings")
 		}
 	} else {
 		if err := validateAbsolutePath("container log", spec.LogPath); err != nil {

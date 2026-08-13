@@ -13,6 +13,7 @@ import {
   stringField,
 } from "./http";
 import { addBackupPolicy, stringRecord, touchProject } from "./project-helpers";
+import { ensureServiceTelemetryMock } from "./service-telemetry";
 import { mockDomainOutputs } from "./service-variables";
 import type { MockState } from "./state";
 import { mockNow, nextMockID } from "./state";
@@ -124,6 +125,7 @@ const createService: ResourceCreator = (state, projectID, input) => {
     ),
   };
   state.services[id] = service;
+  ensureServiceTelemetryMock(state, service);
   state.deployments[id] = [];
   state.domains[id] = Array.isArray(input.domains)
     ? input.domains.flatMap((candidate) => {

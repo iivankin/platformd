@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,22 +16,26 @@ import (
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/resourcemetrics"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 	"github.com/iivankin/platformd/internal/volume"
 )
 
 type repositoryStub struct {
-	projects      []state.ProjectSummary
-	canvas        state.ProjectCanvas
-	service       state.ServiceDesired
-	deployments   state.DeploymentPage
-	canvasCalls   int
-	projectCalls  int
-	projectsCalls int
-	serviceCalls  int
-	createCalls   int
-	created       state.CreateService
-	volumes       []state.Volume
-	volumeCreate  state.CreateVolume
+	projects        []state.ProjectSummary
+	canvas          state.ProjectCanvas
+	service         state.ServiceDesired
+	deployments     state.DeploymentPage
+	canvasCalls     int
+	projectCalls    int
+	projectsCalls   int
+	serviceCalls    int
+	createCalls     int
+	created         state.CreateService
+	volumes         []state.Volume
+	volumeCreate    state.CreateVolume
+	telemetryCalls  int
+	telemetryMethod string
+	telemetryPath   string
 }
 
 func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -94,12 +99,77 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	handler, err := New(Config{
 		Hostname: "admin.example.com", Version: "1.2.3", Repository: repository,
 		Services: services, Logs: logs, Usage: usage, Images: repository, Volumes: volumes,
-		Admission: admission.New(),
+		Telemetry: repository, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	return handler
+}
+
+func (repository *repositoryStub) QueryService(_ context.Context, serviceID, method, path string, _ any) (any, error) {
+	repository.telemetryCalls++
+	repository.telemetryMethod = method
+	repository.telemetryPath = path
+	return map[string]any{"serviceId": serviceID, "path": path}, nil
+}
+
+func (*repositoryStub) ServiceTelemetry(_ context.Context, _, serviceID string) (telemetry.ServiceConfiguration, error) {
+	return telemetry.ServiceConfiguration{
+		ServiceID: serviceID, InternalHostname: "sentry-api.project.internal",
+		InternalDSN:          "http://service@sentry-api.project.internal:9001/1",
+		InternalOTLPEndpoint: "http://otel-api.project.internal:4318",
+		PublicHostname:       "errors.example.com", PublicDSN: "https://service@errors.example.com/1", UpdatedAt: 10,
+	}, nil
+}
+
+func (*repositoryStub) RotateServiceArtifactToken(context.Context, string, string) (string, error) {
+	return "artifact-secret", nil
+}
+
+func (*repositoryStub) ServiceTelemetryWebhooks(context.Context, string, string) ([]state.ServiceTelemetryWebhook, error) {
+	return []state.ServiceTelemetryWebhook{{
+		ID: "webhook", URL: "https://hooks.example.com/telemetry", EventTypes: []string{"issue_created"},
+		SecretEncrypted: []byte("must-not-leak"), Enabled: true, CreatedAtMillis: 1, UpdatedAtMillis: 1,
+	}}, nil
+}
+
+func (*repositoryStub) CreateServiceTelemetryWebhook(_ context.Context, _, serviceID, value string, events []string) (state.ServiceTelemetryWebhook, string, error) {
+	return state.ServiceTelemetryWebhook{ID: "created-webhook", ServiceID: serviceID, URL: value, EventTypes: events, Enabled: true, CreatedAtMillis: 2, UpdatedAtMillis: 2}, "webhook-secret", nil
+}
+
+func (*repositoryStub) DeleteServiceTelemetryWebhook(context.Context, string, string, string) error {
+	return nil
+}
+
+func (*repositoryStub) MetricCharts(_ context.Context, scope state.MetricScope) ([]state.MetricChart, error) {
+	return []state.MetricChart{{ID: "chart", Scope: scope, Title: "Requests", SQL: "SELECT 1", Visualization: "line", Legend: "requests", CreatedAtMillis: 1, UpdatedAtMillis: 1}}, nil
+}
+
+func (*repositoryStub) CreateMetricChart(_ context.Context, chart state.MetricChart) (state.MetricChart, error) {
+	chart.ID, chart.CreatedAtMillis, chart.UpdatedAtMillis = "created-chart", 2, 2
+	return chart, nil
+}
+
+func (*repositoryStub) UpdateMetricChart(_ context.Context, chart state.MetricChart, expected int64) (state.MetricChart, error) {
+	chart.CreatedAtMillis, chart.UpdatedAtMillis = 1, expected+1
+	return chart, nil
+}
+
+func (*repositoryStub) DeleteMetricChart(context.Context, state.MetricScope, string) error {
+	return nil
+}
+
+func (*repositoryStub) QueryMetricScope(_ context.Context, _ state.MetricScope, operation string, _ json.RawMessage) (telemetry.MetricScopeResponse, error) {
+	body := []byte(`[{"name":"http.server.duration"}]`)
+	if operation == "query" {
+		body = []byte(`[{"timeUnixNano":"1","value":2}]`)
+	}
+	return telemetry.MetricScopeResponse{Body: body, ContentType: "application/json", StatusCode: http.StatusOK}, nil
+}
+
+func (*repositoryStub) UpdateServiceTelemetryPublicAccess(_ context.Context, input state.UpdateServiceSentryPublicAccess) (telemetry.ServiceConfiguration, error) {
+	return telemetry.ServiceConfiguration{ServiceID: input.ID, PublicHostname: input.PublicHostname, PublicDSN: "https://service@" + input.PublicHostname + "/1", UpdatedAt: input.UpdatedAtMillis}, nil
 }
 
 type mcpVolumeFilesystem struct{}
@@ -267,6 +337,56 @@ func TestMCPStatelessLifecycleAndTransportContract(t *testing.T) {
 	}
 }
 
+func TestMCPAdvertisesStandaloneAgentGuidanceAndSafetyHints(t *testing.T) {
+	handler := newTestHandler(t, &repositoryStub{})
+
+	initialize := mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"agent","version":"1"}}}`)
+	initialize.Header.Del("MCP-Protocol-Version")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, initialize)
+	var initialized struct {
+		Result struct {
+			Instructions string `json:"instructions"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &initialized); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"list_projects", "expectedUpdatedAt", "list_service_issues", "get_metric_catalog", "Internal artifact uploads need no token"} {
+		if !strings.Contains(initialized.Result.Instructions, expected) {
+			t.Fatalf("initialize instructions omit %q: %q", expected, initialized.Result.Instructions)
+		}
+	}
+
+	list := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}`), automation.Identity{TokenID: "admin", Role: "admin"})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	var listed struct {
+		Result struct {
+			Tools []Tool `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]Tool, len(listed.Result.Tools))
+	for _, tool := range listed.Result.Tools {
+		byName[tool.Name] = tool
+	}
+	if tool := byName["list_service_issues"]; tool.Annotations == nil || !tool.Annotations.ReadOnlyHint || tool.Annotations.DestructiveHint {
+		t.Fatalf("issue tool annotations = %+v", tool.Annotations)
+	}
+	if tool := byName["rotate_service_artifact_token"]; tool.Annotations == nil || tool.Annotations.ReadOnlyHint || !tool.Annotations.DestructiveHint {
+		t.Fatalf("credential rotation annotations = %+v", tool.Annotations)
+	}
+	metric := byName["query_metrics"]
+	properties, _ := metric.InputSchema["properties"].(map[string]any)
+	step, _ := properties["step"].(map[string]any)
+	if step["minimum"] != float64(1_000) || !strings.Contains(metric.Description, "virtual metrics table") {
+		t.Fatalf("metric agent contract = %#v / %q", step, metric.Description)
+	}
+}
+
 func TestMCPSupportsCodexProtocolVersion(t *testing.T) {
 	handler := newTestHandler(t, &repositoryStub{})
 
@@ -349,6 +469,121 @@ func TestMCPReadServiceLogsEnforcesBoundaryBeforeLookup(t *testing.T) {
 	handler.ServeHTTP(response, call)
 	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `ready`) || repository.serviceCalls != 1 {
 		t.Fatalf("visible logs = %s calls=%d", response.Body, repository.serviceCalls)
+	}
+}
+
+func TestMCPServiceTelemetryUsesCommonToolsAndTokenBoundary(t *testing.T) {
+	repository := &repositoryStub{service: state.ServiceDesired{ID: "service", ProjectID: "project-a"}}
+	handler := newTestHandler(t, repository)
+	bound := "project-a"
+	read := automation.Identity{TokenID: "read", Role: "read", ProjectID: &bound}
+
+	list := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`), read)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if !strings.Contains(response.Body.String(), `"name":"list_service_issues"`) || strings.Contains(response.Body.String(), `"name":"update_service_issue_status"`) {
+		t.Fatalf("read telemetry tools = %s", response.Body)
+	}
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_service_issues","arguments":{"projectId":"project-b","serviceId":"service"}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), `"isError":true`) || repository.serviceCalls != 0 || repository.telemetryCalls != 0 {
+		t.Fatalf("cross-project telemetry tool = %s calls=%d/%d", response.Body, repository.serviceCalls, repository.telemetryCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_service_issues","arguments":{"projectId":"project-a","serviceId":"service","limit":10}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || repository.telemetryCalls != 1 || repository.telemetryMethod != http.MethodGet || repository.telemetryPath != "/issues?limit=10" {
+		t.Fatalf("read telemetry tool = %s forwarded=%s %s", response.Body, repository.telemetryMethod, repository.telemetryPath)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"update_service_issue_status","arguments":{"projectId":"project-a","serviceId":"service","issueId":"issue","status":"resolved"}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if !strings.Contains(response.Body.String(), "admin token is required") || repository.telemetryCalls != 1 {
+		t.Fatalf("read telemetry mutation = %s calls=%d", response.Body, repository.telemetryCalls)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"update_service_issue_status","arguments":{"projectId":"project-a","serviceId":"service","issueId":"issue","status":"resolved"}}}`), automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &bound})
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || repository.telemetryCalls != 2 || repository.telemetryMethod != http.MethodPatch || repository.telemetryPath != "/issues/issue" {
+		t.Fatalf("admin telemetry mutation = %s forwarded=%s %s", response.Body, repository.telemetryMethod, repository.telemetryPath)
+	}
+}
+
+func TestMCPServiceTelemetryCoversConfigurationTracesMetricsAndMutations(t *testing.T) {
+	repository := &repositoryStub{
+		service:  state.ServiceDesired{ID: "service", ProjectID: "project-a"},
+		projects: []state.ProjectSummary{{ID: "project-a", Name: "alpha"}},
+	}
+	handler := newTestHandler(t, repository)
+	bound := "project-a"
+	read := automation.Identity{TokenID: "read", Role: "read", ProjectID: &bound}
+	admin := automation.Identity{TokenID: "admin", Role: "admin", ProjectID: &bound}
+
+	list := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}`), read)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	for _, name := range []string{"get_service_telemetry", "get_service_replay_recording", "list_service_traces", "get_service_trace", "get_metric_catalog", "query_metrics", "list_metric_charts"} {
+		if !strings.Contains(response.Body.String(), `"name":"`+name+`"`) {
+			t.Fatalf("read telemetry tools omit %s: %s", name, response.Body)
+		}
+	}
+	if strings.Contains(response.Body.String(), `"name":"rotate_service_artifact_token"`) {
+		t.Fatalf("read token sees telemetry mutation: %s", response.Body)
+	}
+
+	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_service_telemetry","arguments":{"projectId":"project-a","serviceId":"service"}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `internalOtlpEndpoint`) || strings.Contains(response.Body.String(), `must-not-leak`) {
+		t.Fatalf("service telemetry config = %s", response.Body)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_service_traces","arguments":{"projectId":"project-a","serviceId":"service","query":"invoice 42","from":1000,"to":2000,"limit":200,"offset":4}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || repository.telemetryPath != "/traces?from=1000&limit=200&offset=4&query=invoice+42&to=2000" {
+		t.Fatalf("trace list = %s path=%s", response.Body, repository.telemetryPath)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_service_replay_recording","arguments":{"projectId":"project-a","serviceId":"service","replayId":"replay","offset":10}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || repository.telemetryPath != "/replays/replay/recording?limit=500&offset=10" {
+		t.Fatalf("replay recording = %s path=%s", response.Body, repository.telemetryPath)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"query_metrics","arguments":{"scope":"project","projectId":"project-a","sql":"SELECT bucket AS time, avg(value) AS value FROM metrics GROUP BY bucket","from":1000,"to":2000,"step":1000}}}`), read)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `timeUnixNano`) {
+		t.Fatalf("metric SQL = %s", response.Body)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"rotate_service_artifact_token","arguments":{"projectId":"project-a","serviceId":"service"}}}`), admin)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `artifact-secret`) || !strings.Contains(response.Body.String(), `SENTRY_AUTH_TOKEN`) {
+		t.Fatalf("artifact credential = %s", response.Body)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_service_telemetry_webhook","arguments":{"projectId":"project-a","serviceId":"service","url":"https://hooks.example.com/new","events":["issue_created"]}}}`), admin)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `webhook-secret`) ||
+		!strings.Contains(response.Body.String(), `X-Platformd-Signature`) || !strings.Contains(response.Body.String(), `raw request body`) {
+		t.Fatalf("create webhook = %s", response.Body)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"create_metric_chart","arguments":{"scope":"service","projectId":"project-a","serviceId":"service","title":"Latency","sql":"SELECT bucket AS time, avg(value) AS value FROM metrics GROUP BY bucket","visualization":"line","legend":"latency"}}}`), admin)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `created-chart`) {
+		t.Fatalf("create metric chart = %s", response.Body)
 	}
 }
 

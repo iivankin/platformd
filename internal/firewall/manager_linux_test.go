@@ -54,10 +54,15 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	if len(withObjectStore.rules) != len(compiled.rules)+1 {
 		t.Fatalf("object store must add exactly one TCP listener rule: without=%d with=%d", len(compiled.rules), len(withObjectStore.rules))
 	}
+	project.ServiceTelemetryEnabled = true
+	withTelemetry := compileRuleset(TableName, []Project{project})
+	if len(withTelemetry.rules) != len(withObjectStore.rules)+2 {
+		t.Fatalf("service telemetry must add Sentry and OTLP HTTP listeners: without=%d with=%d", len(withObjectStore.rules), len(withTelemetry.rules))
+	}
 	project.BlockedDatabaseEndpoints = []DatabaseEndpoint{{Address: netip.MustParseAddr("10.80.1.4"), Port: 5432}}
 	withMaintenance := compileRuleset(TableName, []Project{project})
-	if len(withMaintenance.rules) != len(withObjectStore.rules)+1 {
-		t.Fatalf("database maintenance must add exactly one forward drop: without=%d with=%d", len(withObjectStore.rules), len(withMaintenance.rules))
+	if len(withMaintenance.rules) != len(withTelemetry.rules)+1 {
+		t.Fatalf("database maintenance must add exactly one forward drop: without=%d with=%d", len(withTelemetry.rules), len(withMaintenance.rules))
 	}
 	project.GatewayListeners = []GatewayListener{{
 		Address: netip.MustParseAddr("10.80.1.192"), Protocol: "tcp", Port: 5432,

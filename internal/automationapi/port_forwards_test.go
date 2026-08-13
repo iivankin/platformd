@@ -40,8 +40,47 @@ func (servicePortForwardRepository) ResolveResource(_ context.Context, _ string,
 	}, nil
 }
 
-func (servicePortForwardRepository) ResolveResourceAddress(string, string, string, int) (string, error) {
+func (servicePortForwardRepository) ResolveResourceAddress(string, string, string, string, int) (string, error) {
 	return "10.42.0.4:8080", nil
+}
+
+func TestPortForwardCreateHandlerIssuesErrorsEndpointTicket(t *testing.T) {
+	application, err := portforward.New(portforward.Config{
+		Repository: servicePortForwardRepository{}, Resolver: servicePortForwardRepository{},
+		Audit: servicePortForwardRepository{},
+		OIDC:  oidcVerifierStub{identity: portforward.OIDCIdentity{Repository: "acme/api", RunID: "99"}},
+		NewID: func() (string, error) { return "port-forward-id", nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := CreatePortForwardHandler(PortForwardCreateConfig{
+		Hostname: "admin.example.com", Application: application, Authenticator: mustAuthenticator(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	mux.Handle("POST /public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards", handler)
+	request := httptest.NewRequest(http.MethodPost,
+		"https://admin.example.com/public/api/v1/projects/shop/resources/api/port-forwards",
+		strings.NewReader(`{"endpoint":"errors","localPort":19001}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiIxIn0.sig")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create errors port forward = %d/%s", response.Code, response.Body)
+	}
+	body := response.Body.String()
+	for _, expected := range []string{
+		`"endpoint":"errors"`, `"endpointHost":"errors-api.shop.internal"`, `"port":9001`,
+		"--local-port 19001 --http-host 'errors-api.shop.internal'",
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("response does not contain %q: %s", expected, body)
+		}
+	}
 }
 
 func (servicePortForwardRepository) RecordPortForwardTicket(context.Context, portforward.AuditRecord) error {
@@ -71,8 +110,8 @@ func TestPortForwardCreateHandlerIssuesTicketWithOIDC(t *testing.T) {
 		Repository: servicePortForwardRepository{},
 		Resolver:   servicePortForwardRepository{},
 		Audit:      servicePortForwardRepository{},
-		OIDC: oidcVerifierStub{identity: portforward.OIDCIdentity{Repository: "acme/api", RunID: "99"}},
-		NewID: func() (string, error) { return "port-forward-id", nil },
+		OIDC:       oidcVerifierStub{identity: portforward.OIDCIdentity{Repository: "acme/api", RunID: "99"}},
+		NewID:      func() (string, error) { return "port-forward-id", nil },
 	})
 	if err != nil {
 		t.Fatal(err)

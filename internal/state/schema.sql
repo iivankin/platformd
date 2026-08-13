@@ -84,11 +84,15 @@ CREATE TABLE services (
   memory_bytes INTEGER CHECK (memory_bytes > 0),
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   active_deployment_id TEXT,
+  sentry_public_hostname TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (active_deployment_id) REFERENCES deployments(id) DEFERRABLE INITIALLY DEFERRED,
   UNIQUE (project_id, name)
 ) STRICT;
+
+CREATE UNIQUE INDEX services_sentry_public_hostname_idx
+ON services(sentry_public_hostname) WHERE sentry_public_hostname IS NOT NULL;
 
 CREATE TABLE service_image_credentials (
   service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
@@ -97,6 +101,48 @@ CREATE TABLE service_image_credentials (
   password_encrypted BLOB NOT NULL,
   updated_at INTEGER NOT NULL
 ) STRICT;
+
+CREATE TABLE service_telemetry_credentials (
+  service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+  artifact_token_sha256 BLOB NOT NULL CHECK (length(artifact_token_sha256) = 32),
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE service_telemetry_webhooks (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  event_types_json TEXT NOT NULL CHECK (json_valid(event_types_json) AND json_type(event_types_json) = 'array'),
+  secret_encrypted BLOB NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX service_telemetry_webhooks_service_idx
+ON service_telemetry_webhooks(service_id, created_at, id);
+
+CREATE TABLE metric_charts (
+  id TEXT PRIMARY KEY,
+  scope_kind TEXT NOT NULL CHECK (scope_kind IN ('installation', 'project', 'service')),
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  service_id TEXT REFERENCES services(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  sql TEXT NOT NULL CHECK (length(sql) BETWEEN 1 AND 16384),
+  visualization TEXT NOT NULL DEFAULT 'area' CHECK (visualization IN ('line', 'area', 'bar', 'value')),
+  legend TEXT NOT NULL DEFAULT '' CHECK (length(legend) <= 80),
+  unit TEXT CHECK (unit IS NULL OR length(unit) <= 32),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (
+    (scope_kind = 'installation' AND project_id IS NULL AND service_id IS NULL) OR
+    (scope_kind = 'project' AND project_id IS NOT NULL AND service_id IS NULL) OR
+    (scope_kind = 'service' AND project_id IS NULL AND service_id IS NOT NULL)
+  )
+) STRICT;
+
+CREATE INDEX metric_charts_scope_idx
+ON metric_charts(scope_kind, project_id, service_id, created_at, id);
 
 CREATE TABLE service_secret_refs (
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
@@ -335,21 +381,6 @@ CREATE TABLE object_stores (
   UNIQUE (project_id, bucket_name)
 ) STRICT;
 
-CREATE TABLE error_trackers (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  volume_id TEXT NOT NULL UNIQUE,
-  public_hostname TEXT UNIQUE,
-  backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
-  backup_cron TEXT,
-  backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
-  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE (project_id, name)
-) STRICT;
-
 CREATE TABLE s3_credentials (
   id TEXT PRIMARY KEY,
   object_store_id TEXT NOT NULL REFERENCES object_stores(id) ON DELETE CASCADE,
@@ -431,7 +462,7 @@ CREATE TABLE backup_targets (
 CREATE TABLE backups (
   id TEXT PRIMARY KEY,
   target_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'error_tracker', 'image', 'object_store', 'postgres', 'redis', 'volume')),
+  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'image', 'object_store', 'postgres', 'redis', 'volume')),
   resource_id TEXT NOT NULL,
   scheduled_occurrence INTEGER,
   generation_id TEXT,
@@ -489,83 +520,4 @@ CREATE TABLE audit_events (
 CREATE INDEX audit_events_created_idx ON audit_events(created_at DESC);
 CREATE INDEX audit_events_project_created_idx ON audit_events(project_id, created_at DESC);
 
-CREATE TABLE resource_metric_samples (
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('service', 'postgres', 'redis', 'network_gateway')),
-  resource_id TEXT NOT NULL,
-  observed_at INTEGER NOT NULL,
-  duration_millis INTEGER NOT NULL CHECK (duration_millis > 0),
-  cpu_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (cpu_duration_millis >= 0),
-  network_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (network_duration_millis >= 0),
-  proxy_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (proxy_duration_millis >= 0),
-  cpu_millicores INTEGER CHECK (cpu_millicores IS NULL OR cpu_millicores >= 0),
-  cpu_peak_millicores INTEGER CHECK (cpu_peak_millicores IS NULL OR cpu_peak_millicores >= 0),
-  memory_bytes INTEGER NOT NULL CHECK (memory_bytes >= 0),
-  memory_peak_bytes INTEGER NOT NULL CHECK (memory_peak_bytes >= memory_bytes),
-  disk_bytes INTEGER CHECK (disk_bytes IS NULL OR disk_bytes >= 0),
-  network_ingress_bytes_per_second INTEGER CHECK (network_ingress_bytes_per_second IS NULL OR network_ingress_bytes_per_second >= 0),
-  network_ingress_peak_bytes_per_second INTEGER CHECK (network_ingress_peak_bytes_per_second IS NULL OR network_ingress_peak_bytes_per_second >= 0),
-  network_egress_bytes_per_second INTEGER CHECK (network_egress_bytes_per_second IS NULL OR network_egress_bytes_per_second >= 0),
-  network_egress_peak_bytes_per_second INTEGER CHECK (network_egress_peak_bytes_per_second IS NULL OR network_egress_peak_bytes_per_second >= 0),
-  running INTEGER NOT NULL CHECK (running IN (0, 1)),
-  proxy_metrics_json TEXT CHECK (proxy_metrics_json IS NULL OR json_valid(proxy_metrics_json)),
-  CHECK (
-    (cpu_duration_millis = 0 AND cpu_millicores IS NULL AND cpu_peak_millicores IS NULL) OR
-    (cpu_duration_millis > 0 AND cpu_duration_millis <= duration_millis AND cpu_millicores IS NOT NULL AND cpu_peak_millicores IS NOT NULL)
-  ),
-  CHECK (
-    (network_duration_millis = 0 AND network_ingress_bytes_per_second IS NULL AND network_ingress_peak_bytes_per_second IS NULL AND network_egress_bytes_per_second IS NULL AND network_egress_peak_bytes_per_second IS NULL) OR
-    (network_duration_millis > 0 AND network_duration_millis <= duration_millis AND network_ingress_bytes_per_second IS NOT NULL AND network_ingress_peak_bytes_per_second IS NOT NULL AND network_egress_bytes_per_second IS NOT NULL AND network_egress_peak_bytes_per_second IS NOT NULL)
-  ),
-  CHECK (proxy_duration_millis <= duration_millis AND (proxy_duration_millis = 0 OR proxy_metrics_json IS NOT NULL)),
-  PRIMARY KEY (resource_kind, resource_id, observed_at)
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX resource_metric_samples_retention_idx
-  ON resource_metric_samples(observed_at);
-
-CREATE TABLE aggregate_metric_samples (
-  scope_kind TEXT NOT NULL CHECK (scope_kind IN ('project', 'installation', 'host')),
-  scope_id TEXT NOT NULL,
-  observed_at INTEGER NOT NULL,
-  duration_millis INTEGER NOT NULL CHECK (duration_millis > 0),
-  cpu_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (cpu_duration_millis >= 0),
-  network_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (network_duration_millis >= 0),
-  proxy_duration_millis INTEGER NOT NULL DEFAULT 0 CHECK (proxy_duration_millis >= 0),
-  cpu_millicores INTEGER CHECK (cpu_millicores IS NULL OR cpu_millicores >= 0),
-  cpu_peak_millicores INTEGER CHECK (cpu_peak_millicores IS NULL OR cpu_peak_millicores >= 0),
-  memory_bytes INTEGER NOT NULL CHECK (memory_bytes >= 0),
-  memory_peak_bytes INTEGER NOT NULL CHECK (memory_peak_bytes >= memory_bytes),
-  disk_bytes INTEGER CHECK (disk_bytes IS NULL OR disk_bytes >= 0),
-  network_ingress_bytes_per_second INTEGER CHECK (network_ingress_bytes_per_second IS NULL OR network_ingress_bytes_per_second >= 0),
-  network_ingress_peak_bytes_per_second INTEGER CHECK (network_ingress_peak_bytes_per_second IS NULL OR network_ingress_peak_bytes_per_second >= 0),
-  network_egress_bytes_per_second INTEGER CHECK (network_egress_bytes_per_second IS NULL OR network_egress_bytes_per_second >= 0),
-  network_egress_peak_bytes_per_second INTEGER CHECK (network_egress_peak_bytes_per_second IS NULL OR network_egress_peak_bytes_per_second >= 0),
-  running_resources INTEGER NOT NULL CHECK (running_resources >= 0),
-  total_resources INTEGER NOT NULL CHECK (total_resources >= running_resources),
-  proxy_metrics_json TEXT CHECK (proxy_metrics_json IS NULL OR json_valid(proxy_metrics_json)),
-  CHECK (
-    (cpu_duration_millis = 0 AND cpu_millicores IS NULL AND cpu_peak_millicores IS NULL) OR
-    (cpu_duration_millis > 0 AND cpu_duration_millis <= duration_millis AND cpu_millicores IS NOT NULL AND cpu_peak_millicores IS NOT NULL)
-  ),
-  CHECK (
-    (network_duration_millis = 0 AND network_ingress_bytes_per_second IS NULL AND network_ingress_peak_bytes_per_second IS NULL AND network_egress_bytes_per_second IS NULL AND network_egress_peak_bytes_per_second IS NULL) OR
-    (network_duration_millis > 0 AND network_duration_millis <= duration_millis AND network_ingress_bytes_per_second IS NOT NULL AND network_ingress_peak_bytes_per_second IS NOT NULL AND network_egress_bytes_per_second IS NOT NULL AND network_egress_peak_bytes_per_second IS NOT NULL)
-  ),
-  CHECK (proxy_duration_millis <= duration_millis AND (proxy_duration_millis = 0 OR proxy_metrics_json IS NOT NULL)),
-  PRIMARY KEY (scope_kind, scope_id, observed_at)
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX aggregate_metric_samples_retention_idx
-  ON aggregate_metric_samples(observed_at);
-
-CREATE TABLE managed_stat_samples (
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('postgres', 'redis', 'object_store')),
-  resource_id TEXT NOT NULL,
-  observed_at INTEGER NOT NULL,
-  metrics_json TEXT NOT NULL CHECK (json_valid(metrics_json)),
-  PRIMARY KEY (resource_kind, resource_id, observed_at)
-) WITHOUT ROWID, STRICT;
-
-CREATE INDEX managed_stat_samples_retention_idx ON managed_stat_samples(observed_at);
-
-PRAGMA user_version = 10;
+PRAGMA user_version = 15;

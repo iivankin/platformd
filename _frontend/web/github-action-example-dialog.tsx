@@ -325,6 +325,7 @@ jobs:
           tag: latest`;
 
 export type PortForwardExampleKind =
+  | "errors"
   | "object_store"
   | "postgres"
   | "redis"
@@ -337,6 +338,7 @@ export const portForwardActionExample = ({
   port,
   projectName,
   resourceName,
+  sentryProject,
 }: {
   kind?: PortForwardExampleKind;
   localPort?: number;
@@ -344,8 +346,41 @@ export const portForwardActionExample = ({
   port: number;
   projectName: string;
   resourceName: string;
+  sentryProject?: string;
 }) => {
   const local = localPort ?? port;
+  if (kind === "errors") {
+    return `# Upload source maps through the service-scoped errors endpoint.
+jobs:
+  artifacts:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # checked against this service's port-forward allowlist
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build application
+        run: bun run build
+
+      - name: Tunnel to the Sentry endpoint
+        id: sentry
+        uses: iivankin/platformd/actions/port-forward@v1
+        with:
+          url: ${origin}
+          project: ${projectName}
+          resource: ${resourceName}
+          endpoint: errors
+
+      - name: Upload source maps
+        env:
+          # sentry-cli requires a non-empty value; the private tunnel does not authenticate it.
+          SENTRY_AUTH_TOKEN: internal
+          SENTRY_URL: \${{ steps.sentry.outputs.sentry-url }}
+          SENTRY_ORG: platformd
+          SENTRY_PROJECT: ${sentryProject ?? resourceName}
+        run: sentry-cli sourcemaps upload ./dist`;
+  }
   if (kind === "postgres") {
     return `# Open a temporary tunnel to managed Postgres, then run migrations.
 jobs:

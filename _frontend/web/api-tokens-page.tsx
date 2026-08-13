@@ -15,7 +15,6 @@ import type { APIToken, Project } from "@/api";
 import { Button } from "@/components/ui/button";
 import { FormCard, SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { PageStack } from "@/components/ui/page-stack";
 import {
   Select,
   SelectContent,
@@ -135,7 +134,7 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
   };
 
   return (
-    <PageStack className="animate-in duration-200 fade-in slide-in-from-bottom-1">
+    <>
       <SectionCard className="flex min-h-14 items-center justify-between gap-4 px-5 py-3">
         <div>
           <p className="text-xs font-medium">API credentials</p>
@@ -350,6 +349,6 @@ export const APITokensPage = ({ projects }: { projects: Project[] }) => {
           )}
         </div>
       </SectionCard>
-    </PageStack>
+    </>
   );
 };

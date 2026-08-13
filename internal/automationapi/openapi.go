@@ -3,6 +3,8 @@ package automationapi
 import (
 	"net/http"
 	"strconv"
+
+	"github.com/iivankin/platformd/internal/portforward"
 )
 
 type openAPIFeatures struct {
@@ -14,6 +16,7 @@ type openAPIFeatures struct {
 	databaseVersions bool
 	volumes          bool
 	portForwards     bool
+	telemetry        bool
 }
 
 func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
@@ -66,13 +69,24 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 		paths["/public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards"] = portForwardOperation()
 		schemas["PortForwardRequest"] = map[string]any{
 			"type": "object", "additionalProperties": false,
-			"required": []string{"port"},
+			"oneOf": []map[string]any{{"required": []string{"port"}}, {"required": []string{"endpoint"}}},
 			"properties": map[string]any{
+				"endpoint":         map[string]any{"type": "string", "enum": []string{portforward.EndpointErrors}},
 				"port":             map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
 				"localPort":        map[string]any{"type": "integer", "minimum": 1, "maximum": 65535},
 				"expiresInSeconds": map[string]any{"type": "integer", "minimum": 60, "maximum": 28800},
 			},
 		}
+	}
+	if features.telemetry {
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/issues"] = serviceErrorListOperation("List grouped Sentry issues")
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/issues/{issueID}"] = serviceIssueOperation()
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/events"] = serviceErrorListOperation("List Sentry error events")
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/events/{eventID}"] = serviceErrorReadOperation("Read one Sentry error event", "eventID")
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/replays"] = serviceErrorListOperation("List Sentry session replays")
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/replays/{replayID}"] = serviceErrorReadOperation("Read one Sentry session replay", "replayID")
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/replays/{replayID}/recording"] = serviceErrorReadOperation("Read decoded replay recording data", "replayID")
+		paths["/public/api/v1/projects/{projectID}/services/{serviceID}/errors/artifacts"] = serviceErrorListOperation("List uploaded source maps and debug artifacts")
 	}
 	document := map[string]any{
 		"openapi": "3.1.0",
@@ -91,6 +105,54 @@ func serveOpenAPI(hostname string, features openAPIFeatures) http.HandlerFunc {
 	}
 	return func(response http.ResponseWriter, _ *http.Request) {
 		writeJSON(response, http.StatusOK, document)
+	}
+}
+
+func serviceErrorListOperation(summary string) map[string]any {
+	return map[string]any{"get": map[string]any{
+		"summary": summary,
+		"parameters": append(serviceErrorIdentityParameters(),
+			map[string]any{"name": "query", "in": "query", "schema": map[string]string{"type": "string"}},
+			map[string]any{"name": "limit", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 1, "maximum": 100}},
+			map[string]any{"name": "offset", "in": "query", "schema": map[string]any{"type": "integer", "minimum": 0}},
+		),
+		"responses": readResponses("Service telemetry records"),
+	}}
+}
+
+func serviceErrorReadOperation(summary, identifier string) map[string]any {
+	parameters := serviceErrorIdentityParameters()
+	if identifier != "" {
+		parameters = append(parameters, map[string]any{"name": identifier, "in": "path", "required": true, "schema": map[string]string{"type": "string"}})
+	}
+	return map[string]any{"get": map[string]any{
+		"summary": summary, "parameters": parameters,
+		"responses": readResponses("Service telemetry record"),
+	}}
+}
+
+func serviceIssueOperation() map[string]any {
+	operation := serviceErrorReadOperation("Read one grouped Sentry issue", "issueID")
+	parameters := append(serviceErrorIdentityParameters(), map[string]any{"name": "issueID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}})
+	operation["patch"] = map[string]any{
+		"summary":    "Update a grouped Sentry issue status (admin token)",
+		"parameters": parameters,
+		"requestBody": map[string]any{"required": true, "content": map[string]any{
+			"application/json": map[string]any{"schema": map[string]any{
+				"type": "object", "additionalProperties": false, "required": []string{"status"},
+				"properties": map[string]any{"status": map[string]any{"type": "string", "enum": []string{"open", "resolved", "ignored"}}},
+			}},
+		},
+		},
+		"responses": readResponses("Updated Sentry issue"),
+	}
+	return operation
+}
+
+func serviceErrorIdentityParameters() []map[string]any {
+	return []map[string]any{
+		{"name": "projectID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
+		{"name": "serviceID", "in": "path", "required": true, "schema": map[string]string{"type": "string"}},
 	}
 }
 
@@ -397,11 +459,11 @@ func serviceMutationSchemas() map[string]any {
 				"type": "object", "additionalProperties": false,
 				"required": []string{"repository", "branch", "workflows", "previews"},
 				"properties": map[string]any{
-					"repository": map[string]string{"type": "string"},
-					"branch":     map[string]string{"type": "string"},
-					"workflows":      map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
-					"previews":       map[string]string{"type": "boolean"},
-					"previewDomain":  map[string]string{"type": "string"},
+					"repository":    map[string]string{"type": "string"},
+					"branch":        map[string]string{"type": "string"},
+					"workflows":     map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
+					"previews":      map[string]string{"type": "boolean"},
+					"previewDomain": map[string]string{"type": "string"},
 				},
 			},
 		},

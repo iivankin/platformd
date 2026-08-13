@@ -29,6 +29,7 @@ type ServiceDesired struct {
 	ActiveImageDigest    string
 	ActiveConfigHash     string
 	ActiveSourceRevision string
+	SentryPublicHostname string
 	CreatedAtMillis      int64
 	UpdatedAtMillis      int64
 	Snapshot             serviceconfig.Snapshot
@@ -213,6 +214,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var activeImageDigest sql.NullString
 	var activeConfigHash sql.NullString
 	var activeSourceRevision sql.NullString
+	var sentryPublicHostname sql.NullString
 	var sourceJSON string
 	var commandJSON sql.NullString
 	var argsJSON sql.NullString
@@ -229,7 +231,7 @@ SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
 	   d.image_digest, d.service_config_hash, d.source_revision,
 	       s.source_json, s.command_json, s.args_json,
 	       s.environment_json, s.before_deploy_json, s.port_forward_json, s.health_port, s.health_path, s.health_timeout_seconds,
-       s.cpu_millis, s.memory_bytes, s.created_at, s.updated_at
+       s.cpu_millis, s.memory_bytes, s.sentry_public_hostname, s.created_at, s.updated_at
 FROM services s
 JOIN projects p ON p.id = s.project_id
 LEFT JOIN deployments d ON d.id = s.active_deployment_id
@@ -238,7 +240,7 @@ WHERE s.id = ?`, serviceID).Scan(
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash, &activeSourceRevision,
 		&sourceJSON, &commandJSON, &argsJSON,
 		&environmentJSON, &beforeDeployJSON, &portForwardJSON, &healthPort, &healthPath, &healthTimeout,
-		&cpuMillis, &memoryBytes, &service.CreatedAtMillis, &service.UpdatedAtMillis,
+		&cpuMillis, &memoryBytes, &sentryPublicHostname, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDesired{}, sql.ErrNoRows
@@ -251,6 +253,7 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveImageDigest = activeImageDigest.String
 	service.ActiveConfigHash = activeConfigHash.String
 	service.ActiveSourceRevision = activeSourceRevision.String
+	service.SentryPublicHostname = sentryPublicHostname.String
 	if err := json.Unmarshal([]byte(sourceJSON), &service.Snapshot.Source); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service source: %w", err)
 	}
@@ -340,6 +343,34 @@ WHERE m.service_id = ? ORDER BY m.container_path, m.volume_id`, serviceID)
 	return service, nil
 }
 
+func (store *Store) Services(ctx context.Context) ([]ServiceDesired, error) {
+	rows, err := store.database.QueryContext(ctx, "SELECT id FROM services ORDER BY id")
+	if err != nil {
+		return nil, fmt.Errorf("list service IDs: %w", err)
+	}
+	var identifiers []string
+	for rows.Next() {
+		var identifier string
+		if err := rows.Scan(&identifier); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan service ID: %w", err)
+		}
+		identifiers = append(identifiers, identifier)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("iterate service ID query: %w", err)
+	}
+	services := make([]ServiceDesired, 0, len(identifiers))
+	for _, identifier := range identifiers {
+		service, err := store.DesiredService(ctx, identifier)
+		if err != nil {
+			return nil, err
+		}
+		services = append(services, service)
+	}
+	return services, nil
+}
+
 func (store *Store) EnabledServiceIDs(ctx context.Context) ([]string, error) {
 	rows, err := store.database.QueryContext(ctx, "SELECT id FROM services WHERE enabled = 1 ORDER BY id")
 	if err != nil {
@@ -368,9 +399,8 @@ SELECT EXISTS(
   UNION ALL SELECT 1 FROM managed_postgres WHERE project_id = ? AND name = ?
   UNION ALL SELECT 1 FROM managed_redis WHERE project_id = ? AND name = ?
   UNION ALL SELECT 1 FROM object_stores WHERE project_id = ? AND name = ?
-	UNION ALL SELECT 1 FROM error_trackers WHERE project_id = ? AND name = ?
 	UNION ALL SELECT 1 FROM network_gateways WHERE project_id = ? AND name = ?
-)`, projectID, name, projectID, name, projectID, name, projectID, name, projectID, name, projectID, name).Scan(&exists)
+)`, projectID, name, projectID, name, projectID, name, projectID, name, projectID, name).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check project resource name: %w", err)
 	}

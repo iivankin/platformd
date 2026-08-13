@@ -260,6 +260,9 @@ func rawBundle(t *testing.T, entries []rawBundleEntry) []byte {
 		header := &zip.FileHeader{Name: entry.name, Method: zip.Store}
 		header.SetMode(entry.mode)
 		header.Flags = entry.flags
+		// The test deliberately writes a raw invalid DOS date, which cannot be
+		// represented through the preferred Modified time.Time field.
+		//lint:ignore SA1019 low-level ZIP corruption test requires the raw field
 		header.ModifiedDate = entry.modifiedDate
 		writer, err := archive.CreateHeader(header)
 		if err != nil {
@@ -293,7 +296,7 @@ func rawRuntimeProfile(t *testing.T) []rawBundleEntry {
 	add("crun", []byte("runtime-crun"), 0o755)
 	add("mounts.conf", []byte("{}"), 0o644)
 	add("netavark", []byte("runtime-netavark"), 0o755)
-	add("platformd-error-tracker", []byte("runtime-platformd-error-tracker"), 0o755)
+	add("platformd-telemetry", []byte("runtime-platformd-telemetry"), 0o755)
 	add("platformd-objectstore", []byte("runtime-platformd-objectstore"), 0o755)
 	for _, name := range []string{"policy.json", "registries.conf", "seccomp.json", "storage.conf"} {
 		add(name, []byte("{}"), 0o644)
@@ -314,7 +317,7 @@ func writeFile(t *testing.T, path string, value []byte, mode fs.FileMode) {
 
 func writeRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	executables := []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"}
+	executables := []string{"catatonit", "conmon", "crun", "netavark", "platformd-telemetry", "platformd-objectstore"}
 	configurations := []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"}
 	for _, name := range executables {
 		writeFile(t, filepath.Join(root, name), []byte("runtime-"+name), 0o755)

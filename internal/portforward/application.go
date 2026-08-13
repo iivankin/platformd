@@ -20,6 +20,7 @@ const (
 	MaximumLifetime      = 8 * time.Hour
 	MaximumTickets       = 1024
 	MaximumConnections   = 16
+	EndpointErrors       = "errors"
 	ticketRandomByteSize = 32
 )
 
@@ -42,7 +43,7 @@ type ResolvedProject struct {
 }
 
 type TargetResolver interface {
-	ResolveResourceAddress(string, string, string, int) (string, error)
+	ResolveResourceAddress(string, string, string, string, int) (string, error)
 }
 
 type AuditRecorder interface {
@@ -56,6 +57,7 @@ type AuditRecord struct {
 	ProjectID    string
 	ResourceKind string
 	ResourceID   string
+	Endpoint     string
 	Port         int
 	CreatedAt    time.Time
 	ExpiresAt    time.Time
@@ -87,6 +89,7 @@ type Application struct {
 type CreateInput struct {
 	Project         string
 	Resource        string
+	Endpoint        string
 	Port            int
 	LifetimeSeconds int
 }
@@ -97,6 +100,8 @@ type Grant struct {
 	Project      string    `json:"project"`
 	Resource     string    `json:"resource"`
 	ResourceKind string    `json:"resourceKind"`
+	Endpoint     string    `json:"endpoint,omitempty"`
+	EndpointHost string    `json:"endpointHost,omitempty"`
 	Port         int       `json:"port"`
 	ExpiresAt    time.Time `json:"expiresAt"`
 }
@@ -113,6 +118,7 @@ type ticketState struct {
 	projectID    string
 	resourceKind string
 	resourceID   string
+	endpoint     string
 	port         int
 	expiresAt    time.Time
 	connections  int
@@ -147,6 +153,8 @@ func (application *Application) issueTicket(
 	ctx context.Context,
 	project ResolvedProject,
 	resource ResolvedResource,
+	endpoint string,
+	endpointHost string,
 	port int,
 	lifetime time.Duration,
 	actorTokenID string,
@@ -163,7 +171,7 @@ func (application *Application) issueTicket(
 	expiresAt := createdAt.Add(lifetime)
 	state := &ticketState{
 		id: ticketID, projectID: project.ID, resourceKind: resource.Kind,
-		resourceID: resource.ID, port: port, expiresAt: expiresAt,
+		resourceID: resource.ID, endpoint: endpoint, port: port, expiresAt: expiresAt,
 	}
 	hash := sha256.Sum256([]byte(ticket))
 	application.mu.Lock()
@@ -178,7 +186,8 @@ func (application *Application) issueTicket(
 	audit := AuditRecord{
 		ID: ticketID, ActorTokenID: actorTokenID, TicketID: ticketID,
 		ProjectID: project.ID, ResourceKind: resource.Kind,
-		ResourceID: resource.ID, Port: port, CreatedAt: createdAt, ExpiresAt: expiresAt,
+		ResourceID: resource.ID, Endpoint: endpoint, Port: port,
+		CreatedAt: createdAt, ExpiresAt: expiresAt,
 	}
 	if err := application.audit.RecordPortForwardTicket(ctx, audit); err != nil {
 		application.mu.Lock()
@@ -190,7 +199,8 @@ func (application *Application) issueTicket(
 	}
 	return Grant{
 		ID: ticketID, Ticket: ticket, Project: project.Name, Resource: resource.Name,
-		ResourceKind: resource.Kind, Port: port, ExpiresAt: expiresAt,
+		ResourceKind: resource.Kind, Endpoint: endpoint, EndpointHost: endpointHost,
+		Port: port, ExpiresAt: expiresAt,
 	}, nil
 }
 
@@ -215,7 +225,7 @@ func (application *Application) Acquire(ticket string) (*Session, error) {
 	application.mu.Unlock()
 
 	target, err := application.resolver.ResolveResourceAddress(
-		state.projectID, state.resourceKind, state.resourceID, state.port,
+		state.projectID, state.resourceKind, state.resourceID, state.endpoint, state.port,
 	)
 	if err != nil {
 		application.release(state)
@@ -250,7 +260,16 @@ func (application *Application) removeExpiredLocked(now time.Time) {
 }
 
 func validateCreateInput(input CreateInput) (time.Duration, error) {
-	if resourcename.Validate(input.Project) != nil || resourcename.Validate(input.Resource) != nil || input.Port < 1 || input.Port > 65535 {
+	if resourcename.Validate(input.Project) != nil || resourcename.Validate(input.Resource) != nil {
+		return 0, ErrInvalidInput
+	}
+	if input.Endpoint == "" && (input.Port < 1 || input.Port > 65535) {
+		return 0, ErrInvalidInput
+	}
+	if input.Endpoint == EndpointErrors && input.Port != 0 {
+		return 0, ErrInvalidInput
+	}
+	if input.Endpoint != "" && input.Endpoint != EndpointErrors {
 		return 0, ErrInvalidInput
 	}
 	if input.LifetimeSeconds == 0 {

@@ -248,23 +248,8 @@ SELECT EXISTS(
   WHERE admin_hostname = ?
   UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ? AND id != ?
-  UNION ALL SELECT 1 FROM error_trackers WHERE public_hostname = ?
+  UNION ALL SELECT 1 FROM services WHERE sentry_public_hostname = ?
 )`, hostname, hostname, hostname, exceptObjectStoreID, hostname).Scan(&exists)
-	if err != nil {
-		return false, fmt.Errorf("check public hostname roles: %w", err)
-	}
-	return exists == 1, nil
-}
-
-func publicHostnameRoleExistsExceptErrorTracker(ctx context.Context, transaction *sql.Tx, hostname, exceptTrackerID string) (bool, error) {
-	var exists int
-	err := transaction.QueryRowContext(ctx, `
-SELECT EXISTS(
-  SELECT 1 FROM installation WHERE admin_hostname = ?
-  UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
-  UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
-  UNION ALL SELECT 1 FROM error_trackers WHERE public_hostname = ? AND id != ?
-)`, hostname, hostname, hostname, hostname, exceptTrackerID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check public hostname roles: %w", err)
 	}

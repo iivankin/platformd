@@ -23,7 +23,13 @@ type Query struct {
 	ServiceID    string
 	DeploymentID string
 	Contains     string
+	SeverityText string
+	TraceID      string
+	SpanID       string
+	From         time.Time
+	To           time.Time
 	Limit        int
+	Ascending    bool
 }
 
 type RuntimeQuery struct {
@@ -35,13 +41,17 @@ type RuntimeQuery struct {
 }
 
 type Record struct {
-	Timestamp    time.Time `json:"timestamp"`
-	Stream       string    `json:"stream"`
-	Text         string    `json:"text"`
-	DeploymentID string    `json:"deploymentId"`
-	AttemptID    string    `json:"attemptId"`
-	Partial      bool      `json:"partial,omitempty"`
-	Truncated    bool      `json:"truncated,omitempty"`
+	Timestamp      time.Time `json:"timestamp"`
+	Stream         string    `json:"stream"`
+	Text           string    `json:"text"`
+	DeploymentID   string    `json:"deploymentId"`
+	AttemptID      string    `json:"attemptId"`
+	TraceID        string    `json:"traceId,omitempty"`
+	SpanID         string    `json:"spanId,omitempty"`
+	SeverityText   string    `json:"severityText,omitempty"`
+	SeverityNumber int32     `json:"severityNumber,omitempty"`
+	Partial        bool      `json:"partial,omitempty"`
+	Truncated      bool      `json:"truncated,omitempty"`
 
 	segment int
 	offset  int64

@@ -115,7 +115,7 @@ func (store *fakeStore) Deployment(_ context.Context, deploymentID string) (stat
 		ID: deployment.ID, ServiceID: deployment.ServiceID, ImageDigest: deployment.ImageDigest,
 		ImageReference: deployment.ImageReference, ImageRevisionID: deployment.ImageRevisionID,
 		SourceRevision: deployment.SourceRevision,
-		CommitMessage: deployment.CommitMessage, ConfigHash: deployment.ConfigHash,
+		CommitMessage:  deployment.CommitMessage, ConfigHash: deployment.ConfigHash,
 		Snapshot: snapshot, Status: "succeeded",
 	}, nil
 }
@@ -190,6 +190,27 @@ func (engine *fakeEngine) StartContainer(_ context.Context, containerID string) 
 	engine.containers[containerID] = container
 	return nil
 }
+
+func (engine *fakeEngine) StartContainerAttached(ctx context.Context, containerID string, stdout, stderr io.WriteCloser) (<-chan error, error) {
+	if err := engine.StartContainer(ctx, containerID); err != nil {
+		return nil, err
+	}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
+
+type fakeContainerLogSink struct{}
+
+func (fakeContainerLogSink) ContainerWriter(_, _, _, _, _ string) io.WriteCloser {
+	return nopWriteCloser{Writer: io.Discard}
+}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
 
 func (engine *fakeEngine) StopContainer(containerID string, _ uint) error {
 	engine.events = append(engine.events, "stop:"+containerID)
@@ -270,7 +291,7 @@ func TestAutomaticRemoteImageUpdateWaitsForMinimumReleaseAge(t *testing.T) {
 			return Placement{NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1")}, nil
 		},
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2, Now: func() time.Time { return now },
+		ContainerLogs: fakeContainerLogSink{}, Now: func() time.Time { return now },
 		NewID: func() (string, error) { return "poll", nil },
 	})
 	if err != nil {
@@ -338,7 +359,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 		return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
 	})}
 	identifierIndex := 0
-	identifiers := []string{"deployment-1", "attempt-1", "poll-noop", "deployment-2", "attempt-2", "blocked-deployment"}
+	identifiers := []string{"deployment-1", "poll-noop", "deployment-2", "blocked-deployment"}
 	clockIndex := 0
 	logRoot := filepath.Join(t.TempDir(), "logs")
 	controller, err := New(Config{
@@ -350,7 +371,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 			}, nil
 		},
 		LogRoot: logRoot, VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2,
+		ContainerLogs: fakeContainerLogSink{},
 		Now: func() time.Time {
 			clockIndex++
 			return time.Unix(int64(clockIndex*2), 0)
@@ -444,7 +465,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	first, err := New(Config{
 		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
+		ContainerLogs: fakeContainerLogSink{}, HTTPClient: httpClient,
 		NewID: func() (string, error) {
 			value := identifiers[identifierIndex]
 			identifierIndex++
@@ -464,7 +485,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	restored, err := New(Config{
 		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
 		LogRoot: filepath.Join(t.TempDir(), "restored-logs"), VolumeRoot: filepath.Join(t.TempDir(), "restored-volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2, HTTPClient: httpClient,
+		ContainerLogs: fakeContainerLogSink{}, HTTPClient: httpClient,
 		NewID: func() (string, error) { return "restored-attempt", nil },
 	})
 	if err != nil {
@@ -558,8 +579,8 @@ func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
 			}, nil
 		},
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2,
-		NewID: func() (string, error) { return "attempt", nil },
+		ContainerLogs: fakeContainerLogSink{},
+		NewID:         func() (string, error) { return "attempt", nil },
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusNoContent, Body: io.NopCloser(&emptyReader{})}, nil
 		})},
@@ -637,7 +658,7 @@ func TestDeployOverridesUploadedImageWithCurrentConfigWhenNoActive(t *testing.T)
 	engine := &fakeEngine{
 		containers: make(map[string]containerengine.Container),
 		images: map[string]containerengine.Image{
-			digest:                          {ID: "uploaded-image", Digest: digest},
+			digest:                             {ID: "uploaded-image", Digest: digest},
 			"oci-archive:/images/revision.oci": {ID: "uploaded-image", Digest: digest},
 		},
 		pullImage: &containerengine.Image{ID: "uploaded-image", Digest: digest},
@@ -654,7 +675,7 @@ func TestDeployOverridesUploadedImageWithCurrentConfigWhenNoActive(t *testing.T)
 			}, nil
 		},
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2,
+		ContainerLogs: fakeContainerLogSink{},
 		NewID: func() (string, error) {
 			value := ids[idIndex]
 			idIndex++
@@ -710,7 +731,7 @@ func TestDeployOverridesFromReusableRevisionWhenNoDeploymentRow(t *testing.T) {
 	engine := &fakeEngine{
 		containers: make(map[string]containerengine.Container),
 		images: map[string]containerengine.Image{
-			digest:                            {ID: "uploaded-image", Digest: digest},
+			digest:                             {ID: "uploaded-image", Digest: digest},
 			"oci-archive:/images/revision.oci": {ID: "uploaded-image", Digest: digest},
 		},
 		pullImage: &containerengine.Image{ID: "uploaded-image", Digest: digest},
@@ -726,7 +747,7 @@ func TestDeployOverridesFromReusableRevisionWhenNoDeploymentRow(t *testing.T) {
 			}, nil
 		},
 		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
-		LogSizeBytes: 1024, LogMaxFiles: 2,
+		ContainerLogs: fakeContainerLogSink{},
 		NewID: func() (string, error) {
 			value := ids[idIndex]
 			idIndex++

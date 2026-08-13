@@ -6,11 +6,9 @@ import tailwindcss from "tailwindcss-bun-plugin";
 const build = async ({
   entrypoint,
   outdir,
-  standalone = false,
 }: {
   entrypoint: string;
   outdir: string;
-  standalone?: boolean;
 }) => {
   await rm(outdir, { force: true, recursive: true });
   const result = await Bun.build({
@@ -19,17 +17,10 @@ const build = async ({
     },
     entrypoints: [entrypoint],
     minify: true,
-    naming: standalone
-      ? {
-          asset: "[name].[ext]",
-          chunk: "[name].[ext]",
-          entry: "[name].[ext]",
-        }
-      : undefined,
     outdir,
     plugins: [tailwindcss],
-    publicPath: standalone ? "/assets/" : "/",
-    splitting: !standalone,
+    publicPath: "/",
+    splitting: true,
     target: "browser",
   });
 
@@ -53,9 +44,4 @@ const build = async ({
 await build({
   entrypoint: "web/index.html",
   outdir: path.join(process.cwd(), "..", "internal", "ui", "dist"),
-});
-await build({
-  entrypoint: "web/error-tracker/index.html",
-  outdir: path.join(process.cwd(), "..", "error-tracker", "src", "web", "dist"),
-  standalone: true,
 });

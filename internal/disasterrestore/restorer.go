@@ -23,6 +23,7 @@ import (
 	"github.com/iivankin/platformd/internal/remotes3"
 	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 )
 
 type RestoreRemote interface {
@@ -31,20 +32,22 @@ type RestoreRemote interface {
 }
 
 type RemoteFactory func(remotes3.Config) (RestoreRemote, error)
+type TelemetryRestorer func(context.Context, string, string, string) error
 
 type Restorer struct {
-	Paths         layout.Paths
-	ExpectedUID   int
-	PublicKey     ed25519.PublicKey
-	ProvideInput  func() (ValidatedInput, error)
-	ValidateHost  func(context.Context, string) error
-	RemoteFactory RemoteFactory
-	ImportExact   ExactImporter
-	AcquireLock   func(string, int) (io.Closer, error)
-	Services      bootstrap.ServiceManager
-	Now           func() time.Time
-	OS            string
-	Architecture  string
+	Paths            layout.Paths
+	ExpectedUID      int
+	PublicKey        ed25519.PublicKey
+	ProvideInput     func() (ValidatedInput, error)
+	ValidateHost     func(context.Context, string) error
+	RemoteFactory    RemoteFactory
+	ImportExact      ExactImporter
+	RestoreTelemetry TelemetryRestorer
+	AcquireLock      func(string, int) (io.Closer, error)
+	Services         bootstrap.ServiceManager
+	Now              func() time.Time
+	OS               string
+	Architecture     string
 }
 
 func ProductionRestorer(provider func() (ValidatedInput, error)) (Restorer, error) {
@@ -61,8 +64,9 @@ func ProductionRestorer(provider func() (ValidatedInput, error)) (Restorer, erro
 			}
 			return facts.Validate()
 		},
-		RemoteFactory: func(config remotes3.Config) (RestoreRemote, error) { return remotes3.New(config) },
-		ImportExact:   RunExactImporter,
+		RemoteFactory:    func(config remotes3.Config) (RestoreRemote, error) { return remotes3.New(config) },
+		ImportExact:      RunExactImporter,
+		RestoreTelemetry: telemetry.RestoreBackup,
 		AcquireLock: func(path string, expectedUID int) (io.Closer, error) {
 			return singletonlock.Acquire(path, expectedUID)
 		},
@@ -146,6 +150,22 @@ func (restorer Restorer) Restore(ctx context.Context) error {
 	if err := bootstrap.PublishReleaseSlot(fetched.Release, restorer.Paths, restorer.ExpectedUID); err != nil {
 		return err
 	}
+	releaseSlot := filepath.Join(restorer.Paths.ReleasesRoot, fetched.Release.Manifest.Version)
+	telemetryVolume := filepath.Join(restorer.Paths.DataRoot, "telemetry")
+	// SQLite is the publication boundary for a disaster restore. If a previous
+	// attempt stopped after restoring telemetry but before publishing SQLite,
+	// that volume is incomplete state and must not make the retry fail.
+	if err := os.RemoveAll(telemetryVolume); err != nil {
+		return fmt.Errorf("remove incomplete telemetry restore: %w", err)
+	}
+	if err := restorer.RestoreTelemetry(
+		ctx,
+		filepath.Join(releaseSlot, "runtime", "platformd-telemetry"),
+		fetched.TelemetryPath,
+		telemetryVolume,
+	); err != nil {
+		return err
+	}
 	importedAt := restorer.Now().UnixMilli()
 	payload, err := NewImportPayload(
 		fetched.DatabasePath, fetched.Manifest, input, importedAt, restorer.ExpectedUID,
@@ -193,7 +213,7 @@ func (restorer Restorer) validate() error {
 	if restorer.Paths.DataRoot == "" || restorer.Paths.ConfigRoot == "" || restorer.Paths.StateDatabase == "" ||
 		restorer.Paths.MasterKey == "" || restorer.Paths.BackupWorkRoot == "" || restorer.ExpectedUID < 0 ||
 		len(restorer.PublicKey) != ed25519.PublicKeySize || restorer.ProvideInput == nil || restorer.ValidateHost == nil ||
-		restorer.RemoteFactory == nil || restorer.ImportExact == nil || restorer.AcquireLock == nil ||
+		restorer.RemoteFactory == nil || restorer.ImportExact == nil || restorer.RestoreTelemetry == nil || restorer.AcquireLock == nil ||
 		restorer.Services == nil || restorer.Now == nil || restorer.OS == "" || restorer.Architecture == "" {
 		return errors.New("disaster restorer configuration is incomplete")
 	}

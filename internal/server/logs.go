@@ -19,9 +19,9 @@ import (
 
 type LogRepository interface {
 	BuildLog(context.Context, string, string, string) (string, error)
-	ServiceLogs(context.Context, string, string, string, string, int) (containerlogs.Window, error)
+	ServiceLogs(context.Context, string, containerlogs.Query) (containerlogs.Window, error)
 	ResourceLogs(context.Context, string, string, string, string, string, int) (containerlogs.Window, error)
-	ServiceLogRevision(context.Context, string, string, string, string) (string, error)
+	ServiceLogRevision(context.Context, string, containerlogs.Query) (string, error)
 	DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error)
 }
 
@@ -155,9 +155,16 @@ func getServiceLogs(repository LogRepository) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_log_limit", err.Error())
 			return
 		}
+		from, to, err := optionalLogRange(request)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_range", err.Error())
+			return
+		}
 		window, err := repository.ServiceLogs(
-			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"),
-			request.URL.Query().Get("deploymentId"), request.URL.Query().Get("contains"), limit,
+			request.Context(), request.PathValue("projectID"), containerlogs.Query{
+				ServiceID: request.PathValue("serviceID"), DeploymentID: request.URL.Query().Get("deploymentId"),
+				Contains: request.URL.Query().Get("contains"), From: from, To: to, Limit: limit,
+			},
 		)
 		switch {
 		case err == nil:
@@ -170,6 +177,32 @@ func getServiceLogs(repository LogRepository) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read service logs", err)
 		}
 	}
+}
+
+func optionalLogRange(request *http.Request) (time.Time, time.Time, error) {
+	parse := func(name string) (time.Time, error) {
+		value := request.URL.Query().Get(name)
+		if value == "" {
+			return time.Time{}, nil
+		}
+		millis, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || millis <= 0 {
+			return time.Time{}, fmt.Errorf("%s must be a positive Unix millisecond timestamp", name)
+		}
+		return time.UnixMilli(millis), nil
+	}
+	from, err := parse("from")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	to, err := parse("to")
+	if err != nil {
+		return time.Time{}, time.Time{}, err
+	}
+	if !from.IsZero() && !to.IsZero() && to.Before(from) {
+		return time.Time{}, time.Time{}, errors.New("to must not be earlier than from")
+	}
+	return from, to, nil
 }
 
 type logStreamMessage struct {
@@ -207,12 +240,15 @@ func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFu
 		serviceID := request.PathValue("serviceID")
 		deploymentID := request.URL.Query().Get("deploymentId")
 		contains := request.URL.Query().Get("contains")
-		window, err := repository.ServiceLogs(request.Context(), projectID, serviceID, deploymentID, contains, limit)
+		query := containerlogs.Query{
+			ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains, Limit: limit,
+		}
+		window, err := repository.ServiceLogs(request.Context(), projectID, query)
 		if err != nil {
 			writeLogStreamError(response, err)
 			return
 		}
-		revision, err := repository.ServiceLogRevision(request.Context(), projectID, serviceID, deploymentID, contains)
+		revision, err := repository.ServiceLogRevision(request.Context(), projectID, query)
 		if err != nil {
 			writeLogStreamError(response, err)
 			return
@@ -245,7 +281,7 @@ func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFu
 					return
 				}
 			case <-poll.C:
-				currentRevision, revisionErr := repository.ServiceLogRevision(ctx, projectID, serviceID, deploymentID, contains)
+				currentRevision, revisionErr := repository.ServiceLogRevision(ctx, projectID, query)
 				if revisionErr != nil {
 					_ = connection.Close(websocket.StatusInternalError, "log stream unavailable")
 					return
@@ -253,7 +289,8 @@ func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFu
 				if currentRevision == revision {
 					continue
 				}
-				current, readErr := repository.ServiceLogs(ctx, projectID, serviceID, deploymentID, contains, containerlogs.MaximumLimit)
+				query.Limit = containerlogs.MaximumLimit
+				current, readErr := repository.ServiceLogs(ctx, projectID, query)
 				if readErr != nil {
 					_ = connection.Close(websocket.StatusInternalError, "log stream unavailable")
 					return

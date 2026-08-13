@@ -1,9 +1,13 @@
 package managedpostgres
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestTruncateQuery(t *testing.T) {
@@ -35,6 +39,47 @@ func TestRecordStatementStatSkipsNullQueryID(t *testing.T) {
 	recordStatementStat(&stats, StatementStat{QueryID: "42", Query: strings.Repeat("a", 600), Calls: 7}, 40, 12)
 	if len(stats.Statements) != 1 || stats.Statements[0].QueryID != "42" || len([]rune(stats.Statements[0].Query)) != 500 {
 		t.Fatalf("statement = %+v", stats.Statements)
+	}
+}
+
+func TestStatsAgainstRealPostgresWithHiddenSessions(t *testing.T) {
+	connectionURL := os.Getenv("PLATFORMD_MANAGED_POSTGRES_TEST_URL")
+	if connectionURL == "" {
+		t.Skip("set PLATFORMD_MANAGED_POSTGRES_TEST_URL to a non-superuser PostgreSQL connection")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	connection, err := pgx.Connect(ctx, connectionURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &Client{connection: connection}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+
+	var hiddenSessions int
+	if err := connection.QueryRow(ctx, `
+SELECT count(*)
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid()
+  AND xact_start IS NULL
+  AND query_start IS NULL
+  AND backend_start IS NULL`).Scan(&hiddenSessions); err != nil {
+		t.Fatal(err)
+	}
+	if hiddenSessions == 0 {
+		t.Skip("database user can inspect every session; a non-superuser is required")
+	}
+	stats, err := client.Stats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.Sessions) < hiddenSessions {
+		t.Fatalf("sessions = %d, hidden sessions = %d", len(stats.Sessions), hiddenSessions)
+	}
+	for _, session := range stats.Sessions {
+		if session.DurationMillis < 0 {
+			t.Fatalf("negative session duration: %+v", session)
+		}
 	}
 }
 

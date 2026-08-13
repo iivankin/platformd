@@ -1,7 +1,6 @@
 package managedredis
 
 import (
-	"crypto/rand"
 	"encoding/base64"
 	"errors"
 	"io"
@@ -18,10 +17,6 @@ const (
 // when the draft is deployed.
 type InitialCredentials struct {
 	Password string
-}
-
-func GeneratePassword() (string, error) {
-	return GeneratePasswordWith(rand.Reader)
 }
 
 func GeneratePasswordWith(random io.Reader) (string, error) {

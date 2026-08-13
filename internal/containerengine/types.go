@@ -107,6 +107,7 @@ type ContainerLogDriver string
 const (
 	ContainerLogFile     ContainerLogDriver = ""
 	ContainerLogJournald ContainerLogDriver = "journald"
+	ContainerLogNone     ContainerLogDriver = "none"
 )
 
 type ContainerSpec struct {

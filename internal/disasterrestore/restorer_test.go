@@ -143,10 +143,15 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
+	telemetryPath := filepath.Join(sourceRoot, "telemetry.tar")
+	if err := os.WriteFile(telemetryPath, []byte("telemetry snapshot"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	built, err := backup.BuildControl(ctx, backup.ControlBuildConfig{
 		Store: sourceStore, Master: master, InstallationID: "installation", GenerationID: "generation",
 		ReleaseSlot: filepath.Join(sourcePaths.ReleasesRoot, "1.2.3"), WorkRoot: filepath.Join(sourceRoot, "work"),
 		ExpectedUID: os.Geteuid(), PublicKey: publicKey, CreatedAt: time.Unix(10, 0), Random: rand.Reader,
+		TelemetryPath: telemetryPath,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +187,15 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 			ImportExact: func(ctx context.Context, _ string, payload disasterrestore.ImportPayload) (disasterrestore.ImportResult, error) {
 				return disasterrestore.ImportSnapshot(ctx, payload)
 			},
+			RestoreTelemetry: func(_ context.Context, _, archive, volume string) error {
+				if archive == "" || volume != filepath.Join(paths.DataRoot, "telemetry") {
+					return errors.New("unexpected telemetry restore paths")
+				}
+				if _, err := os.Lstat(volume); !errors.Is(err, os.ErrNotExist) {
+					return errors.New("telemetry restore destination was not cleaned")
+				}
+				return os.Mkdir(volume, 0o700)
+			},
 			AcquireLock: func(string, int) (io.Closer, error) { return io.NopCloser(strings.NewReader("")), nil },
 			Services:    services, Now: func() time.Time { return time.Unix(20, 0) },
 			OS: "linux", Architecture: architecture,
@@ -207,6 +221,13 @@ func TestRestorerPublishesVerifiedControlStateAndStartsExactRelease(t *testing.T
 	}
 
 	restorer := makeRestorer(paths, "amd64", services)
+	staleTelemetry := filepath.Join(paths.DataRoot, "telemetry")
+	if err := os.MkdirAll(staleTelemetry, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(staleTelemetry, "partial"), []byte("incomplete"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := restorer.Restore(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +306,7 @@ func restoreReleaseSlot(t *testing.T, root string) (layout.Paths, ed25519.Public
 
 func writeRestoreRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
-	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-error-tracker", "platformd-objectstore"} {
+	for _, name := range []string{"catatonit", "conmon", "crun", "netavark", "platformd-telemetry", "platformd-objectstore"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}

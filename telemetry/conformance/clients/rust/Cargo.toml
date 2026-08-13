@@ -1,0 +1,12 @@
+[package]
+name = "platformd-telemetry-conformance-rust"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+[[bin]]
+name = "platformd-telemetry-conformance-rust"
+path = "main.rs"
+
+[dependencies]
+sentry = { version = "=0.49.1", default-features = false, features = ["reqwest", "rustls"] }

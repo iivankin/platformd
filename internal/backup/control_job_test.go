@@ -19,6 +19,12 @@ type growthStub struct{ err error }
 
 func (growth growthStub) PermitGrowth(context.Context) error { return growth.err }
 
+type controlSnapshotterStub struct{}
+
+func (controlSnapshotterStub) Snapshot(_ context.Context, destination string) error {
+	return os.WriteFile(destination, []byte("telemetry snapshot"), 0o600)
+}
+
 func TestControlJobPublishesAndRecordsOnlyStartedWork(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -57,6 +63,7 @@ func TestControlJobPublishesAndRecordsOnlyStartedWork(t *testing.T) {
 		Store: store, Target: targetApplication, TargetGate: targetGate, Admission: admission.New(), Growth: growthStub{},
 		Master: master, InstallationID: "installation-id", WorkRoot: filepath.Join(root, "work"), ExpectedUID: os.Geteuid(),
 		PublicKey: publicKey, ReleaseSlot: func() (string, error) { return filepath.Join(paths.ReleasesRoot, "1.2.3"), nil },
+		Telemetry:     controlSnapshotterStub{},
 		RemoteFactory: func(remotes3.Config) (ControlRemote, error) { return remote, nil },
 		Now:           func() time.Time { return time.Unix(10, 0) }, Random: bytes.NewReader(bytes.Repeat([]byte{0x44}, 4096)),
 	})

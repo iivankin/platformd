@@ -13,6 +13,7 @@ func (audit livePortForwardAudit) RecordPortForwardTicket(ctx context.Context, r
 	return audit.store.RecordPortForwardTicket(ctx, state.RecordPortForwardTicket{
 		AuditEventID: record.ID, ActorTokenID: record.ActorTokenID, TicketID: record.TicketID,
 		ProjectID: record.ProjectID, ResourceKind: record.ResourceKind, ResourceID: record.ResourceID,
-		Port: record.Port, CreatedAtMillis: record.CreatedAt.UnixMilli(), ExpiresAtMillis: record.ExpiresAt.UnixMilli(),
+		Endpoint: record.Endpoint, Port: record.Port,
+		CreatedAtMillis: record.CreatedAt.UnixMilli(), ExpiresAtMillis: record.ExpiresAt.UnixMilli(),
 	})
 }

@@ -8,14 +8,16 @@ import (
 
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationauth"
+	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/portforward"
 	"github.com/iivankin/platformd/internal/state"
 )
 
 type portForwardRequest struct {
-	Port             int `json:"port"`
-	LocalPort        int `json:"localPort"`
-	ExpiresInSeconds int `json:"expiresInSeconds"`
+	Endpoint         string `json:"endpoint"`
+	Port             int    `json:"port"`
+	LocalPort        int    `json:"localPort"`
+	ExpiresInSeconds int    `json:"expiresInSeconds"`
 }
 
 type portForwardResponse struct {
@@ -24,6 +26,8 @@ type portForwardResponse struct {
 	Project      string                   `json:"project"`
 	Resource     string                   `json:"resource"`
 	ResourceKind string                   `json:"resourceKind"`
+	Endpoint     string                   `json:"endpoint,omitempty"`
+	EndpointHost string                   `json:"endpointHost,omitempty"`
 	Port         int                      `json:"port"`
 	ExpiresAt    string                   `json:"expiresAt"`
 	Instructions portforward.Instructions `json:"instructions"`
@@ -57,7 +61,11 @@ func CreatePortForwardHandler(config PortForwardCreateConfig) (http.Handler, err
 		}
 		localPort := body.LocalPort
 		if localPort == 0 {
-			localPort = body.Port
+			if body.Endpoint == portforward.EndpointErrors {
+				localPort = firewall.ServiceTelemetryPort
+			} else {
+				localPort = body.Port
+			}
 		}
 		if localPort < 1 || localPort > 65535 {
 			writeError(response, http.StatusBadRequest, "invalid_port_forward", "localPort must be from 1 to 65535")
@@ -66,6 +74,7 @@ func CreatePortForwardHandler(config PortForwardCreateConfig) (http.Handler, err
 		input := portforward.CreateInput{
 			Project:         request.PathValue("projectName"),
 			Resource:        request.PathValue("resourceName"),
+			Endpoint:        body.Endpoint,
 			Port:            body.Port,
 			LifetimeSeconds: body.ExpiresInSeconds,
 		}
@@ -96,9 +105,10 @@ func CreatePortForwardHandler(config PortForwardCreateConfig) (http.Handler, err
 		}
 		writeJSON(response, http.StatusCreated, portForwardResponse{
 			ID: grant.ID, Ticket: grant.Ticket, Project: grant.Project, Resource: grant.Resource,
-			ResourceKind: grant.ResourceKind, Port: grant.Port,
+			ResourceKind: grant.ResourceKind, Endpoint: grant.Endpoint,
+			EndpointHost: grant.EndpointHost, Port: grant.Port,
 			ExpiresAt:    grant.ExpiresAt.Format(time.RFC3339),
-			Instructions: portforward.ConnectionInstructions(config.Hostname, grant.Ticket, localPort),
+			Instructions: portforward.ConnectionInstructions(config.Hostname, grant.Ticket, localPort, grant.EndpointHost),
 		})
 	}), nil
 }

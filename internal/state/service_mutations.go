@@ -151,7 +151,6 @@ ORDER BY 1`, input.ID, input.ID)
 			args  []any
 		}{
 			{query: "UPDATE services SET active_deployment_id = NULL WHERE id = ?", args: []any{input.ID}},
-			{query: "DELETE FROM resource_metric_samples WHERE resource_kind = 'service' AND resource_id = ?", args: []any{input.ID}},
 			{query: "DELETE FROM service_volume_mounts WHERE service_id = ?", args: []any{input.ID}},
 			{query: "DELETE FROM volumes WHERE project_id = ? AND service_id = ?", args: []any{input.ProjectID, input.ID}},
 			{query: "DELETE FROM services WHERE id = ? AND project_id = ?", args: []any{input.ID, input.ProjectID}},

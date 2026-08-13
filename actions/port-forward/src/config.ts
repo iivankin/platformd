@@ -10,6 +10,7 @@ export type ActionConfig = {
   token: string;
   project: string;
   resource: string;
+  endpoint: string;
   port: number;
   localPort: number;
   expiresInSeconds: number;
@@ -31,7 +32,14 @@ export function readConfig(
   const token = getInput("token").trim();
   const project = requiredInput(getInput, "project");
   const resource = requiredInput(getInput, "resource");
-  const port = parseInteger(requiredInput(getInput, "port"), "port", 1, 65535);
+  const endpoint = getInput("endpoint").trim();
+  if (endpoint && endpoint !== "errors") {
+    throw new Error("endpoint must be errors when set");
+  }
+  const portInput = getInput("port").trim();
+  const port = endpoint === "errors"
+    ? errorsPort(portInput)
+    : parseInteger(portInput || requiredInput(getInput, "port"), "port", 1, 65535);
   const localPortInput = getInput("local-port").trim();
   const localPort = localPortInput
     ? parseInteger(localPortInput, "local-port", 1, 65535)
@@ -54,6 +62,7 @@ export function readConfig(
     token,
     project,
     resource,
+    endpoint,
     port,
     localPort,
     expiresInSeconds,
@@ -63,6 +72,13 @@ export function readConfig(
     connectionEnv,
     target: resolveTarget(platform, architecture),
   };
+}
+
+function errorsPort(value: string): number {
+  if (value) {
+    throw new Error("port must be omitted when endpoint is errors");
+  }
+  return 9001;
 }
 
 function requiredInput(getInput: GetInput, name: string): string {

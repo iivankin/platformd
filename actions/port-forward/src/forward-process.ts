@@ -8,6 +8,7 @@ export type StartForwardOptions = {
   websocketUrl: string;
   ticket: string;
   localPort: number;
+  httpHost: string;
   workDir: string;
 };
 
@@ -21,13 +22,18 @@ export async function startForward({
   websocketUrl,
   ticket,
   localPort,
+  httpHost,
   workDir,
 }: StartForwardOptions): Promise<StartedForward> {
   const logPath = join(workDir, "platformd-forward.log");
   const logDescriptor = openSync(logPath, "a", 0o600);
   let child: ChildProcess;
   try {
-    child = spawn(binaryPath, ["--url", websocketUrl, "--local-port", String(localPort)], {
+    const commandArguments = ["--url", websocketUrl, "--local-port", String(localPort)];
+    if (httpHost) {
+      commandArguments.push("--http-host", httpHost);
+    }
+    child = spawn(binaryPath, commandArguments, {
       cwd: workDir,
       detached: true,
       env: { ...process.env, PLATFORMD_FORWARD_TICKET: ticket },

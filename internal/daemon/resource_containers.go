@@ -14,9 +14,22 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func (stack *runtimeStack) ResolveResourceAddress(projectID, kind, resourceID string, port int) (string, error) {
+func (stack *runtimeStack) ResolveResourceAddress(projectID, kind, resourceID, endpoint string, port int) (string, error) {
 	if projectID == "" || resourceID == "" || port < 1 || port > 65535 {
 		return "", errors.New("resource address input is invalid")
+	}
+	if endpoint == portforward.EndpointErrors {
+		if kind != "service" || port != firewall.ServiceTelemetryPort {
+			return "", errors.New("errors endpoint requires a service telemetry port")
+		}
+		gateway, err := stack.ServiceTelemetryGateway(projectID)
+		if err != nil {
+			return "", err
+		}
+		return net.JoinHostPort(gateway.String(), strconv.Itoa(port)), nil
+	}
+	if endpoint != "" {
+		return "", errors.New("resource endpoint is invalid")
 	}
 	if kind == "object_store" {
 		return stack.resolveObjectStoreAddress(projectID, port)

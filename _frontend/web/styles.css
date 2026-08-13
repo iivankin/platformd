@@ -127,7 +127,7 @@
   }
 }
 
-.tracker-grid {
+.telemetry-grid {
   background-image:
     linear-gradient(
       color-mix(in oklch, var(--foreground) 5%, transparent) 1px,

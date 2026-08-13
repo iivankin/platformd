@@ -9,6 +9,7 @@ import {
   stringField,
 } from "./http";
 import { stringRecord } from "./project-helpers";
+import { handleServiceTelemetry } from "./service-telemetry";
 import {
   mockDomainOutputs,
   referencedResourceNames,
@@ -90,6 +91,12 @@ const handleService = async (
     state.listeners = withoutRecordKey(state.listeners, serviceID);
     state.logs = withoutRecordKey(state.logs, serviceID);
     state.volumes = withoutRecordKey(state.volumes, serviceID);
+    state.serviceErrors = withoutRecordKey(state.serviceErrors, serviceID);
+    state.metricCharts = withoutRecordKey(state.metricCharts, serviceID);
+    state.serviceTelemetry = withoutRecordKey(
+      state.serviceTelemetry,
+      serviceID
+    );
     const canvas = state.canvases[service.projectId];
     if (canvas) {
       canvas.resources = canvas.resources.filter(
@@ -534,6 +541,13 @@ export const handleServicesAPI = async (
     return undefined;
   }
   return (
+    (await handleServiceTelemetry(
+      request,
+      state,
+      projectID,
+      serviceID,
+      rest
+    )) ??
     (await handleService(request, state, serviceID, rest)) ??
     handleServiceAction(request, state, serviceID, rest) ??
     handleServiceDeploymentAction(request, state, serviceID, rest) ??

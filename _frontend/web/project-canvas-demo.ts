@@ -294,7 +294,6 @@ export const projectCanvasForDemoPreset = (
     })),
     project: {
       ...canvas.project,
-      errorTrackerCount: 0,
       networkGatewayCount: resourceCount(resources, "network_gateway"),
       objectStoreCount: resourceCount(resources, "object_store"),
       postgresCount: resourceCount(resources, "postgres"),

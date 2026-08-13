@@ -46,6 +46,9 @@ secret; a repository variable is fine. Cloudflare Access must bypass `/public/*`
 on that hostname.
 
 Object store tunnels always target the project S3 endpoint on port `9000`.
+Set `endpoint: errors` for a service's Sentry-compatible endpoint. In that
+mode `port` is omitted, the helper preserves the service's virtual HTTP host,
+and the action returns a localhost base URL as `sentry-url` for sentry-cli.
 
 ## Inputs
 
@@ -55,7 +58,8 @@ Object store tunnels always target the project S3 endpoint on port `9000`.
 | `token` | no | | admin API token; when omitted, uses GitHub Actions OIDC |
 | `project` | yes | | target project name |
 | `resource` | yes | | target resource name; platformd detects its kind |
-| `port` | yes | | target TCP port |
+| `endpoint` | no | | `errors` for the target service's Sentry endpoint |
+| `port` | unless endpoint is set | | target TCP port |
 | `local-port` | no | target port | localhost TCP port |
 | `expires-in-seconds` | no | `3600` | ticket lifetime, from 60 to 28800 seconds |
 | `platformd-version` | no | `latest` | exact stable helper version or `latest`; ignored when `binary-path` is set |
@@ -78,6 +82,7 @@ the action itself to a full commit SHA. The `v1` tag is convenient but mutable.
 | `host` | `127.0.0.1` |
 | `port` | selected local port |
 | `expires-at` | ticket expiration time |
+| `sentry-url` | localhost Sentry base URL for `endpoint: errors` |
 
 The ticket is masked in workflow logs and is never exposed as an action output.
 The platformd API currently has no ticket revocation endpoint, so a stopped

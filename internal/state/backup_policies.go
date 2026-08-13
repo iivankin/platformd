@@ -87,8 +87,6 @@ func (store *Store) BackupPolicies(ctx context.Context) ([]BackupPolicy, error) 
 	const query = `
 SELECT 'object_store', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM object_stores
 UNION ALL
-SELECT 'error_tracker', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM error_trackers
-UNION ALL
 SELECT 'postgres', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM managed_postgres
 UNION ALL
 SELECT 'redis', id, backup_target_id, backup_enabled, backup_cron, backup_retention_count FROM managed_redis
@@ -228,8 +226,6 @@ func scanBackupPolicy(scanner backupPolicyScanner) (BackupPolicy, error) {
 
 func backupResourceTable(kind string) (string, error) {
 	switch kind {
-	case "error_tracker":
-		return "error_trackers", nil
 	case "object_store":
 		return "object_stores", nil
 	case "postgres":

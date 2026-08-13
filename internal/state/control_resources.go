@@ -6,12 +6,11 @@ import (
 )
 
 type ControlResourceIDs struct {
-	Images        []string `json:"images"`
-	ObjectStores  []string `json:"objectStores"`
-	ErrorTrackers []string `json:"errorTrackers"`
-	Postgres      []string `json:"postgres"`
-	Redis         []string `json:"redis"`
-	Volumes       []string `json:"volumes"`
+	Images       []string `json:"images"`
+	ObjectStores []string `json:"objectStores"`
+	Postgres     []string `json:"postgres"`
+	Redis        []string `json:"redis"`
+	Volumes      []string `json:"volumes"`
 }
 
 func (store *Store) ControlResources(ctx context.Context) (ControlResourceIDs, error) {
@@ -30,7 +29,6 @@ WHERE r.status = 'active' AND (
   ))
 ) ORDER BY r.id`},
 		{&result.ObjectStores, "SELECT id FROM object_stores ORDER BY id"},
-		{&result.ErrorTrackers, "SELECT id FROM error_trackers ORDER BY id"},
 		{&result.Postgres, "SELECT id FROM managed_postgres ORDER BY id"},
 		{&result.Redis, "SELECT id FROM managed_redis ORDER BY id"},
 		{&result.Volumes, "SELECT id FROM volumes ORDER BY id"},

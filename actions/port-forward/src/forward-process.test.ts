@@ -32,6 +32,7 @@ test("starts, observes, and stops the detached forward process", async (t) => {
     websocketUrl: "wss://admin.example.com/public/api/v1/port-forward",
     ticket: "pft_secret",
     localPort: 15432,
+    httpHost: "",
     workDir,
   });
   pid = forward.child.pid ?? undefined;

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
@@ -34,7 +35,13 @@ type ReadServiceLogsInput struct {
 	ServiceID    string
 	DeploymentID string
 	Contains     string
+	SeverityText string
+	TraceID      string
+	SpanID       string
+	From         time.Time
+	To           time.Time
 	Limit        int
+	Ascending    bool
 }
 
 type ReadResourceLogsInput struct {
@@ -72,7 +79,9 @@ func (application *LogApplication) ReadService(ctx context.Context, identity Ide
 	}
 	return application.reader.Read(ctx, containerlogs.Query{
 		ServiceID: input.ServiceID, DeploymentID: input.DeploymentID,
-		Contains: input.Contains, Limit: input.Limit,
+		Contains: input.Contains, SeverityText: input.SeverityText,
+		TraceID: input.TraceID, SpanID: input.SpanID, From: input.From, To: input.To,
+		Limit: input.Limit, Ascending: input.Ascending,
 	})
 }
 

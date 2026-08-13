@@ -5,6 +5,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/origin"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 	"github.com/iivankin/platformd/internal/volume"
 )
@@ -17,6 +18,8 @@ type liveAutomationRepository struct {
 	volumeFilesystem volume.Filesystem
 	traffic          *trafficmetrics.Registry
 	certificates     *origin.Selector
+	telemetry        *telemetry.ServiceManager
+	telemetryRoutes  *liveServiceTelemetryRepository
 	onCleanupError   func(error)
 }
 
@@ -25,6 +28,7 @@ func (repository liveAutomationRepository) services() liveServiceRepository {
 		store: repository.store, runtime: repository.runtime, domains: repository.domains,
 		listeners: repository.listeners, volumeFilesystem: repository.volumeFilesystem,
 		traffic: repository.traffic, certificates: repository.certificates,
+		telemetry: repository.telemetry, telemetryRoutes: repository.telemetryRoutes,
 		onCleanupError: repository.onCleanupError,
 	}
 }

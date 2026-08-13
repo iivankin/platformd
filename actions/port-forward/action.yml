@@ -22,9 +22,12 @@ inputs:
   resource:
     description: Name of the target service, PostgreSQL, Redis, or object store resource.
     required: true
+  endpoint:
+    description: Virtual endpoint of the target service. Set to errors for Sentry artifact uploads.
+    required: false
   port:
-    description: TCP port exposed by the target resource. Object stores require 9000.
-    required: true
+    description: TCP port exposed by the target resource. Optional for endpoint errors, which always uses 9001.
+    required: false
   local-port:
     description: Localhost TCP port. Defaults to port.
     required: false
@@ -53,6 +56,8 @@ outputs:
     description: Local tunnel port.
   expires-at:
     description: RFC 3339 ticket expiration time.
+  sentry-url:
+    description: Local Sentry base URL when endpoint is errors.
 
 runs:
   using: node24

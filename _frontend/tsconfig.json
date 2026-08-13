@@ -19,7 +19,6 @@
   },
   "include": [
     "build.ts",
-    "dev-error-tracker.ts",
     "dev.ts",
     "mock/**/*.ts",
     "web/**/*.ts",

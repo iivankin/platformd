@@ -168,7 +168,7 @@ func getObjectStore(application *objectstore.Application) http.HandlerFunc {
 
 func updateObjectStorePortForward(application *objectstore.Application) http.HandlerFunc {
 	type requestBody struct {
-		ExpectedUpdatedAt int64                     `json:"expectedUpdatedAt"`
+		ExpectedUpdatedAt int64                      `json:"expectedUpdatedAt"`
 		PortForward       *serviceconfig.PortForward `json:"portForward"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {

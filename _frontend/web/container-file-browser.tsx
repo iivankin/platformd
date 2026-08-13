@@ -12,8 +12,10 @@ import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { ContainerFileTree } from "@/container-file-tree";
+import { cn } from "@/lib/utils";
 
 interface ContainerFileBrowserProperties {
+  className?: string;
   projectID: string;
   resourceID: string;
   resourceKind: ContainerResourceKind;
@@ -48,6 +50,7 @@ const uploadDirectory = (
 };
 
 export const ContainerFileBrowser = ({
+  className,
   projectID,
   resourceID,
   resourceKind,
@@ -224,7 +227,7 @@ export const ContainerFileBrowser = ({
   };
 
   return (
-    <SectionCard className="bg-background">
+    <SectionCard className={cn("bg-background", className)}>
       <header className="flex min-h-11 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
         <FolderTree className="size-4 text-muted-foreground" />
         <div>

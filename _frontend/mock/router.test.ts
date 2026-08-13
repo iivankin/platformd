@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  createServiceMetricChart,
+  createMetricChart,
   createAPIToken,
   createBackupTarget,
-  createErrorTracker,
   configureCloudflareMesh,
   createNetworkGateway,
   createProject,
@@ -22,10 +23,12 @@ import {
   fetchCloudflareMeshCredential,
   fetchCloudflareMeshSettings,
   fetchDiskPressure,
-  fetchErrorTracker,
   fetchIdentity,
   fetchInfrastructureLogs,
   fetchInstallationSettings,
+  fetchMetricCatalog,
+  fetchMetricCharts,
+  fetchMetricQuery,
   fetchManagedPostgres,
   fetchManagedPostgresExtensions,
   fetchManagedPostgresStats,
@@ -51,13 +54,21 @@ import {
   fetchServiceDeployments,
   fetchServiceDomains,
   fetchServiceListeners,
+  fetchServiceTelemetry,
+  fetchServiceMetricCatalog,
+  fetchServiceMetricCharts,
+  fetchServiceMetricQuery,
+  fetchServiceReplayRecording,
+  fetchServiceTrace,
+  fetchServiceTraces,
   fetchVolumes,
   scanManagedRedisKeys,
   setAdminHostname,
   setCloudflareAccessConfiguration,
   setManagedPostgresExtension,
   uploadContainerFile,
-  updateErrorTrackerPublicAccess,
+  updateServiceMetricChart,
+  updateServiceTelemetryPublicAccess,
   queryManagedPostgres,
 } from "../web/api";
 import {
@@ -391,6 +402,19 @@ describe("mock API", () => {
       "postgresql://app_owner:mock-only-postgres-password@postgres-main.storefront.internal:5432/app"
     );
     expect(resolvedEnvironment.REDIS_URL).not.toContain("${{");
+    expect(resolvedEnvironment.SENTRY_DSN).toBe(
+      "http://service-api@errors-api.storefront.internal:9001/1"
+    );
+    expect(resolvedEnvironment.OTEL_EXPORTER_OTLP_ENDPOINT).toBe(
+      "http://otel-api.storefront.internal:4318"
+    );
+    expect(resolvedEnvironment.OTEL_EXPORTER_OTLP_PROTOCOL).toBe(
+      "http/protobuf"
+    );
+    expect(resolvedEnvironment.OTEL_SERVICE_NAME).toBe("api");
+    expect(resolvedEnvironment.OTEL_RESOURCE_ATTRIBUTES).toContain(
+      "service.namespace=storefront"
+    );
 
     const selectedDeployment = await fetchServiceDeployment(
       "project-demo",
@@ -698,45 +722,186 @@ describe("mock API", () => {
     expect(settings.accessTeamDomain).toBe("preview.cloudflareaccess.com");
   });
 
-  test("mock error tracker embeds its console behind the resource route", async () => {
+  test("mock service embeds its error console behind the telemetry route", async () => {
     const state = createMockState("demo");
     const mockFetch = fetcher(state);
-    const tracker = await createErrorTracker(
+    const telemetry = await fetchServiceTelemetry(
       "project-demo",
-      { name: "errors" },
-      mockFetch
-    );
-
-    await expect(
-      fetchErrorTracker("project-demo", tracker.id, undefined, mockFetch)
-    ).resolves.toEqual(tracker);
-    const canvas = await fetchProjectCanvas(
-      "project-demo",
+      "service-api",
       undefined,
       mockFetch
     );
-    expect(canvas.project.errorTrackerCount).toBe(1);
-    expect(canvas.resources).toContainEqual(
-      expect.objectContaining({ id: tracker.id, kind: "error_tracker" })
-    );
 
-    const updated = await updateErrorTrackerPublicAccess(
+    const updated = await updateServiceTelemetryPublicAccess(
       "project-demo",
-      tracker.id,
+      "service-api",
       {
-        expectedUpdatedAt: tracker.updatedAt,
+        expectedUpdatedAt: telemetry.updatedAt,
         publicHostname: "errors.mock.local",
       },
       mockFetch
     );
     const consoleResponse = await mockFetch(
-      `/api/v1/projects/project-demo/error-trackers/${tracker.id}/console/api/v1/tracker`
+      "/api/v1/projects/project-demo/services/service-api/errors/issues?limit=100"
     );
-    expect(await consoleResponse.json()).toMatchObject({
-      name: "errors",
-      publicUrl: "https://errors.mock.local",
-    });
+    const consolePayload = await consoleResponse.json();
+    expect(consolePayload.total).toBeGreaterThan(0);
     expect(updated.publicHostname).toBe("errors.mock.local");
+  });
+
+  test("mock service exposes traces with context and custom metric graphs", async () => {
+    const state = createMockState("demo");
+    const mockFetch = fetcher(state);
+    const [traces, catalog] = await Promise.all([
+      fetchServiceTraces("project-demo", "service-api", undefined, mockFetch),
+      fetchServiceMetricCatalog(
+        "project-demo",
+        "service-api",
+        undefined,
+        mockFetch
+      ),
+    ]);
+    const trace = await fetchServiceTrace(
+      "project-demo",
+      "service-api",
+      traces[0]?.traceId ?? "",
+      undefined,
+      mockFetch
+    );
+    const aiTraces = await fetchServiceTraces(
+      "project-demo",
+      "service-api",
+      undefined,
+      mockFetch,
+      { query: "invoice" }
+    );
+    const aiTrace = await fetchServiceTrace(
+      "project-demo",
+      "service-api",
+      aiTraces[0]?.traceId ?? "",
+      undefined,
+      mockFetch
+    );
+    const replay = await fetchServiceReplayRecording(
+      "project-demo",
+      "service-api",
+      "82818281828142818281828182818281",
+      undefined,
+      mockFetch
+    );
+    const chart = await createServiceMetricChart(
+      "project-demo",
+      "service-api",
+      {
+        legend: "Queue depth",
+        sql: `SELECT bucket AS time, avg(value) AS value FROM metrics WHERE name = '${catalog[0]?.name ?? ""}' GROUP BY bucket`,
+        title: "Queue depth",
+        visualization: "area",
+      },
+      mockFetch
+    );
+    const updatedChart = await updateServiceMetricChart(
+      "project-demo",
+      "service-api",
+      chart.id,
+      {
+        expectedUpdatedAt: chart.updatedAt,
+        legend: "Queue depth",
+        sql: "SELECT bucket AS time, max(value) AS value, attributes['region'] AS series FROM metrics GROUP BY bucket, series",
+        title: "Queue depth by region",
+        visualization: "line",
+      },
+      mockFetch
+    );
+    const [charts, series] = await Promise.all([
+      fetchServiceMetricCharts(
+        "project-demo",
+        "service-api",
+        undefined,
+        mockFetch
+      ),
+      fetchServiceMetricQuery(
+        "project-demo",
+        "service-api",
+        {
+          from: Date.now() - 60_000,
+          sql: updatedChart.sql,
+          step: 10_000,
+          to: Date.now(),
+        },
+        undefined,
+        mockFetch
+      ),
+    ]);
+    expect(trace.spans).toHaveLength(3);
+    expect(aiTraces[0]).toMatchObject({
+      aiAgentRunCount: 1,
+      aiCacheReadTokens: 3180,
+      aiModel: "gpt-5-mini",
+      isAi: true,
+      name: "POST /support/reply",
+    });
+    expect(aiTrace.spans).toHaveLength(6);
+    expect(trace.spans[0]?.span).toMatchObject({
+      replay_id: replay.replayId,
+      user: { id: "customer_1042" },
+    });
+    expect(replay.events.length).toBeGreaterThan(0);
+    expect(charts).toEqual([updatedChart]);
+    expect(series.length).toBeGreaterThan(3);
+    expect(series.length).toBeGreaterThan(0);
+
+    const projectScope = {
+      kind: "project",
+      projectID: "project-demo",
+    } as const;
+    const installationScope = { kind: "installation" } as const;
+    const [projectCatalog, installationCatalog] = await Promise.all([
+      fetchMetricCatalog(projectScope, undefined, mockFetch),
+      fetchMetricCatalog(installationScope, undefined, mockFetch),
+    ]);
+    const [projectChart, installationChart] = await Promise.all([
+      createMetricChart(
+        projectScope,
+        {
+          legend: "Service",
+          sql: "SELECT bucket AS time, avg(value) AS value, service_id AS series FROM metrics GROUP BY bucket, series",
+          title: "Project latency",
+          visualization: "line",
+        },
+        mockFetch
+      ),
+      createMetricChart(
+        installationScope,
+        {
+          legend: "Total",
+          sql: "SELECT bucket AS time, sum(value) AS value FROM metrics GROUP BY bucket",
+          title: "Installation requests",
+          visualization: "area",
+        },
+        mockFetch
+      ),
+    ]);
+    const [projectCharts, installationCharts, projectSeries] =
+      await Promise.all([
+        fetchMetricCharts(projectScope, undefined, mockFetch),
+        fetchMetricCharts(installationScope, undefined, mockFetch),
+        fetchMetricQuery(
+          projectScope,
+          {
+            from: Date.now() - 60_000,
+            sql: projectChart.sql,
+            step: 10_000,
+            to: Date.now(),
+          },
+          undefined,
+          mockFetch
+        ),
+      ]);
+    expect(projectCatalog).toEqual(installationCatalog);
+    expect(projectCharts).toEqual([projectChart]);
+    expect(installationCharts).toEqual([installationChart]);
+    expect(projectSeries.length).toBeGreaterThan(0);
   });
 
   test("deletes a project and all of its mock-owned resources", async () => {
@@ -757,7 +922,9 @@ describe("mock API", () => {
     expect(Object.keys(state.postgres)).toEqual([]);
     expect(Object.keys(state.redis)).toEqual([]);
     expect(Object.keys(state.objectStores)).toEqual([]);
-    expect(Object.keys(state.errorTrackers)).toEqual([]);
+    expect(Object.keys(state.serviceTelemetry)).toEqual([]);
+    expect(Object.keys(state.serviceErrors)).toEqual([]);
+    expect(Object.keys(state.metricCharts)).toEqual([]);
     expect(state.backupPolicies).toHaveLength(0);
   });
 

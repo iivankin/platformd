@@ -9,7 +9,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"testing"
 	"time"
 
 	"github.com/iivankin/platformd/internal/state"
@@ -259,12 +258,3 @@ func checkMemoryPrecondition(exists bool, etag string, precondition ObjectPrecon
 }
 
 func errorsNew(value string) error { return fmt.Errorf("%s", value) }
-
-func requireMemoryStorage(t *testing.T, application *Application) *memoryStorage {
-	t.Helper()
-	storage, ok := application.storage.(*memoryStorage)
-	if !ok {
-		t.Fatal("application does not use memory storage")
-	}
-	return storage
-}

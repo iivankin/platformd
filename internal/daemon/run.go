@@ -33,7 +33,6 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
-	"github.com/iivankin/platformd/internal/errortracker"
 	"github.com/iivankin/platformd/internal/hostmetrics"
 	"github.com/iivankin/platformd/internal/imageupload"
 	"github.com/iivankin/platformd/internal/ingress"
@@ -59,6 +58,7 @@ import (
 	"github.com/iivankin/platformd/internal/singletonlock"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/systemevent"
+	"github.com/iivankin/platformd/internal/telemetry"
 	"github.com/iivankin/platformd/internal/terminalauth"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 	"github.com/iivankin/platformd/internal/version"
@@ -341,16 +341,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		dirtyControl = backup.NewDirtyTracker()
 		store.SetControlCommitObserver(func() { dirtyControl.Mark(time.Now()) })
 		defer store.SetControlCommitObserver(nil)
-		controlJob, err = backup.NewControlJob(backup.ControlJobConfig{
-			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
-			Admission: mutationAdmission, Growth: pressure, Master: key,
-			InstallationID: installation.ID, WorkRoot: paths.BackupWorkRoot, ExpectedUID: 0,
-			PublicKey:   releasePublicKey,
-			ReleaseSlot: func() (string, error) { return filepath.EvalSymlinks(paths.Current) },
-		})
-		if err != nil {
-			return fmt.Errorf("configure control backup job: %w", err)
-		}
 	}
 	if err := runtime.ConfigureManagedPostgres(store, key); err != nil {
 		return fmt.Errorf("configure managed PostgreSQL: %w", err)
@@ -366,8 +356,76 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure project webhooks: %w", err)
 	}
-	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, cloudflareDNS, projectWebhooks); err != nil {
+	telemetryProcess, err := telemetry.StartProcess(ctx, telemetry.ProcessConfig{
+		Binary: filepath.Join(paths.Current, "runtime", "platformd-telemetry"),
+		Volume: filepath.Join(paths.DataRoot, "telemetry"),
+	})
+	if err != nil {
+		return fmt.Errorf("start embedded telemetry: %w", err)
+	}
+	defer func() { returnErr = errors.Join(returnErr, telemetryProcess.Close()) }()
+	if !installation.RecoveryMode {
+		controlJob, err = backup.NewControlJob(backup.ControlJobConfig{
+			Store: store, Target: backupTargets, TargetGate: backupTargetGate,
+			Admission: mutationAdmission, Growth: pressure, Master: key,
+			InstallationID: installation.ID, WorkRoot: paths.BackupWorkRoot, ExpectedUID: 0,
+			PublicKey: releasePublicKey, Telemetry: telemetryProcess,
+			ReleaseSlot: func() (string, error) { return filepath.EvalSymlinks(paths.Current) },
+		})
+		if err != nil {
+			return fmt.Errorf("configure control backup job: %w", err)
+		}
+	}
+	go func() {
+		<-telemetryProcess.Done()
+		if ctx.Err() == nil {
+			if processErr := telemetryProcess.WaitError(); processErr != nil {
+				log.Printf("embedded telemetry stopped: %v", processErr)
+			} else {
+				log.Printf("embedded telemetry stopped unexpectedly")
+			}
+			cancelDaemon()
+		}
+	}()
+	containerLogs := telemetry.NewLogExporter(ctx, "http://"+telemetry.OTLPHTTPAddress)
+	defer containerLogs.Close()
+	telemetryCredentials, err := telemetry.NewCredentials(store, nil, nil)
+	if err != nil {
+		return fmt.Errorf("configure telemetry credentials: %w", err)
+	}
+	telemetryWebhooks, err := telemetry.NewWebhookDispatcher(store, key, func(webhookErr error) {
+		log.Printf("service telemetry webhook: %v", webhookErr)
+	})
+	if err != nil {
+		return fmt.Errorf("configure service telemetry webhooks: %w", err)
+	}
+	defer telemetryWebhooks.Close()
+	serviceTelemetry, err := telemetry.NewServiceManager(
+		telemetryProcess, runtime, telemetryCredentials, telemetryWebhooks.Enqueue,
+	)
+	if err != nil {
+		return fmt.Errorf("configure service telemetry: %w", err)
+	}
+	defer func() { returnErr = errors.Join(returnErr, serviceTelemetry.Close()) }()
+	services, err := store.Services(ctx)
+	if err != nil {
+		return fmt.Errorf("load services for telemetry: %w", err)
+	}
+	for _, service := range services {
+		if err := serviceTelemetry.Ensure(ctx, service); err != nil {
+			return fmt.Errorf("configure telemetry for service %s: %w", service.ID, err)
+		}
+	}
+	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, cloudflareDNS, projectWebhooks, containerLogs); err != nil {
 		return fmt.Errorf("configure service deployments: %w", err)
+	}
+	metricStore, err := telemetry.NewMetricStore(
+		store,
+		"http://"+telemetry.OTLPHTTPAddress,
+		telemetryProcess.Target().String(),
+	)
+	if err != nil {
+		return fmt.Errorf("configure telemetry metric store: %w", err)
 	}
 	if !installation.RecoveryMode {
 		go runImageCacheCleanup(ctx, imageCollector)
@@ -379,7 +437,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	publicNetwork := &publicNetworkReader{proxy: publicTraffic, firewall: runtime.firewall}
 	resourceMetrics, err := resourcemetrics.NewApplication(
-		store, cgroupUsage,
+		metricStore, cgroupUsage,
 		publicNetwork,
 		resourceDiskUsage,
 		hostUsage,
@@ -476,31 +534,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	errorTrackerManager, err := errortracker.NewManager(errortracker.ManagerConfig{
-		Binary:      filepath.Join(paths.Current, "runtime", "platformd-error-tracker"),
-		VolumeRoot:  paths.VolumesRoot,
-		RuntimeRoot: filepath.Join(paths.RuntimeRoot, "error-trackers"),
-		Runtime:     runtime,
-	})
-	if err != nil {
-		return fmt.Errorf("configure error tracker runtime: %w", err)
-	}
-	defer func() { returnErr = errors.Join(returnErr, errorTrackerManager.Close()) }()
-	errorTrackerRepository := &liveErrorTrackerRepository{store: store}
-	errorTrackerApplication, err := errortracker.NewApplication(
-		errorTrackerRepository, errorTrackerManager, certificates.Covers, publicMutationMu,
-	)
-	if err != nil {
-		return err
-	}
-	if !installation.RecoveryMode {
-		trackers, err := store.ErrorTrackers(ctx)
-		if err != nil {
-			return fmt.Errorf("load error trackers: %w", err)
-		}
-		if err := errorTrackerManager.Reconcile(ctx, trackers); err != nil {
-			log.Printf("error tracker startup reconcile: %v", err)
-		}
+	serviceTelemetryRepository := &liveServiceTelemetryRepository{
+		store: store, manager: serviceTelemetry, certificates: certificates,
+		cloudflare: cloudflareDNS, publicMu: publicMutationMu,
+		adminHostname: installation.AdminHostname, master: key,
 	}
 	var disasterRecoveryProgress *recoveryProgress
 	if installation.RecoveryMode {
@@ -509,7 +546,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	restoreService, err := backup.NewResourceRestoreService(backup.ResourceRestoreServiceConfig{
 		Context: ctx, Store: store, Target: backupTargets, TargetGate: backupTargetGate,
 		Admission: mutationAdmission, Master: key,
-		Restorers: resourceRestorers(runtime, store, objectStoreApplication, store, errorTrackerManager,
+		Restorers: resourceRestorers(runtime, store, objectStoreApplication,
 			ordinaryVolumeBackupConfig{Store: store, Root: paths.VolumesRoot}),
 		OnError: func(restoreErr error) { log.Printf("resource restore: %v", restoreErr) },
 		OnSuccess: func(request backup.ResourceRestoreRequest) {
@@ -556,16 +593,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 					return backup.ResourceExport{
 						Reader: export.Reader, Release: export.Release,
 					}, err
-				}),
-				"error_tracker": backup.ResourceExporterFunc(func(exportContext context.Context, resourceID string) (backup.ResourceExport, error) {
-					tracker, err := store.ErrorTracker(exportContext, resourceID)
-					if err != nil {
-						return backup.ResourceExport{}, err
-					}
-					reader, err := volume.OpenLiveBackup(exportContext, paths.VolumesRoot, state.Volume{
-						ID: tracker.VolumeID, ProjectID: tracker.ProjectID,
-					})
-					return backup.ResourceExport{Reader: reader}, err
 				}),
 			},
 		})
@@ -628,8 +655,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	publicErrorTrackerHandler, err := newAvailabilityHandler(
-		errortracker.NewPublicHandler(errorTrackerRepository, errorTrackerManager.Proxy()),
+	publicServiceTelemetryHandler, err := newAvailabilityHandler(
+		telemetry.NewPublicHandler(store, serviceTelemetry),
 		!installation.RecoveryMode,
 	)
 	if err != nil {
@@ -651,7 +678,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	logs := liveLogRepository{store: store, reader: logReader, root: paths.LogsRoot}
+	serviceLogReader, err := telemetry.NewLogReader(telemetryProcess.Target().String())
+	if err != nil {
+		return err
+	}
+	logs := liveLogRepository{
+		store: store, fileReader: logReader, serviceReader: serviceLogReader, root: paths.LogsRoot,
+	}
 	infrastructureLogs := journallogs.NewReader()
 	managedImageCatalog, err := managedimages.New("https://hub.docker.com", &http.Client{
 		Timeout: managedImageCatalogTimeout,
@@ -670,7 +703,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	managedStats, err := managedstats.NewApplication(store, managedstats.Config{
+	managedStats, err := managedstats.NewApplication(metricStore, managedstats.Config{
 		Postgres: runtime.ManagedPostgresCollectorStats,
 		Redis:    runtime.ManagedRedisStats,
 		ObjectStore: func(statsContext context.Context, storeID string) (objectstore.ObjectStoreStats, error) {
@@ -749,6 +782,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	automationRepository := liveAutomationRepository{
 		store: store, runtime: runtime, domains: domains, listeners: liveServiceListeners,
 		volumeFilesystem: volumeFilesystem, traffic: publicTraffic, certificates: certificates,
+		telemetry: serviceTelemetry, telemetryRoutes: serviceTelemetryRepository,
 		onCleanupError: volumeCleanupError,
 	}
 	projectAutomation, err := automation.NewProjectApplication(automationRepository, nil)
@@ -868,6 +902,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		ObjectStores: objectStoreApplication, Managed: managedResourceAutomation, Versions: databaseVersions,
 		Volumes:    volumeAutomation,
 		ServerExec: serverExecAutomation, PortForwards: portForwards, Admission: mutationAdmission,
+		Telemetry: serviceTelemetry,
 	}, mcp.Config{
 		Version: version.Version, Repository: automationRepository, Projects: projectAutomation,
 		Services: serviceAutomation, Domains: domainAutomation,
@@ -879,7 +914,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		ManagedStats:    managedStatsAutomation,
 		NetworkGateways: networkGatewayAutomation, Backups: backupAutomation, Versions: databaseVersions,
 		ServerExec: serverExecAutomation, Volumes: volumeAutomation, PortForwards: portForwards,
-		Admission: mutationAdmission,
+		Admission: mutationAdmission, Telemetry: serviceTelemetryRepository,
 	}, authenticator, portForwards, imageUploads.Handler(), !installation.RecoveryMode)
 	if err != nil {
 		return err
@@ -904,7 +939,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithProjects(liveProjectRepository{
 			store: store, runtime: runtime, backups: backupResources, domains: domains,
 			objectStores: objectStoreRepository, objectStoreData: objectStoreApplication,
-			errorTrackers: errorTrackerManager, errorTrackerRoutes: errorTrackerRepository,
+			serviceTelemetry: serviceTelemetry, telemetryRoutes: serviceTelemetryRepository,
 			listeners: liveServiceListeners, gateways: liveNetworkGateways, traffic: publicTraffic,
 			onCleanupError: func(cleanupErr error) { log.Printf("project cleanup: %v", cleanupErr) },
 		}),
@@ -913,7 +948,9 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			store: store, runtime: runtime, domains: domains, volumeFilesystem: volumeFilesystem,
 			onCleanupError: volumeCleanupError, listeners: liveServiceListeners, traffic: publicTraffic,
 			certificates: certificates,
+			telemetry:    serviceTelemetry, telemetryRoutes: serviceTelemetryRepository,
 		}),
+		server.WithServiceTelemetry(serviceTelemetryRepository),
 		server.WithServiceEnvironment(resourceVariableResolver{store: store, master: key}),
 		server.WithVolumes(volumeApplication),
 		server.WithServiceImageCredentials(imageCredentials),
@@ -928,7 +965,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithManagedPostgres(managedPostgresApplication),
 		server.WithManagedStats(managedStats),
 		server.WithObjectStores(objectStoreApplication),
-		server.WithErrorTrackers(errorTrackerApplication, errorTrackerManager.Proxy()),
 		server.WithInstallationSettings(installationSettings, cancelDaemon),
 		server.WithCloudflareDNS(cloudflareDNS),
 		server.WithCloudflareMesh(cloudflareMesh),
@@ -961,17 +997,17 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	adminHandler := adminHostnameHandler(adminAccessHandler, publicHandler)
 	ingressRouter, err := ingress.New(ingress.Config{
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
-		ObjectStoreHandler:  publicObjectStoreHandler,
-		ErrorTrackerHandler: publicErrorTrackerHandler,
-		Backends:            runtime,
-		Traffic:             publicTraffic,
+		ObjectStoreHandler:      publicObjectStoreHandler,
+		ServiceTelemetryHandler: publicServiceTelemetryHandler,
+		Backends:                runtime,
+		Traffic:                 publicTraffic,
 	})
 	if err != nil {
 		return fmt.Errorf("configure HTTPS ingress: %w", err)
 	}
 	domains.router = ingressRouter
 	objectStoreRepository.router = ingressRouter
-	errorTrackerRepository.router = ingressRouter
+	serviceTelemetryRepository.router = ingressRouter
 	if err := domains.reload(ctx); err != nil {
 		return fmt.Errorf("load application domains: %w", err)
 	}
@@ -980,6 +1016,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		log.Printf("service domain DNS reconcile warning: %v", err)
 	}
 	cancelDNSReconcile()
+	serviceTelemetryDNSContext, cancelServiceTelemetryDNS := context.WithTimeout(ctx, 30*time.Second)
+	if err := serviceTelemetryRepository.reconcileDNS(serviceTelemetryDNSContext); err != nil {
+		log.Printf("service telemetry DNS reconcile warning: %v", err)
+	}
+	cancelServiceTelemetryDNS()
 	if !installation.RecoveryMode {
 		if err := runtime.ConfigurePreviews(
 			ctx, store, key, cloudflareDNS, domains, certificates.Covers,
@@ -990,8 +1031,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
 			return fmt.Errorf("load object store domains: %w", err)
 		}
-		if err := errorTrackerRepository.reloadPublicRoutes(ctx); err != nil {
-			return fmt.Errorf("load error tracker domains: %w", err)
+		if err := serviceTelemetryRepository.reloadPublicRoutes(ctx); err != nil {
+			return fmt.Errorf("load service telemetry domains: %w", err)
 		}
 	}
 	var disasterRecovery recoveryAttempt
@@ -1001,7 +1042,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			Admission: mutationAdmission, Master: key,
 			Installation: installation, Runtime: runtime,
 			ObjectStore: objectStoreApplication, Progress: disasterRecoveryProgress,
-			ErrorTracker: errorTrackerManager,
 		})
 		if err != nil {
 			return fmt.Errorf("configure automatic disaster recovery: %w", err)

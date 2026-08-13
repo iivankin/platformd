@@ -52,16 +52,35 @@ class MockEnvironmentResolution {
     const project = this.state.projects.find(
       (candidate) => candidate.id === service.projectId
     );
+    const projectName = project?.name ?? "";
+    const deploymentID = service.activeDeploymentId ?? "";
+    const resourceAttributes = [
+      `service.namespace=${projectName}`,
+      "deployment.environment.name=production",
+      ...(deploymentID ? [`deployment.id=${deploymentID}`] : []),
+    ].join(",");
+    const telemetryDefaults: Record<string, string> = {
+      OTEL_EXPORTER_OTLP_ENDPOINT: `http://otel-${service.name}.${projectName}.internal:4318`,
+      OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+      OTEL_RESOURCE_ATTRIBUTES: resourceAttributes,
+      OTEL_SERVICE_NAME: service.name,
+      SENTRY_DSN: `http://${service.id}@errors-${service.name}.${projectName}.internal:9001/1`,
+    };
+    for (const [name, value] of Object.entries(telemetryDefaults)) {
+      if (!(name in result)) {
+        result[name] = value;
+      }
+    }
     result.PLATFORMD_ENVIRONMENT = "production";
     result.PLATFORMD_PROJECT_ID = service.projectId;
-    result.PLATFORMD_PROJECT_NAME = project?.name ?? "";
+    result.PLATFORMD_PROJECT_NAME = projectName;
     result.PLATFORMD_SERVICE_ID = service.id;
     result.PLATFORMD_SERVICE_NAME = service.name;
-    result.PLATFORMD_PRIVATE_DOMAIN = `${service.name}.${project?.name ?? ""}.internal`;
+    result.PLATFORMD_PRIVATE_DOMAIN = `${service.name}.${projectName}.internal`;
     const publicURLs = (this.state.domains[service.id] ?? [])
       .map((domain) => `https://${domain.hostname}`)
       .toSorted();
-    result.PLATFORMD_DEPLOYMENT_ID = service.activeDeploymentId ?? "";
+    result.PLATFORMD_DEPLOYMENT_ID = deploymentID;
     result.PLATFORMD_PUBLIC_URLS = publicURLs.join(",");
     return result;
   }

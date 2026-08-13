@@ -203,7 +203,7 @@ func restoreArchiveEntry(root string, header *tar.Header, source io.Reader) erro
 		if err := os.MkdirAll(destination, mode); err != nil {
 			return err
 		}
-	case tar.TypeReg, tar.TypeRegA:
+	case tar.TypeReg, 0: // A NUL type flag is the legacy tar encoding for a regular file.
 		if header.Size < 0 {
 			return errors.New("volume backup contains a negative file size")
 		}

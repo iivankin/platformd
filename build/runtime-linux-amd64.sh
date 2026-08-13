@@ -121,10 +121,10 @@ netavark_source="$work_dir/src/netavark-$netavark_revision"
 )
 
 (
-	cd "$repository_root/error-tracker"
+	cd "$repository_root/telemetry"
 	export RUSTFLAGS="--remap-path-prefix=$repository_root=."
 	cargo build --locked --release -j "$jobs"
-	install -m 0755 target/release/error-tracker "$output_dir/platformd-error-tracker"
+	install -m 0755 target/release/platformd-telemetry "$output_dir/platformd-telemetry"
 )
 
 catatonit_source="$work_dir/src/catatonit-$catatonit_revision"
@@ -143,5 +143,5 @@ done
 
 "$repository_root/build/verify-elf.sh" "$output_dir/crun" "$output_dir/conmon" \
 	"$output_dir/netavark" "$output_dir/catatonit" "$output_dir/platformd-objectstore" \
-	"$output_dir/platformd-error-tracker"
+	"$output_dir/platformd-telemetry"
 sha256sum "$output_dir"/*

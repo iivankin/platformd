@@ -412,63 +412,201 @@ func migrateSchemaVersionNine(ctx context.Context, database *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("begin SQLite schema migration 9 to 10: %w", err)
 	}
-	if _, err := transaction.ExecContext(ctx, `CREATE TABLE error_trackers (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-  name TEXT NOT NULL,
-  volume_id TEXT NOT NULL UNIQUE,
-  public_hostname TEXT UNIQUE,
-  backup_enabled INTEGER NOT NULL DEFAULT 0 CHECK (backup_enabled IN (0, 1)),
-  backup_cron TEXT,
-  backup_retention_count INTEGER NOT NULL DEFAULT 7 CHECK (backup_retention_count BETWEEN 1 AND 100),
-  backup_target_id TEXT REFERENCES backup_targets(id) ON DELETE RESTRICT,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  UNIQUE (project_id, name)
-) STRICT`); err != nil {
-		return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
-	}
-	var backupsExist int
-	if err := transaction.QueryRowContext(ctx,
-		`SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'backups'`,
-	).Scan(&backupsExist); err != nil {
-		return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
-	}
-	statements := []string{}
-	if backupsExist == 1 {
-		statements = append(statements,
-			`DROP INDEX IF EXISTS backups_resource_started_idx`,
-			`DROP INDEX IF EXISTS backups_scheduled_occurrence_idx`,
-			`ALTER TABLE backups RENAME TO backups_v9`,
-			`CREATE TABLE backups (
-  id TEXT PRIMARY KEY,
-  target_id TEXT NOT NULL,
-  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('control', 'error_tracker', 'image', 'object_store', 'postgres', 'redis', 'volume')),
-  resource_id TEXT NOT NULL,
-  scheduled_occurrence INTEGER,
-  generation_id TEXT,
-  status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed', 'interrupted')),
-  size_bytes INTEGER CHECK (size_bytes >= 0),
-  error_code TEXT,
-  error_message TEXT,
-  started_at INTEGER NOT NULL,
-  finished_at INTEGER
-) STRICT`,
-			`INSERT INTO backups SELECT * FROM backups_v9`,
-			`DROP TABLE backups_v9`,
-			`CREATE INDEX backups_resource_started_idx ON backups(target_id, resource_kind, resource_id, started_at DESC)`,
-			`CREATE UNIQUE INDEX backups_scheduled_occurrence_idx ON backups(resource_kind, resource_id, scheduled_occurrence) WHERE scheduled_occurrence IS NOT NULL`)
-	}
-	for _, statement := range statements {
+	for _, statement := range []string{
+		`ALTER TABLE services ADD COLUMN sentry_public_hostname TEXT`,
+		`CREATE UNIQUE INDEX services_sentry_public_hostname_idx ON services(sentry_public_hostname) WHERE sentry_public_hostname IS NOT NULL`,
+		`DROP TABLE resource_metric_samples`,
+		`DROP TABLE aggregate_metric_samples`,
+		`DROP TABLE managed_stat_samples`,
+		`PRAGMA user_version = 10`,
+	} {
 		if _, err := transaction.ExecContext(ctx, statement); err != nil {
 			return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
 		}
 	}
-	if _, err := transaction.ExecContext(ctx, `PRAGMA user_version = 10`); err != nil {
-		return errors.Join(fmt.Errorf("migrate SQLite schema 9 to 10: %w", err), transaction.Rollback())
-	}
 	if err := transaction.Commit(); err != nil {
 		return fmt.Errorf("commit SQLite schema migration 9 to 10: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionTen(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 10 to 11: %w", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE service_telemetry_credentials (
+  service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
+  artifact_token_sha256 BLOB NOT NULL CHECK (length(artifact_token_sha256) = 32),
+  updated_at INTEGER NOT NULL
+) STRICT`,
+		`CREATE TABLE service_telemetry_webhooks (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  url TEXT NOT NULL,
+  event_types_json TEXT NOT NULL CHECK (json_valid(event_types_json) AND json_type(event_types_json) = 'array'),
+  secret_encrypted BLOB NOT NULL,
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT`,
+		`CREATE INDEX service_telemetry_webhooks_service_idx ON service_telemetry_webhooks(service_id, created_at, id)`,
+		`PRAGMA user_version = 11`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 10 to 11: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 10 to 11: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionEleven(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 11 to 12: %w", err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE service_metric_charts (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  metric_name TEXT NOT NULL CHECK (length(metric_name) BETWEEN 1 AND 256),
+  aggregation TEXT NOT NULL CHECK (aggregation IN ('avg', 'sum', 'min', 'max')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT`,
+		`CREATE INDEX service_metric_charts_service_idx ON service_metric_charts(service_id, created_at, id)`,
+		`PRAGMA user_version = 12`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 11 to 12: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 11 to 12: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionTwelve(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 12 to 13: %w", err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE service_metric_charts RENAME TO service_metric_charts_v12`,
+		`CREATE TABLE service_metric_charts (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  metric_name TEXT NOT NULL CHECK (length(metric_name) BETWEEN 1 AND 256),
+  operation TEXT NOT NULL CHECK (operation IN ('average', 'count', 'increase', 'last', 'maximum', 'minimum', 'p50', 'p90', 'p95', 'p99', 'rate', 'sum')),
+  filters_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(filters_json) AND json_type(filters_json) = 'array' AND json_array_length(filters_json) <= 5),
+  group_by TEXT CHECK (group_by IS NULL OR length(group_by) BETWEEN 1 AND 128),
+  series_limit INTEGER NOT NULL DEFAULT 5 CHECK (series_limit BETWEEN 1 AND 20),
+  visualization TEXT NOT NULL DEFAULT 'area' CHECK (visualization IN ('line', 'area', 'bar', 'value')),
+  legend TEXT NOT NULL DEFAULT '' CHECK (length(legend) <= 80),
+  unit TEXT CHECK (unit IS NULL OR length(unit) <= 32),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT`,
+		`INSERT INTO service_metric_charts(
+  id, service_id, title, metric_name, operation, filters_json, group_by,
+  series_limit, visualization, legend, unit, created_at, updated_at
+)
+SELECT id, service_id, title, metric_name,
+  CASE aggregation WHEN 'avg' THEN 'average' WHEN 'min' THEN 'minimum' WHEN 'max' THEN 'maximum' ELSE 'sum' END,
+  '[]', NULL, 5, 'area', '', NULL, created_at, updated_at
+FROM service_metric_charts_v12`,
+		`DROP TABLE service_metric_charts_v12`,
+		`CREATE INDEX service_metric_charts_service_idx ON service_metric_charts(service_id, created_at, id)`,
+		`PRAGMA user_version = 13`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 12 to 13: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 12 to 13: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionThirteen(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 13 to 14: %w", err)
+	}
+	for _, statement := range []string{
+		`DROP TABLE service_metric_charts`,
+		`CREATE TABLE service_metric_charts (
+  id TEXT PRIMARY KEY,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  sql TEXT NOT NULL CHECK (length(sql) BETWEEN 1 AND 16384),
+  visualization TEXT NOT NULL DEFAULT 'area' CHECK (visualization IN ('line', 'area', 'bar', 'value')),
+  legend TEXT NOT NULL DEFAULT '' CHECK (length(legend) <= 80),
+  unit TEXT CHECK (unit IS NULL OR length(unit) <= 32),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT`,
+		`CREATE INDEX service_metric_charts_service_idx ON service_metric_charts(service_id, created_at, id)`,
+		`PRAGMA user_version = 14`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 13 to 14: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 13 to 14: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionFourteen(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 14 to 15: %w", err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE service_metric_charts RENAME TO service_metric_charts_v14`,
+		`CREATE TABLE metric_charts (
+  id TEXT PRIMARY KEY,
+  scope_kind TEXT NOT NULL CHECK (scope_kind IN ('installation', 'project', 'service')),
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  service_id TEXT REFERENCES services(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  sql TEXT NOT NULL CHECK (length(sql) BETWEEN 1 AND 16384),
+  visualization TEXT NOT NULL DEFAULT 'area' CHECK (visualization IN ('line', 'area', 'bar', 'value')),
+  legend TEXT NOT NULL DEFAULT '' CHECK (length(legend) <= 80),
+  unit TEXT CHECK (unit IS NULL OR length(unit) <= 32),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (
+    (scope_kind = 'installation' AND project_id IS NULL AND service_id IS NULL) OR
+    (scope_kind = 'project' AND project_id IS NOT NULL AND service_id IS NULL) OR
+    (scope_kind = 'service' AND project_id IS NULL AND service_id IS NOT NULL)
+  )
+) STRICT`,
+		`INSERT INTO metric_charts(
+  id, scope_kind, project_id, service_id, title, sql, visualization, legend, unit, created_at, updated_at
+)
+SELECT id, 'service', NULL, service_id, title, sql, visualization, legend, unit, created_at, updated_at
+FROM service_metric_charts_v14`,
+		`DROP TABLE service_metric_charts_v14`,
+		`CREATE INDEX metric_charts_scope_idx ON metric_charts(scope_kind, project_id, service_id, created_at, id)`,
+		`PRAGMA user_version = 15`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 14 to 15: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 14 to 15: %w", err)
 	}
 	return nil
 }

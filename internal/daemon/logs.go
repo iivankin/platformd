@@ -13,14 +13,16 @@ import (
 	"github.com/iivankin/platformd/internal/buildlog"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/telemetry"
 )
 
 const objectStoreLogLimit = state.MaximumAuditPageSize
 
 type liveLogRepository struct {
-	store  *state.Store
-	reader *containerlogs.Reader
-	root   string
+	store         *state.Store
+	fileReader    *containerlogs.Reader
+	serviceReader *telemetry.LogReader
+	root          string
 }
 
 func (repository liveLogRepository) BuildLog(ctx context.Context, projectID, serviceID, deploymentID string) (string, error) {
@@ -63,25 +65,21 @@ func (repository liveLogRepository) DownloadServiceLogs(
 	if _, err := repository.store.Service(ctx, projectID, query.ServiceID); err != nil {
 		return containerlogs.DownloadResult{}, err
 	}
-	return repository.reader.Download(ctx, query, destination)
+	return repository.serviceReader.Download(ctx, query, destination)
 }
 
-func (repository liveLogRepository) ServiceLogs(ctx context.Context, projectID, serviceID, deploymentID, contains string, limit int) (containerlogs.Window, error) {
-	if _, err := repository.store.Service(ctx, projectID, serviceID); err != nil {
+func (repository liveLogRepository) ServiceLogs(ctx context.Context, projectID string, query containerlogs.Query) (containerlogs.Window, error) {
+	if _, err := repository.store.Service(ctx, projectID, query.ServiceID); err != nil {
 		return containerlogs.Window{}, err
 	}
-	return repository.reader.Read(ctx, containerlogs.Query{
-		ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains, Limit: limit,
-	})
+	return repository.serviceReader.Read(ctx, query)
 }
 
-func (repository liveLogRepository) ServiceLogRevision(ctx context.Context, projectID, serviceID, deploymentID, contains string) (string, error) {
-	if _, err := repository.store.Service(ctx, projectID, serviceID); err != nil {
+func (repository liveLogRepository) ServiceLogRevision(ctx context.Context, projectID string, query containerlogs.Query) (string, error) {
+	if _, err := repository.store.Service(ctx, projectID, query.ServiceID); err != nil {
 		return "", err
 	}
-	return repository.reader.Revision(ctx, containerlogs.Query{
-		ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains,
-	})
+	return repository.serviceReader.Revision(ctx, query)
 }
 
 func (repository liveLogRepository) ResourceLogs(ctx context.Context, projectID, kind, resourceID, deploymentID, contains string, limit int) (containerlogs.Window, error) {
@@ -102,7 +100,7 @@ func (repository liveLogRepository) ResourceLogs(ctx context.Context, projectID,
 	default:
 		return containerlogs.Window{}, fmt.Errorf("%w: unsupported resource log kind", containerlogs.ErrInvalidQuery)
 	}
-	return repository.reader.ReadRuntime(ctx, containerlogs.RuntimeQuery{
+	return repository.fileReader.ReadRuntime(ctx, containerlogs.RuntimeQuery{
 		Kind: kind, ResourceID: resourceID, DeploymentID: deploymentID, Contains: contains, Limit: limit,
 	})
 }

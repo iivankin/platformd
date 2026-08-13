@@ -24,6 +24,7 @@ type logRepository struct {
 	resourceKind  string
 	downloadCalls int
 	downloadQuery containerlogs.DownloadQuery
+	serviceQuery  containerlogs.Query
 }
 
 func (repository *logRepository) BuildLog(_ context.Context, projectID, serviceID, deploymentID string) (string, error) {
@@ -42,8 +43,9 @@ func (repository *logRepository) DownloadServiceLogs(_ context.Context, _ string
 	return containerlogs.DownloadResult{Bytes: int64(written)}, err
 }
 
-func (repository *logRepository) ServiceLogs(context.Context, string, string, string, string, int) (containerlogs.Window, error) {
+func (repository *logRepository) ServiceLogs(_ context.Context, _ string, query containerlogs.Query) (containerlogs.Window, error) {
 	repository.calls++
+	repository.serviceQuery = query
 	return containerlogs.Window{Records: []containerlogs.Record{{
 		Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "ready",
 		DeploymentID: "deployment", AttemptID: "attempt",
@@ -86,7 +88,7 @@ func TestAdminServiceLogDownloadRequiresAccessAndBoundsRange(t *testing.T) {
 	}
 }
 
-func (*logRepository) ServiceLogRevision(context.Context, string, string, string, string) (string, error) {
+func (*logRepository) ServiceLogRevision(context.Context, string, containerlogs.Query) (string, error) {
 	return "revision", nil
 }
 
@@ -121,8 +123,10 @@ func TestAdminServiceLogsRequireAccessAndReturnStructuredWindow(t *testing.T) {
 
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stream":"stdout"`) || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.calls != 1 {
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready&from=1000&to=2000", ""))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stream":"stdout"`) || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.calls != 1 ||
+		repository.serviceQuery.ServiceID != "service" || repository.serviceQuery.Contains != "ready" || repository.serviceQuery.Limit != 20 ||
+		repository.serviceQuery.From.UnixMilli() != 1000 || repository.serviceQuery.To.UnixMilli() != 2000 {
 		t.Fatalf("authenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.calls)
 	}
 }

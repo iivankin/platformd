@@ -45,6 +45,7 @@ export async function run(): Promise<void> {
       websocketUrl: grant.websocketUrl,
       ticket: grant.ticket,
       localPort: config.localPort,
+      httpHost: grant.endpointHost,
       workDir,
     });
     pid = forward.child.pid ?? undefined;
@@ -57,6 +58,11 @@ export async function run(): Promise<void> {
     core.setOutput("host", "127.0.0.1");
     core.setOutput("port", String(config.localPort));
     core.setOutput("expires-at", grant.expiresAt);
+    if (grant.endpointHost) {
+      const sentryUrl = `http://127.0.0.1:${config.localPort}`;
+      core.setOutput("sentry-url", sentryUrl);
+      core.info(`Sentry endpoint available at ${sentryUrl}`);
+    }
     if (connection) {
       core.exportVariable(connection.environment, connection.url);
       core.info(`Exported tunneled connection as ${connection.environment}`);
