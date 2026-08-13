@@ -8,7 +8,6 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -53,7 +52,7 @@ func startServiceGateway(address netip.Addr, proxy *sentry.Proxy) (*serviceGatew
 		Handler: gateway, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second,
 		MaxHeaderBytes: 64 << 10,
 	}
-	sentryListener, err := net.Listen("tcp", net.JoinHostPort(address.String(), strconv.Itoa(firewall.ServiceTelemetryPort)))
+	sentryListener, err := listenServiceGateway(address, firewall.ServiceTelemetryPort)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +60,7 @@ func startServiceGateway(address netip.Addr, proxy *sentry.Proxy) (*serviceGatew
 		Handler: http.HandlerFunc(gateway.serveOTLP), ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 120 * time.Second,
 		MaxHeaderBytes: 64 << 10,
 	}
-	otlpListener, err := net.Listen("tcp", net.JoinHostPort(address.String(), strconv.Itoa(firewall.OTLPHTTPPort)))
+	otlpListener, err := listenServiceGateway(address, firewall.OTLPHTTPPort)
 	if err != nil {
 		_ = sentryListener.Close()
 		return nil, err
