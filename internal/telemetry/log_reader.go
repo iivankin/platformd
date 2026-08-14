@@ -3,6 +3,7 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +25,10 @@ const (
 )
 
 var telemetryLogID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+var telemetryStoredLogID = regexp.MustCompile(`^[[:xdigit:]]{8}(?:-[[:xdigit:]]{4}){3}-[[:xdigit:]]{12}$`)
 var telemetryTraceID = regexp.MustCompile(`^[[:xdigit:]]{32}$`)
 var telemetrySpanID = regexp.MustCompile(`^[[:xdigit:]]{16}$`)
+var telemetryLogFieldPath = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$`)
 
 type LogReader struct {
 	endpoint string
@@ -33,31 +36,38 @@ type LogReader struct {
 }
 
 type telemetryLogRecord struct {
-	ID             string `json:"id"`
-	TimeUnixNano   uint64 `json:"timeUnixNano"`
-	Stream         string `json:"stream"`
-	Text           string `json:"text"`
-	Partial        bool   `json:"partial"`
-	DeploymentID   string `json:"deploymentId"`
-	AttemptID      string `json:"attemptId"`
-	TraceID        string `json:"traceId"`
-	SpanID         string `json:"spanId"`
-	SeverityText   string `json:"severityText"`
-	SeverityNumber int32  `json:"severityNumber"`
+	ID             string  `json:"id"`
+	TimeUnixNano   uint64  `json:"timeUnixNano"`
+	Stream         string  `json:"stream"`
+	Text           string  `json:"text"`
+	Partial        bool    `json:"partial"`
+	DeploymentID   string  `json:"deploymentId"`
+	AttemptID      string  `json:"attemptId"`
+	TraceID        string  `json:"traceId"`
+	SpanID         string  `json:"spanId"`
+	SeverityText   string  `json:"severityText"`
+	SeverityNumber int32   `json:"severityNumber"`
+	BodyJSON       *string `json:"bodyJson"`
+	Phase          string  `json:"phase"`
 }
 
 type telemetryLogPage struct {
 	Records          []telemetryLogRecord `json:"records"`
 	Truncated        bool                 `json:"truncated"`
-	Revision         string               `json:"revision"`
 	NextTimeUnixNano *uint64              `json:"nextTimeUnixNano"`
 	NextID           *string              `json:"nextId"`
+}
+
+type telemetryLogCursor struct {
+	TimeUnixNano uint64 `json:"t"`
+	ID           string `json:"i"`
 }
 
 type telemetryLogRequest struct {
 	serviceID         string
 	deploymentID      string
 	contains          string
+	fieldFilters      []containerlogs.FieldFilter
 	severityText      string
 	traceID           string
 	spanID            string
@@ -83,14 +93,19 @@ func (reader *LogReader) Read(ctx context.Context, query containerlogs.Query) (c
 	if err := validateTelemetryLogQuery(query); err != nil {
 		return containerlogs.Window{}, err
 	}
+	cursor, err := decodeTelemetryLogCursor(query.Cursor)
+	if err != nil {
+		return containerlogs.Window{}, err
+	}
 	limit := query.Limit
 	if limit == 0 {
 		limit = containerlogs.DefaultLimit
 	}
 	page, err := reader.page(ctx, telemetryLogRequest{
 		serviceID: query.ServiceID, deploymentID: query.DeploymentID,
-		contains: query.Contains, severityText: query.SeverityText,
+		contains: query.Contains, fieldFilters: query.FieldFilters, severityText: query.SeverityText,
 		traceID: strings.ToLower(query.TraceID), spanID: strings.ToLower(query.SpanID),
+		afterTimeUnixNano: cursorTime(cursor), afterID: cursorID(cursor),
 		from: optionalTime(query.From), to: optionalTime(query.To),
 		limit: limit, ascending: query.Ascending,
 	})
@@ -101,24 +116,61 @@ func (reader *LogReader) Read(ctx context.Context, query containerlogs.Query) (c
 	if err != nil {
 		return containerlogs.Window{}, err
 	}
-	return containerlogs.Window{Records: records, Truncated: page.Truncated}, nil
+	window := containerlogs.Window{Records: records, Truncated: page.Truncated}
+	if page.Truncated {
+		if page.NextTimeUnixNano == nil || *page.NextTimeUnixNano == 0 || page.NextID == nil || !telemetryStoredLogID.MatchString(*page.NextID) {
+			return containerlogs.Window{}, errors.New("telemetry log page omitted its continuation cursor")
+		}
+		window.NextCursor = encodeTelemetryLogCursor(telemetryLogCursor{
+			TimeUnixNano: *page.NextTimeUnixNano,
+			ID:           *page.NextID,
+		})
+	}
+	return window, nil
 }
 
-func (reader *LogReader) Revision(ctx context.Context, query containerlogs.Query) (string, error) {
-	query.Limit = 1
-	if err := validateTelemetryLogQuery(query); err != nil {
-		return "", err
+func decodeTelemetryLogCursor(value string) (*telemetryLogCursor, error) {
+	if value == "" {
+		return nil, nil
 	}
-	page, err := reader.page(ctx, telemetryLogRequest{
-		serviceID: query.ServiceID, deploymentID: query.DeploymentID,
-		contains: query.Contains, severityText: query.SeverityText,
-		traceID: query.TraceID, spanID: query.SpanID,
-		from: optionalTime(query.From), to: optionalTime(query.To), limit: 1,
-	})
+	if len(value) > 512 {
+		return nil, fmt.Errorf("%w: invalid telemetry log cursor", containerlogs.ErrInvalidQuery)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(value)
 	if err != nil {
-		return "", err
+		return nil, fmt.Errorf("%w: invalid telemetry log cursor", containerlogs.ErrInvalidQuery)
 	}
-	return page.Revision, nil
+	var cursor telemetryLogCursor
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&cursor); err != nil || cursor.TimeUnixNano == 0 || !telemetryStoredLogID.MatchString(cursor.ID) {
+		return nil, fmt.Errorf("%w: invalid telemetry log cursor", containerlogs.ErrInvalidQuery)
+	}
+	if decoder.Decode(&struct{}{}) != io.EOF {
+		return nil, fmt.Errorf("%w: invalid telemetry log cursor", containerlogs.ErrInvalidQuery)
+	}
+	return &cursor, nil
+}
+
+func encodeTelemetryLogCursor(cursor telemetryLogCursor) string {
+	// Cursor IDs are validated as URL-safe telemetry IDs, so this fixed JSON
+	// shape cannot require additional string escaping.
+	payload := []byte(fmt.Sprintf(`{"t":%d,"i":"%s"}`, cursor.TimeUnixNano, cursor.ID))
+	return base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func cursorTime(cursor *telemetryLogCursor) *uint64 {
+	if cursor == nil {
+		return nil
+	}
+	return &cursor.TimeUnixNano
+}
+
+func cursorID(cursor *telemetryLogCursor) string {
+	if cursor == nil {
+		return ""
+	}
+	return cursor.ID
 }
 
 func (reader *LogReader) Download(
@@ -210,6 +262,13 @@ func (reader *LogReader) page(ctx context.Context, input telemetryLogRequest) (t
 	if input.contains != "" {
 		query.Set("contains", input.contains)
 	}
+	if len(input.fieldFilters) > 0 {
+		encoded, err := json.Marshal(input.fieldFilters)
+		if err != nil {
+			return telemetryLogPage{}, fmt.Errorf("encode telemetry log field filters: %w", err)
+		}
+		query.Set("fieldFilters", string(encoded))
+	}
 	if input.severityText != "" {
 		query.Set("severityText", input.severityText)
 	}
@@ -258,6 +317,7 @@ func validateTelemetryLogQuery(query containerlogs.Query) error {
 		(query.DeploymentID != "" && !telemetryLogID.MatchString(query.DeploymentID)) ||
 		len(query.Contains) > containerlogs.MaximumContainsBytes || bytes.IndexByte([]byte(query.Contains), 0) >= 0 ||
 		len(query.SeverityText) > 64 || bytes.IndexByte([]byte(query.SeverityText), 0) >= 0 ||
+		!validTelemetryLogFieldFilters(query.FieldFilters) ||
 		(query.TraceID != "" && !telemetryTraceID.MatchString(query.TraceID)) ||
 		(query.SpanID != "" && !telemetrySpanID.MatchString(query.SpanID)) ||
 		(!query.From.IsZero() && !query.To.IsZero() && query.To.Before(query.From)) ||
@@ -265,6 +325,32 @@ func validateTelemetryLogQuery(query containerlogs.Query) error {
 		return fmt.Errorf("%w: invalid telemetry log query", containerlogs.ErrInvalidQuery)
 	}
 	return nil
+}
+
+func validTelemetryLogFieldFilters(filters []containerlogs.FieldFilter) bool {
+	if len(filters) > containerlogs.MaximumFieldFilters {
+		return false
+	}
+	for _, filter := range filters {
+		if len(filter.Path) > 256 || !telemetryLogFieldPath.MatchString(filter.Path) ||
+			len(filter.Value) > 512 || strings.IndexByte(filter.Value, 0) >= 0 {
+			return false
+		}
+		switch filter.Operator {
+		case "equals":
+		case "contains":
+			if filter.Value == "" {
+				return false
+			}
+		case "exists":
+			if filter.Value != "" {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func optionalTime(value time.Time) *time.Time {
@@ -294,12 +380,18 @@ func publicLogRecord(stored telemetryLogRecord) (containerlogs.Record, error) {
 	if stream == "" {
 		stream = "otel"
 	}
-	return containerlogs.Record{
+	record := containerlogs.Record{
 		Timestamp: time.Unix(0, int64(stored.TimeUnixNano)).UTC(), Stream: stream, Text: stored.Text,
 		DeploymentID: stored.DeploymentID, AttemptID: stored.AttemptID, Partial: stored.Partial,
 		TraceID: stored.TraceID, SpanID: stored.SpanID, SeverityText: stored.SeverityText,
-		SeverityNumber: stored.SeverityNumber,
-	}, nil
+		SeverityNumber: stored.SeverityNumber, Phase: stored.Phase,
+	}
+	if stored.BodyJSON != nil {
+		if err := json.Unmarshal([]byte(*stored.BodyJSON), &record.Fields); err != nil {
+			return containerlogs.Record{}, fmt.Errorf("decode structured telemetry log body: %w", err)
+		}
+	}
+	return record, nil
 }
 
 var errTelemetryLogDownloadLimit = errors.New("telemetry log download byte limit reached")

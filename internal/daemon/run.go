@@ -28,7 +28,6 @@ import (
 	"github.com/iivankin/platformd/internal/cloudflaremesh"
 	"github.com/iivankin/platformd/internal/containerconsole"
 	"github.com/iivankin/platformd/internal/containerfiles"
-	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
@@ -188,7 +187,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		{ID: "images", Path: paths.ImagesRoot},
 		{ID: "image_uploads", Path: paths.ImageUploadsRoot},
 		{ID: "object_storage", Path: paths.ObjectsRoot},
-		{ID: "logs", Path: paths.LogsRoot},
 		{ID: "backup_work", Path: paths.BackupWorkRoot},
 		{ID: "cloudflare_mesh", Path: paths.CloudflareMeshRoot},
 		{ID: "postgres_extensions", Path: paths.PostgresExtensionRoot},
@@ -274,22 +272,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			log.Printf("disk pressure monitor stopped: %v", err)
 		}
 	}()
-	logCleaner, err := containerlogs.NewCleaner(containerlogs.CleanerConfig{
-		Root: paths.LogsRoot, Retention: containerLogRetention, BudgetBytes: containerLogBudgetBytes,
-	})
-	if err != nil {
-		return err
-	}
-	logCleanupContext, cancelLogCleanup := context.WithCancel(ctx)
-	logCleanupDone := make(chan struct{})
-	defer func() {
-		cancelLogCleanup()
-		<-logCleanupDone
-	}()
-	go func() {
-		defer close(logCleanupDone)
-		runContainerLogCleanup(logCleanupContext, logCleaner, runtime.engine.ActiveLogPaths)
-	}()
 	releasePublicKey, err := releaseconfig.PublicKey()
 	if err != nil {
 		return err
@@ -315,7 +297,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	cloudflareMeshRuntime, err := cloudflaremesh.ProductionRuntime(cloudflaremesh.ProductionRuntimeConfig{
 		Engine: runtime.engine, Network: runtime.cloudflareMeshNetwork, BuildNetwork: runtime.buildNetwork.Name,
-		StateRoot: paths.CloudflareMeshRoot, GeneratedRoot: paths.GeneratedRoot, LogRoot: paths.LogsRoot,
+		StateRoot: paths.CloudflareMeshRoot, GeneratedRoot: paths.GeneratedRoot,
 		CgroupParent: filepath.Join(cgroups.WorkloadRoot(), "cloudflare-mesh"),
 		StartupError: runtime.cloudflareMeshNetworkError,
 	})
@@ -341,12 +323,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		dirtyControl = backup.NewDirtyTracker()
 		store.SetControlCommitObserver(func() { dirtyControl.Mark(time.Now()) })
 		defer store.SetControlCommitObserver(nil)
-	}
-	if err := runtime.ConfigureManagedPostgres(store, key); err != nil {
-		return fmt.Errorf("configure managed PostgreSQL: %w", err)
-	}
-	if err := runtime.ConfigureManagedRedis(store, key); err != nil {
-		return fmt.Errorf("configure managed Redis: %w", err)
 	}
 	projectWebhooks, err := projectwebhook.New(projectwebhook.Config{
 		Context: ctx,
@@ -389,6 +365,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}()
 	containerLogs := telemetry.NewLogExporter(ctx, "http://"+telemetry.OTLPHTTPAddress)
 	defer containerLogs.Close()
+	if err := runtime.ConfigureManagedPostgres(store, key, containerLogs); err != nil {
+		return fmt.Errorf("configure managed PostgreSQL: %w", err)
+	}
+	if err := runtime.ConfigureManagedRedis(store, key, containerLogs); err != nil {
+		return fmt.Errorf("configure managed Redis: %w", err)
+	}
 	telemetryCredentials, err := telemetry.NewCredentials(store, nil, nil)
 	if err != nil {
 		return fmt.Errorf("configure telemetry credentials: %w", err)
@@ -426,9 +408,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	)
 	if err != nil {
 		return fmt.Errorf("configure telemetry metric store: %w", err)
-	}
-	if !installation.RecoveryMode {
-		go runImageCacheCleanup(ctx, imageCollector)
 	}
 	publicTraffic := trafficmetrics.NewRegistry()
 	hostUsage, err := hostmetrics.NewProduction()
@@ -674,16 +653,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	apiTokens := liveAPITokenRepository{store: store, verifier: tokenVerifier}
-	logReader, err := containerlogs.NewReader(paths.LogsRoot)
-	if err != nil {
-		return err
-	}
 	serviceLogReader, err := telemetry.NewLogReader(telemetryProcess.Target().String())
 	if err != nil {
 		return err
 	}
 	logs := liveLogRepository{
-		store: store, fileReader: logReader, serviceReader: serviceLogReader, root: paths.LogsRoot,
+		store: store, telemetryReader: serviceLogReader,
 	}
 	infrastructureLogs := journallogs.NewReader()
 	managedImageCatalog, err := managedimages.New("https://hub.docker.com", &http.Client{
@@ -817,7 +792,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
-	logAutomation, err := automation.NewLogApplication(store, logReader, logs)
+	logAutomation, err := automation.NewLogApplication(store, serviceLogReader, logs)
 	if err != nil {
 		return err
 	}
@@ -830,10 +805,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	diskPressureAutomation, err := automation.NewDiskPressureApplication(capacity, capacity)
-	if err != nil {
-		return err
-	}
-	imageGCAutomation, err := automation.NewImageGCApplication(imageCollector)
 	if err != nil {
 		return err
 	}
@@ -883,7 +854,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		Context: ctx, Store: store, Engine: runtime.engine, Runtime: runtime, Growth: pressure,
 		Verifier: oidcVerifier, PublicHostname: installation.AdminHostname,
 		UploadRoot: paths.ImageUploadsRoot, ImageRoot: paths.ImagesRoot,
-		OnError: func(uploadErr error) { log.Printf("image upload: %v", uploadErr) },
+		OnError:    func(uploadErr error) { log.Printf("image upload: %v", uploadErr) },
+		OnComplete: imageCollector.requestCleanup,
 	})
 	if err != nil {
 		return err
@@ -907,7 +879,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		Version: version.Version, Repository: automationRepository, Projects: projectAutomation,
 		Services: serviceAutomation, Domains: domainAutomation,
 		Logs: logAutomation, Usage: usageAutomation, InfrastructureLogs: infrastructureLogAutomation,
-		DiskPressure: diskPressureAutomation, ImageGC: imageGCAutomation, Audit: auditAutomation,
+		DiskPressure: diskPressureAutomation, Audit: auditAutomation,
 		Images: managedImageCatalog, Redis: redisAutomation,
 		Postgres: postgresAutomation, ObjectStores: objectStoreAutomation,
 		Managed: managedResourceAutomation, ManagedDeployments: managedDeploymentAutomation,
@@ -958,7 +930,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithServiceListeners(serviceListeners),
 		server.WithNetworkGateways(networkGateways),
 		server.WithAPITokens(apiTokens),
-		server.WithLogs(installation.AdminHostname, logs),
+		server.WithLogs(logs),
 		server.WithAudit(store),
 		server.WithManagedImages(managedImageCatalog),
 		server.WithManagedRedis(managedRedisApplication),
@@ -980,7 +952,6 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			serverTerminalIdleTimeout, serverTerminalAbsoluteLifetime,
 		),
 		server.WithDiskPressure(capacity),
-		server.WithImageGarbageCollector(imageCollector),
 		server.WithResourceUsage(resourceMetrics),
 		server.WithInfrastructureLogs(infrastructureLogs),
 		server.WithAdmission(mutationAdmission),
@@ -1023,11 +994,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	cancelServiceTelemetryDNS()
 	if !installation.RecoveryMode {
 		if err := runtime.ConfigurePreviews(
-			ctx, store, key, cloudflareDNS, domains, certificates.Covers,
+			ctx, store, key, cloudflareDNS, domains, certificates.Covers, containerLogs,
 		); err != nil {
 			return fmt.Errorf("configure image previews: %w", err)
 		}
 		imageCollector.setArchiveCollector(newImageArchiveGarbageCollector(store, imageUploads, runtime))
+		go runImageCacheCleanup(ctx, imageCollector)
 		if err := objectStoreRepository.reloadPublicRoutes(ctx); err != nil {
 			return fmt.Errorf("load object store domains: %w", err)
 		}

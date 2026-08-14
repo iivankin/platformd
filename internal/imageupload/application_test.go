@@ -201,10 +201,14 @@ func TestParallelPartsAndOverlap(t *testing.T) {
 	second.Header.Set("Upload-Offset", "2")
 	second.Header.Set("Upload-Length", "10")
 	second.Header.Set("Upload-SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	second.Header.Set("Upload-Commit-Message", base64.RawURLEncoding.EncodeToString([]byte("Fix checkout race")))
 	secondResponse := httptest.NewRecorder()
 	application.Handler().ServeHTTP(secondResponse, second)
 	if secondResponse.Code != http.StatusAccepted || secondResponse.Header().Get("Upload-Offset") != "2" {
 		t.Fatalf("non-zero first part response = %d %s", secondResponse.Code, secondResponse.Body.String())
+	}
+	if store.upload.Identity.CommitMessage != "Fix checkout race" {
+		t.Fatalf("commit message = %q", store.upload.Identity.CommitMessage)
 	}
 
 	first := httptest.NewRequest(http.MethodPost, endpoint, bytes.NewBufferString("ab"))

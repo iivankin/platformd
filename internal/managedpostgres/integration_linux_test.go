@@ -380,7 +380,6 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 	}
 	extensionBuilder, err := postgresextension.New(postgresextension.Config{
 		Engine: extensionEngine, Growth: allowGrowthGate{}, CacheRoot: paths.PostgresExtensionRoot,
-		LogRoot: paths.LogsRoot, LogSizeBytes: 1 << 20, LogMaxFiles: 2,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -396,8 +395,7 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 				DNSSearch: "integration.internal", CgroupParent: filepath.Join(tree.WorkloadRoot(), resource.ID),
 			}, nil
 		},
-		VolumeRoot: paths.VolumesRoot, LogRoot: paths.LogsRoot,
-		LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+		VolumeRoot: paths.VolumesRoot, ContainerLogs: postgresTestLogSink{},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -408,12 +406,7 @@ func testOfficialPostgresProfile(t *testing.T, profile postgresIntegrationProfil
 		_ = controller.Stop(cleanupContext, resource.ID)
 	})
 	if err := controller.Start(ctx, resource.ID); err != nil {
-		logs, _ := filepath.Glob(filepath.Join(paths.LogsRoot, "postgres", resource.ID, "*.log"))
-		var logContent []byte
-		if len(logs) != 0 {
-			logContent, _ = os.ReadFile(logs[len(logs)-1])
-		}
-		t.Fatalf("start managed PostgreSQL: %v\n%s", err, logContent)
+		t.Fatalf("start managed PostgreSQL: %v", err)
 	}
 	result, err := controller.Query(ctx, resource.ID, `
 CREATE TABLE people(id bigint PRIMARY KEY, name text NOT NULL);
@@ -455,12 +448,7 @@ FROM pg_roles WHERE rolname = current_user`)
 		if err := controller.ChangeExtension(ctx, resource.ID, postgresextension.VectorName, true, func(value string) {
 			progress = append(progress, value)
 		}); err != nil {
-			buildLogs, _ := filepath.Glob(filepath.Join(paths.LogsRoot, "postgres-extension-builds", "*.log"))
-			var logContent []byte
-			if len(buildLogs) != 0 {
-				logContent, _ = os.ReadFile(buildLogs[len(buildLogs)-1])
-			}
-			t.Fatalf("install pgvector: %v progress=%v\n%s", err, progress, logContent)
+			t.Fatalf("install pgvector: %v progress=%v", err, progress)
 		}
 		result, err = controller.Query(ctx, resource.ID, `
 CREATE TABLE embeddings(id bigint PRIMARY KEY, embedding vector(3));

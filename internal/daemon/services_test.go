@@ -19,7 +19,6 @@ type fakeServiceRuntime struct {
 	trackRetry  []bool
 	failures    []error
 	deleted     []string
-	logsDeleted []string
 }
 
 func (runtime *fakeServiceRuntime) DeployService(_ context.Context, _ string, force bool) error {
@@ -36,15 +35,8 @@ func (*fakeServiceRuntime) RestartServiceDeployment(context.Context, string, str
 	return nil
 }
 
-func (*fakeServiceRuntime) DeleteServiceDeploymentLogs(string, string) error { return nil }
-
 func (runtime *fakeServiceRuntime) DeleteService(_ context.Context, service state.ServiceDesired) error {
 	runtime.deleted = append(runtime.deleted, service.ID)
-	return nil
-}
-
-func (runtime *fakeServiceRuntime) DeleteServiceLogs(serviceID string) error {
-	runtime.logsDeleted = append(runtime.logsDeleted, serviceID)
 	return nil
 }
 
@@ -138,8 +130,8 @@ func TestLiveServiceRepositoryReconcilesMutationsAndPropagatesExplicitRedeployFa
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.deleted) != 1 || runtime.deleted[0] != created.ID || len(runtime.logsDeleted) != 1 {
-		t.Fatalf("delete runtime calls = services %v logs %v", runtime.deleted, runtime.logsDeleted)
+	if len(runtime.deleted) != 1 || runtime.deleted[0] != created.ID {
+		t.Fatalf("delete runtime calls = services %v", runtime.deleted)
 	}
 	if _, exists := traffic.Snapshot()[created.ID]; exists {
 		t.Fatal("deleted service traffic counters were retained")

@@ -106,6 +106,7 @@ pub(crate) struct LogQuery {
     pub service_id: String,
     pub deployment_id: Option<String>,
     pub contains: Option<String>,
+    pub field_filters: Vec<LogFieldFilter>,
     pub severity_text: Option<String>,
     pub trace_id: Option<String>,
     pub span_id: Option<String>,
@@ -115,6 +116,23 @@ pub(crate) struct LogQuery {
     pub after_id: Option<String>,
     pub limit: usize,
     pub ascending: bool,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct LogFieldFilter {
+    pub path: String,
+    pub operator: LogFieldOperator,
+    #[serde(default)]
+    pub value: String,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum LogFieldOperator {
+    Equals,
+    Contains,
+    Exists,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -138,6 +156,10 @@ pub(crate) struct LogRecord {
     pub severity_number: i32,
     #[serde(alias = "severity_text")]
     pub severity_text: String,
+    #[serde(alias = "body_json")]
+    pub body_json: Option<String>,
+    #[serde(default)]
+    pub phase: String,
 }
 
 #[derive(Serialize)]
@@ -145,7 +167,6 @@ pub(crate) struct LogRecord {
 pub(crate) struct LogPage {
     pub records: Vec<LogRecord>,
     pub truncated: bool,
-    pub revision: String,
     pub next_time_unix_nano: Option<u64>,
     pub next_id: Option<String>,
 }
@@ -581,7 +602,7 @@ impl Store {
     pub(crate) async fn metric_samples(
         &self,
         scope_kind: String,
-        scope_id: Option<String>,
+        scope_ids: Vec<String>,
         from_unix_nano: u64,
         to_unix_nano: u64,
     ) -> Result<Vec<Value>> {
@@ -597,14 +618,25 @@ impl Store {
                 format!("time_unix_nano BETWEEN {from_unix_nano} AND {to_unix_nano}"),
                 "field != ''".into(),
             ];
-            if let Some(scope_id) = scope_id {
-                clauses.push(format!("scope_id = {}", chdb_string(&scope_id)));
+            if !scope_ids.is_empty() {
+                let ids = scope_ids
+                    .iter()
+                    .map(|scope_id| chdb_string(scope_id))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                clauses.push(format!("scope_id IN ({ids})"));
             }
             let query = format!(
                 "SELECT scope_kind, scope_id, time_unix_nano, \
-                 toJSONString(mapFromArrays(groupArray(field), groupArray(if(value_int IS NOT NULL, toString(value_int), toString(value_double))))) AS values, \
-                 toJSONString(mapFromArrays(groupArray(field), groupArray(if(value_int IS NOT NULL, 'int', 'double')))) AS value_types, \
-                 toJSONString(mapFromArrays(groupArray(field), groupArray(attributes))) AS attributes \
+                 mapFromArrays(groupArray(field), groupArray(multiIf(\
+                   arrayExists((key, value) -> key = 'platformd.value.type' AND value = 'bool', attribute_keys, attribute_values), \
+                     concat('b:', if(value_int IS NOT NULL, toString(value_int), toString(value_double))), \
+                   value_int IS NOT NULL, concat('i:', toString(value_int)), \
+                   concat('f:', toString(value_double))))) AS values, \
+                 mapFilter((field_name, field_attributes) -> field_attributes != '{{}}', \
+                   mapFromArrays(groupArray(field), groupArray(toJSONString(mapFilter(\
+                     (key, value) -> startsWith(key, 'platformd.dimension.'), \
+                     mapFromArrays(attribute_keys, attribute_values)))))) AS attributes \
                  FROM {ANALYTICS_DATABASE}.metrics WHERE {} \
                  GROUP BY scope_kind, scope_id, time_unix_nano ORDER BY time_unix_nano, scope_id",
                 clauses.join(" AND ")
@@ -647,10 +679,12 @@ impl Store {
             }
             if let Some(contains) = request.contains.as_deref() {
                 clauses.push(format!(
-                    "position(message, {}) > 0",
+                    "(positionCaseInsensitiveUTF8(message, {0}) > 0 OR \
+                     positionCaseInsensitiveUTF8(ifNull(body_json, ''), {0}) > 0)",
                     chdb_string(contains)
                 ));
             }
+            clauses.extend(request.field_filters.iter().map(log_field_clause));
             if let Some(severity_text) = request.severity_text.as_deref() {
                 clauses.push(format!(
                     "severity_text = {}",
@@ -673,15 +707,17 @@ impl Store {
                 request.after_time_unix_nano,
                 request.after_id.as_deref(),
             ) {
+                let comparison = if request.ascending { ">" } else { "<" };
                 clauses.push(format!(
-                    "(time_unix_nano > {time} OR (time_unix_nano = {time} AND toString(id) > {}))",
+                    "(time_unix_nano {comparison} {time} OR (time_unix_nano = {time} AND toString(id) {comparison} {}))",
                     chdb_string(id)
                 ));
             }
             let direction = if request.ascending { "ASC" } else { "DESC" };
             let query = format!(
                 "SELECT toString(id) AS id, time_unix_nano, stream, leftUTF8(message, 65536) AS text, partial, \
-                 deployment_id, attempt_id, trace_id, span_id, severity_number, severity_text \
+                 deployment_id, attempt_id, trace_id, span_id, severity_number, severity_text, body_json, \
+                 if(JSON_VALUE(scope, '$.name') = 'platformd.before_deploy', 'before_deploy', '') AS phase \
                  FROM {ANALYTICS_DATABASE}.logs WHERE {} \
                  ORDER BY time_unix_nano {direction}, id {direction} LIMIT {}",
                 clauses.join(" AND "),
@@ -706,11 +742,6 @@ impl Store {
                     .collect::<Result<Vec<_>>>()?;
                 let truncated = records.len() > request.limit;
                 records.truncate(request.limit);
-                let revision = records
-                    .iter()
-                    .max_by_key(|record| (record.time_unix_nano, record.id.as_str()))
-                    .map(|record| format!("{}:{}", record.time_unix_nano, record.id))
-                    .unwrap_or_default();
                 let cursor = records.last().cloned();
                 if !request.ascending {
                     records.reverse();
@@ -718,7 +749,6 @@ impl Store {
                 Ok(LogPage {
                     records,
                     truncated,
-                    revision,
                     next_time_unix_nano: cursor.as_ref().map(|record| record.time_unix_nano),
                     next_id: cursor.map(|record| record.id),
                 })
@@ -1085,6 +1115,18 @@ impl Store {
             .lock()
             .map_err(|_| Error::Storage("chDB session lock is poisoned".into()))?;
         operation(&analytics)
+    }
+}
+
+fn log_field_clause(filter: &LogFieldFilter) -> String {
+    let path = chdb_string(&format!("$.{}", filter.path));
+    let value = chdb_string(&filter.value);
+    match filter.operator {
+        LogFieldOperator::Equals => format!("JSON_VALUE(body_json, {path}) = {value}"),
+        LogFieldOperator::Contains => format!(
+            "positionCaseInsensitiveUTF8(ifNull(JSON_VALUE(body_json, {path}), ''), {value}) > 0"
+        ),
+        LogFieldOperator::Exists => format!("JSON_EXISTS(body_json, {path}) = 1"),
     }
 }
 
@@ -2035,6 +2077,8 @@ mod tests {
                         "trace_id": "0123456789abcdef0123456789abcdef",
                         "span_id": "0123456789abcdef",
                         "severity_number": 17, "severity_text": "ERROR",
+                        "body_json": "{\"caller\":\"server.go:42\",\"http\":{\"route\":\"/checkout\"},\"request_id\":\"req-1\"}",
+                        "scope": "{\"name\":\"platformd.before_deploy\"}",
                     }),
                 ],
             )
@@ -2046,6 +2090,7 @@ mod tests {
                 service_id: "service".into(),
                 deployment_id: Some("deployment".into()),
                 contains: None,
+                field_filters: vec![],
                 severity_text: None,
                 trace_id: None,
                 span_id: None,
@@ -2063,14 +2108,53 @@ mod tests {
         assert!(page.records[0].partial);
         assert_eq!(page.records[0].stream, "stderr");
         assert_eq!(page.records[0].severity_number, 17);
-        assert!(page.revision.starts_with(&format!("{second_timestamp}:")));
+        assert_eq!(page.records[0].phase, "before_deploy");
         assert_eq!(page.next_time_unix_nano, Some(second_timestamp));
+
+        let older = store
+            .log_records(LogQuery {
+                service_id: "service".into(),
+                deployment_id: Some("deployment".into()),
+                contains: None,
+                field_filters: vec![],
+                severity_text: None,
+                trace_id: None,
+                span_id: None,
+                from_unix_nano: None,
+                to_unix_nano: None,
+                after_time_unix_nano: page.next_time_unix_nano,
+                after_id: page.next_id,
+                limit: 1,
+                ascending: false,
+            })
+            .await
+            .unwrap();
+        assert!(!older.truncated);
+        assert_eq!(older.records.len(), 1);
+        assert_eq!(older.records[0].text, "starting");
 
         let filtered = store
             .log_records(LogQuery {
                 service_id: "service".into(),
                 deployment_id: None,
-                contains: Some("readiness".into()),
+                contains: Some("SERVER.GO:42".into()),
+                field_filters: vec![
+                    LogFieldFilter {
+                        path: "caller".into(),
+                        operator: LogFieldOperator::Equals,
+                        value: "server.go:42".into(),
+                    },
+                    LogFieldFilter {
+                        path: "http.route".into(),
+                        operator: LogFieldOperator::Contains,
+                        value: "CHECKOUT".into(),
+                    },
+                    LogFieldFilter {
+                        path: "request_id".into(),
+                        operator: LogFieldOperator::Exists,
+                        value: String::new(),
+                    },
+                ],
                 severity_text: Some("ERROR".into()),
                 trace_id: Some("0123456789abcdef0123456789abcdef".into()),
                 span_id: Some("0123456789abcdef".into()),
@@ -2085,6 +2169,12 @@ mod tests {
             .unwrap();
         assert_eq!(filtered.records.len(), 1);
         assert_eq!(filtered.records[0].severity_text, "ERROR");
+        assert!(
+            filtered.records[0]
+                .body_json
+                .as_deref()
+                .is_some_and(|body| body.contains("server.go:42"))
+        );
         assert_eq!(
             filtered.records[0].trace_id,
             "0123456789abcdef0123456789abcdef"
@@ -2166,6 +2256,7 @@ mod tests {
                 service_id: "app".into(),
                 deployment_id: None,
                 contains: None,
+                field_filters: vec![],
                 severity_text: None,
                 trace_id: None,
                 span_id: None,
@@ -2244,6 +2335,7 @@ mod tests {
                     service_id: "removed".into(),
                     deployment_id: None,
                     contains: None,
+                    field_filters: vec![],
                     severity_text: None,
                     trace_id: None,
                     span_id: None,
@@ -2289,9 +2381,11 @@ mod tests {
                     "field": "MemoryBytes",
                     "name": "platformd.resource.memory_bytes", "description": "", "unit": "By",
                     "kind": "gauge", "start_time_unix_nano": 0, "time_unix_nano": timestamp,
-                    "value_int": 42, "value_double": null, "count": null, "sum": null,
+                    "value_int": 1, "value_double": null, "count": null, "sum": null,
                     "min": null, "max": null, "aggregation_temporality": 0,
                     "is_monotonic": false, "flags": 0,
+                    "attribute_keys": ["platformd.field", "platformd.value.type", "platformd.dimension.name", "region"],
+                    "attribute_values": ["MemoryBytes", "bool", "worker-1", "eu-west"],
                     "attributes": "[{\"key\":\"platformd.field\",\"value\":{\"stringValue\":\"MemoryBytes\"}}]",
                     "exemplars": "[]", "point": "{}", "resource": "{}", "scope": "{}",
                     "metric": "{}", "received_at_unix_nano": timestamp
@@ -2302,15 +2396,19 @@ mod tests {
         let samples = store
             .metric_samples(
                 "resource_service".into(),
-                Some("service-1".into()),
+                vec!["service-1".into()],
                 timestamp - 1,
                 timestamp + 1,
             )
             .await
             .unwrap();
         assert_eq!(samples.len(), 1);
-        let values: Value = serde_json::from_str(samples[0]["values"].as_str().unwrap()).unwrap();
-        assert_eq!(values["MemoryBytes"], "42");
+        assert_eq!(samples[0]["values"]["MemoryBytes"], "b:1");
+        let field_attributes: Value =
+            serde_json::from_str(samples[0]["attributes"]["MemoryBytes"].as_str().unwrap())
+                .unwrap();
+        assert_eq!(field_attributes["platformd.dimension.name"], "worker-1");
+        assert_eq!(field_attributes.as_object().unwrap().len(), 1);
     }
 
     #[tokio::test]

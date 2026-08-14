@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -208,6 +207,10 @@ func (fakeContainerLogSink) ContainerWriter(_, _, _, _, _ string) io.WriteCloser
 	return nopWriteCloser{Writer: io.Discard}
 }
 
+func (fakeContainerLogSink) BeforeDeployWriter(_, _, _, _, _ string) io.WriteCloser {
+	return nopWriteCloser{Writer: io.Discard}
+}
+
 type nopWriteCloser struct{ io.Writer }
 
 func (nopWriteCloser) Close() error { return nil }
@@ -290,7 +293,7 @@ func TestAutomaticRemoteImageUpdateWaitsForMinimumReleaseAge(t *testing.T) {
 		Placement: func(state.ServiceDesired) (Placement, error) {
 			return Placement{NetworkName: "project-network", Gateway: netip.MustParseAddr("10.80.0.1")}, nil
 		},
-		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "volumes"),
 		ContainerLogs: fakeContainerLogSink{}, Now: func() time.Time { return now },
 		NewID: func() (string, error) { return "poll", nil },
 	})
@@ -361,7 +364,6 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	identifierIndex := 0
 	identifiers := []string{"deployment-1", "poll-noop", "deployment-2", "blocked-deployment"}
 	clockIndex := 0
-	logRoot := filepath.Join(t.TempDir(), "logs")
 	controller, err := New(Config{
 		Store: store, Engine: engine, Publisher: publisher, Growth: allowGrowth, Admission: admission.New(),
 		Placement: func(state.ServiceDesired) (Placement, error) {
@@ -370,7 +372,7 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
 			}, nil
 		},
-		LogRoot: logRoot, VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "volumes"),
 		ContainerLogs: fakeContainerLogSink{},
 		Now: func() time.Time {
 			clockIndex++
@@ -409,10 +411,6 @@ func TestStopFirstDeploymentPublishesCandidateAndRestoresOldOnFailure(t *testing
 	if len(store.deployments) != 1 {
 		t.Fatalf("unchanged image poll created deployment history: %+v", store.deployments)
 	}
-	if _, err := os.Stat(filepath.Join(logRoot, "services", "service", "poll-noop")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unchanged image poll left build logs: %v", err)
-	}
-
 	store.service.Snapshot.Environment = map[string]string{"REVISION": "2"}
 	probeFails = true
 	err = controller.Deploy(context.Background(), "service", false)
@@ -464,7 +462,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	identifierIndex := 0
 	first, err := New(Config{
 		Store: store, Engine: firstEngine, Publisher: firstPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
-		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "volumes"),
 		ContainerLogs: fakeContainerLogSink{}, HTTPClient: httpClient,
 		NewID: func() (string, error) {
 			value := identifiers[identifierIndex]
@@ -484,7 +482,7 @@ func TestRestoreRecreatesExactActiveDeploymentWithoutChangingPointer(t *testing.
 	restoredPublisher := &fakePublisher{}
 	restored, err := New(Config{
 		Store: store, Engine: restoredEngine, Publisher: restoredPublisher, Credentials: credentials, Growth: allowGrowth, Admission: admission.New(), Placement: placement,
-		LogRoot: filepath.Join(t.TempDir(), "restored-logs"), VolumeRoot: filepath.Join(t.TempDir(), "restored-volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "restored-volumes"),
 		ContainerLogs: fakeContainerLogSink{}, HTTPClient: httpClient,
 		NewID: func() (string, error) { return "restored-attempt", nil },
 	})
@@ -578,7 +576,7 @@ func TestCriticalPressureRestoresCachedActiveDigestWithoutPull(t *testing.T) {
 				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
 			}, nil
 		},
-		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "volumes"),
 		ContainerLogs: fakeContainerLogSink{},
 		NewID:         func() (string, error) { return "attempt", nil },
 		HTTPClient: &http.Client{Transport: roundTripFunc(func(_ *http.Request) (*http.Response, error) {
@@ -674,7 +672,7 @@ func TestDeployOverridesUploadedImageWithCurrentConfigWhenNoActive(t *testing.T)
 				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
 			}, nil
 		},
-		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "volumes"),
 		ContainerLogs: fakeContainerLogSink{},
 		NewID: func() (string, error) {
 			value := ids[idIndex]
@@ -725,7 +723,7 @@ func TestDeployOverridesFromReusableRevisionWhenNoDeploymentRow(t *testing.T) {
 		latestRevision: &state.ImageRevision{
 			ID: "revision", ServiceID: "service", ArchivePath: "/images/revision.oci",
 			ImageDigest: digest, Status: "retired",
-			Identity: state.ImageUploadIdentity{SHA: "abc123"},
+			Identity: state.ImageUploadIdentity{SHA: "abc123", CommitMessage: "Fix checkout race"},
 		},
 	}
 	engine := &fakeEngine{
@@ -746,7 +744,7 @@ func TestDeployOverridesFromReusableRevisionWhenNoDeploymentRow(t *testing.T) {
 				DNSSearch: "shop.internal", CgroupParent: "/platformd/workloads/service",
 			}, nil
 		},
-		LogRoot: filepath.Join(t.TempDir(), "logs"), VolumeRoot: filepath.Join(t.TempDir(), "volumes"),
+		VolumeRoot:    filepath.Join(t.TempDir(), "volumes"),
 		ContainerLogs: fakeContainerLogSink{},
 		NewID: func() (string, error) {
 			value := ids[idIndex]
@@ -762,6 +760,9 @@ func TestDeployOverridesFromReusableRevisionWhenNoDeploymentRow(t *testing.T) {
 	}
 	if err := controller.Deploy(context.Background(), "service", false); err != nil {
 		t.Fatal(err)
+	}
+	if got := store.deployments["redeploy"].CommitMessage; got != "Fix checkout race" {
+		t.Fatalf("commit message = %q", got)
 	}
 	if got := store.deployments["redeploy"]; got.ImageRevisionID != "revision" || got.SourceRevision != "abc123" {
 		t.Fatalf("redeployed from retired revision = %+v", got)

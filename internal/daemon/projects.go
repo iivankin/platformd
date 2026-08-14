@@ -182,15 +182,6 @@ func (repository liveProjectRepository) cleanupProjectFiles(plan state.ProjectDe
 	if volumeCleanupErr == nil {
 		repository.reportCleanupError(os.RemoveAll(filepath.Join(repository.runtime.paths.VolumesRoot, plan.Project.ID)))
 	}
-	for _, service := range plan.Services {
-		repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
-	}
-	for _, resource := range plan.Postgres {
-		repository.reportCleanupError(removeProjectDirectory(repository.runtime.paths.LogsRoot, "postgres", resource.ID))
-	}
-	for _, resource := range plan.Redis {
-		repository.reportCleanupError(removeProjectDirectory(repository.runtime.paths.LogsRoot, "redis", resource.ID))
-	}
 }
 
 func (repository liveProjectRepository) cleanupObjectStoreData(stores []state.ObjectStore) {
@@ -229,13 +220,6 @@ func removeProjectManagedVolumes(
 		remove("Redis", resource.VolumeID)
 	}
 	return errors.Join(failures...)
-}
-
-func removeProjectDirectory(root, kind, resourceID string) error {
-	if filepath.Base(resourceID) != resourceID {
-		return fmt.Errorf("%s cleanup identity %q is invalid", kind, resourceID)
-	}
-	return os.RemoveAll(filepath.Join(root, kind, resourceID))
 }
 
 func (repository liveProjectRepository) reportCleanupError(err error) {

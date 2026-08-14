@@ -33,6 +33,7 @@ var ErrGrowthDenied = errors.New("disk-growing operation denied by disk pressure
 
 type Usage struct {
 	TotalBytes       uint64
+	UsedBytes        uint64
 	AvailableBytes   uint64
 	TotalInodes      uint64
 	AvailableInodes  uint64

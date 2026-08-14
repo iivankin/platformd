@@ -15,6 +15,7 @@ const inactiveFinalImageRetention = 14 * 24 * time.Hour
 const buildCacheRetention = 24 * time.Hour
 const imageCacheCleanupInterval = 24 * time.Hour
 const diskPressureImageCleanupInterval = 5 * time.Minute
+const retainedImageRevisions = 7
 
 type imageCacheReferences interface {
 	ReferencedContainerImageDigests(context.Context) (map[string]struct{}, error)
@@ -35,10 +36,11 @@ type imageGarbageCollector struct {
 	lastPressureLevel   diskpressure.Level
 	archiveMu           sync.RWMutex
 	archive             *imageArchiveGarbageCollector
+	wake                chan struct{}
 }
 
 func newImageGarbageCollector(references imageCacheReferences, cleaner imageCacheCleaner) *imageGarbageCollector {
-	return &imageGarbageCollector{references: references, cleaner: cleaner, now: time.Now}
+	return &imageGarbageCollector{references: references, cleaner: cleaner, now: time.Now, wake: make(chan struct{}, 1)}
 }
 
 func runImageCacheCleanup(ctx context.Context, collector *imageGarbageCollector) {
@@ -49,20 +51,17 @@ func runImageCacheCleanup(ctx context.Context, collector *imageGarbageCollector)
 		select {
 		case <-ctx.Done():
 			return
+		case <-collector.wake:
 		case <-ticker.C:
 		}
 	}
 }
 
-func (collector *imageGarbageCollector) ForceGarbageCollect(ctx context.Context) (containerengine.ImageGarbageCollectResult, error) {
-	var err error
-	if archive := collector.archiveCollector(); archive != nil {
-		err = archive.Cleanup(ctx, diskpressure.Low)
+func (collector *imageGarbageCollector) requestCleanup() {
+	select {
+	case collector.wake <- struct{}{}:
+	default:
 	}
-	result, cacheErr := collector.cleanup(ctx, true)
-	err = errors.Join(err, cacheErr)
-	logImageGarbageCollection(result, err)
-	return result, err
 }
 
 func (collector *imageGarbageCollector) CleanupDiskPressure(ctx context.Context, level diskpressure.Level) error {

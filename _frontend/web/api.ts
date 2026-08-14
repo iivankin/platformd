@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { ReplayRecording } from "@/errors/types";
+import type { LogFieldFilter } from "@/log-field-filter";
 
 const metaSchema = z.object({
   architecture: z.string(),
@@ -619,7 +620,9 @@ export type RuntimeDeploymentPage = z.infer<typeof runtimeDeploymentPageSchema>;
 const logRecordSchema = z.object({
   attemptId: z.string(),
   deploymentId: z.string(),
+  fields: z.record(z.string(), z.unknown()).optional(),
   partial: z.boolean().optional(),
+  phase: z.enum(["before_deploy"]).optional(),
   severityNumber: z.number().int().optional(),
   severityText: z.string().optional(),
   spanId: z.string().optional(),
@@ -631,14 +634,13 @@ const logRecordSchema = z.object({
 });
 
 const logWindowSchema = z.object({
+  nextCursor: z.string().min(1).optional(),
   records: z.array(logRecordSchema),
   truncated: z.boolean(),
 });
 
 export type LogRecord = z.infer<typeof logRecordSchema>;
 export type LogWindow = z.infer<typeof logWindowSchema>;
-
-const buildLogSchema = z.object({ text: z.string() });
 
 const terminalShellsSchema = z.object({
   shells: z.array(z.enum(["/bin/sh", "/bin/bash"])),
@@ -668,21 +670,10 @@ const diskPressureSchema = z.object({
   reservePresent: z.boolean(),
   totalBytes: z.number().int().positive(),
   totalInodes: z.number().int().nonnegative(),
+  usedBytes: z.number().int().nonnegative(),
 });
 
 export type DiskPressure = z.infer<typeof diskPressureSchema>;
-
-const imageGarbageCollectionResultSchema = z.object({
-  buildCacheImagesRemoved: z.number().int().nonnegative(),
-  finalImagesRemoved: z.number().int().nonnegative(),
-  orphanLayersRemoved: z.number().int().nonnegative(),
-  removedBytes: z.number().int().nonnegative(),
-  skipped: z.number().int().nonnegative(),
-});
-
-export type ImageGarbageCollectionResult = z.infer<
-  typeof imageGarbageCollectionResultSchema
->;
 
 const infrastructureLogRecordSchema = z.object({
   cursor: z.string().min(1),
@@ -2585,26 +2576,6 @@ export const fetchServicePreviews = async (
     .parse(await response.json()).previews;
 };
 
-export const fetchServiceDeployment = async (
-  projectID: string,
-  serviceID: string,
-  deploymentID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<Deployment> => {
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments/${encodeURIComponent(deploymentID)}`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `deployment request failed with ${response.status}`
-    );
-  }
-  return deploymentSchema.parse(await response.json());
-};
-
 export type ManagedDeploymentKind = "postgres" | "redis";
 
 export const fetchRuntimeDeployments = async (
@@ -2630,27 +2601,6 @@ export const fetchRuntimeDeployments = async (
     );
   }
   return runtimeDeploymentPageSchema.parse(await response.json());
-};
-
-export const fetchRuntimeDeployment = async (
-  projectID: string,
-  kind: ManagedDeploymentKind,
-  resourceID: string,
-  deploymentID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<RuntimeDeployment> => {
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/${kind}/${encodeURIComponent(resourceID)}/deployments/${encodeURIComponent(deploymentID)}`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `deployment request failed with ${response.status}`
-    );
-  }
-  return runtimeDeploymentSchema.parse(await response.json());
 };
 
 const runtimeDeploymentAction = async (
@@ -2705,69 +2655,9 @@ export const removeRuntimeDeployment = (
     fetcher
   );
 
-export const fetchServiceLogs = async (
-  projectID: string,
-  serviceID: string,
-  filters: {
-    contains?: string;
-    deploymentId?: string;
-    from?: number;
-    limit?: number;
-    to?: number;
-  } = {},
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<LogWindow> => {
-  const query = new URLSearchParams({ limit: String(filters.limit ?? 500) });
-  if (filters.deploymentId) {
-    query.set("deploymentId", filters.deploymentId);
-  }
-  if (filters.contains) {
-    query.set("contains", filters.contains);
-  }
-  if (filters.from !== undefined) {
-    query.set("from", String(filters.from));
-  }
-  if (filters.to !== undefined) {
-    query.set("to", String(filters.to));
-  }
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/logs?${query.toString()}`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `service logs request failed with ${response.status}`
-    );
-  }
-  return logWindowSchema.parse(await response.json());
-};
-
-export const fetchBuildLog = async (
-  projectID: string,
-  serviceID: string,
-  deploymentID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<string> => {
-  const response = await fetcher(
-    `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/deployments/${encodeURIComponent(deploymentID)}/logs/build`,
-    { headers: { Accept: "application/json" }, signal }
-  );
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `build log request failed with ${response.status}`
-    );
-  }
-  return buildLogSchema.parse(await response.json()).text;
-};
-
-export type ResourceLogKind = "object_store" | "postgres" | "redis" | "service";
+export type ResourceLogKind = "postgres" | "redis" | "service";
 
 const resourceLogCollection: Record<ResourceLogKind, string> = {
-  object_store: "object-stores",
   postgres: "postgres",
   redis: "redis",
   service: "services",
@@ -2779,7 +2669,9 @@ export const fetchResourceLogs = async (
   resourceID: string,
   options: {
     contains?: string;
+    cursor?: string;
     deploymentId?: string;
+    fieldFilters?: LogFieldFilter[];
     from?: number;
     limit?: number;
     to?: number;
@@ -2790,6 +2682,12 @@ export const fetchResourceLogs = async (
   const query = new URLSearchParams({ limit: String(options.limit ?? 500) });
   if (options.contains) {
     query.set("contains", options.contains);
+  }
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.fieldFilters?.length) {
+    query.set("fieldFilters", JSON.stringify(options.fieldFilters));
   }
   if (options.deploymentId) {
     query.set("deploymentId", options.deploymentId);
@@ -2946,22 +2844,6 @@ export const fetchDiskPressure = async (
     );
   }
   return diskPressureSchema.parse(await response.json());
-};
-
-export const forceImageGarbageCollection = async (
-  fetcher: Fetcher = globalThis.fetch
-): Promise<ImageGarbageCollectionResult> => {
-  const response = await fetcher("/api/v1/infrastructure/container-images/gc", {
-    headers: { Accept: "application/json" },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw await apiError(
-      response,
-      `container image garbage collection failed with ${response.status}`
-    );
-  }
-  return imageGarbageCollectionResultSchema.parse(await response.json());
 };
 
 export const fetchInfrastructureLogs = async (

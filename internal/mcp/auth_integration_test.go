@@ -64,11 +64,7 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	logReader, err := containerlogs.NewReader(filepath.Join(t.TempDir(), "logs"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	logAutomation, err := automation.NewLogApplication(store, logReader, nil)
+	logAutomation, err := automation.NewLogApplication(store, authLogReaderStub{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +107,12 @@ func TestRevokedBearerTokenCannotInitializeNextMCPRequest(t *testing.T) {
 }
 
 type managedImageCatalogStub struct{}
+
+type authLogReaderStub struct{}
+
+func (authLogReaderStub) Read(context.Context, containerlogs.Query) (containerlogs.Window, error) {
+	return containerlogs.Window{}, nil
+}
 
 func (managedImageCatalogStub) List(context.Context, managedimages.Engine, int, int, string) (managedimages.Page, error) {
 	return managedimages.Page{}, nil

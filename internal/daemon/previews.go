@@ -6,6 +6,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/cloudflaredns"
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/preview"
 	"github.com/iivankin/platformd/internal/state"
@@ -18,6 +19,7 @@ func (stack *runtimeStack) ConfigurePreviews(
 	dns *cloudflaredns.Application,
 	domains *liveDomainRepository,
 	certificateCovers func(string) bool,
+	containerLogs containerlogs.Sink,
 ) error {
 	application, err := preview.New(preview.Config{
 		Store: store, Engine: stack.engine,
@@ -25,8 +27,7 @@ func (stack *runtimeStack) ConfigurePreviews(
 		DNS:         dns, Growth: stack.growth, Admission: stack.admission,
 		Placement: stack.previewPlacement, RoutesChanged: domains.reload,
 		CertificateCovers: certificateCovers,
-		LogRoot:           stack.paths.LogsRoot, LogSizeBytes: serviceLogSegmentBytes,
-		LogMaxFiles: serviceLogMaxFiles,
+		ContainerLogs:     containerLogs,
 	})
 	if err != nil {
 		return err

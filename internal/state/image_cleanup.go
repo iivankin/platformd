@@ -133,10 +133,13 @@ func (store *Store) DeleteImageCleanupCandidates(
 	ctx context.Context,
 	mode ImageCleanupMode,
 	nowMillis int64,
-	productionRetiredBeforeMillis int64,
+	revisionsToKeep int,
 ) (ImageCleanupFiles, error) {
-	if nowMillis <= 0 || productionRetiredBeforeMillis <= 0 {
+	if nowMillis <= 0 {
 		return ImageCleanupFiles{}, errors.New("image cleanup time is invalid")
+	}
+	if revisionsToKeep <= 0 {
+		return ImageCleanupFiles{}, errors.New("retained image revision count is invalid")
 	}
 	if mode != ImageCleanupStandard && mode != ImageCleanupCritical && mode != ImageCleanupEmergency {
 		return ImageCleanupFiles{}, errors.New("image cleanup mode is invalid")
@@ -166,7 +169,7 @@ WHERE status IN ('succeeded', 'failed', 'superseded') AND expires_at <= ?`, nowM
 			return err
 		}
 
-		condition, arguments := imageRevisionCleanupCondition(mode, nowMillis, productionRetiredBeforeMillis)
+		condition, arguments := imageRevisionCleanupCondition(mode, revisionsToKeep)
 		rows, err = transaction.QueryContext(ctx, `
 SELECT id, archive_path FROM service_image_revisions r
 WHERE (`+condition+`) AND NOT EXISTS(
@@ -222,26 +225,30 @@ WHERE id = ?
 	return result, nil
 }
 
-func imageRevisionCleanupCondition(mode ImageCleanupMode, nowMillis, productionRetiredBeforeMillis int64) (string, []any) {
+func imageRevisionCleanupCondition(mode ImageCleanupMode, revisionsToKeep int) (string, []any) {
 	standard := `
 r.status = 'failed'
-OR (r.kind = 'preview' AND r.status IN ('active', 'retired') AND r.expires_at <= ?
-    AND NOT EXISTS(SELECT 1 FROM preview_deployments p WHERE p.image_revision_id = r.id AND p.status = 'active'))
-OR (r.kind = 'production' AND r.status = 'retired' AND r.retired_at <= ?)`
-	if mode == ImageCleanupStandard {
-		return standard, []any{nowMillis, productionRetiredBeforeMillis}
-	}
-	production := `r.kind = 'production' AND r.status != 'active'`
-	if mode == ImageCleanupCritical {
-		production += ` AND r.id NOT IN (
+OR (r.status = 'retired' AND r.id NOT IN (
   SELECT id FROM (
-    SELECT id, row_number() OVER (PARTITION BY service_id ORDER BY COALESCE(retired_at, created_at) DESC, id DESC) AS position
-    FROM service_image_revisions WHERE kind = 'production' AND status = 'retired'
+    SELECT id, row_number() OVER (
+      PARTITION BY service_id, kind ORDER BY created_at DESC, id DESC
+    ) AS position
+    FROM service_image_revisions WHERE status IN ('active', 'retired')
+  ) WHERE position <= ?
+))`
+	if mode == ImageCleanupStandard {
+		return standard, []any{revisionsToKeep}
+	}
+	retired := `r.status = 'retired'`
+	if mode == ImageCleanupCritical {
+		retired += ` AND r.id NOT IN (
+  SELECT id FROM (
+    SELECT id, row_number() OVER (
+      PARTITION BY service_id, kind ORDER BY created_at DESC, id DESC
+    ) AS position
+    FROM service_image_revisions WHERE status = 'retired'
   ) WHERE position = 1
 )`
 	}
-	return `r.status = 'failed'
-OR (r.kind = 'preview' AND r.status != 'importing'
-    AND NOT EXISTS(SELECT 1 FROM preview_deployments p WHERE p.image_revision_id = r.id AND p.status = 'active'))
-OR (` + production + `)`, nil
+	return `r.status = 'failed' OR (` + retired + `)`, nil
 }

@@ -155,7 +155,7 @@ func (controller *Controller) ChangeVersion(ctx context.Context, input VersionCh
 	if err != nil {
 		return err
 	}
-	if err := controller.engine.StartContainer(ctx, candidate.ID); err != nil {
+	if err := controller.startContainer(ctx, target, runtimeID, candidate.ID); err != nil {
 		return fmt.Errorf("start managed PostgreSQL version-change candidate: %w", err)
 	}
 	candidateStarted = true
@@ -332,7 +332,7 @@ func (controller *Controller) recoverVersionChangeSource(
 	if stopped {
 		ctx, cancel := context.WithTimeout(context.Background(), controller.readyTimeout+30*time.Second)
 		defer cancel()
-		if err := controller.engine.StartContainer(ctx, runtime.container.ID); err != nil {
+		if err := controller.startContainer(ctx, runtime.resource, runtime.runtimeID, runtime.container.ID); err != nil {
 			return fmt.Errorf("restart managed PostgreSQL after failed version change: %w", err)
 		}
 		ready, err := controller.waitReady(

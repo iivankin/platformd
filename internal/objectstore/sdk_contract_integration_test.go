@@ -468,7 +468,10 @@ func startSDKContractServer(t testing.TB) sdkContractFixture {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(socketRoot) })
 	process, storage, err := StartSidecar(
-		ctx, binary, filepath.Join(t.TempDir(), "objects"), filepath.Join(socketRoot, "socket"),
+		ctx,
+		binary,
+		filepath.Join(t.TempDir(), "objects"),
+		filepath.Join(socketRoot, "socket"),
 	)
 	if err != nil {
 		t.Fatal(err)

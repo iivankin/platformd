@@ -7,8 +7,6 @@ export type ResourceCollection =
   | "redis"
   | "services";
 
-export type DeploymentWorkspaceView = "deploy-logs" | "details";
-
 const collectionByKind: Record<ResourceNodeData["kind"], ResourceCollection> = {
   network_gateway: "network-gateways",
   object_store: "object-stores",
@@ -45,29 +43,13 @@ export const resourceKind = (
   return entry?.[0] as ResourceNodeData["kind"] | undefined;
 };
 
-export const resourceDeploymentPath = (
+export const resourceTelemetryLogsPath = (
   projectID: string,
   resourceID: string,
-  kind: "postgres" | "redis" | "service",
-  deploymentID: string,
-  view: DeploymentWorkspaceView = "deploy-logs"
-) =>
-  `/projects/${encodeURIComponent(projectID)}/${collectionByKind[kind]}/${encodeURIComponent(resourceID)}/deployments/${encodeURIComponent(deploymentID)}/${view}`;
-
-export const deploymentPath = (
-  projectID: string,
-  serviceID: string,
-  deploymentID: string,
-  view: DeploymentWorkspaceView = "deploy-logs"
-) =>
-  resourceDeploymentPath(projectID, serviceID, "service", deploymentID, view);
-
-export const serviceTelemetryLogsPath = (
-  projectID: string,
-  serviceID: string,
+  kind: "object_store" | "postgres" | "redis" | "service",
   deploymentID?: string
 ) => {
-  const path = resourcePath(projectID, serviceID, "service", "telemetry");
+  const path = resourcePath(projectID, resourceID, kind, "telemetry");
   const query = new URLSearchParams({ telemetry: "logs" });
   if (deploymentID) {
     query.set("deployment", deploymentID);

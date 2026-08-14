@@ -9,6 +9,7 @@ import (
 	"path"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedredis"
@@ -16,7 +17,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryptobox.MasterKey) error {
+func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryptobox.MasterKey, logs containerlogs.Sink) error {
 	controller, err := managedredis.NewController(managedredis.Config{
 		Store: store, Deployments: store, Engine: stack.engine, Publisher: stack, Growth: stack.growth, Maintenance: stack, Admission: stack.admission,
 		Password: func(resource state.ManagedRedis) (string, error) {
@@ -24,8 +25,7 @@ func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryp
 		},
 		Placement:     stack.redisPlacement,
 		GeneratedRoot: stack.paths.GeneratedRoot, VolumeRoot: stack.paths.VolumesRoot,
-		LogRoot: stack.paths.LogsRoot, LogSizeBytes: serviceLogSegmentBytes,
-		LogMaxFiles: serviceLogMaxFiles,
+		ContainerLogs: logs,
 	})
 	if err != nil {
 		return err

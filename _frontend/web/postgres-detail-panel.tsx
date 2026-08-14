@@ -7,22 +7,20 @@ import { postgresConnectionURL } from "@/connection-values";
 import { DatabaseVersionChange } from "@/database-version-change";
 import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
 import { ManagedDeploymentHistory } from "@/managed-deployment-history";
+import { ManagedContainerTelemetry } from "@/managed-resource-telemetry";
 import { PostgresDatabase } from "@/postgres-database";
 import type { ResourceNodeData } from "@/project-flow";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
-import { ResourceConsole } from "@/resource-console";
-import { ResourceUsage } from "@/resource-usage";
 import { ResourceVariables } from "@/resource-variables";
 import { ResourcePortForwardSettings } from "@/service-port-forward";
 import { WorkspaceView } from "@/workspace-view";
 
 export type PostgresWorkspaceView =
   | "backups"
-  | "console"
   | "database"
   | "deployments"
-  | "metrics"
   | "settings"
+  | "telemetry"
   | "variables";
 
 interface PostgresDetailPanelProperties {
@@ -106,14 +104,6 @@ export const PostgresDetailPanel = ({
               resourceKind="postgres"
             />
           ),
-          console: (
-            <ResourceConsole
-              projectID={projectID}
-              resourceID={postgresID}
-              resourceKind="postgres"
-              resourceName={data.name}
-            />
-          ),
           database: (
             <PostgresDatabase postgresID={postgresID} projectID={projectID} />
           ),
@@ -122,14 +112,7 @@ export const PostgresDetailPanel = ({
               kind="postgres"
               projectID={projectID}
               resourceID={postgresID}
-            />
-          ),
-          metrics: (
-            <ResourceUsage
-              cpuMillicores={resource?.cpuMillicores}
-              kind="postgres"
-              memoryBytes={resource?.memoryBytes}
-              resourceID={postgresID}
+              resourceName={data.name}
             />
           ),
           settings: (
@@ -181,6 +164,15 @@ export const PostgresDetailPanel = ({
                 />
               ) : null}
             </>
+          ),
+          telemetry: (
+            <ManagedContainerTelemetry
+              cpuMillicores={resource?.cpuMillicores}
+              kind="postgres"
+              memoryBytes={resource?.memoryBytes}
+              projectID={projectID}
+              resourceID={postgresID}
+            />
           ),
           variables: (
             <ResourceVariables

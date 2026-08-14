@@ -7,7 +7,28 @@ import (
 	"path/filepath"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
+
+func TestStatfsCollectorSeparatesUsedAndAvailableBytes(t *testing.T) {
+	var stat unix.Statfs_t
+	path := t.TempDir()
+	if err := unix.Statfs(path, &stat); err != nil {
+		t.Fatal(err)
+	}
+	usage, err := (StatfsCollector{}).Collect(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blockSize := uint64(stat.Bsize)
+	if want := (stat.Blocks - stat.Bfree) * blockSize; usage.UsedBytes != want {
+		t.Fatalf("used bytes = %d, want %d", usage.UsedBytes, want)
+	}
+	if want := stat.Bavail * blockSize; usage.AvailableBytes != want {
+		t.Fatalf("available bytes = %d, want %d", usage.AvailableBytes, want)
+	}
+}
 
 func TestFileReserveIsAllocatedAndRemoved(t *testing.T) {
 	t.Parallel()

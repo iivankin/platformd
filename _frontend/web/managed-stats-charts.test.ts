@@ -2,25 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import {
   foldUnselectedOperationsIntoOther,
-  objectStoreOperationsBreakdown,
   operationsBreakdownKeys,
 } from "@/managed-stats-charts";
 
 describe("operationsBreakdownKeys", () => {
-  test("returns fixed object-store series", () => {
-    const keys = operationsBreakdownKeys({
-      fixed: objectStoreOperationsBreakdown,
-      history: null,
-    });
-    expect(keys.map((item) => item.key)).toEqual([
-      "getOperationsPerSecond",
-      "putOperationsPerSecond",
-      "deleteOperationsPerSecond",
-      "listOperationsPerSecond",
-      "otherOperationsPerSecond",
-    ]);
-  });
-
   test("ranks redis command series by total rate", () => {
     const keys = operationsBreakdownKeys({
       history: {

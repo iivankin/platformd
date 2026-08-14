@@ -4,11 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"path/filepath"
+	"io"
 	"strings"
 	"time"
 
-	"github.com/iivankin/platformd/internal/buildlog"
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/state"
@@ -32,12 +31,11 @@ type beforeDeployCloudflare interface {
 }
 
 type beforeDeployExecutor struct {
-	engine       beforeDeployEngine
-	environment  deployment.EnvironmentResolver
-	placement    func(state.ServiceDesired) (deployment.Placement, error)
-	cloudflare   beforeDeployCloudflare
-	logSizeBytes int64
-	logMaxFiles  uint
+	engine      beforeDeployEngine
+	environment deployment.EnvironmentResolver
+	placement   func(state.ServiceDesired) (deployment.Placement, error)
+	cloudflare  beforeDeployCloudflare
+	logs        deployment.ContainerLogSink
 }
 
 func (executor beforeDeployExecutor) Execute(ctx context.Context, request deployment.BeforeDeployRequest) error {
@@ -54,13 +52,13 @@ func (executor beforeDeployExecutor) Execute(ctx context.Context, request deploy
 		if executor.cloudflare == nil {
 			return errors.New("purge before-deploy Cloudflare cache: Cloudflare integration is unavailable")
 		}
-		if err := appendBeforeDeployLog(request.BuildLogPath, "Purging Cloudflare cache for "+strings.Join(configuration.CloudflareHostnames, ", ")); err != nil {
+		if err := executor.writeLog(request, request.EnvironmentContext.DeploymentID, "stdout", "Purging Cloudflare cache for "+strings.Join(configuration.CloudflareHostnames, ", ")); err != nil {
 			return err
 		}
 		if err := executor.cloudflare.PurgeHostnames(ctx, configuration.CloudflareHostnames); err != nil {
 			return fmt.Errorf("purge before-deploy Cloudflare cache: %w", err)
 		}
-		if err := appendBeforeDeployLog(request.BuildLogPath, "Cloudflare cache purge completed"); err != nil {
+		if err := executor.writeLog(request, request.EnvironmentContext.DeploymentID, "stdout", "Cloudflare cache purge completed"); err != nil {
 			return err
 		}
 	}
@@ -72,7 +70,7 @@ func (executor beforeDeployExecutor) runCommand(
 	request deployment.BeforeDeployRequest,
 	command string,
 ) (result error) {
-	if executor.engine == nil || executor.environment == nil || executor.placement == nil {
+	if executor.engine == nil || executor.environment == nil || executor.placement == nil || executor.logs == nil {
 		return errors.New("command executor is unavailable")
 	}
 	placement, err := executor.placement(request.Desired)
@@ -94,8 +92,7 @@ func (executor beforeDeployExecutor) runCommand(
 		},
 		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()},
 		DNSSearch:    []string{placement.DNSSearch},
-		LogPath:      filepath.Join(filepath.Dir(request.BuildLogPath), "before-deploy-container.log"),
-		LogSizeBytes: executor.logSizeBytes, LogMaxFiles: executor.logMaxFiles,
+		LogDriver:    containerengine.ContainerLogNone,
 		CgroupParent: placement.CgroupParent, CPUMillicores: request.Desired.Snapshot.CPUMillicores,
 		MemoryMaxBytes: request.Desired.Snapshot.MemoryMaxBytes,
 	})
@@ -110,19 +107,21 @@ func (executor beforeDeployExecutor) runCommand(
 	if err := executor.engine.StartContainer(ctx, container.ID); err != nil {
 		return err
 	}
-	if err := appendBeforeDeployLog(request.BuildLogPath, "Running command: "+command); err != nil {
+	if err := executor.writeLog(request, container.ID, "stdout", "Running command: "+command); err != nil {
 		return err
 	}
-	writer, err := buildlog.OpenAppend(request.BuildLogPath)
-	if err != nil {
-		return err
-	}
+	stdout := executor.logs.BeforeDeployWriter(
+		request.Desired.ID, request.Desired.Name, request.EnvironmentContext.DeploymentID, container.ID, "stdout",
+	)
+	stderr := executor.logs.BeforeDeployWriter(
+		request.Desired.ID, request.Desired.Name, request.EnvironmentContext.DeploymentID, container.ID, "stderr",
+	)
 	commandContext, cancel := context.WithTimeout(ctx, beforeDeployActionTimeout)
 	exitCode, execErr := executor.engine.ExecContainer(commandContext, container.ID, containerengine.ExecRequest{
-		Command: []string{"/bin/sh", "-lc", command}, Stdout: writer, Stderr: writer,
+		Command: []string{"/bin/sh", "-lc", command}, Stdout: stdout, Stderr: stderr,
 	})
 	cancel()
-	closeErr := writer.Close()
+	closeErr := errors.Join(stdout.Close(), stderr.Close())
 	if execErr != nil {
 		return errors.Join(execErr, closeErr)
 	}
@@ -132,9 +131,21 @@ func (executor beforeDeployExecutor) runCommand(
 	if exitCode != 0 {
 		return fmt.Errorf("command exited with code %d", exitCode)
 	}
-	return appendBeforeDeployLog(request.BuildLogPath, "Before-deploy command completed")
+	return executor.writeLog(request, container.ID, "stdout", "Before-deploy command completed")
 }
 
-func appendBeforeDeployLog(logPath, message string) error {
-	return buildlog.Append(logPath, fmt.Sprintf("%s %s\n", time.Now().UTC().Format(time.RFC3339), message))
+func (executor beforeDeployExecutor) writeLog(
+	request deployment.BeforeDeployRequest,
+	attemptID string,
+	stream string,
+	message string,
+) error {
+	if executor.logs == nil {
+		return errors.New("before-deploy log exporter is unavailable")
+	}
+	writer := executor.logs.BeforeDeployWriter(
+		request.Desired.ID, request.Desired.Name, request.EnvironmentContext.DeploymentID, attemptID, stream,
+	)
+	_, writeErr := io.WriteString(writer, message+"\n")
+	return errors.Join(writeErr, writer.Close())
 }

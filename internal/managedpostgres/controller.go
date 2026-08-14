@@ -8,7 +8,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -16,9 +15,11 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/postgresextension"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -60,6 +61,7 @@ type Engine interface {
 	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
 	StartContainer(context.Context, string) error
+	StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error)
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	RemoveManagedVolume(context.Context, string) error
@@ -114,14 +116,12 @@ type ControllerConfig struct {
 	Placement         func(state.ManagedPostgres) (Placement, error)
 	Dial              func(context.Context, string, string, string, string) (Connection, error)
 	VolumeRoot        string
-	LogRoot           string
-	LogSizeBytes      int64
-	LogMaxFiles       uint
 	ReadyTimeout      time.Duration
 	ProbePeriod       time.Duration
 	MaintenanceDrain  time.Duration
 	Now               func() time.Time
 	NewID             func() (string, error)
+	ContainerLogs     containerlogs.Sink
 }
 
 type activeRuntime struct {
@@ -146,14 +146,12 @@ type Controller struct {
 	placement         func(state.ManagedPostgres) (Placement, error)
 	dial              func(context.Context, string, string, string, string) (Connection, error)
 	volumeRoot        string
-	logRoot           string
-	logSizeBytes      int64
-	logMaxFiles       uint
 	readyTimeout      time.Duration
 	probePeriod       time.Duration
 	maintenanceDrain  time.Duration
 	now               func() time.Time
 	newID             func() (string, error)
+	containerLogs     containerlogs.Sink
 	mu                sync.Mutex
 	locks             map[string]*sync.Mutex
 	active            map[string]activeRuntime
@@ -161,11 +159,11 @@ type Controller struct {
 }
 
 func NewController(config ControllerConfig) (*Controller, error) {
-	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Maintenance == nil || config.Admission == nil || config.OwnerPassword == nil || config.BootstrapPassword == nil || config.Placement == nil {
+	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Maintenance == nil || config.Admission == nil || config.OwnerPassword == nil || config.BootstrapPassword == nil || config.Placement == nil || config.ContainerLogs == nil {
 		return nil, errors.New("managed PostgreSQL controller dependencies are incomplete")
 	}
-	if !safeRoot(config.VolumeRoot) || !safeRoot(config.LogRoot) || config.LogSizeBytes <= 0 || config.LogMaxFiles == 0 {
-		return nil, errors.New("managed PostgreSQL runtime paths and log rotation are invalid")
+	if !safeRoot(config.VolumeRoot) {
+		return nil, errors.New("managed PostgreSQL volume root is invalid")
 	}
 	dial := config.Dial
 	if dial == nil {
@@ -201,8 +199,7 @@ func NewController(config ControllerConfig) (*Controller, error) {
 		engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		ownerPassword: config.OwnerPassword, bootstrapPassword: config.BootstrapPassword,
 		placement: config.Placement, dial: dial, volumeRoot: config.VolumeRoot,
-		logRoot: config.LogRoot, logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
-		readyTimeout: readyTimeout, probePeriod: probePeriod, maintenanceDrain: maintenanceDrain, now: now, newID: newID,
+		readyTimeout: readyTimeout, probePeriod: probePeriod, maintenanceDrain: maintenanceDrain, now: now, newID: newID, containerLogs: config.ContainerLogs,
 		locks: make(map[string]*sync.Mutex), active: make(map[string]activeRuntime), maintaining: make(map[string]struct{}),
 	}, nil
 }
@@ -271,7 +268,7 @@ func (controller *Controller) startLocked(ctx context.Context, resourceID string
 			_ = controller.engine.RemoveContainer(context.Background(), container.ID, true)
 		}
 	}()
-	if err := controller.engine.StartContainer(ctx, container.ID); err != nil {
+	if err := controller.startContainer(ctx, resource, runtimeID, container.ID); err != nil {
 		return fmt.Errorf("start managed PostgreSQL container: %w", err)
 	}
 	ready, err := controller.waitReady(ctx, container.ID, placement.NetworkName, resource, ownerPassword, bootstrapPassword)
@@ -393,7 +390,7 @@ func (controller *Controller) resume(ctx context.Context, runtime activeRuntime)
 	if err != nil {
 		return err
 	}
-	if err := controller.engine.StartContainer(ctx, runtime.container.ID); err != nil {
+	if err := controller.startContainer(ctx, runtime.resource, runtime.runtimeID, runtime.container.ID); err != nil {
 		return err
 	}
 	ready, err := controller.waitReady(ctx, runtime.container.ID, runtime.network, runtime.resource, ownerPassword, bootstrapPassword)
@@ -689,14 +686,6 @@ func (controller *Controller) createContainerAttempt(
 	if !safePathComponent(volumeID) {
 		return containerengine.Container{}, errors.New("managed PostgreSQL volume ID is invalid")
 	}
-	attemptID, err := controller.newID()
-	if err != nil {
-		return containerengine.Container{}, err
-	}
-	logPath := filepath.Join(controller.logRoot, "postgres", resource.ID, runtimeID, attemptID+".log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
-		return containerengine.Container{}, err
-	}
 	storage := storageProfileForTag(resource.ImageTag)
 	return controller.engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID: imageID, Name: "platformd-postgres-" + runtimeID,
@@ -714,10 +703,35 @@ func (controller *Controller) createContainerAttempt(
 		ManagedVolumes: []containerengine.ManagedVolumeMount{{
 			ID: volumeID, Source: volume, Destination: storage.volumeDestination,
 		}},
-		LogPath: logPath, LogSizeBytes: controller.logSizeBytes, LogMaxFiles: controller.logMaxFiles,
+		LogDriver:    containerengine.ContainerLogNone,
 		CgroupParent: placement.CgroupParent, CPUMillicores: resource.CPUMillicores,
 		MemoryMaxBytes: resource.MemoryMaxBytes,
 	})
+}
+
+func (controller *Controller) startContainer(
+	ctx context.Context,
+	resource state.ManagedPostgres,
+	deploymentID string,
+	containerID string,
+) error {
+	attached, err := containerlogs.StartAttached(ctx, controller.engine, controller.containerLogs, containerlogs.RuntimeMetadata{
+		ResourceID: resource.ID, ResourceName: resource.Name,
+		DeploymentID: deploymentID, ContainerID: containerID,
+	})
+	if err != nil {
+		return err
+	}
+	go func() {
+		if attachErr, ok := <-attached; ok && attachErr != nil {
+			systemevent.Failure(
+				"managed_postgres_log_attach_failed", attachErr,
+				systemevent.String("resource_id", resource.ID),
+				systemevent.String("deployment_id", deploymentID),
+			)
+		}
+	}()
+	return nil
 }
 
 func (controller *Controller) waitReady(ctx context.Context, containerID, networkName string, resource state.ManagedPostgres, ownerPassword, bootstrapPassword string) (containerengine.Container, error) {

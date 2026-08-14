@@ -23,26 +23,23 @@ import { DatabaseVersionChange } from "@/database-version-change";
 import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
 import { cn } from "@/lib/utils";
 import { ManagedDeploymentHistory } from "@/managed-deployment-history";
+import { ManagedContainerTelemetry } from "@/managed-resource-telemetry";
 import type { ResourceNodeData } from "@/project-flow";
 import { formatBytes, formatTTL } from "@/redis-data-utils";
 import { RedisKeyEditor } from "@/redis-key-editor";
 import { RedisNewKeyForm } from "@/redis-new-key-form";
 import { RedisPersistenceStatus } from "@/redis-persistence-status";
-import { RedisStats } from "@/redis-stats";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
-import { ResourceConsole } from "@/resource-console";
-import { ResourceUsage } from "@/resource-usage";
 import { ResourceVariables } from "@/resource-variables";
 import { ResourcePortForwardSettings } from "@/service-port-forward";
 import { WorkspaceView } from "@/workspace-view";
 
 export type RedisWorkspaceView =
   | "backups"
-  | "console"
   | "database"
   | "deployments"
-  | "metrics"
   | "settings"
+  | "telemetry"
   | "variables";
 
 interface RedisDetailPanelProperties {
@@ -80,21 +77,6 @@ const RedisVersionChange = ({
     />
   );
 };
-
-const RedisResourceUsage = ({
-  redisID,
-  resource,
-}: {
-  redisID: string;
-  resource: ManagedRedis | null;
-}) => (
-  <ResourceUsage
-    cpuMillicores={resource?.cpuMillicores}
-    kind="redis"
-    memoryBytes={resource?.memoryBytes}
-    resourceID={redisID}
-  />
-);
 
 const RedisOverview = ({
   data,
@@ -213,9 +195,7 @@ export const RedisDetailPanel = ({
   const [preview, setPreview] = useState<RedisPreview | null>(null);
   const [newKeyOpen, setNewKeyOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [databaseView, setDatabaseView] = useState<"config" | "data" | "stats">(
-    "data"
-  );
+  const [databaseView, setDatabaseView] = useState<"config" | "data">("data");
   const [error, setError] = useState<string | null>(null);
   const hasMoreKeys = cursor !== "0";
 
@@ -343,21 +323,13 @@ export const RedisDetailPanel = ({
           backups: (
             <ResourceBackupPanel resourceID={redisID} resourceKind="redis" />
           ),
-          console: (
-            <ResourceConsole
-              projectID={projectID}
-              resourceID={redisID}
-              resourceKind="redis"
-              resourceName={data.name}
-            />
-          ),
           database: (
             <>
               <SectionCard
                 aria-label="Redis database pages"
                 className="flex min-h-10 px-4"
               >
-                {(["data", "stats", "config"] as const).map((item) => (
+                {(["data", "config"] as const).map((item) => (
                   <button
                     className={cn(
                       "border-b-2 border-transparent px-4 text-[10px] text-muted-foreground capitalize",
@@ -488,9 +460,6 @@ export const RedisDetailPanel = ({
                   </SectionCard>
                 </>
               ) : null}
-              {databaseView === "stats" ? (
-                <RedisStats projectID={projectID} redisID={redisID} />
-              ) : null}
               {databaseView === "config" ? (
                 <RedisPersistenceStatus
                   projectID={projectID}
@@ -504,9 +473,9 @@ export const RedisDetailPanel = ({
               kind="redis"
               projectID={projectID}
               resourceID={redisID}
+              resourceName={data.name}
             />
           ),
-          metrics: <RedisResourceUsage redisID={redisID} resource={resource} />,
           settings: (
             <RedisOverview
               data={data}
@@ -515,6 +484,15 @@ export const RedisDetailPanel = ({
               projectID={projectID}
               redisID={redisID}
               resource={resource}
+            />
+          ),
+          telemetry: (
+            <ManagedContainerTelemetry
+              cpuMillicores={resource?.cpuMillicores}
+              kind="redis"
+              memoryBytes={resource?.memoryBytes}
+              projectID={projectID}
+              resourceID={redisID}
             />
           ),
           variables: (

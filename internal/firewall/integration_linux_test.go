@@ -3,11 +3,15 @@
 package firewall
 
 import (
+	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/google/nftables"
+	"github.com/vishvananda/netlink"
 )
 
 func TestManagerPublishesAndReplacesSingleTable(t *testing.T) {
@@ -50,6 +54,71 @@ func TestManagerPublishesAndReplacesSingleTable(t *testing.T) {
 	for _, table := range tables {
 		if table.Name == TableName {
 			t.Fatal("platform firewall table survived clear")
+		}
+	}
+}
+
+func TestManagerAllowsHostPortForwardsToGatewayBackedTargets(t *testing.T) {
+	if os.Getenv("PLATFORMD_FIREWALL_INTEGRATION") != "1" {
+		t.Skip("set PLATFORMD_FIREWALL_INTEGRATION=1 on an isolated root host")
+	}
+	bridge := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: "pdhlooptest"}}
+	if err := netlink.LinkAdd(bridge); err != nil {
+		t.Fatalf("create test bridge: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := netlink.LinkDel(bridge); err != nil {
+			t.Errorf("delete test bridge: %v", err)
+		}
+	})
+	address, err := netlink.ParseAddr("10.89.250.1/24")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := netlink.AddrAdd(bridge, address); err != nil {
+		t.Fatalf("assign test gateway: %v", err)
+	}
+	if err := netlink.LinkSetUp(bridge); err != nil {
+		t.Fatalf("bring test bridge up: %v", err)
+	}
+
+	listeners := make([]net.Listener, 0, 2)
+	for _, port := range []uint16{ObjectStorePort, ServiceTelemetryPort} {
+		listener, listenErr := net.Listen("tcp4", fmt.Sprintf("10.89.250.1:%d", port))
+		if listenErr != nil {
+			t.Fatalf("listen on gateway port %d: %v", port, listenErr)
+		}
+		listeners = append(listeners, listener)
+	}
+	t.Cleanup(func() {
+		for _, listener := range listeners {
+			if err := listener.Close(); err != nil {
+				t.Errorf("close test listener: %v", err)
+			}
+		}
+	})
+
+	manager := New()
+	t.Cleanup(func() {
+		if err := manager.Clear(); err != nil {
+			t.Errorf("clear firewall: %v", err)
+		}
+	})
+	project := Project{
+		ID: "host-forward", Bridge: bridge.Attrs().Name,
+		Subnet: netip.MustParsePrefix("10.89.250.0/24"), Gateway: netip.MustParseAddr("10.89.250.1"),
+		ObjectStoreEnabled: true, ServiceTelemetryEnabled: true,
+	}
+	if err := manager.Apply([]Project{project}); err != nil {
+		t.Fatalf("apply test ruleset: %v", err)
+	}
+	for _, port := range []uint16{ObjectStorePort, ServiceTelemetryPort} {
+		connection, dialErr := net.DialTimeout("tcp4", fmt.Sprintf("10.89.250.1:%d", port), time.Second)
+		if dialErr != nil {
+			t.Fatalf("host connection to gateway port %d: %v", port, dialErr)
+		}
+		if err := connection.Close(); err != nil {
+			t.Fatalf("close gateway connection: %v", err)
 		}
 	}
 }

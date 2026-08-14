@@ -1,5 +1,10 @@
-import { Menu } from "@base-ui/react/menu";
-import { MoreVertical, RotateCw, ScrollText, Trash2 } from "lucide-react";
+import {
+  Files,
+  RotateCw,
+  ScrollText,
+  SquareTerminal,
+  Trash2,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router";
 
@@ -11,7 +16,10 @@ import {
 import type { ManagedDeploymentKind, RuntimeDeployment } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
-import { resourceDeploymentPath } from "@/project-resource-path";
+import { DeploymentActionMenu } from "@/deployment-action-menu";
+import { resourceTelemetryLogsPath } from "@/project-resource-path";
+import { RuntimeToolDialogs } from "@/runtime-tool-dialogs";
+import type { RuntimeTool } from "@/runtime-tool-dialogs";
 
 const statusClass: Record<RuntimeDeployment["status"], string> = {
   failed: "bg-destructive",
@@ -28,6 +36,8 @@ const DeploymentMenu = ({
   active,
   busy,
   deployment,
+  onOpenConsole,
+  onOpenFiles,
   onRemove,
   onRestart,
   onViewLogs,
@@ -35,53 +45,47 @@ const DeploymentMenu = ({
   active: boolean;
   busy: boolean;
   deployment: RuntimeDeployment;
+  onOpenConsole: () => void;
+  onOpenFiles: () => void;
   onRemove: () => void;
   onRestart: () => void;
   onViewLogs: () => void;
 }) => (
-  <Menu.Root>
-    <Menu.Trigger
-      aria-label={`Actions for deployment ${deployment.id}`}
-      className="grid size-8 place-items-center border border-transparent text-muted-foreground hover:border-border hover:bg-muted hover:text-foreground"
-      disabled={busy}
-    >
-      <MoreVertical className="size-3.5" />
-    </Menu.Trigger>
-    <Menu.Portal>
-      <Menu.Positioner align="end" className="z-50" sideOffset={4}>
-        <Menu.Popup className="min-w-44 border border-border bg-popover p-1 text-[10px] text-popover-foreground shadow-lg">
-          <Menu.Item
-            className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-            onClick={onViewLogs}
-          >
-            <ScrollText className="size-3.5" />
-            View logs
-          </Menu.Item>
-          {active ? (
-            <Menu.Item
-              className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-              onClick={onRestart}
-            >
-              <RotateCw className="size-3.5" />
-              Restart
-            </Menu.Item>
-          ) : null}
-          <Menu.Item
-            className="flex cursor-default items-center gap-2 px-2.5 py-2 text-destructive outline-none data-[highlighted]:bg-destructive/10"
-            onClick={onRemove}
-          >
-            <Trash2 className="size-3.5" />
-            Remove
-          </Menu.Item>
-        </Menu.Popup>
-      </Menu.Positioner>
-    </Menu.Portal>
-  </Menu.Root>
+  <DeploymentActionMenu
+    actions={[
+      { handleSelect: onViewLogs, icon: ScrollText, label: "View logs" },
+      ...(active
+        ? [
+            {
+              handleSelect: onOpenConsole,
+              icon: SquareTerminal,
+              label: "Console",
+            },
+            {
+              handleSelect: onOpenFiles,
+              icon: Files,
+              label: "Container files",
+            },
+            { handleSelect: onRestart, icon: RotateCw, label: "Restart" },
+          ]
+        : []),
+      {
+        handleSelect: onRemove,
+        icon: Trash2,
+        label: "Remove",
+        tone: "destructive" as const,
+      },
+    ]}
+    busy={busy}
+    deploymentID={deployment.id}
+  />
 );
 
 const DeploymentRow = ({
   busy,
   deployment,
+  onOpenConsole,
+  onOpenFiles,
   onRemove,
   onRestart,
   onViewLogs,
@@ -90,6 +94,8 @@ const DeploymentRow = ({
 }: {
   busy: boolean;
   deployment: RuntimeDeployment;
+  onOpenConsole: () => void;
+  onOpenFiles: () => void;
   onRemove: () => void;
   onRestart: () => void;
   onViewLogs: () => void;
@@ -131,6 +137,8 @@ const DeploymentRow = ({
         active={deployment.active}
         busy={busy}
         deployment={deployment}
+        onOpenConsole={onOpenConsole}
+        onOpenFiles={onOpenFiles}
         onRemove={() => setRemoveCandidate(deployment.id)}
         onRestart={onRestart}
         onViewLogs={onViewLogs}
@@ -140,8 +148,8 @@ const DeploymentRow = ({
       <div className="border-t border-border bg-muted/15 px-4 py-3">
         <p className="text-[9px] leading-4 text-muted-foreground">
           {deployment.active
-            ? "This stops the container and keeps its volume, data, deployment record, and logs. You can restart it later."
-            : "This permanently removes this history record and its logs. The database volume is not touched."}
+            ? "This stops the container and keeps its volume, data, deployment record, and retained telemetry. You can restart it later."
+            : "This permanently removes only this history record. The database volume and retained telemetry are not touched."}
         </p>
         <div className="mt-2 flex justify-end gap-2">
           <Button
@@ -169,10 +177,12 @@ export const ManagedDeploymentHistory = ({
   kind,
   projectID,
   resourceID,
+  resourceName,
 }: {
   kind: ManagedDeploymentKind;
   projectID: string;
   resourceID: string;
+  resourceName: string;
 }) => {
   const navigate = useNavigate();
   const [deployments, setDeployments] = useState<RuntimeDeployment[]>([]);
@@ -180,6 +190,7 @@ export const ManagedDeploymentHistory = ({
   const [removeCandidate, setRemoveCandidate] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
+  const [runtimeTool, setRuntimeTool] = useState<RuntimeTool>();
 
   const load = useCallback(
     async (cursor?: string, signal?: AbortSignal) => {
@@ -271,6 +282,8 @@ export const ManagedDeploymentHistory = ({
             busy={busy}
             deployment={deployment}
             key={deployment.id}
+            onOpenConsole={() => setRuntimeTool("console")}
+            onOpenFiles={() => setRuntimeTool("files")}
             onRemove={() =>
               void runAction(() =>
                 removeRuntimeDeployment(
@@ -293,7 +306,7 @@ export const ManagedDeploymentHistory = ({
             }
             onViewLogs={() =>
               void navigate(
-                resourceDeploymentPath(
+                resourceTelemetryLogsPath(
                   projectID,
                   resourceID,
                   kind,
@@ -323,6 +336,14 @@ export const ManagedDeploymentHistory = ({
           </Button>
         </div>
       ) : null}
+      <RuntimeToolDialogs
+        onChange={setRuntimeTool}
+        projectID={projectID}
+        resourceID={resourceID}
+        resourceKind={kind}
+        resourceName={resourceName}
+        tool={runtimeTool}
+      />
     </SectionCard>
   );
 };

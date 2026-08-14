@@ -24,10 +24,6 @@ const canvas: ProjectCanvas = {
   resources: [],
 };
 
-test("keeps the live demo canvas for the default preset", () => {
-  expect(projectCanvasForDemoPreset(canvas, "default")).toBe(canvas);
-});
-
 test("builds valid connected resources for every complex demo preset", () => {
   const expectedSizes = {
     "data-pipeline": { connections: 10, resources: 10 },

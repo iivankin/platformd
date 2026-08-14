@@ -15,24 +15,11 @@ import (
 )
 
 type logRepository struct {
-	buildCalls    int
-	buildProject  string
-	buildService  string
-	buildDeploy   string
-	calls         int
 	resourceCalls int
 	resourceKind  string
+	resourceQuery containerlogs.ResourceQuery
 	downloadCalls int
 	downloadQuery containerlogs.DownloadQuery
-	serviceQuery  containerlogs.Query
-}
-
-func (repository *logRepository) BuildLog(_ context.Context, projectID, serviceID, deploymentID string) (string, error) {
-	repository.buildCalls++
-	repository.buildProject = projectID
-	repository.buildService = serviceID
-	repository.buildDeploy = deploymentID
-	return "build complete", nil
 }
 
 func (repository *logRepository) DownloadServiceLogs(_ context.Context, _ string, query containerlogs.DownloadQuery, destination io.Writer) (containerlogs.DownloadResult, error) {
@@ -43,27 +30,19 @@ func (repository *logRepository) DownloadServiceLogs(_ context.Context, _ string
 	return containerlogs.DownloadResult{Bytes: int64(written)}, err
 }
 
-func (repository *logRepository) ServiceLogs(_ context.Context, _ string, query containerlogs.Query) (containerlogs.Window, error) {
-	repository.calls++
-	repository.serviceQuery = query
+func (repository *logRepository) ResourceLogs(_ context.Context, _ string, query containerlogs.ResourceQuery) (containerlogs.Window, error) {
+	repository.resourceCalls++
+	repository.resourceKind = query.Kind
+	repository.resourceQuery = query
 	return containerlogs.Window{Records: []containerlogs.Record{{
 		Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "ready",
-		DeploymentID: "deployment", AttemptID: "attempt",
-	}}}, nil
-}
-
-func (repository *logRepository) ResourceLogs(_ context.Context, _, kind, _, _, _ string, _ int) (containerlogs.Window, error) {
-	repository.resourceCalls++
-	repository.resourceKind = kind
-	return containerlogs.Window{Records: []containerlogs.Record{{
-		Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "resource ready",
 		DeploymentID: "resource", AttemptID: "attempt",
 	}}}, nil
 }
 
 func TestAdminServiceLogDownloadRequiresAccessAndBoundsRange(t *testing.T) {
 	repository := &logRepository{}
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs(repository))
 	path := "/api/v1/projects/project/services/service/logs/download?from=1783843200000&to=1783846800000&deploymentId=deployment"
 	response := httptest.NewRecorder()
 	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
@@ -88,53 +67,36 @@ func TestAdminServiceLogDownloadRequiresAccessAndBoundsRange(t *testing.T) {
 	}
 }
 
-func (*logRepository) ServiceLogRevision(context.Context, string, containerlogs.Query) (string, error) {
-	return "revision", nil
-}
-
-func TestAdminBuildLogRequiresAccessAndScopesDeployment(t *testing.T) {
-	repository := &logRepository{}
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
-	path := "/api/v1/projects/project/services/service/deployments/deployment/logs/build"
-	response := httptest.NewRecorder()
-	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
-	if response.Code != http.StatusForbidden || repository.buildCalls != 0 {
-		t.Fatalf("unauthenticated build log = %d/%s calls=%d", response.Code, response.Body, repository.buildCalls)
-	}
-
-	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
-	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
-	if response.Code != http.StatusOK || repository.buildCalls != 1 ||
-		repository.buildProject != "project" || repository.buildService != "service" || repository.buildDeploy != "deployment" ||
-		!strings.Contains(response.Body.String(), `"text":"build complete"`) {
-		t.Fatalf("build log = %d/%s repository=%+v", response.Code, response.Body, repository)
-	}
-}
-
 func TestAdminServiceLogsRequireAccessAndReturnStructuredWindow(t *testing.T) {
 	repository := &logRepository{}
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs(repository))
 	response := httptest.NewRecorder()
 	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs", nil))
-	if response.Code != http.StatusForbidden || repository.calls != 0 {
-		t.Fatalf("unauthenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.calls)
+	if response.Code != http.StatusForbidden || repository.resourceCalls != 0 {
+		t.Fatalf("unauthenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.resourceCalls)
 	}
 
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready&from=1000&to=2000", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stream":"stdout"`) || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.calls != 1 ||
-		repository.serviceQuery.ServiceID != "service" || repository.serviceQuery.Contains != "ready" || repository.serviceQuery.Limit != 20 ||
-		repository.serviceQuery.From.UnixMilli() != 1000 || repository.serviceQuery.To.UnixMilli() != 2000 {
-		t.Fatalf("authenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.calls)
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready&cursor=next-page&from=1000&to=2000&fieldFilters=%5B%7B%22path%22%3A%22caller%22%2C%22operator%22%3A%22equals%22%2C%22value%22%3A%22server.go%3A42%22%7D%5D", ""))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stream":"stdout"`) || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.resourceCalls != 1 ||
+		repository.resourceKind != "service" || repository.resourceQuery.ResourceID != "service" || repository.resourceQuery.Contains != "ready" || repository.resourceQuery.Cursor != "next-page" || repository.resourceQuery.Limit != 20 ||
+		len(repository.resourceQuery.FieldFilters) != 1 || repository.resourceQuery.FieldFilters[0].Path != "caller" ||
+		repository.resourceQuery.From.UnixMilli() != 1000 || repository.resourceQuery.To.UnixMilli() != 2000 {
+		t.Fatalf("authenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.resourceCalls)
+	}
+
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?fieldFilters=not-json", ""))
+	if response.Code != http.StatusBadRequest || repository.resourceCalls != 1 {
+		t.Fatalf("invalid field filters = %d/%s calls=%d", response.Code, response.Body, repository.resourceCalls)
 	}
 }
 
 func TestAdminManagedResourceLogsRequireAccessAndUseScopedKind(t *testing.T) {
 	repository := &logRepository{}
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs("admin.example.com", repository))
-	path := "/api/v1/projects/project/postgres/database/logs?limit=20&contains=ready"
+	direct := server.Handler(server.DefaultMeta("ready"), server.WithLogs(repository))
+	path := "/api/v1/projects/project/postgres/database/logs?limit=20&contains=ready&cursor=older-page"
 	response := httptest.NewRecorder()
 	direct.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
 	if response.Code != http.StatusForbidden || repository.resourceCalls != 0 {
@@ -145,7 +107,8 @@ func TestAdminManagedResourceLogsRequireAccessAndUseScopedKind(t *testing.T) {
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, projectRequest(http.MethodGet, path, ""))
 	if response.Code != http.StatusOK || repository.resourceCalls != 1 || repository.resourceKind != "postgres" ||
-		!strings.Contains(response.Body.String(), `"text":"resource ready"`) {
+		repository.resourceQuery.ResourceID != "database" || repository.resourceQuery.Cursor != "older-page" ||
+		!strings.Contains(response.Body.String(), `"text":"ready"`) {
 		t.Fatalf("resource logs = %d/%s calls=%d kind=%q", response.Code, response.Body, repository.resourceCalls, repository.resourceKind)
 	}
 }

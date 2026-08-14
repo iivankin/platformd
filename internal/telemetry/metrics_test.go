@@ -1,11 +1,47 @@
 package telemetry
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"testing"
 )
+
+func TestMetricQueryDecodesCompactProtocol(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Query().Get("scopeIds") != "service-a,service-b" {
+			t.Errorf("scopeIds = %q", request.URL.Query().Get("scopeIds"))
+		}
+		_ = json.NewEncoder(writer).Encode([]map[string]any{{
+			"scope_kind": "resource_service", "scope_id": "service-a", "time_unix_nano": uint64(42_000_000),
+			"values":     map[string]string{"MemoryBytes": "i:42", "Running": "b:1"},
+			"attributes": map[string]string{},
+		}})
+	}))
+	defer server.Close()
+	store := &MetricStore{queryEndpoint: server.URL, queryClient: server.Client()}
+	samples, err := store.query(context.Background(), "resource_service", []string{"service-a", "service-b"}, 1, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 || samples[0].ScopeID != "service-a" || samples[0].ObservedAt != 42 {
+		t.Fatalf("samples = %#v", samples)
+	}
+	var values struct {
+		MemoryBytes uint64
+		Running     bool
+	}
+	if err := decodeMetricValue(samples[0], &values); err != nil {
+		t.Fatal(err)
+	}
+	if values.MemoryBytes != 42 || !values.Running {
+		t.Fatalf("values = %#v", values)
+	}
+}
 
 func TestMetricFlatteningRoundTripsNestedDimensionsAndBooleans(t *testing.T) {
 	t.Parallel()
@@ -22,28 +58,25 @@ func TestMetricFlatteningRoundTripsNestedDimensionsAndBooleans(t *testing.T) {
 		t.Fatal(err)
 	}
 	sample := decodedMetricSample{
-		Values: make(map[string]string), Types: make(map[string]string), Attributes: make(map[string]string),
+		Values: make(map[string]string), Attributes: make(map[string]string),
 	}
 	for _, point := range points {
-		attributes := []any{attribute("platformd.field", point.field)}
+		attributes := make(map[string]string)
 		for key, value := range point.dimensions {
-			attributes = append(attributes, attribute("platformd.dimension."+key, value))
+			attributes["platformd.dimension."+key] = value
 		}
 		switch value := point.value.(type) {
 		case bool:
 			if value {
-				sample.Values[point.field] = "1"
+				sample.Values[point.field] = "b:1"
 			} else {
-				sample.Values[point.field] = "0"
+				sample.Values[point.field] = "b:0"
 			}
-			sample.Types[point.field] = "int"
-			attributes = append(attributes, attribute("platformd.value.type", "bool"))
 		case json.Number:
-			sample.Values[point.field] = value.String()
 			if _, err := value.Int64(); err == nil {
-				sample.Types[point.field] = "int"
+				sample.Values[point.field] = "i:" + value.String()
 			} else {
-				sample.Types[point.field] = "double"
+				sample.Values[point.field] = "f:" + value.String()
 			}
 		}
 		encoded, err := json.Marshal(attributes)

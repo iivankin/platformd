@@ -2,7 +2,7 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,58 +10,24 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/coder/websocket"
-	"github.com/coder/websocket/wsjson"
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/state"
 )
 
 type LogRepository interface {
-	BuildLog(context.Context, string, string, string) (string, error)
-	ServiceLogs(context.Context, string, containerlogs.Query) (containerlogs.Window, error)
-	ResourceLogs(context.Context, string, string, string, string, string, int) (containerlogs.Window, error)
-	ServiceLogRevision(context.Context, string, containerlogs.Query) (string, error)
+	ResourceLogs(context.Context, string, containerlogs.ResourceQuery) (containerlogs.Window, error)
 	DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error)
 }
 
-const logStreamPollInterval = 250 * time.Millisecond
-
-func registerLogRoutes(mux *http.ServeMux, hostname string, repository LogRepository) error {
-	if hostname == "" {
-		return errors.New("log stream hostname is required")
-	}
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", getServiceLogs(repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/deployments/{deploymentID}/logs/build", getBuildLog(repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{resourceID}/logs", getResourceLogs(repository, "redis"))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{resourceID}/logs", getResourceLogs(repository, "postgres"))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{resourceID}/logs", getResourceLogs(repository, "object_store"))
+func registerLogRoutes(mux *http.ServeMux, repository LogRepository) {
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs", getResourceLogs(repository, "service", "serviceID"))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{resourceID}/logs", getResourceLogs(repository, "redis", "resourceID"))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{resourceID}/logs", getResourceLogs(repository, "postgres", "resourceID"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/download", downloadServiceLogs(repository))
-	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/stream", streamServiceLogs(hostname, repository))
-	return nil
 }
 
-func getBuildLog(repository LogRepository) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		if _, ok := access.IdentityFromContext(request.Context()); !ok {
-			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
-			return
-		}
-		content, err := repository.BuildLog(
-			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"), request.PathValue("deploymentID"),
-		)
-		switch {
-		case err == nil:
-			writeJSON(response, http.StatusOK, map[string]string{"text": content})
-		case errors.Is(err, state.ErrServiceNotFound), errors.Is(err, state.ErrDeploymentNotFound):
-			writeAPIError(response, http.StatusNotFound, "deployment_not_found", "Deployment not found")
-		default:
-			writeAPIError(response, http.StatusInternalServerError, "build_log_read_failed", "Unable to read build log")
-		}
-	}
-}
-
-func getResourceLogs(repository LogRepository, kind string) http.HandlerFunc {
+func getResourceLogs(repository LogRepository, kind, resourcePathValue string) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := access.IdentityFromContext(request.Context()); !ok {
 			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
@@ -72,14 +38,30 @@ func getResourceLogs(repository LogRepository, kind string) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_log_limit", err.Error())
 			return
 		}
+		from, to, err := optionalLogRange(request)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_range", err.Error())
+			return
+		}
+		fieldFilters, err := logFieldFilters(request)
+		if err != nil {
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_field_filters", err.Error())
+			return
+		}
 		window, err := repository.ResourceLogs(
-			request.Context(), request.PathValue("projectID"), kind, request.PathValue("resourceID"),
-			request.URL.Query().Get("deploymentId"), request.URL.Query().Get("contains"), limit,
+			request.Context(), request.PathValue("projectID"), containerlogs.ResourceQuery{
+				Kind: kind, ResourceID: request.PathValue(resourcePathValue),
+				Query: containerlogs.Query{
+					DeploymentID: request.URL.Query().Get("deploymentId"), Contains: request.URL.Query().Get("contains"),
+					Cursor: request.URL.Query().Get("cursor"), FieldFilters: fieldFilters,
+					From: from, To: to, Limit: limit,
+				},
+			},
 		)
 		switch {
 		case err == nil:
 			writeJSON(response, http.StatusOK, window)
-		case errors.Is(err, state.ErrManagedRedisNotFound), errors.Is(err, state.ErrManagedPostgresNotFound), errors.Is(err, state.ErrObjectStoreNotFound):
+		case errors.Is(err, state.ErrServiceNotFound), errors.Is(err, state.ErrManagedRedisNotFound), errors.Is(err, state.ErrManagedPostgresNotFound):
 			writeAPIError(response, http.StatusNotFound, "resource_not_found", "Resource not found")
 		case errors.Is(err, containerlogs.ErrInvalidQuery):
 			writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
@@ -144,39 +126,19 @@ func writeLogDownloadError(response http.ResponseWriter, err error) {
 	}
 }
 
-func getServiceLogs(repository LogRepository) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		if _, ok := access.IdentityFromContext(request.Context()); !ok {
-			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
-			return
-		}
-		limit, err := logLimit(request)
-		if err != nil {
-			writeAPIError(response, http.StatusBadRequest, "invalid_log_limit", err.Error())
-			return
-		}
-		from, to, err := optionalLogRange(request)
-		if err != nil {
-			writeAPIError(response, http.StatusBadRequest, "invalid_log_range", err.Error())
-			return
-		}
-		window, err := repository.ServiceLogs(
-			request.Context(), request.PathValue("projectID"), containerlogs.Query{
-				ServiceID: request.PathValue("serviceID"), DeploymentID: request.URL.Query().Get("deploymentId"),
-				Contains: request.URL.Query().Get("contains"), From: from, To: to, Limit: limit,
-			},
-		)
-		switch {
-		case err == nil:
-			writeJSON(response, http.StatusOK, window)
-		case errors.Is(err, state.ErrServiceNotFound):
-			writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
-		case errors.Is(err, containerlogs.ErrInvalidQuery):
-			writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
-		default:
-			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read service logs", err)
-		}
+func logFieldFilters(request *http.Request) ([]containerlogs.FieldFilter, error) {
+	value := request.URL.Query().Get("fieldFilters")
+	if value == "" {
+		return nil, nil
 	}
+	if len(value) > containerlogs.MaximumFieldFilterBytes {
+		return nil, errors.New("fieldFilters is too large")
+	}
+	var filters []containerlogs.FieldFilter
+	if err := json.Unmarshal([]byte(value), &filters); err != nil {
+		return nil, errors.New("fieldFilters must be a JSON array")
+	}
+	return filters, nil
 }
 
 func optionalLogRange(request *http.Request) (time.Time, time.Time, error) {
@@ -205,115 +167,6 @@ func optionalLogRange(request *http.Request) (time.Time, time.Time, error) {
 	return from, to, nil
 }
 
-type logStreamMessage struct {
-	Type      string                 `json:"type"`
-	Records   []containerlogs.Record `json:"records"`
-	Truncated bool                   `json:"truncated,omitempty"`
-}
-
-func logStreamRecords(records []containerlogs.Record) []containerlogs.Record {
-	if records == nil {
-		return []containerlogs.Record{}
-	}
-	return records
-}
-
-func streamServiceLogs(hostname string, repository LogRepository) http.HandlerFunc {
-	return func(response http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Origin") != "https://"+hostname {
-			http.Error(response, http.StatusText(http.StatusForbidden), http.StatusForbidden)
-			return
-		}
-		if _, ok := access.IdentityFromContext(request.Context()); !ok {
-			http.Error(response, http.StatusText(http.StatusForbidden), http.StatusForbidden)
-			return
-		}
-		limit, err := logLimit(request)
-		if err != nil {
-			http.Error(response, err.Error(), http.StatusBadRequest)
-			return
-		}
-		if limit == 0 {
-			limit = containerlogs.DefaultLimit
-		}
-		projectID := request.PathValue("projectID")
-		serviceID := request.PathValue("serviceID")
-		deploymentID := request.URL.Query().Get("deploymentId")
-		contains := request.URL.Query().Get("contains")
-		query := containerlogs.Query{
-			ServiceID: serviceID, DeploymentID: deploymentID, Contains: contains, Limit: limit,
-		}
-		window, err := repository.ServiceLogs(request.Context(), projectID, query)
-		if err != nil {
-			writeLogStreamError(response, err)
-			return
-		}
-		revision, err := repository.ServiceLogRevision(request.Context(), projectID, query)
-		if err != nil {
-			writeLogStreamError(response, err)
-			return
-		}
-		connection, err := websocket.Accept(response, request, &websocket.AcceptOptions{CompressionMode: websocket.CompressionDisabled})
-		if err != nil {
-			return
-		}
-		defer connection.CloseNow()
-		ctx := connection.CloseRead(context.Background())
-		if err := writeLogMessage(ctx, connection, logStreamMessage{
-			Type: "snapshot", Records: logStreamRecords(window.Records), Truncated: window.Truncated,
-		}); err != nil {
-			return
-		}
-		seen := logFingerprints(window.Records)
-		poll := time.NewTicker(logStreamPollInterval)
-		defer poll.Stop()
-		ping := time.NewTicker(30 * time.Second)
-		defer ping.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ping.C:
-				pingCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				err := connection.Ping(pingCtx)
-				cancel()
-				if err != nil {
-					return
-				}
-			case <-poll.C:
-				currentRevision, revisionErr := repository.ServiceLogRevision(ctx, projectID, query)
-				if revisionErr != nil {
-					_ = connection.Close(websocket.StatusInternalError, "log stream unavailable")
-					return
-				}
-				if currentRevision == revision {
-					continue
-				}
-				query.Limit = containerlogs.MaximumLimit
-				current, readErr := repository.ServiceLogs(ctx, projectID, query)
-				if readErr != nil {
-					_ = connection.Close(websocket.StatusInternalError, "log stream unavailable")
-					return
-				}
-				currentSeen := logFingerprints(current.Records)
-				newRecords, overlap := unseenLogRecords(current.Records, seen)
-				if len(seen) > 0 && !overlap && len(current.Records) > 0 {
-					if err := writeLogMessage(ctx, connection, logStreamMessage{Type: "gap", Records: []containerlogs.Record{}}); err != nil {
-						return
-					}
-				}
-				if len(newRecords) > 0 {
-					if err := writeLogMessage(ctx, connection, logStreamMessage{Type: "records", Records: newRecords}); err != nil {
-						return
-					}
-				}
-				seen = currentSeen
-				revision = currentRevision
-			}
-		}
-	}
-}
-
 func logLimit(request *http.Request) (int, error) {
 	value := request.URL.Query().Get("limit")
 	if value == "" {
@@ -324,62 +177,4 @@ func logLimit(request *http.Request) (int, error) {
 		return 0, fmt.Errorf("limit must be an integer from 1 to %d", containerlogs.MaximumLimit)
 	}
 	return parsed, nil
-}
-
-func writeLogStreamError(response http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, state.ErrServiceNotFound):
-		http.Error(response, "Service not found", http.StatusNotFound)
-	case errors.Is(err, containerlogs.ErrInvalidQuery):
-		http.Error(response, err.Error(), http.StatusBadRequest)
-	default:
-		http.Error(response, "Unable to read service logs", http.StatusInternalServerError)
-	}
-}
-
-func writeLogMessage(ctx context.Context, connection *websocket.Conn, message logStreamMessage) error {
-	writeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	return wsjson.Write(writeCtx, connection, message)
-}
-
-type logFingerprint [sha256.Size]byte
-
-func logFingerprints(records []containerlogs.Record) map[logFingerprint]struct{} {
-	result := make(map[logFingerprint]struct{}, len(records))
-	for _, record := range records {
-		result[fingerprintLogRecord(record)] = struct{}{}
-	}
-	return result
-}
-
-func unseenLogRecords(records []containerlogs.Record, previous map[logFingerprint]struct{}) ([]containerlogs.Record, bool) {
-	result := make([]containerlogs.Record, 0)
-	overlap := false
-	for _, record := range records {
-		if _, exists := previous[fingerprintLogRecord(record)]; exists {
-			overlap = true
-			continue
-		}
-		result = append(result, record)
-	}
-	return result, overlap
-}
-
-func fingerprintLogRecord(record containerlogs.Record) logFingerprint {
-	hash := sha256.New()
-	_, _ = io.WriteString(hash, record.Timestamp.UTC().Format(time.RFC3339Nano))
-	for _, value := range []string{record.Stream, record.Text, record.DeploymentID, record.AttemptID} {
-		_, _ = hash.Write([]byte{0})
-		_, _ = io.WriteString(hash, value)
-	}
-	if record.Partial {
-		_, _ = hash.Write([]byte{1})
-	}
-	if record.Truncated {
-		_, _ = hash.Write([]byte{2})
-	}
-	var result logFingerprint
-	copy(result[:], hash.Sum(nil))
-	return result
 }

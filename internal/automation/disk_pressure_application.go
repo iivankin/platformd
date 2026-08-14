@@ -28,6 +28,7 @@ type DiskPressureDTO struct {
 	ByteBasisPoints     uint64             `json:"byteBasisPoints"`
 	InodeBasisPoints    uint64             `json:"inodeBasisPoints"`
 	TotalBytes          uint64             `json:"totalBytes"`
+	UsedBytes           uint64             `json:"usedBytes"`
 	AvailableBytes      uint64             `json:"availableBytes"`
 	TotalInodes         uint64             `json:"totalInodes"`
 	AvailableInodes     uint64             `json:"availableInodes"`
@@ -60,7 +61,8 @@ func (application *DiskPressureApplication) Read(ctx context.Context, identity I
 	result := DiskPressureDTO{
 		Level: snapshot.Level, ByteBasisPoints: snapshot.Usage.ByteBasisPoints,
 		InodeBasisPoints: snapshot.Usage.InodeBasisPoints, TotalBytes: snapshot.Usage.TotalBytes,
-		AvailableBytes: snapshot.Usage.AvailableBytes, TotalInodes: snapshot.Usage.TotalInodes,
+		UsedBytes: snapshot.Usage.UsedBytes, AvailableBytes: snapshot.Usage.AvailableBytes,
+		TotalInodes:     snapshot.Usage.TotalInodes,
 		AvailableInodes: snapshot.Usage.AvailableInodes, ReservePresent: snapshot.ReservePresent,
 		CheckedAt: snapshot.CheckedAt.UnixMilli(),
 	}

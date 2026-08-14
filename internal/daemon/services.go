@@ -31,9 +31,7 @@ type serviceRuntime interface {
 	DeployService(context.Context, string, bool) error
 	DeployServiceImage(context.Context, string, state.DeploymentRecord) error
 	RestartServiceDeployment(context.Context, string, string) error
-	DeleteServiceDeploymentLogs(string, string) error
 	DeleteService(context.Context, state.ServiceDesired) error
-	DeleteServiceLogs(string) error
 	stopServicePreviews(context.Context, string, string) error
 	ReconcileService(context.Context, string) error
 	TrackService(context.Context, string, bool) error
@@ -88,7 +86,6 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 		repository.reportCleanupError(repository.telemetryRoutes.reloadPublicRoutes(ctx))
 	}
 	repository.traffic.Forget(service.ID)
-	repository.reportCleanupError(repository.runtime.DeleteServiceLogs(service.ID))
 	if repository.volumeFilesystem != nil {
 		for _, item := range deleted.Volumes {
 			repository.reportCleanupError(repository.volumeFilesystem.Remove(ctx, item.ProjectID, item.ID))
@@ -140,9 +137,6 @@ func (repository liveServiceRepository) RemoveServiceDeployment(ctx context.Cont
 		})
 	}
 	if _, err := repository.store.ServiceDeployment(ctx, input.ProjectID, input.ID, input.DeploymentID); err != nil {
-		return state.ServiceDesired{}, err
-	}
-	if err := repository.runtime.DeleteServiceDeploymentLogs(input.ID, input.DeploymentID); err != nil {
 		return state.ServiceDesired{}, err
 	}
 	if err := repository.store.DeleteServiceDeployment(ctx, input); err != nil {

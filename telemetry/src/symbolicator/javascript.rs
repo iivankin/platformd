@@ -5,7 +5,7 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use serde_json::{Value, json};
 use symbolic_debuginfo::sourcebundle::{
-    SourceBundle, SourceBundleDebugSession, SourceFileDescriptor,
+    SourceBundle, SourceBundleDebugSession, SourceFileDescriptor, SourceFileType,
 };
 use symbolic_sourcemapcache::{
     ScopeLookupResult, SourceMapCache, SourceMapCacheWriter, SourcePosition,
@@ -139,7 +139,7 @@ fn prepare_source<'a>(
     debug_id: Option<&str>,
 ) -> Result<PreparedSource> {
     let Some(source) = find_minified_source(session, abs_path, debug_id)? else {
-        return Ok(PreparedSource::Missing);
+        return prepare_standalone_sourcemap(session, abs_path, debug_id);
     };
     let source_contents = source
         .contents()
@@ -163,7 +163,36 @@ fn prepare_source<'a>(
             .to_owned()
     };
 
-    let writer = SourceMapCacheWriter::new(&source_contents, &sourcemap_contents)
+    compile_sourcemap(&source_contents, &sourcemap_contents, sourcemap_reference)
+}
+
+fn prepare_standalone_sourcemap<'a>(
+    session: &'a SourceBundleDebugSession<'a>,
+    abs_path: &str,
+    debug_id: Option<&str>,
+) -> Result<PreparedSource> {
+    // Compiled full-stack bundles can expose source maps to CI while keeping the corresponding
+    // browser chunks embedded in an executable. Exact URL lookup keeps content-hashed chunk names
+    // as the artifact identity without requiring SDK metadata.
+    let Some(sourcemap) = find_standalone_sourcemap(session, abs_path, debug_id)? else {
+        return Ok(PreparedSource::Missing);
+    };
+    let sourcemap_reference = sourcemap
+        .url()
+        .map(str::to_owned)
+        .unwrap_or_else(|| standalone_sourcemap_url(abs_path));
+    let sourcemap_contents = sourcemap
+        .contents()
+        .ok_or_else(|| Error::Storage("source map entry has no contents".into()))?;
+    compile_sourcemap("", sourcemap_contents, sourcemap_reference)
+}
+
+fn compile_sourcemap(
+    source_contents: &str,
+    sourcemap_contents: &str,
+    sourcemap_reference: String,
+) -> Result<PreparedSource> {
+    let writer = SourceMapCacheWriter::new(source_contents, sourcemap_contents)
         .map_err(|error| Error::Storage(format!("compile source map: {error}")))?;
     let mut bytes = Cursor::new(Vec::new());
     writer
@@ -253,10 +282,7 @@ fn find_minified_source<'a>(
     debug_id: Option<&str>,
 ) -> Result<Option<SourceFileDescriptor<'a>>> {
     if let Some(debug_id) = debug_id.and_then(|value| value.parse().ok()) {
-        for ty in [
-            symbolic_debuginfo::sourcebundle::SourceFileType::MinifiedSource,
-            symbolic_debuginfo::sourcebundle::SourceFileType::Source,
-        ] {
+        for ty in [SourceFileType::MinifiedSource, SourceFileType::Source] {
             if let Some(source) = session
                 .source_by_debug_id(debug_id, ty)
                 .map_err(source_bundle_error)?
@@ -266,6 +292,26 @@ fn find_minified_source<'a>(
         }
     }
     find_source_by_url(session, abs_path)
+}
+
+fn find_standalone_sourcemap<'a>(
+    session: &'a SourceBundleDebugSession<'a>,
+    abs_path: &str,
+    debug_id: Option<&str>,
+) -> Result<Option<SourceFileDescriptor<'a>>> {
+    if let Some(debug_id) = debug_id.and_then(|value| value.parse().ok())
+        && let Some(source) = session
+            .source_by_debug_id(debug_id, SourceFileType::SourceMap)
+            .map_err(source_bundle_error)?
+    {
+        return Ok(Some(source));
+    }
+    find_source_by_url(session, &standalone_sourcemap_url(abs_path))
+}
+
+fn standalone_sourcemap_url(source_url: &str) -> String {
+    let suffix_start = source_url.find(['?', '#']).unwrap_or(source_url.len());
+    format!("{}.map", &source_url[..suffix_start])
 }
 
 fn find_source_by_url<'a>(
@@ -449,5 +495,46 @@ mod tests {
         );
         assert_eq!(frame["filename"], "app.js");
         assert_eq!(frame["data"]["symbolicated"], true);
+    }
+
+    #[test]
+    fn resolves_a_hashed_chunk_from_a_standalone_source_map() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle_path = directory.path().join("bundle.zip");
+        let mut bundle = SourceBundleWriter::start(File::create(&bundle_path).unwrap()).unwrap();
+        let mut map_info = SourceFileInfo::new();
+        map_info.set_ty(SourceFileType::SourceMap);
+        map_info.set_url("~/chunk-a1b2c3.js.map".into());
+        bundle
+            .add_file(
+                "chunk-a1b2c3.js.map",
+                Cursor::new(
+                    r#"{"version":3,"sources":["app.js"],"sourcesContent":["export function boom() {\n  throw new Error('broken');\n}\nboom();\n"],"names":["boom","Error"],"mappings":"AAAO,SAASA,OAAO,CAAC,CAAE,MAAM,IAAIC,KAAK,CAAC,QAAQ,CAAC,CAAC,CAACD,IAAI,EAAE"}"#,
+                ),
+                map_info,
+            )
+            .unwrap();
+        bundle.finish().unwrap();
+        let bytes = std::fs::read(bundle_path).unwrap();
+        let mut frame = json!({
+            "abs_path": "https://example.invalid/chunk-a1b2c3.js?cache=1",
+            "filename": "chunk-a1b2c3.js",
+            "function": "boom",
+            "lineno": 1,
+            "colno": 23,
+        });
+
+        assert!(
+            symbolicate_frame(
+                &mut frame,
+                "https://example.invalid/chunk-a1b2c3.js?cache=1",
+                None,
+                &bytes,
+            )
+            .unwrap()
+        );
+        assert_eq!(frame["filename"], "app.js");
+        assert_eq!(frame["data"]["symbolicated"], true);
+        assert_eq!(frame["data"]["sourcemap"], "~/chunk-a1b2c3.js.map");
     }
 }

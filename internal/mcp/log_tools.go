@@ -12,17 +12,19 @@ import (
 
 func (handler *Handler) readServiceLogs(ctx context.Context, arguments json.RawMessage, identity automation.Identity) (any, error) {
 	var input struct {
-		ProjectID    string `json:"projectId"`
-		ServiceID    string `json:"serviceId"`
-		DeploymentID string `json:"deploymentId"`
-		Contains     string `json:"contains"`
-		SeverityText string `json:"severityText"`
-		TraceID      string `json:"traceId"`
-		SpanID       string `json:"spanId"`
-		From         int64  `json:"from"`
-		To           int64  `json:"to"`
-		Order        string `json:"order"`
-		Limit        int    `json:"limit"`
+		ProjectID    string                      `json:"projectId"`
+		ServiceID    string                      `json:"serviceId"`
+		DeploymentID string                      `json:"deploymentId"`
+		Contains     string                      `json:"contains"`
+		Cursor       string                      `json:"cursor"`
+		FieldFilters []containerlogs.FieldFilter `json:"fieldFilters"`
+		SeverityText string                      `json:"severityText"`
+		TraceID      string                      `json:"traceId"`
+		SpanID       string                      `json:"spanId"`
+		From         int64                       `json:"from"`
+		To           int64                       `json:"to"`
+		Order        string                      `json:"order"`
+		Limit        int                         `json:"limit"`
 	}
 	if err := decodeArguments(arguments, &input); err != nil || input.ProjectID == "" || input.ServiceID == "" ||
 		input.From < 0 || input.To < 0 || input.From > 0 && input.To > 0 && input.To < input.From ||
@@ -39,7 +41,8 @@ func (handler *Handler) readServiceLogs(ctx context.Context, arguments json.RawM
 	}
 	window, err := handler.logs.ReadService(ctx, identity, automation.ReadServiceLogsInput{
 		ProjectID: input.ProjectID, ServiceID: input.ServiceID, DeploymentID: input.DeploymentID,
-		Contains: input.Contains, SeverityText: input.SeverityText, TraceID: input.TraceID, SpanID: input.SpanID,
+		Contains: input.Contains, Cursor: input.Cursor, FieldFilters: input.FieldFilters,
+		SeverityText: input.SeverityText, TraceID: input.TraceID, SpanID: input.SpanID,
 		From: from, To: to, Limit: input.Limit, Ascending: input.Order == "asc",
 	})
 	if err != nil {

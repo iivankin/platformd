@@ -3,6 +3,7 @@
 package firewall
 
 import (
+	"bytes"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -51,13 +52,16 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	}
 	project.ObjectStoreEnabled = true
 	withObjectStore := compileRuleset(TableName, []Project{project})
-	if len(withObjectStore.rules) != len(compiled.rules)+1 {
-		t.Fatalf("object store must add exactly one TCP listener rule: without=%d with=%d", len(compiled.rules), len(withObjectStore.rules))
+	if len(withObjectStore.rules) != len(compiled.rules)+2 {
+		t.Fatalf("object store must add project and host TCP listener rules: without=%d with=%d", len(compiled.rules), len(withObjectStore.rules))
 	}
 	project.ServiceTelemetryEnabled = true
 	withTelemetry := compileRuleset(TableName, []Project{project})
-	if len(withTelemetry.rules) != len(withObjectStore.rules)+2 {
-		t.Fatalf("service telemetry must add Sentry and OTLP HTTP listeners: without=%d with=%d", len(withObjectStore.rules), len(withTelemetry.rules))
+	if len(withTelemetry.rules) != len(withObjectStore.rules)+3 {
+		t.Fatalf("service telemetry must add project Sentry/OTLP and host Sentry listeners: without=%d with=%d", len(withObjectStore.rules), len(withTelemetry.rules))
+	}
+	if countInputAcceptsForInterface(withTelemetry, loopbackInterface) != 2 {
+		t.Fatal("gateway-backed port-forward targets are not reachable from the host namespace")
 	}
 	project.BlockedDatabaseEndpoints = []DatabaseEndpoint{{Address: netip.MustParseAddr("10.80.1.4"), Port: 5432}}
 	withMaintenance := compileRuleset(TableName, []Project{project})
@@ -71,6 +75,36 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	if len(withGateway.rules) != len(withMaintenance.rules)+2 {
 		t.Fatalf("network gateway must add one exact accept and one cross-project drop: without=%d with=%d", len(withMaintenance.rules), len(withGateway.rules))
 	}
+}
+
+func countInputAcceptsForInterface(compiled compiledRuleset, interfaceName string) int {
+	expectedName := make([]byte, 16)
+	copy(expectedName, interfaceName)
+	count := 0
+	for _, currentRule := range compiled.rules {
+		if currentRule.Chain != compiled.chains[0] || !hasAcceptVerdict(currentRule) {
+			continue
+		}
+		for index := 0; index+1 < len(currentRule.Exprs); index++ {
+			metadata, metadataOK := currentRule.Exprs[index].(*expr.Meta)
+			comparison, comparisonOK := currentRule.Exprs[index+1].(*expr.Cmp)
+			if metadataOK && comparisonOK && metadata.Key == expr.MetaKeyIIFNAME &&
+				comparison.Op == expr.CmpOpEq && bytes.Equal(comparison.Data, expectedName) {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
+func hasAcceptVerdict(rule *nftables.Rule) bool {
+	for _, expression := range rule.Exprs {
+		if value, ok := expression.(*expr.Verdict); ok && value.Kind == expr.VerdictAccept {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCompileRulesetAddsPerServicePublicTrafficCounters(t *testing.T) {

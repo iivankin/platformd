@@ -264,16 +264,6 @@ export const App = () => {
                       onProjectUpdated={data.handleProjectUpdated}
                     />
                   }
-                  path="/projects/:projectID/:resourceCollection/:resourceID/deployments/:deploymentID/:deploymentView?"
-                />
-                <Route
-                  element={
-                    <ProjectCanvasPage
-                      isDemo={isDemo}
-                      onProjectDeleted={data.handleProjectDeleted}
-                      onProjectUpdated={data.handleProjectUpdated}
-                    />
-                  }
                   path="/projects/:projectID/:resourceCollection/:resourceID/:view?"
                 />
                 <Route

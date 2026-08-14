@@ -11,7 +11,7 @@ import (
 )
 
 type imageArchiveStore interface {
-	DeleteImageCleanupCandidates(context.Context, state.ImageCleanupMode, int64, int64) (state.ImageCleanupFiles, error)
+	DeleteImageCleanupCandidates(context.Context, state.ImageCleanupMode, int64, int) (state.ImageCleanupFiles, error)
 }
 
 type imageUploadCanceller interface {
@@ -57,7 +57,7 @@ func (collector *imageArchiveGarbageCollector) Cleanup(ctx context.Context, leve
 		}
 	}
 	files, err := collector.store.DeleteImageCleanupCandidates(
-		ctx, mode, now.UnixMilli(), now.Add(-inactiveFinalImageRetention).UnixMilli(),
+		ctx, mode, now.UnixMilli(), retainedImageRevisions,
 	)
 	if err != nil {
 		return err

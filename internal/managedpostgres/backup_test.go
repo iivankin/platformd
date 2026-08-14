@@ -35,6 +35,9 @@ func (*backupEngineStub) CreateContainer(context.Context, containerengine.Contai
 func (*backupEngineStub) StartContainer(context.Context, string) error {
 	return errors.New("unexpected StartContainer")
 }
+func (*backupEngineStub) StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error) {
+	return nil, errors.New("unexpected StartContainerAttached")
+}
 func (*backupEngineStub) StopContainer(string, uint) error {
 	return errors.New("unexpected StopContainer")
 }

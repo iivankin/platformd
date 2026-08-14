@@ -198,6 +198,7 @@ const handleManagedLogs = (
   if (
     request.method !== "GET" ||
     !isManagedCollection(collection) ||
+    collection === "object-stores" ||
     resource !== "logs" ||
     tail.length > 0
   ) {

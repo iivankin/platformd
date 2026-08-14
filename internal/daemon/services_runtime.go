@@ -22,11 +22,6 @@ import (
 	"github.com/iivankin/platformd/internal/systemevent"
 )
 
-const (
-	serviceLogSegmentBytes = 10 << 20
-	serviceLogMaxFiles     = 3
-)
-
 type publishedBackend struct {
 	deploymentID string
 	address      string
@@ -47,10 +42,10 @@ func (stack *runtimeStack) ConfigureDeployments(ctx context.Context, store *stat
 		BeforeDeploy: beforeDeployExecutor{
 			engine: stack.engine, environment: resourceVariableResolver{store: store, master: master},
 			placement: stack.servicePlacement, cloudflare: cloudflareApplication,
-			logSizeBytes: serviceLogSegmentBytes, logMaxFiles: serviceLogMaxFiles,
+			logs: containerLogs,
 		},
-		Placement: stack.servicePlacement,
-		LogRoot:   stack.paths.LogsRoot, VolumeRoot: stack.paths.VolumesRoot,
+		Placement:     stack.servicePlacement,
+		VolumeRoot:    stack.paths.VolumesRoot,
 		ContainerLogs: containerLogs,
 	})
 	if err != nil {
@@ -187,7 +182,9 @@ func (stack *runtimeStack) DeployServiceImage(ctx context.Context, serviceID str
 	if err != nil {
 		return err
 	}
-	return stack.DeployUploadedProduction(ctx, serviceID, deploymentID, previous.ImageRevisionID, previous.ImageReference, image, state.ImageUploadIdentity{SHA: previous.SourceRevision})
+	return stack.DeployUploadedProduction(ctx, serviceID, deploymentID, previous.ImageRevisionID, previous.ImageReference, image, state.ImageUploadIdentity{
+		SHA: previous.SourceRevision, CommitMessage: previous.CommitMessage,
+	})
 }
 
 func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, deploy func(*deployment.Controller) error) error {
@@ -219,17 +216,6 @@ func (stack *runtimeStack) RestartServiceDeployment(ctx context.Context, service
 	return err
 }
 
-func (stack *runtimeStack) DeleteServiceDeploymentLogs(serviceID, deploymentID string) error {
-	stack.mu.Lock()
-	controller := stack.deployments
-	closed := stack.closed
-	stack.mu.Unlock()
-	if closed || controller == nil {
-		return errors.New("service deployment runtime is not ready")
-	}
-	return controller.DeleteDeploymentLogs(serviceID, deploymentID)
-}
-
 func (stack *runtimeStack) DeleteService(ctx context.Context, service state.ServiceDesired) error {
 	stack.mu.Lock()
 	controller := stack.deployments
@@ -252,17 +238,6 @@ func (stack *runtimeStack) deleteServiceDuringProjectDeletion(ctx context.Contex
 		return errors.New("service deployment runtime is not ready")
 	}
 	return controller.DeleteServiceDuringProjectDeletion(ctx, service)
-}
-
-func (stack *runtimeStack) DeleteServiceLogs(serviceID string) error {
-	stack.mu.Lock()
-	controller := stack.deployments
-	closed := stack.closed
-	stack.mu.Unlock()
-	if closed || controller == nil {
-		return errors.New("service deployment runtime is not ready")
-	}
-	return controller.DeleteServiceLogs(serviceID)
 }
 
 func (stack *runtimeStack) WithServiceQuiesced(ctx context.Context, serviceID string, action func() error) error {
@@ -506,6 +481,9 @@ func (stack *runtimeStack) previewPlacement(service state.ServiceDesired) (previ
 	if err != nil {
 		return preview.Placement{}, err
 	}
+	// Previews intentionally share the service cgroup: the one resource-metrics
+	// collector then exports production and preview usage through the same OTLP
+	// pipeline instead of maintaining a second preview metrics subsystem.
 	return preview.Placement{
 		NetworkName: placement.NetworkName, Gateway: placement.Gateway,
 		DNSSearch: placement.DNSSearch, CgroupParent: placement.CgroupParent,

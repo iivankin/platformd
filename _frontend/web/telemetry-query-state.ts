@@ -1,10 +1,13 @@
 import {
   debounce,
-  parseAsBoolean,
   parseAsInteger,
+  parseAsJson,
   parseAsString,
   parseAsStringLiteral,
 } from "nuqs";
+
+import { logFieldFiltersSchema } from "@/log-field-filter";
+import { logSeverityValues } from "@/log-severity";
 
 export const telemetryViewValues = [
   "metrics",
@@ -49,19 +52,15 @@ export const timeRangeQueryParsers = {
 
 export const logQueryParsers = {
   deployment: parseAsString,
-  logLevel: parseAsStringLiteral([
-    "all",
-    "error",
-    "warn",
-    "info",
-    "debug",
-    "unset",
-  ] as const).withDefault("all"),
+  logFields: parseAsJson((value) => {
+    const parsed = logFieldFiltersSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  }).withDefault([]),
+  logLevel: parseAsStringLiteral(logSeverityValues).withDefault("info"),
   logOrder: parseAsStringLiteral(["asc", "desc"] as const).withDefault("desc"),
   logQuery: parseAsString.withDefault(""),
   logSort: parseAsStringLiteral(logSortValues).withDefault("timestamp"),
   ...timeRangeQueryParsers,
-  withTrace: parseAsBoolean.withDefault(false),
 };
 
 export const traceQueryParsers = {

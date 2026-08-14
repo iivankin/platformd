@@ -7,11 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,11 +18,12 @@ import (
 
 	"github.com/iivankin/platformd/internal/admission"
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/deployment"
-	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/serviceconfig"
 	"github.com/iivankin/platformd/internal/servicesource"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const (
@@ -58,7 +58,7 @@ type Engine interface {
 	Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error)
 	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
-	StartContainer(context.Context, string) error
+	StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error)
 	StopContainer(string, uint) error
 	RemoveContainer(context.Context, string, bool) error
 	InspectContainer(string) (containerengine.Container, error)
@@ -90,11 +90,8 @@ type Config struct {
 	Placement         func(state.ServiceDesired) (Placement, error)
 	RoutesChanged     func(context.Context) error
 	CertificateCovers func(string) bool
-	LogRoot           string
-	LogSizeBytes      int64
-	LogMaxFiles       uint
+	ContainerLogs     containerlogs.Sink
 	Now               func() time.Time
-	NewID             func() (string, error)
 }
 
 type activeContainer struct {
@@ -112,11 +109,8 @@ type Application struct {
 	placement         func(state.ServiceDesired) (Placement, error)
 	routesChanged     func(context.Context) error
 	certificateCovers func(string) bool
-	logRoot           string
-	logSizeBytes      int64
-	logMaxFiles       uint
+	containerLogs     containerlogs.Sink
 	now               func() time.Time
-	newID             func() (string, error)
 	httpClient        *http.Client
 
 	mu     sync.Mutex
@@ -127,24 +121,18 @@ type Application struct {
 func New(config Config) (*Application, error) {
 	if config.Store == nil || config.Engine == nil || config.Environment == nil || config.DNS == nil ||
 		config.Growth == nil || config.Admission == nil || config.Placement == nil || config.RoutesChanged == nil ||
-		config.CertificateCovers == nil || !filepath.IsAbs(config.LogRoot) || config.LogRoot == "/" ||
-		config.LogSizeBytes <= 0 || config.LogMaxFiles == 0 {
+		config.CertificateCovers == nil || config.ContainerLogs == nil {
 		return nil, errors.New("image preview dependencies are incomplete")
 	}
 	now := config.Now
 	if now == nil {
 		now = time.Now
 	}
-	newID := config.NewID
-	if newID == nil {
-		newID = id.New
-	}
 	return &Application{
 		store: config.Store, engine: config.Engine, environment: config.Environment, dns: config.DNS,
 		growth: config.Growth, admission: config.Admission, placement: config.Placement,
 		routesChanged: config.RoutesChanged, certificateCovers: config.CertificateCovers,
-		logRoot: config.LogRoot, logSizeBytes: config.LogSizeBytes, logMaxFiles: config.LogMaxFiles,
-		now: now, newID: newID,
+		containerLogs: config.ContainerLogs, now: now,
 		httpClient: &http.Client{
 			Timeout:       probeTimeout,
 			Transport:     &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: (&net.Dialer{Timeout: probeTimeout}).DialContext},
@@ -216,7 +204,7 @@ func (application *Application) DeployUploaded(
 			_ = application.engine.RemoveContainer(context.Background(), candidate.ID, true)
 		}
 	}()
-	if err := application.engine.StartContainer(ctx, candidate.ID); err != nil {
+	if err := application.startContainer(ctx, plan.desired, previewID, candidate.ID); err != nil {
 		return "", application.fail(ctx, previewID, "candidate_start_failed", err)
 	}
 	ready, err := application.waitReady(ctx, plan.desired, candidate.ID, placement.NetworkName)
@@ -310,7 +298,7 @@ func (application *Application) Restore(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		if err := application.engine.StartContainer(ctx, container.ID); err != nil {
+		if err := application.startContainer(ctx, desired, item.ID, container.ID); err != nil {
 			_ = application.engine.RemoveContainer(context.Background(), container.ID, true)
 			return err
 		}
@@ -350,11 +338,7 @@ func (application *Application) cleanup(ctx context.Context) {
 			_ = application.deleteDNS(ctx, item)
 		}
 	}
-	if removed, err := application.store.DeleteFinishedPreviewDeployments(ctx, now.Add(-Retention).UnixMilli()); err == nil {
-		for _, item := range removed {
-			_ = os.RemoveAll(filepath.Join(application.logRoot, "services", item.ServiceID, item.ID))
-		}
-	}
+	_, _ = application.store.DeleteFinishedPreviewDeployments(ctx, now.Add(-Retention).UnixMilli())
 }
 
 func (application *Application) desiredPreview(ctx context.Context, serviceID string) (previewPlan, error) {
@@ -378,24 +362,16 @@ func (application *Application) desiredPreview(ctx context.Context, serviceID st
 		return previewPlan{}, err
 	}
 	return previewPlan{
-		desired:            desired,
-		root:               root,
-		targetPort:         targetPort,
-		canonicalHostname:  previewDNSCanonical(root, domains),
+		desired:           desired,
+		root:              root,
+		targetPort:        targetPort,
+		canonicalHostname: previewDNSCanonical(root, domains),
 	}, nil
 }
 
 func (application *Application) createContainer(ctx context.Context, desired state.ServiceDesired, environmentContext deployment.EnvironmentContext, imageID string) (containerengine.Container, Placement, error) {
 	placement, err := application.placement(desired)
 	if err != nil {
-		return containerengine.Container{}, Placement{}, err
-	}
-	attemptID, err := application.newID()
-	if err != nil {
-		return containerengine.Container{}, Placement{}, err
-	}
-	logPath := filepath.Join(application.logRoot, "services", desired.ID, environmentContext.DeploymentID, attemptID+".log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
 		return containerengine.Container{}, Placement{}, err
 	}
 	environment, err := application.environment.Resolve(ctx, desired, environmentContext)
@@ -407,10 +383,35 @@ func (application *Application) createContainer(ctx context.Context, desired sta
 		Entrypoint: desired.Snapshot.Command, Command: desired.Snapshot.Args, Environment: environment,
 		Labels:  map[string]string{"io.platformd.owner": "preview", "io.platformd.project-id": desired.ProjectID, "io.platformd.service-id": desired.ID, "io.platformd.preview-id": environmentContext.DeploymentID},
 		Network: placement.NetworkName, DNSServers: []string{placement.Gateway.String()}, DNSSearch: []string{placement.DNSSearch},
-		LogPath: logPath, LogSizeBytes: application.logSizeBytes, LogMaxFiles: application.logMaxFiles,
+		LogDriver:    containerengine.ContainerLogNone,
 		CgroupParent: placement.CgroupParent, CPUMillicores: desired.Snapshot.CPUMillicores, MemoryMaxBytes: desired.Snapshot.MemoryMaxBytes,
 	})
 	return container, placement, err
+}
+
+func (application *Application) startContainer(
+	ctx context.Context,
+	desired state.ServiceDesired,
+	previewID string,
+	containerID string,
+) error {
+	attached, err := containerlogs.StartAttached(ctx, application.engine, application.containerLogs, containerlogs.RuntimeMetadata{
+		ResourceID: desired.ID, ResourceName: desired.Name,
+		DeploymentID: previewID, ContainerID: containerID,
+	})
+	if err != nil {
+		return err
+	}
+	go func() {
+		if attachErr, ok := <-attached; ok && attachErr != nil {
+			systemevent.Failure(
+				"preview_log_attach_failed", attachErr,
+				systemevent.String("service_id", desired.ID),
+				systemevent.String("preview_id", previewID),
+			)
+		}
+	}()
+	return nil
 }
 
 func (application *Application) waitReady(ctx context.Context, desired state.ServiceDesired, containerID, networkName string) (containerengine.Container, error) {

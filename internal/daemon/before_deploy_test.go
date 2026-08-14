@@ -4,8 +4,8 @@ import (
 	"context"
 	"io"
 	"net/netip"
-	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/containerengine"
@@ -53,6 +53,22 @@ type beforeDeployCloudflareStub struct {
 	hostnames []string
 }
 
+type beforeDeployLogSink struct {
+	output strings.Builder
+}
+
+type beforeDeployWriteCloser struct{ io.Writer }
+
+func (beforeDeployWriteCloser) Close() error { return nil }
+
+func (sink *beforeDeployLogSink) ContainerWriter(_, _, _, _, _ string) io.WriteCloser {
+	return beforeDeployWriteCloser{Writer: io.Discard}
+}
+
+func (sink *beforeDeployLogSink) BeforeDeployWriter(_, _, _, _, _ string) io.WriteCloser {
+	return beforeDeployWriteCloser{Writer: &sink.output}
+}
+
 func (stub *beforeDeployCloudflareStub) PurgeHostnames(_ context.Context, hostnames []string) error {
 	*stub.actions = append(*stub.actions, "cloudflare")
 	stub.hostnames = append([]string(nil), hostnames...)
@@ -74,7 +90,6 @@ func beforeDeployTestRequest(t *testing.T) deployment.BeforeDeployRequest {
 		},
 		EnvironmentContext: deployment.EnvironmentContext{DeploymentID: "deployment", Kind: deployment.EnvironmentProduction},
 		ImageID:            "new-image",
-		BuildLogPath:       filepath.Join(t.TempDir(), "build.log"),
 	}
 }
 
@@ -82,6 +97,7 @@ func TestBeforeDeployExecutorRunsConfiguredActionsInOrder(t *testing.T) {
 	actions := []string{}
 	engine := &beforeDeployEngineStub{actions: &actions}
 	cloudflare := &beforeDeployCloudflareStub{actions: &actions}
+	logs := &beforeDeployLogSink{}
 	executor := beforeDeployExecutor{
 		engine: engine, environment: beforeDeployEnvironmentStub{}, cloudflare: cloudflare,
 		placement: func(state.ServiceDesired) (deployment.Placement, error) {
@@ -90,7 +106,7 @@ func TestBeforeDeployExecutorRunsConfiguredActionsInOrder(t *testing.T) {
 				DNSSearch: "shop.internal", CgroupParent: "/platformd/service-service",
 			}, nil
 		},
-		logSizeBytes: 1024, logMaxFiles: 2,
+		logs: logs,
 	}
 	if err := executor.Execute(context.Background(), beforeDeployTestRequest(t)); err != nil {
 		t.Fatal(err)
@@ -104,6 +120,10 @@ func TestBeforeDeployExecutorRunsConfiguredActionsInOrder(t *testing.T) {
 	if !reflect.DeepEqual(engine.spec.Entrypoint, []string{"/bin/sh", "-c"}) || !reflect.DeepEqual(cloudflare.hostnames, []string{"api.example.com"}) {
 		t.Fatalf("executor inputs = entrypoint %#v, Cloudflare %#v", engine.spec.Entrypoint, cloudflare.hostnames)
 	}
+	if engine.spec.LogDriver != containerengine.ContainerLogNone || !strings.Contains(logs.output.String(), "migration output") ||
+		!strings.Contains(logs.output.String(), "Cloudflare cache purge completed") {
+		t.Fatalf("before-deploy logging = driver %q output %q", engine.spec.LogDriver, logs.output.String())
+	}
 }
 
 func TestBeforeDeployExecutorStopsAfterCommandFailure(t *testing.T) {
@@ -111,11 +131,11 @@ func TestBeforeDeployExecutorStopsAfterCommandFailure(t *testing.T) {
 	executor := beforeDeployExecutor{
 		engine:      &beforeDeployEngineStub{actions: &actions, exitCode: 17},
 		environment: beforeDeployEnvironmentStub{},
+		logs:        &beforeDeployLogSink{},
 		placement: func(state.ServiceDesired) (deployment.Placement, error) {
 			return deployment.Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.24.0.1")}, nil
 		},
-		cloudflare:   &beforeDeployCloudflareStub{actions: &actions},
-		logSizeBytes: 1024, logMaxFiles: 1,
+		cloudflare: &beforeDeployCloudflareStub{actions: &actions},
 	}
 	if err := executor.Execute(context.Background(), beforeDeployTestRequest(t)); err == nil {
 		t.Fatal("failing command did not fail before-deploy execution")

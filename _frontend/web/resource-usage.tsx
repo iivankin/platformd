@@ -404,12 +404,14 @@ const UsageSummary = ({
 const RangeSelector = ({
   history,
   historyError,
+  loading,
   onChange,
   range,
   standalone = false,
 }: {
   history: ResourceUsageHistory | null;
   historyError?: string;
+  loading?: boolean;
   onChange: (range: ResourceUsageRange) => void;
   range: ResourceUsageRange;
   standalone?: boolean;
@@ -436,8 +438,9 @@ const RangeSelector = ({
         {option.label}
       </button>
     ))}
-    <span className="ml-auto text-[8px] text-muted-foreground">
-      {historyStatusFor(history, historyError)}
+    <span className="ml-auto flex items-center gap-1.5 text-[8px] text-muted-foreground">
+      {loading ? <LoaderCircle className="size-3 animate-spin" /> : null}
+      {loading ? `Loading ${range}…` : historyStatusFor(history, historyError)}
     </span>
   </div>
 );
@@ -446,10 +449,12 @@ const UsageCharts = ({
   aggregate = false,
   history,
   historyError,
+  loading = false,
 }: {
   aggregate?: boolean;
   history: ResourceUsageHistory | null;
   historyError?: string;
+  loading?: boolean;
 }) => {
   const points = history?.points ?? emptyPoints;
   const emptyLabel = emptyLabelFor(history, historyError);
@@ -472,7 +477,12 @@ const UsageCharts = ({
     [history]
   );
   return (
-    <div className="grid border-t border-border lg:grid-cols-2">
+    <div
+      aria-busy={loading}
+      className={`grid border-t border-border transition-opacity lg:grid-cols-2 ${
+        loading ? "opacity-45" : "opacity-100"
+      }`}
+    >
       <div className="min-w-0 lg:border-r lg:border-border">
         <MetricChart
           emptyLabel={emptyLabel}
@@ -846,10 +856,12 @@ const VPSCharts = ({
   cpuCores,
   history,
   historyError,
+  loading = false,
 }: {
   cpuCores: number;
   history: ResourceUsageHistory | null;
   historyError?: string;
+  loading?: boolean;
 }) => {
   const cpuSeriesForHost = useMemo<MetricSeries<UsagePoint>[]>(
     () => [
@@ -878,7 +890,12 @@ const VPSCharts = ({
   const from = history?.from ?? 0;
   const to = history?.to ?? 0;
   return (
-    <div className="grid border-t border-border xl:grid-cols-2">
+    <div
+      aria-busy={loading}
+      className={`grid border-t border-border transition-opacity xl:grid-cols-2 ${
+        loading ? "opacity-45" : "opacity-100"
+      }`}
+    >
       <div className="min-w-0 xl:border-r xl:border-border">
         <MetricChart
           emptyLabel={emptyLabel}
@@ -922,10 +939,12 @@ const VPSCharts = ({
 const VPSUsage = ({
   history,
   historyError,
+  historyLoading,
   usage,
 }: {
   history: ResourceUsageHistory | null;
   historyError?: string;
+  historyLoading?: boolean;
   usage: Usage | null;
 }) => {
   const host = usage?.host;
@@ -936,6 +955,7 @@ const VPSUsage = ({
         cpuCores={host?.cpuCores ?? 1}
         history={history}
         historyError={historyError}
+        loading={historyLoading}
       />
     </section>
   );
@@ -948,6 +968,7 @@ const UsageContent = ({
   currentError,
   history,
   historyError,
+  historyLoading,
   memoryBytes,
   network,
   onRangeChange,
@@ -963,6 +984,7 @@ const UsageContent = ({
   currentError?: string;
   history: ResourceUsageHistory | null;
   historyError?: string;
+  historyLoading?: boolean;
   memoryBytes?: number;
   network?: { egress: number; ingress: number };
   onRangeChange: (range: ResourceUsageRange) => void;
@@ -992,6 +1014,7 @@ const UsageContent = ({
       <RangeSelector
         history={history}
         historyError={historyError}
+        loading={historyLoading}
         onChange={onRangeChange}
         range={range}
       />
@@ -1000,6 +1023,7 @@ const UsageContent = ({
       aggregate={aggregate}
       history={history}
       historyError={historyError}
+      loading={historyLoading}
     />
   </section>
 );
@@ -1008,25 +1032,33 @@ export const ResourceUsage = ({
   cpuMillicores,
   kind,
   memoryBytes,
+  onRangeChange,
+  range: controlledRange,
   resourceID,
+  showRange = true,
 }: {
   cpuMillicores?: number;
   kind: ResourceUsageKind;
   memoryBytes?: number;
+  onRangeChange?: (range: ResourceUsageRange) => void;
+  range?: ResourceUsageRange;
   resourceID: string;
+  showRange?: boolean;
 }) => {
-  const [range, setRange] = useState<ResourceUsageRange>("1h");
+  const [localRange, setLocalRange] = useState<ResourceUsageRange>("1h");
+  const range = controlledRange ?? localRange;
+  const setRange = onRangeChange ?? setLocalRange;
   const {
     cpuMillicores: actualCPU,
     error: currentError,
     network: actualNetwork,
     usage,
   } = useCurrentResourceUsage(kind, resourceID);
-  const { error: historyError, history } = useResourceUsageHistory(
-    kind,
-    resourceID,
-    range
-  );
+  const {
+    error: historyError,
+    history,
+    loading: historyLoading,
+  } = useResourceUsageHistory(kind, resourceID, range);
 
   return (
     <div className="space-y-4">
@@ -1036,10 +1068,12 @@ export const ResourceUsage = ({
         currentError={currentError}
         history={history}
         historyError={historyError}
+        historyLoading={historyLoading}
         memoryBytes={memoryBytes}
         network={actualNetwork}
         onRangeChange={setRange}
         range={range}
+        showRange={showRange}
         title="Resource usage"
         usage={usage}
       />
@@ -1072,6 +1106,7 @@ export const ProjectUsage = ({ projectID }: { projectID: string }) => {
           currentError={metrics.currentError}
           history={metrics.history}
           historyError={metrics.historyError}
+          historyLoading={metrics.historyLoading}
           network={metrics.network}
           onRangeChange={setRange}
           range={range}
@@ -1098,6 +1133,7 @@ export const InstallationUsage = () => {
       <RangeSelector
         history={metrics.history}
         historyError={metrics.historyError}
+        loading={metrics.historyLoading}
         onChange={setRange}
         range={range}
         standalone
@@ -1105,6 +1141,7 @@ export const InstallationUsage = () => {
       <VPSUsage
         history={metrics.hostHistory}
         historyError={metrics.hostHistoryError}
+        historyLoading={metrics.historyLoading}
         usage={metrics.usage}
       />
       <UsageContent
@@ -1113,6 +1150,7 @@ export const InstallationUsage = () => {
         currentError={metrics.currentError}
         history={metrics.history}
         historyError={metrics.historyError}
+        historyLoading={metrics.historyLoading}
         network={metrics.network}
         onRangeChange={setRange}
         range={range}

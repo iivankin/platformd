@@ -70,6 +70,27 @@ func (engine *testEngine) StartContainer(context.Context, string) error {
 	return nil
 }
 
+func (engine *testEngine) StartContainerAttached(ctx context.Context, id string, stdout, stderr io.WriteCloser) (<-chan error, error) {
+	if err := engine.StartContainer(ctx, id); err != nil {
+		return nil, err
+	}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
+
+type testLogSink struct{}
+
+func (testLogSink) ContainerWriter(_, _, _, _, _ string) io.WriteCloser {
+	return testWriteCloser{Writer: io.Discard}
+}
+
+type testWriteCloser struct{ io.Writer }
+
+func (testWriteCloser) Close() error { return nil }
+
 func (engine *testEngine) StopContainer(string, uint) error {
 	engine.stopped = true
 	return nil
@@ -209,8 +230,8 @@ func TestControllerStartsPinnedProfileAfterAuthenticatedReadinessAndFinalSave(t 
 			return connection, nil
 		},
 		GeneratedRoot: generatedRoot, VolumeRoot: filepath.Join(root, "volumes"),
-		LogRoot: filepath.Join(root, "logs"), LogSizeBytes: 1 << 20, LogMaxFiles: 3,
-		ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
+		ContainerLogs: testLogSink{},
+		ReadyTimeout:  time.Second, ProbePeriod: time.Millisecond,
 		NewID: func() (string, error) { return "attempt-id", nil },
 	})
 	if err != nil {
@@ -292,8 +313,8 @@ func TestControllerDoesNotPublishAndRemovesFailedReadinessCandidate(t *testing.T
 			return Placement{NetworkName: "network", Gateway: netip.MustParseAddr("10.90.0.1")}, nil
 		},
 		Dial:          func(context.Context, string, string) (RedisConnection, error) { return nil, errors.New("AUTH failed") },
-		GeneratedRoot: generatedRoot, VolumeRoot: filepath.Join(root, "volumes"), LogRoot: filepath.Join(root, "logs"),
-		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: 3 * time.Millisecond, ProbePeriod: time.Millisecond,
+		GeneratedRoot: generatedRoot, VolumeRoot: filepath.Join(root, "volumes"), ContainerLogs: testLogSink{},
+		ReadyTimeout: 3 * time.Millisecond, ProbePeriod: time.Millisecond,
 		NewID: func() (string, error) { return "attempt-id", nil },
 	})
 	if err != nil {
@@ -350,9 +371,9 @@ func TestOpenBackupRDBReturnsNewStableInode(t *testing.T) {
 				return os.Rename(temporary, rdbPath)
 			}}, nil
 		},
-		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
-		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ProbePeriod: time.Millisecond,
-		NewID: func() (string, error) { return "attempt-id", nil },
+		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, ContainerLogs: testLogSink{},
+		ProbePeriod: time.Millisecond,
+		NewID:       func() (string, error) { return "attempt-id", nil },
 	})
 	if err != nil {
 		t.Fatal(err)

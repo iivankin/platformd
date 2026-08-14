@@ -31,15 +31,12 @@ import {
   fetchBackupPolicies,
   fetchBackupTargets,
   fetchBackupGenerations,
-  fetchBuildLog,
   fetchContainerPorts,
   fetchService,
-  fetchServiceDeployment,
   fetchServiceDeployments,
   fetchServiceDomainDNSStatus,
   fetchServiceDomains,
   fetchServiceListeners,
-  fetchServiceLogs,
   fetchResourceTerminalShells,
   issueServerTerminalToken,
   fetchVolumes,
@@ -50,7 +47,6 @@ import {
   fetchInstallationUsageHistory,
   fetchLargestObjectsSearch,
   fetchDiskPressure,
-  forceImageGarbageCollection,
   applySelfUpdate,
   fetchManagedImageTags,
   previewDatabaseVersion,
@@ -572,81 +568,34 @@ test("validates bounded deployment history pages", async () => {
   ).resolves.toMatchObject({ nextCursor: "deployment" });
 });
 
-test("loads one deployment by its stable route", async () => {
-  let requested = "";
-  await expect(
-    fetchServiceDeployment(
-      "project/id",
-      "service/id",
-      "deployment/id",
-      undefined,
-      (input) => {
-        requested = input.toString();
-        return Promise.resolve(
-          Response.json({
-            createdAt: 1,
-            id: "deployment/id",
-            imageDigest: "sha256:image",
-            serviceConfigHash: "config",
-            serviceId: "service/id",
-            snapshot: {
-              environment: {},
-              secretReferences: [],
-              source: {
-                autoUpdate: true,
-                image: { reference: "docker.io/library/alpine:latest" },
-                type: "public_image",
-              },
-              volumeMounts: [],
-            },
-            status: "succeeded",
-          })
-        );
-      }
-    )
-  ).resolves.toMatchObject({ id: "deployment/id" });
-  expect(requested).toBe(
-    "/api/v1/projects/project%2Fid/services/service%2Fid/deployments/deployment%2Fid"
-  );
-});
-
-test("loads persisted build output for one deployment", async () => {
-  let requested = "";
-  await expect(
-    fetchBuildLog(
-      "project/id",
-      "service/id",
-      "deployment/id",
-      undefined,
-      (input) => {
-        requested = input.toString();
-        return Promise.resolve(
-          Response.json({ text: "STEP 1/3\nBuilt image" })
-        );
-      }
-    )
-  ).resolves.toBe("STEP 1/3\nBuilt image");
-  expect(requested).toBe(
-    "/api/v1/projects/project%2Fid/services/service%2Fid/deployments/deployment%2Fid/logs/build"
-  );
-});
-
 test("reads a validated bounded structured log window", async () => {
   let requested = "";
   await expect(
-    fetchServiceLogs(
+    fetchResourceLogs(
       "project",
       "service",
-      { contains: "ready", deploymentId: "deployment", limit: 25 },
+      "service",
+      {
+        contains: "ready",
+        cursor: "next-page",
+        deploymentId: "deployment",
+        fieldFilters: [
+          { operator: "equals", path: "caller", value: "server.go:42" },
+        ],
+        limit: 25,
+      },
       undefined,
       (input) => {
         requested = input.toString();
         return Promise.resolve(
           Response.json({
+            nextCursor: "older-page",
             records: [
               {
                 attemptId: "attempt",
                 deploymentId: "deployment",
+                fields: { caller: "server.go:42" },
+                phase: "before_deploy",
                 stream: "stdout",
                 text: "ready",
                 timestamp: "2026-07-12T10:00:00.000000001Z",
@@ -657,9 +606,18 @@ test("reads a validated bounded structured log window", async () => {
         );
       }
     )
-  ).resolves.toMatchObject({ records: [{ text: "ready" }] });
+  ).resolves.toMatchObject({
+    nextCursor: "older-page",
+    records: [
+      {
+        fields: { caller: "server.go:42" },
+        phase: "before_deploy",
+        text: "ready",
+      },
+    ],
+  });
   expect(requested).toBe(
-    "/api/v1/projects/project/services/service/logs?limit=25&deploymentId=deployment&contains=ready"
+    "/api/v1/projects/project/services/service/logs?limit=25&contains=ready&cursor=next-page&fieldFilters=%5B%7B%22operator%22%3A%22equals%22%2C%22path%22%3A%22caller%22%2C%22value%22%3A%22server.go%3A42%22%7D%5D&deploymentId=deployment"
   );
 });
 
@@ -668,9 +626,9 @@ test("reads logs from the selected managed resource route", async () => {
   await expect(
     fetchResourceLogs(
       "project",
-      "object_store",
-      "assets",
-      { contains: "PUT", limit: 25 },
+      "redis",
+      "cache",
+      { contains: "ready", cursor: "older-page", limit: 25 },
       undefined,
       (input) => {
         requested = input.toString();
@@ -681,7 +639,7 @@ test("reads logs from the selected managed resource route", async () => {
                 attemptId: "activity",
                 deploymentId: "assets",
                 stream: "stdout",
-                text: "PUT catalog.json",
+                text: "ready to accept connections",
                 timestamp: "2026-07-12T10:00:00Z",
               },
             ],
@@ -690,9 +648,11 @@ test("reads logs from the selected managed resource route", async () => {
         );
       }
     )
-  ).resolves.toMatchObject({ records: [{ text: "PUT catalog.json" }] });
+  ).resolves.toMatchObject({
+    records: [{ text: "ready to accept connections" }],
+  });
   expect(requested).toBe(
-    "/api/v1/projects/project/object-stores/assets/logs?limit=25&contains=PUT"
+    "/api/v1/projects/project/redis/cache/logs?limit=25&contains=ready&cursor=older-page"
   );
 });
 
@@ -750,38 +710,11 @@ test("reads derived disk pressure without a persisted operation", async () => {
           reservePresent: false,
           totalBytes: 100,
           totalInodes: 1000,
+          usedBytes: 90,
         })
       )
     )
   ).resolves.toMatchObject({ level: "critical", reservePresent: false });
-});
-
-test("runs container image garbage collection immediately", async () => {
-  let requested = "";
-  let method = "";
-  await expect(
-    forceImageGarbageCollection((input, init) => {
-      requested = input.toString();
-      method = init?.method ?? "";
-      return Promise.resolve(
-        Response.json({
-          buildCacheImagesRemoved: 3,
-          finalImagesRemoved: 2,
-          orphanLayersRemoved: 1,
-          removedBytes: 42,
-          skipped: 0,
-        })
-      );
-    })
-  ).resolves.toEqual({
-    buildCacheImagesRemoved: 3,
-    finalImagesRemoved: 2,
-    orphanLayersRemoved: 1,
-    removedBytes: 42,
-    skipped: 0,
-  });
-  expect(requested).toBe("/api/v1/infrastructure/container-images/gc");
-  expect(method).toBe("POST");
 });
 
 test("reads a cursor-paginated system journal window", async () => {

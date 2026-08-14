@@ -4,13 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/state"
+	"github.com/iivankin/platformd/internal/systemevent"
 )
 
 const buildScript = `set -eu
@@ -76,7 +76,7 @@ esac`
 type Engine interface {
 	InspectImage(context.Context, string) (containerengine.Image, error)
 	CreateContainer(context.Context, containerengine.ContainerSpec) (containerengine.Container, error)
-	StartContainer(context.Context, string) error
+	StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error)
 	WaitContainer(context.Context, string) (int32, error)
 	RemoveContainer(context.Context, string, bool) error
 	CommitDerivedImage(context.Context, containerengine.DerivedImageRequest) (containerengine.Image, error)
@@ -92,9 +92,6 @@ type Config struct {
 	Engine        Engine
 	Growth        GrowthGate
 	CacheRoot     string
-	LogRoot       string
-	LogSizeBytes  int64
-	LogMaxFiles   uint
 	HTTPClient    *http.Client
 	ResolveSource func(context.Context, Recipe) (string, error)
 }
@@ -117,7 +114,7 @@ type Builder struct {
 }
 
 func New(config Config) (*Builder, error) {
-	if config.Engine == nil || config.Growth == nil || config.CacheRoot == "" || config.LogRoot == "" || config.LogSizeBytes <= 0 || config.LogMaxFiles == 0 {
+	if config.Engine == nil || config.Growth == nil || config.CacheRoot == "" {
 		return nil, errors.New("PostgreSQL extension builder dependencies are incomplete")
 	}
 	if config.HTTPClient == nil {
@@ -161,10 +158,6 @@ func (builder *Builder) Ensure(ctx context.Context, request BuildRequest) (conta
 	if err != nil {
 		return containerengine.Image{}, err
 	}
-	if err := os.MkdirAll(filepath.Join(builder.config.LogRoot, "postgres-extension-builds"), 0o700); err != nil {
-		return containerengine.Image{}, err
-	}
-	logPath := filepath.Join(builder.config.LogRoot, "postgres-extension-builds", cacheKey+".log")
 	container, err := builder.config.Engine.CreateContainer(ctx, containerengine.ContainerSpec{
 		ImageID:    request.Base.ID,
 		Name:       "platformd-postgres-extension-" + cacheKey[:20],
@@ -175,10 +168,10 @@ func (builder *Builder) Ensure(ctx context.Context, request BuildRequest) (conta
 			"io.platformd.project-id":  request.ProjectID,
 			"io.platformd.postgres-id": request.PostgresID,
 		},
-		Network:    request.Network,
-		DNSServers: append([]string(nil), request.DNSServers...),
-		Mounts:     []containerengine.Mount{{Source: source, Destination: "/platformd/vector.tar.gz", ReadOnly: true}},
-		LogPath:    logPath, LogSizeBytes: builder.config.LogSizeBytes, LogMaxFiles: builder.config.LogMaxFiles,
+		Network:      request.Network,
+		DNSServers:   append([]string(nil), request.DNSServers...),
+		Mounts:       []containerengine.Mount{{Source: source, Destination: "/platformd/vector.tar.gz", ReadOnly: true}},
+		LogDriver:    containerengine.ContainerLogNone,
 		CgroupParent: request.CgroupParent,
 	})
 	if err != nil {
@@ -186,16 +179,35 @@ func (builder *Builder) Ensure(ctx context.Context, request BuildRequest) (conta
 	}
 	defer func() { _ = builder.config.Engine.RemoveContainer(context.Background(), container.ID, true) }()
 	progress(request.Progress, "building_image")
-	if err := builder.config.Engine.StartContainer(ctx, container.ID); err != nil {
-		return containerengine.Image{}, fmt.Errorf("start PostgreSQL extension builder: %w", err)
+	fields := []systemevent.Field{
+		systemevent.String("project_id", request.ProjectID),
+		systemevent.String("postgres_id", request.PostgresID),
+		systemevent.String("cache_key", cacheKey),
+	}
+	systemevent.Info("postgres_extension_build_started", fields...)
+	stdoutFields := append(append([]systemevent.Field(nil), fields...), systemevent.String("stream", "stdout"))
+	stderrFields := append(append([]systemevent.Field(nil), fields...), systemevent.String("stream", "stderr"))
+	stdout := systemevent.NewLineWriter("postgres_extension_build_output", stdoutFields...)
+	stderr := systemevent.NewLineWriter("postgres_extension_build_output", stderrFields...)
+	attached, err := builder.config.Engine.StartContainerAttached(ctx, container.ID, stdout, stderr)
+	if err != nil {
+		return containerengine.Image{}, errors.Join(
+			fmt.Errorf("start PostgreSQL extension builder: %w", err),
+			stdout.Close(),
+			stderr.Close(),
+		)
 	}
 	exitCode, err := builder.config.Engine.WaitContainer(ctx, container.ID)
 	if err != nil {
 		return containerengine.Image{}, err
 	}
-	if exitCode != 0 {
-		return containerengine.Image{}, fmt.Errorf("PostgreSQL extension build exited with code %d; build log: %s", exitCode, logPath)
+	if attachErr, ok := <-attached; ok && attachErr != nil {
+		return containerengine.Image{}, fmt.Errorf("read PostgreSQL extension build output: %w", attachErr)
 	}
+	if exitCode != 0 {
+		return containerengine.Image{}, fmt.Errorf("PostgreSQL extension build exited with code %d; inspect event=postgres_extension_build_output in the platform journal", exitCode)
+	}
+	systemevent.Info("postgres_extension_build_completed", fields...)
 	recipeSet, err := RecipeSet(request.Extensions)
 	if err != nil {
 		return containerengine.Image{}, err

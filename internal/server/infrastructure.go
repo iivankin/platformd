@@ -9,7 +9,6 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/journallogs"
@@ -18,10 +17,6 @@ import (
 
 type DiskPressure interface {
 	Snapshot() (diskpressure.Snapshot, bool)
-}
-
-type ImageGarbageCollector interface {
-	ForceGarbageCollect(context.Context) (containerengine.ImageGarbageCollectResult, error)
 }
 
 type diskComponents interface {
@@ -47,6 +42,7 @@ type diskPressureResponse struct {
 	ByteBasisPoints     uint64                  `json:"byteBasisPoints"`
 	InodeBasisPoints    uint64                  `json:"inodeBasisPoints"`
 	TotalBytes          uint64                  `json:"totalBytes"`
+	UsedBytes           uint64                  `json:"usedBytes"`
 	AvailableBytes      uint64                  `json:"availableBytes"`
 	TotalInodes         uint64                  `json:"totalInodes"`
 	AvailableInodes     uint64                  `json:"availableInodes"`
@@ -176,7 +172,6 @@ type resourceUsageHistorySeriesResponse struct {
 func registerInfrastructureRoutes(
 	mux *http.ServeMux,
 	pressure DiskPressure,
-	imageGarbageCollector ImageGarbageCollector,
 	usage ResourceUsage,
 	logs InfrastructureLogs,
 ) {
@@ -210,25 +205,12 @@ func registerInfrastructureRoutes(
 			writeJSON(response, http.StatusOK, diskPressureResponse{
 				Level:           snapshot.Level,
 				ByteBasisPoints: snapshot.Usage.ByteBasisPoints, InodeBasisPoints: snapshot.Usage.InodeBasisPoints,
-				TotalBytes: snapshot.Usage.TotalBytes, AvailableBytes: snapshot.Usage.AvailableBytes,
-				TotalInodes: snapshot.Usage.TotalInodes, AvailableInodes: snapshot.Usage.AvailableInodes,
+				TotalBytes: snapshot.Usage.TotalBytes, UsedBytes: snapshot.Usage.UsedBytes,
+				AvailableBytes: snapshot.Usage.AvailableBytes,
+				TotalInodes:    snapshot.Usage.TotalInodes, AvailableInodes: snapshot.Usage.AvailableInodes,
 				ReservePresent: snapshot.ReservePresent, CheckedAt: snapshot.CheckedAt.UnixMilli(),
 				Components: components, ComponentsCheckedAt: componentsCheckedAt,
 			})
-		})
-	}
-	if imageGarbageCollector != nil {
-		mux.HandleFunc("POST /api/v1/infrastructure/container-images/gc", func(response http.ResponseWriter, request *http.Request) {
-			if _, ok := requireAccessIdentity(response, request); !ok {
-				return
-			}
-			result, err := imageGarbageCollector.ForceGarbageCollect(request.Context())
-			if err != nil {
-				writeAPIError(response, http.StatusInternalServerError, "container_image_gc_failed", "Container image garbage collection failed")
-				return
-			}
-			response.Header().Set("Cache-Control", "no-store")
-			writeJSON(response, http.StatusOK, result)
 		})
 	}
 	if usage != nil {

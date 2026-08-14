@@ -95,7 +95,7 @@ func (controller *Controller) RestoreReplace(
 	if err != nil {
 		return err
 	}
-	if err := controller.engine.StartContainer(ctx, candidate.ID); err != nil {
+	if err := controller.startContainer(ctx, resource, runtimeID, candidate.ID); err != nil {
 		return fmt.Errorf("start managed PostgreSQL restore candidate: %w", err)
 	}
 	candidateStarted = true
@@ -268,7 +268,7 @@ func (controller *Controller) recoverOldPostgres(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), controller.readyTimeout+30*time.Second)
 	defer cancel()
-	if err := controller.engine.StartContainer(ctx, runtime.container.ID); err != nil {
+	if err := controller.startContainer(ctx, runtime.resource, runtime.runtimeID, runtime.container.ID); err != nil {
 		return fmt.Errorf("restart managed PostgreSQL after failed restore switch: %w", err)
 	}
 	ready, err := controller.waitReady(

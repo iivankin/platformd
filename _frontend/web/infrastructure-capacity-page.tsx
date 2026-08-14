@@ -5,7 +5,6 @@ import { fetchDiskPressure } from "@/api";
 import type { DiskPressure } from "@/api";
 import { SectionCard } from "@/components/ui/card";
 import { PageStack } from "@/components/ui/page-stack";
-import { ImageGarbageCollectionOperation } from "@/image-garbage-collection-operation";
 import { cn } from "@/lib/utils";
 
 const levelColor: Record<DiskPressure["level"], string> = {
@@ -17,7 +16,7 @@ const levelColor: Record<DiskPressure["level"], string> = {
 
 const otherComponentPresentation = {
   color: "bg-muted-foreground/30",
-  label: "Other disk data",
+  label: "System & untracked data",
 };
 
 const componentPresentation: Record<string, { color: string; label: string }> =
@@ -113,9 +112,7 @@ export const InfrastructureCapacityPage = () => {
     };
   }, []);
 
-  const usedBytes = pressure
-    ? pressure.totalBytes - pressure.availableBytes
-    : 0;
+  const usedBytes = pressure?.usedBytes ?? 0;
   const trackedBytes =
     pressure?.components.reduce(
       (total, component) => total + component.bytes,
@@ -264,8 +261,6 @@ export const InfrastructureCapacityPage = () => {
           })}
         </div>
       </SectionCard>
-
-      <ImageGarbageCollectionOperation />
     </PageStack>
   );
 };

@@ -57,7 +57,7 @@ export const telemetryTimeBounds = (
 const localDateTime = (value: number) => {
   const date = new Date(value);
   const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(value - offset).toISOString().slice(0, 16);
+  return new Date(value - offset).toISOString().slice(0, 19);
 };
 
 const parseLocalDateTime = (value: FormDataEntryValue | null) => {
@@ -65,11 +65,21 @@ const parseLocalDateTime = (value: FormDataEntryValue | null) => {
   return Number.isFinite(timestamp) ? timestamp : undefined;
 };
 
-const formatRangeDate = (value: number) =>
-  new Date(value).toLocaleString([], {
-    dateStyle: "short",
-    timeStyle: "short",
-  });
+export const formatTelemetryRange = (
+  from: number,
+  to: number,
+  locale?: Intl.LocalesArgument
+) => {
+  const showSeconds = to - from < 60_000;
+  return new Intl.DateTimeFormat(locale, {
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+    second: showSeconds ? "2-digit" : undefined,
+    year: "2-digit",
+  }).formatRange(new Date(from), new Date(to));
+};
 
 const rangeLabel = (state: TelemetryTimeRangeState) => {
   if (state.range !== "custom") {
@@ -79,7 +89,7 @@ const rangeLabel = (state: TelemetryTimeRangeState) => {
   if (bounds.from === undefined || bounds.to === undefined) {
     return "Custom range";
   }
-  return `${formatRangeDate(bounds.from)} – ${formatRangeDate(bounds.to)}`;
+  return formatTelemetryRange(bounds.from, bounds.to);
 };
 
 export const TelemetryTimeRangePicker = ({
@@ -177,6 +187,7 @@ export const TelemetryTimeRangePicker = ({
                 defaultValue={localDateTime(defaultFrom)}
                 id="telemetry-time-from"
                 name="from"
+                step={1}
                 type="datetime-local"
               />
             </label>
@@ -190,6 +201,7 @@ export const TelemetryTimeRangePicker = ({
                 defaultValue={localDateTime(defaultTo)}
                 id="telemetry-time-to"
                 name="to"
+                step={1}
                 type="datetime-local"
               />
             </label>

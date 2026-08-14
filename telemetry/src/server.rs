@@ -39,7 +39,7 @@ use crate::service::{
     ARTIFACT_AUTHORIZED_HEADER, SENTRY_ORGANIZATION, SENTRY_PROJECT_ID, SERVICE_ID_HEADER,
     ServiceContext, WEBHOOK_EVENTS_HEADER,
 };
-use crate::storage::{LogPage, LogQuery, Store, all, any, term};
+use crate::storage::{LogFieldFilter, LogFieldOperator, LogPage, LogQuery, Store, all, any, term};
 use crate::symbolicator::{
     CrashFileKind, Dispatcher as SymbolicationDispatcher, Symbolicator, crash_event,
 };
@@ -94,7 +94,7 @@ struct BackupView {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MetricHistoryQuery {
     scope_kind: String,
-    scope_id: Option<String>,
+    scope_ids: Option<String>,
     from: u64,
     to: u64,
 }
@@ -105,6 +105,7 @@ struct LogHistoryQuery {
     service_id: String,
     deployment_id: Option<String>,
     contains: Option<String>,
+    field_filters: Option<String>,
     severity_text: Option<String>,
     trace_id: Option<String>,
     span_id: Option<String>,
@@ -526,9 +527,19 @@ async fn internal_metrics(
         .to
         .checked_mul(1_000_000)
         .ok_or_else(|| Error::InvalidRequest("metric query end overflows".into()))?;
+    let scope_ids = query
+        .scope_ids
+        .map(|value| {
+            value
+                .split(',')
+                .filter(|item| !item.is_empty())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default();
     state
         .store
-        .metric_samples(query.scope_kind, query.scope_id, from, to)
+        .metric_samples(query.scope_kind, scope_ids, from, to)
         .await
         .map(Json)
 }
@@ -568,6 +579,7 @@ async fn internal_logs(
     {
         return Err(Error::InvalidRequest("invalid telemetry log query".into()));
     }
+    let field_filters = parse_log_field_filters(query.field_filters.as_deref())?;
     let limit = query.limit.unwrap_or(500);
     if !(1..=2000).contains(&limit) {
         return Err(Error::InvalidRequest("invalid telemetry log limit".into()));
@@ -594,7 +606,6 @@ async fn internal_logs(
             .after_id
             .as_deref()
             .is_some_and(|id| uuid::Uuid::parse_str(id).is_err())
-        || (query.after_id.is_some() && !ascending)
     {
         return Err(Error::InvalidRequest("invalid telemetry log cursor".into()));
     }
@@ -604,6 +615,7 @@ async fn internal_logs(
             service_id: query.service_id,
             deployment_id: query.deployment_id,
             contains: query.contains.filter(|value| !value.is_empty()),
+            field_filters,
             severity_text: query.severity_text.filter(|value| !value.is_empty()),
             trace_id: query.trace_id.map(|value| value.to_ascii_lowercase()),
             span_id: query.span_id.map(|value| value.to_ascii_lowercase()),
@@ -616,6 +628,44 @@ async fn internal_logs(
         })
         .await
         .map(Json)
+}
+
+fn parse_log_field_filters(value: Option<&str>) -> Result<Vec<LogFieldFilter>> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(Vec::new());
+    };
+    if value.len() > 8 << 10 {
+        return Err(Error::InvalidRequest(
+            "telemetry log field filters are too large".into(),
+        ));
+    }
+    let filters: Vec<LogFieldFilter> = serde_json::from_str(value)
+        .map_err(|_| Error::InvalidRequest("invalid telemetry log field filters".into()))?;
+    if filters.len() > 8 || filters.iter().any(|filter| !valid_log_field_filter(filter)) {
+        return Err(Error::InvalidRequest(
+            "invalid telemetry log field filters".into(),
+        ));
+    }
+    Ok(filters)
+}
+
+fn valid_log_field_filter(filter: &LogFieldFilter) -> bool {
+    let valid_path = filter.path.len() <= 256
+        && filter.path.split('.').all(|segment| {
+            let mut bytes = segment.bytes();
+            bytes
+                .next()
+                .is_some_and(|byte| byte.is_ascii_alphabetic() || byte == b'_')
+                && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        });
+    valid_path
+        && filter.value.len() <= 512
+        && !filter.value.contains('\0')
+        && match filter.operator {
+            LogFieldOperator::Equals => true,
+            LogFieldOperator::Contains => !filter.value.is_empty(),
+            LogFieldOperator::Exists => filter.value.is_empty(),
+        }
 }
 
 async fn download_internal_backup(
@@ -2152,5 +2202,26 @@ mod tests {
         headers.insert(ARTIFACT_AUTHORIZED_HEADER, HeaderValue::from_static("1"));
         assert!(artifact_service(&headers, SENTRY_ORGANIZATION, Some("service-123")).is_ok());
         assert!(artifact_service(&headers, SENTRY_ORGANIZATION, Some("other")).is_err());
+    }
+
+    #[test]
+    fn validates_structured_log_filters_before_building_sql() {
+        let filters = parse_log_field_filters(Some(
+            r#"[{"path":"http.status_code","operator":"equals","value":"500"}]"#,
+        ))
+        .unwrap();
+        assert_eq!(filters.len(), 1);
+        assert!(
+            parse_log_field_filters(Some(
+                r#"[{"path":"caller') OR 1=1","operator":"equals","value":"x"}]"#
+            ))
+            .is_err()
+        );
+        assert!(
+            parse_log_field_filters(Some(
+                r#"[{"path":"caller","operator":"exists","value":"unexpected"}]"#
+            ))
+            .is_err()
+        );
     }
 }

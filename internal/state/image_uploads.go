@@ -18,14 +18,15 @@ var (
 )
 
 type ImageUploadIdentity struct {
-	Repository  string `json:"repository"`
-	Ref         string `json:"ref"`
-	SHA         string `json:"sha"`
-	Workflow    string `json:"workflow"`
-	WorkflowRef string `json:"workflowRef"`
-	Actor       string `json:"actor"`
-	RunID       string `json:"runId"`
-	RunAttempt  string `json:"runAttempt"`
+	Repository    string `json:"repository"`
+	Ref           string `json:"ref"`
+	SHA           string `json:"sha"`
+	CommitMessage string `json:"commitMessage,omitempty"`
+	Workflow      string `json:"workflow"`
+	WorkflowRef   string `json:"workflowRef"`
+	Actor         string `json:"actor"`
+	RunID         string `json:"runId"`
+	RunAttempt    string `json:"runAttempt"`
 }
 
 type ImageUploadByteRange struct {

@@ -33,6 +33,7 @@ export const useScopeUsage = (scope: UsageScope, range: ResourceUsageRange) => {
   const [currentError, setCurrentError] = useState<string>();
   const [historyError, setHistoryError] = useState<string>();
   const [hostHistoryError, setHostHistoryError] = useState<string>();
+  const [historyLoading, setHistoryLoading] = useState(true);
   const projectID = scope.kind === "project" ? scope.id : undefined;
 
   useEffect(() => {
@@ -76,6 +77,7 @@ export const useScopeUsage = (scope: UsageScope, range: ResourceUsageRange) => {
         return;
       }
       inFlight = true;
+      setHistoryLoading(true);
       try {
         const [nextHistory, nextHostHistory] = projectID
           ? [
@@ -105,6 +107,9 @@ export const useScopeUsage = (scope: UsageScope, range: ResourceUsageRange) => {
         }
       } finally {
         inFlight = false;
+        if (!controller.signal.aborted) {
+          setHistoryLoading(false);
+        }
       }
     };
     void load();
@@ -132,6 +137,7 @@ export const useScopeUsage = (scope: UsageScope, range: ResourceUsageRange) => {
     currentError,
     history,
     historyError,
+    historyLoading,
     hostHistory,
     hostHistoryError,
     network,

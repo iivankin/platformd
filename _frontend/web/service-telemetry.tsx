@@ -1,5 +1,4 @@
 import { Check, Clipboard, Globe2, LoaderCircle } from "lucide-react";
-import { useQueryState } from "nuqs";
 import { useEffect, useMemo, useState } from "react";
 
 import {
@@ -18,21 +17,11 @@ import {
   adminOrigin,
   projectNameFromInternalHostname,
 } from "@/github-action-example-dialog";
-import { cn } from "@/lib/utils";
 import { ResourceLogs } from "@/resource-logs";
 import { SentryCloudflareGeoIpHint } from "@/sentry-cloudflare-geoip-hint";
 import { ServiceMetrics } from "@/service-metrics";
 import { ServiceTraces } from "@/service-traces";
-import { telemetryViewParser } from "@/telemetry-query-state";
-import type { TelemetryView } from "@/telemetry-query-state";
-
-const telemetryViews: { label: string; value: TelemetryView }[] = [
-  { label: "Metrics", value: "metrics" },
-  { label: "Logs", value: "logs" },
-  { label: "Errors", value: "errors" },
-  { label: "Traces", value: "traces" },
-  { label: "Settings", value: "settings" },
-];
+import { TelemetryWorkspace } from "@/telemetry-workspace";
 
 const publicBase = (dsn: string) => {
   const parsed = new URL(dsn);
@@ -199,7 +188,6 @@ export const ServiceTelemetryWorkspace = ({
   projectID: string;
   serviceID: string;
 }) => {
-  const [view, setView] = useQueryState("telemetry", telemetryViewParser);
   const [configuration, setConfiguration] = useState<ServiceTelemetry>();
   const [service, setService] = useState<Service>();
   const [error, setError] = useState("");
@@ -272,10 +260,6 @@ export const ServiceTelemetryWorkspace = ({
     }),
     [configuration]
   );
-  const selectView = (nextView: TelemetryView) => {
-    void setView(nextView);
-  };
-
   if (error) {
     return (
       <div className="grid min-h-[28rem] place-items-center border border-destructive/35 p-8 text-center text-[10px] text-destructive">
@@ -294,71 +278,55 @@ export const ServiceTelemetryWorkspace = ({
   }
 
   return (
-    <div className="min-h-[28rem] overflow-hidden">
-      <nav
-        aria-label="Telemetry views"
-        className="flex h-12 items-stretch overflow-x-auto border-b border-border px-3"
-      >
-        {telemetryViews.map((item) => (
-          <button
-            className={cn(
-              "relative shrink-0 px-3 text-[9px] tracking-[0.1em] text-muted-foreground uppercase after:absolute after:right-3 after:bottom-0 after:left-3 after:h-px after:bg-transparent hover:text-foreground",
-              item.value === view && "text-foreground after:bg-foreground"
-            )}
-            key={item.value}
-            onClick={() => selectView(item.value)}
-            type="button"
-          >
-            {item.label}
-          </button>
-        ))}
-      </nav>
-      {view === "errors" ? (
-        <ErrorsApp
-          apiBasePath={`/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}`}
-          app={app}
-        />
-      ) : null}
-      {view === "metrics" ? (
-        <ServiceMetrics
-          cpuMillicores={cpuMillicores}
-          memoryBytes={memoryBytes}
-          projectID={projectID}
-          serviceID={serviceID}
-        />
-      ) : null}
-      {view === "logs" ? (
-        <ResourceLogs
-          kind="service"
-          projectID={projectID}
-          resourceID={serviceID}
-        />
-      ) : null}
-      {view === "traces" ? (
-        <ServiceTraces projectID={projectID} serviceID={serviceID} />
-      ) : null}
-      {view === "settings" ? (
-        <ApplicationSettingsView
-          app={app}
-          key={app.id}
-          notify={setToast}
-          refresh={refresh}
-          settingsHeader={
-            <>
-              <PublicSentryEndpoint
-                configuration={configuration}
-                onChanged={setConfiguration}
-                projectID={projectID}
-                serviceID={serviceID}
-              />
-              <TelemetryIngestionEndpoint
-                endpoint={configuration.internalOtlpEndpoint}
-              />
-            </>
-          }
-          telemetry={metadata}
-        />
-      ) : null}
+    <>
+      <TelemetryWorkspace
+        views={{
+          errors: (
+            <ErrorsApp
+              apiBasePath={`/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}`}
+              app={app}
+            />
+          ),
+          logs: (
+            <ResourceLogs
+              kind="service"
+              projectID={projectID}
+              resourceID={serviceID}
+            />
+          ),
+          metrics: (
+            <ServiceMetrics
+              cpuMillicores={cpuMillicores}
+              memoryBytes={memoryBytes}
+              projectID={projectID}
+              serviceID={serviceID}
+            />
+          ),
+          settings: (
+            <ApplicationSettingsView
+              app={app}
+              key={app.id}
+              notify={setToast}
+              refresh={refresh}
+              settingsHeader={
+                <>
+                  <PublicSentryEndpoint
+                    configuration={configuration}
+                    onChanged={setConfiguration}
+                    projectID={projectID}
+                    serviceID={serviceID}
+                  />
+                  <TelemetryIngestionEndpoint
+                    endpoint={configuration.internalOtlpEndpoint}
+                  />
+                </>
+              }
+              telemetry={metadata}
+            />
+          ),
+          traces: <ServiceTraces projectID={projectID} serviceID={serviceID} />,
+        }}
+      />
       {toast ? (
         <output
           aria-live="polite"
@@ -367,6 +335,6 @@ export const ServiceTelemetryWorkspace = ({
           {toast}
         </output>
       ) : null}
-    </div>
+    </>
   );
 };

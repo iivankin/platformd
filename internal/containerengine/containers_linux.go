@@ -155,8 +155,6 @@ func (e *Engine) StartContainerAttached(
 	// accidentally tying log delivery to the request context lifetime.
 	attached, err := container.Attach(context.WithoutCancel(ctx), streams, "", nil, true)
 	if err != nil {
-		stdout.Close()
-		stderr.Close()
 		return nil, fmt.Errorf("attach and start container %s: %w", id, err)
 	}
 	done := make(chan error, 1)

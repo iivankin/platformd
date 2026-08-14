@@ -24,7 +24,7 @@ import { PostgresDataBrowser } from "@/postgres-data-browser";
 import { PostgresExtensions } from "@/postgres-extensions";
 import { PostgresQueryRunner } from "@/postgres-query-runner";
 
-type DatabaseView = "data" | "extensions" | "query" | "stats";
+type DatabaseView = "data" | "extensions" | "query";
 
 const Stat = ({
   label,
@@ -96,14 +96,18 @@ const StatsTable = ({
   </section>
 );
 
-const PostgresStats = ({
+export const PostgresStats = ({
   onOpenInQuery,
   postgresID,
   projectID,
+  range: controlledRange,
+  showRange = true,
 }: {
   onOpenInQuery?: (sql: string) => void;
   postgresID: string;
   projectID: string;
+  range?: Parameters<typeof fetchManagedPostgresStatsHistory>[2];
+  showRange?: boolean;
 }) => {
   const [stats, setStats] = useState<ManagedPostgresStats>();
   const [error, setError] = useState<string>();
@@ -166,8 +170,10 @@ const PostgresStats = ({
     ) => fetchManagedPostgresStatsHistory(projectID, postgresID, range, signal),
     [postgresID, projectID]
   );
-  const { history, historyError, range, setRange } =
-    useManagedStatsHistory(fetchHistory);
+  const { history, historyError, range, setRange } = useManagedStatsHistory(
+    fetchHistory,
+    controlledRange
+  );
   const emptyLabel = managedHistoryEmptyLabel(history, historyError);
 
   const rateChips = stats
@@ -209,16 +215,9 @@ const PostgresStats = ({
     stats?.indexes.filter((index) => index.idxScan === 0) ?? [];
 
   return (
-    <section>
+    <section className="border border-border bg-card">
       <header className="flex items-center justify-between border-b border-border px-5 py-3">
-        <div>
-          <h3 className="text-[10px] font-medium">
-            Live PostgreSQL statistics
-          </h3>
-          <p className="mt-1 text-[9px] text-muted-foreground">
-            Snapshot from pg_stat_* views; refreshes on demand.
-          </p>
-        </div>
+        <h3 className="text-[10px] font-medium">Live PostgreSQL statistics</h3>
         <Button
           disabled={loading}
           onClick={() => void load()}
@@ -272,12 +271,14 @@ const PostgresStats = ({
         </div>
       )}
 
-      <ManagedStatsRangePicker
-        history={history}
-        historyError={historyError}
-        onChange={setRange}
-        range={range}
-      />
+      {showRange ? (
+        <ManagedStatsRangePicker
+          history={history}
+          historyError={historyError}
+          onChange={setRange}
+          range={range}
+        />
+      ) : null}
       <div className="grid border-b border-border lg:grid-cols-2">
         <div className="min-w-0 lg:border-r lg:border-border">
           <ManagedMetricChart
@@ -608,15 +609,6 @@ export const PostgresDatabase = ({
         <PostgresExtensions postgresID={postgresID} projectID={projectID} />
       );
     }
-    if (view === "stats") {
-      return (
-        <PostgresStats
-          onOpenInQuery={openInQuery}
-          postgresID={postgresID}
-          projectID={projectID}
-        />
-      );
-    }
     if (view === "query") {
       return (
         <PostgresQueryRunner
@@ -632,7 +624,6 @@ export const PostgresDatabase = ({
   const views: { label: string; value: DatabaseView }[] = [
     { label: "Data", value: "data" },
     { label: "Query", value: "query" },
-    { label: "Stats", value: "stats" },
     { label: "Extensions", value: "extensions" },
   ];
 

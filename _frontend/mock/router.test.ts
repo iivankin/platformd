@@ -50,7 +50,6 @@ import {
   fetchResourceTerminalShells,
   fetchResolvedServiceEnvironment,
   fetchService,
-  fetchServiceDeployment,
   fetchServiceDeployments,
   fetchServiceDomains,
   fetchServiceListeners,
@@ -287,7 +286,6 @@ describe("mock API", () => {
       backupGenerations,
       redisLogs,
       postgresLogs,
-      objectStoreLogs,
       serviceUsage,
       serviceUsageHistory,
       resolvedEnvironment,
@@ -355,14 +353,6 @@ describe("mock API", () => {
         undefined,
         mockFetch
       ),
-      fetchResourceLogs(
-        "project-demo",
-        "object_store",
-        "object-assets",
-        {},
-        undefined,
-        mockFetch
-      ),
       fetchResourceUsage("service", "service-api", undefined, mockFetch),
       fetchResourceUsageHistory(
         "service",
@@ -394,7 +384,6 @@ describe("mock API", () => {
     expect(backupGenerations).not.toHaveLength(0);
     expect(redisLogs.records).not.toHaveLength(0);
     expect(postgresLogs.records).not.toHaveLength(0);
-    expect(objectStoreLogs.records).not.toHaveLength(0);
     expect(serviceUsage.running).toBe(true);
     expect(serviceUsage.networkAvailable).toBe(true);
     expect(serviceUsageHistory.points).not.toHaveLength(0);
@@ -416,13 +405,13 @@ describe("mock API", () => {
       "service.namespace=storefront"
     );
 
-    const selectedDeployment = await fetchServiceDeployment(
-      "project-demo",
-      "service-api",
-      "deployment-failed",
-      undefined,
-      mockFetch
+    const selectedDeployment = deployments.deployments.find(
+      (deployment) => deployment.id === "deployment-failed"
     );
+    expect(selectedDeployment).toBeDefined();
+    if (!selectedDeployment) {
+      throw new Error("mock failed deployment is missing");
+    }
     const selectedDeploymentLogs = await fetchResourceLogs(
       "project-demo",
       "service",

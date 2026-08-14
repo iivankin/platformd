@@ -141,13 +141,14 @@ impl ProjectState {
             .cloned()
     }
 
-    pub fn physical_bucket_for_logical(&self, bucket: &str) -> Option<String> {
+    pub fn store_for_logical_bucket(&self, bucket: &str) -> Option<ResolvedStore> {
         self.stores
             .read()
             .expect("project store snapshot poisoned")
             .by_logical_bucket
             .get(bucket)
-            .map(|store| store.physical_bucket.to_string())
+            .cloned()
+            .map(ResolvedStore)
     }
 
     fn store_ids(&self) -> Vec<String> {
@@ -743,7 +744,10 @@ async fn serve_s3_request(
         ));
     }
 
-    let physical_bucket = project.physical_bucket_for_logical(&logical_bucket);
+    let resolved_store = project.store_for_logical_bucket(&logical_bucket);
+    let physical_bucket = resolved_store
+        .as_ref()
+        .map(|store| store.physical_bucket().to_owned());
     // Only attribute traffic to known logical→physical mappings. Unknown path
     // prefixes use ephemeral counters so probes cannot grow the registry or
     // alias onto a real physical bucket name from the URL.

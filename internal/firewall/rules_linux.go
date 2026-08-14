@@ -11,7 +11,10 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const ipv4AddressLength = 4
+const (
+	ipv4AddressLength = 4
+	loopbackInterface = "lo"
+)
 
 type compiledRuleset struct {
 	table   *nftables.Table
@@ -38,12 +41,16 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 		if project.ObjectStoreEnabled {
 			compiled.rules = append(compiled.rules,
 				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
+				rule(table, input, append(matchHostProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
 			)
 		}
 		if project.ServiceTelemetryEnabled {
 			compiled.rules = append(compiled.rules,
 				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ServiceTelemetryPort), verdict(expr.VerdictAccept))...),
 				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, OTLPHTTPPort), verdict(expr.VerdictAccept))...),
+				// Port forwards originate in the host namespace and reach a project
+				// gateway through loopback rather than through its bridge.
+				rule(table, input, append(matchHostProjectListener(project, unix.IPPROTO_TCP, ServiceTelemetryPort), verdict(expr.VerdictAccept))...),
 			)
 		}
 		for _, listener := range project.GatewayListeners {
@@ -173,7 +180,15 @@ func counterReference(name string) expr.Any {
 }
 
 func matchProjectListener(project Project, protocol byte, port uint16) []expr.Any {
-	expressions := append(matchInputInterface(project.Bridge), matchIPv4Destination(project.Gateway)...)
+	return matchListener(project.Bridge, project.Gateway, protocol, port)
+}
+
+func matchHostProjectListener(project Project, protocol byte, port uint16) []expr.Any {
+	return matchListener(loopbackInterface, project.Gateway, protocol, port)
+}
+
+func matchListener(inputInterface string, address netip.Addr, protocol byte, port uint16) []expr.Any {
+	expressions := append(matchInputInterface(inputInterface), matchIPv4Destination(address)...)
 	return append(expressions,
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{protocol}},

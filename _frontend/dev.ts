@@ -1,11 +1,7 @@
 import { handleMockAPI } from "./mock/router";
 import { createMockState } from "./mock/state";
 import type { MockScenario } from "./mock/state";
-import {
-  mockWebSocketHandlers,
-  upgradeLogSocket,
-  upgradeTerminalSocket,
-} from "./mock/websocket";
+import { mockWebSocketHandlers, upgradeTerminalSocket } from "./mock/websocket";
 import type { MockSocketData } from "./mock/websocket";
 import app from "./web/index.html";
 
@@ -49,22 +45,6 @@ const server = Bun.serve<MockSocketData>({
         }
         return new Response("WebSocket upgrade required", { status: 426 });
       },
-    "/api/v1/projects/:projectID/services/:serviceID/logs/stream": (
-      request: Bun.BunRequest<"/api/v1/projects/:projectID/services/:serviceID/logs/stream">,
-      bunServer: Bun.Server<MockSocketData>
-    ) => {
-      if (
-        upgradeLogSocket(
-          request,
-          bunServer,
-          state,
-          decodeURIComponent(request.params.serviceID)
-        )
-      ) {
-        return;
-      }
-      return new Response("WebSocket upgrade required", { status: 426 });
-    },
     "/api/v1/server/terminal": (
       request: Bun.BunRequest<"/api/v1/server/terminal">,
       bunServer: Bun.Server<MockSocketData>

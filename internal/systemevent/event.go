@@ -1,7 +1,9 @@
 package systemevent
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"strconv"
 	"strings"
@@ -13,6 +15,14 @@ import (
 const maximumValueBytes = 2 << 10
 
 var writeMu sync.Mutex
+
+type lineWriter struct {
+	mu     sync.Mutex
+	event  string
+	fields []Field
+	buffer []byte
+	closed bool
+}
 
 type Field struct {
 	key   string
@@ -48,6 +58,68 @@ func Warning(event string, fields ...Field) {
 
 func Failure(event string, cause error, fields ...Field) {
 	write("error", event, append(fields, Error(cause)))
+}
+
+// NewLineWriter turns streaming command output into bounded structured journal
+// records. Long unterminated lines are split so a noisy tool cannot grow
+// platformd's heap while journald applies its normal retention and rate limits.
+func NewLineWriter(event string, fields ...Field) io.WriteCloser {
+	return &lineWriter{event: sanitizeKey(event), fields: append([]Field(nil), fields...)}
+}
+
+func (writer *lineWriter) Write(input []byte) (int, error) {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.closed {
+		return 0, io.ErrClosedPipe
+	}
+	requested := len(input)
+	for len(input) != 0 {
+		newline := bytes.IndexByte(input, '\n')
+		segment := input
+		if newline >= 0 {
+			segment = input[:newline]
+		}
+		for len(segment) != 0 {
+			remaining := maximumValueBytes - len(writer.buffer)
+			count := min(remaining, len(segment))
+			writer.buffer = append(writer.buffer, segment[:count]...)
+			segment = segment[count:]
+			if len(writer.buffer) == maximumValueBytes {
+				writer.flush(true)
+			}
+		}
+		if newline < 0 {
+			break
+		}
+		writer.flush(false)
+		input = input[newline+1:]
+	}
+	return requested, nil
+}
+
+func (writer *lineWriter) Close() error {
+	writer.mu.Lock()
+	defer writer.mu.Unlock()
+	if writer.closed {
+		return nil
+	}
+	writer.closed = true
+	writer.flush(false)
+	return nil
+}
+
+func (writer *lineWriter) flush(partial bool) {
+	if len(writer.buffer) == 0 {
+		return
+	}
+	fields := append([]Field(nil), writer.fields...)
+	fields = append(fields, String("message", string(writer.buffer)))
+	if partial {
+		fields = append(fields, String("partial", "true"))
+	}
+	write("info", writer.event, fields)
+	writer.buffer = writer.buffer[:0]
 }
 
 func write(level, event string, fields []Field) {

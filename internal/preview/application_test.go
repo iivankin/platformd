@@ -2,8 +2,8 @@ package preview
 
 import (
 	"context"
+	"io"
 	"net/netip"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -14,7 +14,8 @@ import (
 )
 
 type previewEngine struct {
-	spec containerengine.ContainerSpec
+	spec       containerengine.ContainerSpec
+	attachedID string
 }
 
 func (*previewEngine) Pull(context.Context, containerengine.PullRequest) (containerengine.Image, error) {
@@ -30,12 +31,42 @@ func (engine *previewEngine) CreateContainer(_ context.Context, spec containeren
 	return containerengine.Container{ID: "container"}, nil
 }
 
-func (*previewEngine) StartContainer(context.Context, string) error        { return nil }
+func (engine *previewEngine) StartContainerAttached(_ context.Context, id string, stdout, stderr io.WriteCloser) (<-chan error, error) {
+	engine.attachedID = id
+	_ = stdout.Close()
+	_ = stderr.Close()
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
 func (*previewEngine) StopContainer(string, uint) error                    { return nil }
 func (*previewEngine) RemoveContainer(context.Context, string, bool) error { return nil }
 func (*previewEngine) InspectContainer(string) (containerengine.Container, error) {
 	return containerengine.Container{}, nil
 }
+
+type previewLogSink struct {
+	resourceID   string
+	resourceName string
+	deploymentID string
+	attemptID    string
+	streams      []string
+}
+
+func (sink *previewLogSink) ContainerWriter(resourceID, resourceName, deploymentID, attemptID, stream string) io.WriteCloser {
+	sink.resourceID = resourceID
+	sink.resourceName = resourceName
+	sink.deploymentID = deploymentID
+	sink.attemptID = attemptID
+	sink.streams = append(sink.streams, stream)
+	return nopWriteCloser{Writer: io.Discard}
+}
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error { return nil }
 
 type previewEnvironmentResolver struct {
 	values map[string]string
@@ -55,6 +86,7 @@ func (environment previewEnvironmentResolver) Resolve(
 
 func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 	engine := &previewEngine{}
+	logs := &previewLogSink{}
 	application := &Application{
 		engine:      engine,
 		environment: previewEnvironmentResolver{values: map[string]string{"APP_ENV": "preview"}},
@@ -64,9 +96,8 @@ func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 				DNSSearch: "storefront.internal", CgroupParent: "platformd.slice",
 			}, nil
 		},
-		logRoot: filepath.Join(t.TempDir(), "logs"), logSizeBytes: 1 << 20, logMaxFiles: 2,
-		now:   func() time.Time { return time.Unix(100, 0) },
-		newID: func() (string, error) { return "attempt", nil },
+		containerLogs: logs,
+		now:           func() time.Time { return time.Unix(100, 0) },
 	}
 	desired := state.ServiceDesired{
 		ID: "service", ProjectID: "project",
@@ -97,5 +128,15 @@ func TestCreateContainerNeverMountsProductionVolumes(t *testing.T) {
 	}
 	if engine.spec.Labels["io.platformd.owner"] != "preview" || engine.spec.Labels["io.platformd.preview-id"] != "preview" {
 		t.Fatalf("preview labels = %#v", engine.spec.Labels)
+	}
+	if engine.spec.LogDriver != containerengine.ContainerLogNone || engine.spec.LogPath != "" {
+		t.Fatalf("preview log configuration = %#v", engine.spec)
+	}
+	if err := application.startContainer(context.Background(), state.ServiceDesired{ID: "service", Name: "storefront"}, "preview", "container"); err != nil {
+		t.Fatal(err)
+	}
+	if engine.attachedID != "container" || logs.resourceID != "service" || logs.resourceName != "storefront" ||
+		logs.deploymentID != "preview" || logs.attemptID != "container" || len(logs.streams) != 2 {
+		t.Fatalf("preview attached logs = engine %q, sink %#v", engine.attachedID, logs)
 	}
 }

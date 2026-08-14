@@ -248,9 +248,11 @@ export const useManagedStatsHistory = (
   fetchHistory: (
     range: ResourceUsageRange,
     signal: AbortSignal
-  ) => Promise<ManagedStatsHistory>
+  ) => Promise<ManagedStatsHistory>,
+  controlledRange?: ResourceUsageRange
 ) => {
-  const [range, setRange] = useState<ResourceUsageRange>("1h");
+  const [localRange, setLocalRange] = useState<ResourceUsageRange>("1h");
+  const range = controlledRange ?? localRange;
   const [history, setHistory] = useState<ManagedStatsHistory | null>(null);
   const [loadedRange, setLoadedRange] = useState<ResourceUsageRange | null>(
     null
@@ -284,7 +286,7 @@ export const useManagedStatsHistory = (
     history: loadedRange === range ? history : null,
     historyError: loadedRange === range ? historyError : undefined,
     range,
-    setRange,
+    setRange: setLocalRange,
   };
 };
 

@@ -78,6 +78,7 @@ export const useResourceUsageHistory = (
 ) => {
   const [history, setHistory] = useState<ResourceUsageHistory | null>(null);
   const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -87,6 +88,7 @@ export const useResourceUsageHistory = (
         return;
       }
       inFlight = true;
+      setLoading(true);
       try {
         const current = await fetchResourceUsageHistory(
           kind,
@@ -102,6 +104,9 @@ export const useResourceUsageHistory = (
         }
       } finally {
         inFlight = false;
+        if (!controller.signal.aborted) {
+          setLoading(false);
+        }
       }
     };
     void load();
@@ -115,5 +120,5 @@ export const useResourceUsageHistory = (
     };
   }, [kind, range, resourceID]);
 
-  return { error, history };
+  return { error, history, loading };
 };

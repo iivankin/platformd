@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -93,6 +94,17 @@ func (engine *restoreEngine) StartContainer(_ context.Context, id string) error 
 	return nil
 }
 
+func (engine *restoreEngine) StartContainerAttached(ctx context.Context, id string, stdout, stderr io.WriteCloser) (<-chan error, error) {
+	if err := engine.StartContainer(ctx, id); err != nil {
+		return nil, err
+	}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
+
 func (engine *restoreEngine) StopContainer(id string, _ uint) error {
 	container, exists := engine.containers[id]
 	if !exists {
@@ -173,7 +185,7 @@ func TestRestoreReplacePublishesValidatedCandidateAndDeletesOldVolume(t *testing
 	}
 	spec := fixture.engine.created[0]
 	if spec.Name != "platformd-redis-runtime-id" || spec.Labels["io.platformd.redis-id"] != "redis-id" ||
-		!strings.HasSuffix(spec.LogPath, "/redis/redis-id/runtime-id/attempt-id.log") {
+		spec.LogDriver != containerengine.ContainerLogNone || spec.LogPath != "" {
 		t.Fatalf("candidate identity/profile = %+v", spec)
 	}
 	if len(spec.Mounts) != 1 || !reflect.DeepEqual(spec.ManagedVolumes, []containerengine.ManagedVolumeMount{{
@@ -277,8 +289,8 @@ func newRestoreFixture(t *testing.T, switchErr error) restoreFixture {
 				return os.Rename(temporary, filepath.Join(oldVolume, "dump.rdb"))
 			}}, nil
 		},
-		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
-		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
+		GeneratedRoot: generatedRoot, VolumeRoot: volumeRoot, ContainerLogs: testLogSink{},
+		ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
 		MaintenanceDrain: time.Nanosecond,
 		Now:              func() time.Time { return time.UnixMilli(10) },
 		NewID: func() (string, error) {

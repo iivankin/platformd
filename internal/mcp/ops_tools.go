@@ -24,13 +24,14 @@ func readInstallationUsageTool() Tool {
 func readManagedResourceLogsTool() Tool {
 	return Tool{
 		Name:        "read_managed_resource_logs",
-		Description: "Read a bounded recent log window for one PostgreSQL, Redis, or object store resource.",
+		Description: "Read a bounded recent log window for one PostgreSQL or Redis resource.",
 		InputSchema: objectSchema(map[string]any{
 			"projectId":    map[string]any{"type": "string"},
-			"kind":         map[string]any{"type": "string", "enum": []string{"postgres", "redis", "object_store"}},
+			"kind":         map[string]any{"type": "string", "enum": []string{"postgres", "redis"}},
 			"resourceId":   map[string]any{"type": "string"},
 			"deploymentId": map[string]any{"type": "string"},
 			"contains":     map[string]any{"type": "string", "maxLength": 256},
+			"cursor":       map[string]any{"type": "string", "description": "Opaque nextCursor returned by the previous call."},
 			"limit":        map[string]any{"type": "integer", "minimum": 1, "maximum": containerlogs.MaximumLimit},
 		}, []string{"projectId", "kind", "resourceId"}),
 	}
@@ -50,13 +51,6 @@ func readInfrastructureLogsTool() Tool {
 func readDiskPressureTool() Tool {
 	return Tool{
 		Name: "read_disk_pressure", Description: "Read the current disk pressure snapshot and component usage.",
-		InputSchema: objectSchema(nil, nil),
-	}
-}
-
-func runContainerImageGCTool() Tool {
-	return Tool{
-		Name: "run_container_image_gc", Description: "Force container image garbage collection. Requires an admin token.",
 		InputSchema: objectSchema(nil, nil),
 	}
 }
@@ -96,6 +90,7 @@ func (handler *Handler) readManagedResourceLogs(ctx context.Context, arguments j
 		ResourceID   string `json:"resourceId"`
 		DeploymentID string `json:"deploymentId"`
 		Contains     string `json:"contains"`
+		Cursor       string `json:"cursor"`
 		Limit        int    `json:"limit"`
 	}
 	if err := decodeArguments(arguments, &input); err != nil || input.ProjectID == "" || input.Kind == "" || input.ResourceID == "" || input.Limit < 0 || input.Limit > containerlogs.MaximumLimit {
@@ -103,7 +98,7 @@ func (handler *Handler) readManagedResourceLogs(ctx context.Context, arguments j
 	}
 	return handler.logs.ReadResource(ctx, identity, automation.ReadResourceLogsInput{
 		ProjectID: input.ProjectID, Kind: input.Kind, ResourceID: input.ResourceID,
-		DeploymentID: input.DeploymentID, Contains: input.Contains, Limit: input.Limit,
+		DeploymentID: input.DeploymentID, Contains: input.Contains, Cursor: input.Cursor, Limit: input.Limit,
 	})
 }
 
@@ -126,14 +121,6 @@ func (handler *Handler) readDiskPressure(ctx context.Context, arguments json.Raw
 		return nil, err
 	}
 	return handler.diskPressure.Read(ctx, identity)
-}
-
-func (handler *Handler) runContainerImageGC(ctx context.Context, arguments json.RawMessage, identity automation.Identity) (any, error) {
-	var empty struct{}
-	if err := decodeArguments(arguments, &empty); err != nil {
-		return nil, err
-	}
-	return handler.imageGC.Force(ctx, identity)
 }
 
 func (handler *Handler) listAuditEvents(ctx context.Context, arguments json.RawMessage, identity automation.Identity) (any, error) {

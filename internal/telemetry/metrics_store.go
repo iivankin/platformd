@@ -99,7 +99,7 @@ func (store *MetricStore) RecordManagedStatBatch(ctx context.Context, samples []
 }
 
 func (store *MetricStore) ResourceMetricSamples(ctx context.Context, kind, resourceID string, from, to int64) ([]state.ResourceMetricSample, error) {
-	samples, err := store.query(ctx, "resource_"+kind, resourceID, from, to)
+	samples, err := store.query(ctx, "resource_"+kind, []string{resourceID}, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -118,11 +118,11 @@ func (store *MetricStore) ResourceMetricSamples(ctx context.Context, kind, resou
 }
 
 func (store *MetricStore) AggregateMetricSamples(ctx context.Context, kind, id string, from, to int64) ([]state.AggregateMetricSample, error) {
-	samples, err := store.query(ctx, kind, id, from, to)
+	samples, err := store.query(ctx, kind, []string{id}, from, to)
 	if err != nil {
 		return nil, err
 	}
-	return decodeAggregateSamples(samples, kind, id)
+	return decodeAggregateSamples(samples, kind)
 }
 
 func (store *MetricStore) ResourceMetricSeriesByProject(ctx context.Context, projectID string, from, to int64) ([]state.ResourceMetricSeries, error) {
@@ -130,13 +130,35 @@ func (store *MetricStore) ResourceMetricSeriesByProject(ctx context.Context, pro
 	if err != nil {
 		return nil, err
 	}
-	series := make([]state.ResourceMetricSeries, 0, len(catalog))
+	type resourceKey struct{ kind, id string }
+	samplesByResource := make(map[resourceKey][]state.ResourceMetricSample, len(catalog))
+	resourcesByKind := make(map[string][]state.MetricCatalogResource)
 	for _, resource := range catalog {
-		samples, err := store.ResourceMetricSamples(ctx, resource.Kind, resource.ID, from, to)
+		resourcesByKind[resource.Kind] = append(resourcesByKind[resource.Kind], resource)
+	}
+	for kind, resources := range resourcesByKind {
+		ids := make([]string, 0, len(resources))
+		for _, resource := range resources {
+			ids = append(ids, resource.ID)
+		}
+		rows, err := store.query(ctx, "resource_"+kind, ids, from, to)
 		if err != nil {
 			return nil, err
 		}
-		if len(samples) > 0 {
+		for _, row := range rows {
+			var values state.MetricValues
+			if err := decodeMetricValue(row, &values); err != nil {
+				return nil, err
+			}
+			key := resourceKey{kind: kind, id: row.ScopeID}
+			samplesByResource[key] = append(samplesByResource[key], state.ResourceMetricSample{
+				Kind: kind, ResourceID: row.ScopeID, ObservedAt: row.ObservedAt, MetricValues: values,
+			})
+		}
+	}
+	series := make([]state.ResourceMetricSeries, 0, len(catalog))
+	for _, resource := range catalog {
+		if samples := samplesByResource[resourceKey{kind: resource.Kind, id: resource.ID}]; len(samples) > 0 {
 			series = append(series, state.ResourceMetricSeries{
 				Kind: resource.Kind, ResourceID: resource.ID, Name: resource.Name, Samples: samples,
 			})
@@ -150,21 +172,36 @@ func (store *MetricStore) ProjectAggregateMetricSeries(ctx context.Context, from
 	if err != nil {
 		return nil, err
 	}
+	if len(catalog) == 0 {
+		return []state.AggregateMetricSeries{}, nil
+	}
+	projectIDs := make([]string, 0, len(catalog))
+	for _, project := range catalog {
+		projectIDs = append(projectIDs, project.ID)
+	}
+	rows, err := store.query(ctx, "project", projectIDs, from, to)
+	if err != nil {
+		return nil, err
+	}
+	samples, err := decodeAggregateSamples(rows, "project")
+	if err != nil {
+		return nil, err
+	}
+	samplesByProject := make(map[string][]state.AggregateMetricSample, len(catalog))
+	for _, sample := range samples {
+		samplesByProject[sample.ScopeID] = append(samplesByProject[sample.ScopeID], sample)
+	}
 	series := make([]state.AggregateMetricSeries, 0, len(catalog))
 	for _, project := range catalog {
-		samples, err := store.AggregateMetricSamples(ctx, "project", project.ID, from, to)
-		if err != nil {
-			return nil, err
-		}
-		if len(samples) > 0 {
-			series = append(series, state.AggregateMetricSeries{ScopeID: project.ID, Name: project.Name, Samples: samples})
+		if projectSamples := samplesByProject[project.ID]; len(projectSamples) > 0 {
+			series = append(series, state.AggregateMetricSeries{ScopeID: project.ID, Name: project.Name, Samples: projectSamples})
 		}
 	}
 	return series, nil
 }
 
 func (store *MetricStore) ManagedStatSamples(ctx context.Context, kind, resourceID string, from, to int64) ([]state.ManagedStatSample, error) {
-	samples, err := store.query(ctx, "managed_"+kind, resourceID, from, to)
+	samples, err := store.query(ctx, "managed_"+kind, []string{resourceID}, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -186,12 +223,11 @@ func (store *MetricStore) ManagedStatSamples(ctx context.Context, kind, resource
 }
 
 type metricQueryRow struct {
-	ScopeKind    string `json:"scope_kind"`
-	ScopeID      string `json:"scope_id"`
-	TimeUnixNano uint64 `json:"time_unix_nano"`
-	Values       string `json:"values"`
-	ValueTypes   string `json:"value_types"`
-	Attributes   string `json:"attributes"`
+	ScopeKind    string            `json:"scope_kind"`
+	ScopeID      string            `json:"scope_id"`
+	TimeUnixNano uint64            `json:"time_unix_nano"`
+	Values       map[string]string `json:"values"`
+	Attributes   map[string]string `json:"attributes"`
 }
 
 type decodedMetricSample struct {
@@ -199,19 +235,18 @@ type decodedMetricSample struct {
 	ScopeID    string
 	ObservedAt int64
 	Values     map[string]string
-	Types      map[string]string
 	Attributes map[string]string
 }
 
-func (store *MetricStore) query(ctx context.Context, scopeKind, scopeID string, from, to int64) ([]decodedMetricSample, error) {
+func (store *MetricStore) query(ctx context.Context, scopeKind string, scopeIDs []string, from, to int64) ([]decodedMetricSample, error) {
 	endpoint, err := url.Parse(store.queryEndpoint + "/internal/metrics")
 	if err != nil {
 		return nil, err
 	}
 	query := endpoint.Query()
 	query.Set("scopeKind", scopeKind)
-	if scopeID != "" {
-		query.Set("scopeId", scopeID)
+	if len(scopeIDs) > 0 {
+		query.Set("scopeIds", strings.Join(scopeIDs, ","))
 	}
 	query.Set("from", strconv.FormatInt(from, 10))
 	query.Set("to", strconv.FormatInt(to, 10))
@@ -236,16 +271,7 @@ func (store *MetricStore) query(ctx context.Context, scopeKind, scopeID string, 
 	for _, row := range rows {
 		sample := decodedMetricSample{
 			ScopeKind: row.ScopeKind, ScopeID: row.ScopeID,
-			ObservedAt: int64(row.TimeUnixNano / 1_000_000),
-		}
-		if err := json.Unmarshal([]byte(row.Values), &sample.Values); err != nil {
-			return nil, fmt.Errorf("decode telemetry metric values: %w", err)
-		}
-		if err := json.Unmarshal([]byte(row.ValueTypes), &sample.Types); err != nil {
-			return nil, fmt.Errorf("decode telemetry metric types: %w", err)
-		}
-		if err := json.Unmarshal([]byte(row.Attributes), &sample.Attributes); err != nil {
-			return nil, fmt.Errorf("decode telemetry metric attributes: %w", err)
+			ObservedAt: int64(row.TimeUnixNano / 1_000_000), Values: row.Values, Attributes: row.Attributes,
 		}
 		result = append(result, sample)
 	}

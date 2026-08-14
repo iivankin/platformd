@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { fetchManagedRedisStats, fetchManagedRedisStatsHistory } from "@/api";
 import type { ManagedRedisStats } from "@/api";
 import { Button } from "@/components/ui/button";
-import { SectionCard } from "@/components/ui/card";
 import {
   ManagedMetricChart,
   ManagedStatsRangePicker,
@@ -41,10 +40,14 @@ const Stat = ({
 
 export const RedisStats = ({
   projectID,
+  range: controlledRange,
   redisID,
+  showRange = true,
 }: {
   projectID: string;
+  range?: Parameters<typeof fetchManagedRedisStatsHistory>[2];
   redisID: string;
+  showRange?: boolean;
 }) => {
   const [stats, setStats] = useState<ManagedRedisStats>();
   const [error, setError] = useState<string>();
@@ -106,8 +109,10 @@ export const RedisStats = ({
     ) => fetchManagedRedisStatsHistory(projectID, redisID, range, signal),
     [projectID, redisID]
   );
-  const { history, historyError, range, setRange } =
-    useManagedStatsHistory(fetchHistory);
+  const { history, historyError, range, setRange } = useManagedStatsHistory(
+    fetchHistory,
+    controlledRange
+  );
   const emptyLabel = managedHistoryEmptyLabel(history, historyError);
   const operationsKeys = useMemo(
     () =>
@@ -136,14 +141,9 @@ export const RedisStats = ({
   }, [stats]);
 
   return (
-    <SectionCard>
+    <section className="border border-border bg-card">
       <header className="flex items-center justify-between border-b border-border px-5 py-3">
-        <div>
-          <h3 className="text-[10px] font-medium">Live Redis statistics</h3>
-          <p className="mt-1 text-[9px] text-muted-foreground">
-            Read directly from INFO; refreshes on demand.
-          </p>
-        </div>
+        <h3 className="text-[10px] font-medium">Live Redis statistics</h3>
         <Button
           disabled={loading}
           onClick={() => void load()}
@@ -261,12 +261,14 @@ export const RedisStats = ({
         </div>
       )}
 
-      <ManagedStatsRangePicker
-        history={history}
-        historyError={historyError}
-        onChange={setRange}
-        range={range}
-      />
+      {showRange ? (
+        <ManagedStatsRangePicker
+          history={history}
+          historyError={historyError}
+          onChange={setRange}
+          range={range}
+        />
+      ) : null}
       <div className="grid border-b border-border lg:grid-cols-2">
         <div className="min-w-0 lg:border-r lg:border-border">
           <ManagedMetricChart
@@ -468,6 +470,6 @@ export const RedisStats = ({
           {error}
         </p>
       ) : null}
-    </SectionCard>
+    </section>
   );
 };

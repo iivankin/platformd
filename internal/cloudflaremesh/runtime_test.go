@@ -8,8 +8,8 @@ import (
 
 func TestSidecarContainerSpecIsIsolatedAndPersistent(t *testing.T) {
 	config := ProductionRuntimeConfig{
-		Network:   containerengine.Network{Name: "mesh-network", Gateway: "10.80.0.1"},
-		StateRoot: "/var/lib/platformd/cloudflare-mesh", LogRoot: "/var/lib/platformd/logs",
+		Network:      containerengine.Network{Name: "mesh-network", Gateway: "10.80.0.1"},
+		StateRoot:    "/var/lib/platformd/cloudflare-mesh",
 		CgroupParent: "/platformd/cloudflare-mesh",
 	}
 	spec := sidecarContainerSpec(config, "image")

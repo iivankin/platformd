@@ -44,6 +44,11 @@ archives saturate the link without tripping Cloudflare's 100 MiB request-body
 limit. `chunk-size` must stay at or below 100 MiB; platformd enforces the same
 per-part cap. There is no total archive-size limit.
 
+When the repository has been checked out, the action also reads the subject of
+`GITHUB_SHA` and sends it with the upload. platformd shows that commit title in
+deployment history and details. Push and workflow-run event payloads are used as
+a fallback when the local commit is unavailable.
+
 This action requires a platformd build that accepts parallel part uploads
 (`Upload-Offset` is an absolute part start, not a sequential cursor). Older
 sequential-only platformd installs are unsupported.

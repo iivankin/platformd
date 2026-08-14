@@ -1,4 +1,6 @@
 import type { Service } from "../web/api";
+import { logFieldFiltersSchema } from "../web/log-field-filter";
+import type { LogFieldFilter } from "../web/log-field-filter";
 import {
   booleanField,
   json,
@@ -309,6 +311,77 @@ const deploymentsResponse = (
     : mockError("deployment_not_found", "Deployment not found", 404);
 };
 
+const structuredFieldValue = (
+  fields: Record<string, unknown> | undefined,
+  path: string
+) => {
+  let value: unknown = fields;
+  for (const segment of path.split(".")) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return;
+    }
+    value = (value as Record<string, unknown>)[segment];
+  }
+  return value;
+};
+
+const matchesStructuredFilter = (
+  fields: Record<string, unknown> | undefined,
+  filter: LogFieldFilter
+) => {
+  const value = structuredFieldValue(fields, filter.path);
+  if (filter.operator === "exists") {
+    return value !== undefined;
+  }
+  const text = value === null ? "null" : String(value ?? "");
+  return filter.operator === "equals"
+    ? text === filter.value
+    : text.toLowerCase().includes(filter.value.toLowerCase());
+};
+
+const mockFieldFilters = (value: string | null): LogFieldFilter[] => {
+  try {
+    const parsed = logFieldFiltersSchema.safeParse(JSON.parse(value ?? "[]"));
+    return parsed.success ? parsed.data : [];
+  } catch {
+    return [];
+  }
+};
+
+const serviceLogsResponse = (state: MockState, serviceID: string, url: URL) => {
+  const window = state.logs[serviceID] ?? { records: [], truncated: false };
+  const deploymentID = url.searchParams.get("deploymentId");
+  const contains = url.searchParams.get("contains");
+  const fieldFilters = mockFieldFilters(url.searchParams.get("fieldFilters"));
+  const cursor = Math.max(
+    0,
+    Math.trunc(Number(url.searchParams.get("cursor") ?? "0")) || 0
+  );
+  const limit = Math.max(
+    1,
+    Math.trunc(Number(url.searchParams.get("limit") ?? "500")) || 500
+  );
+  const matching = window.records
+    .filter((record) => !deploymentID || record.deploymentId === deploymentID)
+    .filter(
+      (record) =>
+        !contains ||
+        `${record.text}\n${JSON.stringify(record.fields ?? {})}`
+          .toLowerCase()
+          .includes(contains.toLowerCase())
+    )
+    .filter((record) =>
+      fieldFilters.every((filter) =>
+        matchesStructuredFilter(record.fields, filter)
+      )
+    );
+  const end = Math.max(0, matching.length - cursor);
+  const start = Math.max(0, end - limit);
+  const records = matching.slice(start, end);
+  const nextCursor = start > 0 ? String(cursor + records.length) : undefined;
+  return json({ nextCursor, records, truncated: Boolean(nextCursor) });
+};
+
 const handleServiceReadModels = (
   request: Request,
   state: MockState,
@@ -330,18 +403,7 @@ const handleServiceReadModels = (
     return resolvedVariablesResponse(state, serviceID);
   }
   if (resource === "logs" && !detail) {
-    const window = state.logs[serviceID] ?? { records: [], truncated: false };
-    const deploymentID = url.searchParams.get("deploymentId");
-    const contains = url.searchParams.get("contains");
-    const limit = Math.max(
-      1,
-      Math.trunc(Number(url.searchParams.get("limit") ?? "500")) || 500
-    );
-    const records = window.records
-      .filter((record) => !deploymentID || record.deploymentId === deploymentID)
-      .filter((record) => !contains || record.text.includes(contains))
-      .slice(-limit);
-    return json({ records, truncated: window.truncated });
+    return serviceLogsResponse(state, serviceID, url);
   }
   if (resource !== "logs" || detail !== "download") {
     return undefined;

@@ -49,7 +49,6 @@ type handlerConfig struct {
 	tokens                  APITokenRepository
 	serviceImageCredentials ServiceImageCredentialManager
 	logs                    LogRepository
-	logsHostname            string
 	audit                   AuditRepository
 	managedImages           ManagedImageCatalog
 	managedRedis            ManagedRedisRepository
@@ -72,7 +71,6 @@ type handlerConfig struct {
 	serverTerminalLife      time.Duration
 	adminHostname           string
 	diskPressure            DiskPressure
-	imageGarbageCollector   ImageGarbageCollector
 	resourceUsage           ResourceUsage
 	infrastructureLogs      InfrastructureLogs
 	admission               *admission.Gate
@@ -151,10 +149,9 @@ func WithAPITokens(repository APITokenRepository) Option {
 	}
 }
 
-func WithLogs(hostname string, repository LogRepository) Option {
+func WithLogs(repository LogRepository) Option {
 	return func(config *handlerConfig) {
 		config.logs = repository
-		config.logsHostname = hostname
 	}
 }
 
@@ -271,12 +268,6 @@ func WithDiskPressure(pressure DiskPressure) Option {
 	}
 }
 
-func WithImageGarbageCollector(collector ImageGarbageCollector) Option {
-	return func(config *handlerConfig) {
-		config.imageGarbageCollector = collector
-	}
-}
-
 func WithResourceUsage(usage ResourceUsage) Option {
 	return func(config *handlerConfig) {
 		config.resourceUsage = usage
@@ -346,9 +337,7 @@ func Handler(meta Meta, options ...Option) http.Handler {
 		registerAPITokenRoutes(mux, config)
 	}
 	if config.logs != nil {
-		if err := registerLogRoutes(mux, config.logsHostname, config.logs); err != nil {
-			panic("register log routes: " + err.Error())
-		}
+		registerLogRoutes(mux, config.logs)
 	}
 	if config.audit != nil {
 		registerAuditRoutes(mux, config.audit)
@@ -408,11 +397,10 @@ func Handler(meta Meta, options ...Option) http.Handler {
 			panic("register server terminal: " + err.Error())
 		}
 	}
-	if config.diskPressure != nil || config.imageGarbageCollector != nil || config.resourceUsage != nil || config.infrastructureLogs != nil {
+	if config.diskPressure != nil || config.resourceUsage != nil || config.infrastructureLogs != nil {
 		registerInfrastructureRoutes(
 			mux,
 			config.diskPressure,
-			config.imageGarbageCollector,
 			config.resourceUsage,
 			config.infrastructureLogs,
 		)

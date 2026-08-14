@@ -21,7 +21,7 @@ type ContainerLogReader interface {
 }
 
 type ManagedLogReader interface {
-	ResourceLogs(ctx context.Context, projectID, kind, resourceID, deploymentID, contains string, limit int) (containerlogs.Window, error)
+	ResourceLogs(ctx context.Context, projectID string, query containerlogs.ResourceQuery) (containerlogs.Window, error)
 }
 
 type LogApplication struct {
@@ -35,6 +35,8 @@ type ReadServiceLogsInput struct {
 	ServiceID    string
 	DeploymentID string
 	Contains     string
+	Cursor       string
+	FieldFilters []containerlogs.FieldFilter
 	SeverityText string
 	TraceID      string
 	SpanID       string
@@ -50,6 +52,7 @@ type ReadResourceLogsInput struct {
 	ResourceID   string
 	DeploymentID string
 	Contains     string
+	Cursor       string
 	Limit        int
 }
 
@@ -79,7 +82,7 @@ func (application *LogApplication) ReadService(ctx context.Context, identity Ide
 	}
 	return application.reader.Read(ctx, containerlogs.Query{
 		ServiceID: input.ServiceID, DeploymentID: input.DeploymentID,
-		Contains: input.Contains, SeverityText: input.SeverityText,
+		Contains: input.Contains, Cursor: input.Cursor, FieldFilters: input.FieldFilters, SeverityText: input.SeverityText,
 		TraceID: input.TraceID, SpanID: input.SpanID, From: input.From, To: input.To,
 		Limit: input.Limit, Ascending: input.Ascending,
 	})
@@ -96,12 +99,18 @@ func (application *LogApplication) ReadResource(ctx context.Context, identity Id
 		return containerlogs.Window{}, errors.New("projectId and resourceId are required")
 	}
 	switch input.Kind {
-	case "postgres", "redis", "object_store":
+	case "postgres", "redis":
 	default:
-		return containerlogs.Window{}, fmt.Errorf("%w: kind must be postgres, redis, or object_store", ErrInvalidInput)
+		return containerlogs.Window{}, fmt.Errorf("%w: kind must be postgres or redis", ErrInvalidInput)
 	}
 	if !identity.AllowsProject(input.ProjectID) {
 		return containerlogs.Window{}, ErrProjectBoundary
 	}
-	return application.managed.ResourceLogs(ctx, input.ProjectID, input.Kind, input.ResourceID, input.DeploymentID, input.Contains, input.Limit)
+	return application.managed.ResourceLogs(ctx, input.ProjectID, containerlogs.ResourceQuery{
+		Kind: input.Kind, ResourceID: input.ResourceID,
+		Query: containerlogs.Query{
+			DeploymentID: input.DeploymentID, Contains: input.Contains,
+			Cursor: input.Cursor, Limit: input.Limit,
+		},
+	})
 }

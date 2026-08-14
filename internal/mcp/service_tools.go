@@ -50,6 +50,19 @@ func adminTools() []Tool {
 					},
 				},
 			},
+			"portForward": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"properties": map[string]any{
+					"repository": map[string]any{
+						"type": "string", "description": "Lowercase GitHub owner/name allowed to create port forwards with Actions OIDC.",
+					},
+					"workflows": map[string]any{
+						"type": "array", "items": map[string]string{"type": "string"},
+						"description": "Allowed .yml or .yaml workflow filenames; an empty list allows any workflow in the repository.",
+					},
+				},
+				"required": []string{"repository", "workflows"},
+			},
 			"command":          map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"args":             map[string]any{"type": "array", "items": map[string]string{"type": "string"}},
 			"environment":      map[string]any{"type": "object", "additionalProperties": map[string]string{"type": "string"}},
@@ -125,7 +138,7 @@ func isAdminMutationTool(name string) bool {
 		"attach_service_domain", "detach_service_domain", "create_object_store",
 		"create_network_gateway", "update_network_gateway", "delete_network_gateway",
 		"set_backup_policy", "run_backup", "restore_backup",
-		"query_managed_postgres", "mutate_redis_key", "run_container_image_gc",
+		"query_managed_postgres", "mutate_redis_key",
 		"create_managed_redis", "create_managed_postgres", "server_exec",
 		"preview_managed_database_version_change", "start_managed_database_version_change",
 		"create_service_volume", "delete_service_volume", "create_port_forward":

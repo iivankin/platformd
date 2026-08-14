@@ -3,7 +3,6 @@ package cloudflaremesh
 import (
 	"context"
 	"errors"
-	"io"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 )
@@ -30,15 +29,13 @@ type ProductionRuntimeConfig struct {
 	BuildNetwork  string
 	StateRoot     string
 	GeneratedRoot string
-	LogRoot       string
 	CgroupParent  string
-	BuildLog      io.Writer
 	StartupError  error
 }
 
 func (config ProductionRuntimeConfig) validate() error {
 	if config.Engine == nil || config.BuildNetwork == "" ||
-		config.StateRoot == "" || config.GeneratedRoot == "" || config.LogRoot == "" || config.CgroupParent == "" {
+		config.StateRoot == "" || config.GeneratedRoot == "" || config.CgroupParent == "" {
 		return errors.New("Cloudflare Mesh sidecar runtime configuration is incomplete")
 	}
 	if config.StartupError == nil && (config.Network.Name == "" || config.Network.Gateway == "") {

@@ -3,6 +3,7 @@ package managedpostgres
 import (
 	"context"
 	"errors"
+	"io"
 	"net/netip"
 	"testing"
 
@@ -24,6 +25,9 @@ func (*extensionImageEngine) CreateContainer(context.Context, containerengine.Co
 }
 func (*extensionImageEngine) StartContainer(context.Context, string) error {
 	return errors.New("unexpected start")
+}
+func (*extensionImageEngine) StartContainerAttached(context.Context, string, io.WriteCloser, io.WriteCloser) (<-chan error, error) {
+	return nil, errors.New("unexpected attached start")
 }
 func (*extensionImageEngine) StopContainer(string, uint) error { return errors.New("unexpected stop") }
 func (*extensionImageEngine) RemoveContainer(context.Context, string, bool) error {

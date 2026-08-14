@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { appendFileSync, createReadStream, readFileSync, statSync } from "node:fs";
 import type { Readable } from "node:stream";
 import { Transform } from "node:stream";
@@ -13,6 +14,7 @@ const DEFAULT_CONCURRENCY = 4;
 const MAX_CONCURRENCY = 8;
 const OIDC_REFRESH_SKEW_MS = 60_000;
 const PROGRESS_INTERVAL_MS = 400;
+const MAX_COMMIT_MESSAGE_BYTES = 512;
 
 type JSONObject = Record<string, unknown>;
 
@@ -50,6 +52,57 @@ function input(name: string, fallback = ""): string {
 
 function sleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function normalizeCommitMessage(value: unknown): string {
+  if (typeof value !== "string") {
+    return "";
+  }
+  const subject = value.split(/\r?\n/u, 1)[0]?.trim() ?? "";
+  let result = "";
+  let bytes = 0;
+  for (const character of subject) {
+    const characterBytes = Buffer.byteLength(character, "utf8");
+    if (bytes + characterBytes > MAX_COMMIT_MESSAGE_BYTES) {
+      break;
+    }
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+function commitMessage(): string {
+  const sha = process.env.GITHUB_SHA;
+  if (sha) {
+    const git = spawnSync("git", ["show", "-s", "--format=%s", sha], {
+      cwd: process.env.GITHUB_WORKSPACE || undefined,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    if (git.status === 0) {
+      const subject = normalizeCommitMessage(git.stdout);
+      if (subject) {
+        return subject;
+      }
+    }
+  }
+
+  const eventPath = process.env.GITHUB_EVENT_PATH;
+  if (!eventPath) {
+    return "";
+  }
+  try {
+    const event = JSON.parse(readFileSync(eventPath, "utf8")) as {
+      head_commit?: { message?: unknown };
+      workflow_run?: { head_commit?: { message?: unknown } };
+    };
+    return normalizeCommitMessage(
+      event.head_commit?.message ?? event.workflow_run?.head_commit?.message,
+    );
+  } catch {
+    return "";
+  }
 }
 
 function setOutput(name: string, value: string | undefined): void {
@@ -736,6 +789,12 @@ async function run(): Promise<void> {
 
   const uploadID = randomUUID();
   const digest = await sha256File(archive);
+  const uploadedCommitMessage = commitMessage();
+  // HTTP header values cannot reliably carry arbitrary Unicode, so the
+  // internal upload protocol transports the UTF-8 commit subject as base64url.
+  const commitMessageHeader = uploadedCommitMessage
+    ? Buffer.from(uploadedCommitMessage, "utf8").toString("base64url")
+    : "";
   setOutput("upload-id", uploadID);
 
   const parts = splitParts(fileStat.size, chunkSize);
@@ -777,6 +836,9 @@ async function run(): Promise<void> {
         "Upload-Offset": String(part.offset),
         "Upload-SHA256": digest,
         "Upload-Tag": tag,
+        ...(commitMessageHeader
+          ? { "Upload-Commit-Message": commitMessageHeader }
+          : {}),
       },
       body,
     );

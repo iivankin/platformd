@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sync"
 	"time"
@@ -257,8 +258,16 @@ func (pacer *scanPacer) step(ctx context.Context) error {
 }
 
 func pathBytes(ctx context.Context, root string, seen map[fileIdentity]struct{}, pacer *scanPacer) (uint64, error) {
+	rootInfo, err := os.Lstat(root)
+	if errors.Is(err, fs.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	rootDevice, identifyFilesystem := deviceOf(rootInfo)
 	var total uint64
-	err := filepath.WalkDir(root, func(_ string, entry fs.DirEntry, walkErr error) error {
+	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
 		if errors.Is(walkErr, fs.ErrNotExist) {
 			return nil
 		}
@@ -268,7 +277,26 @@ func pathBytes(ctx context.Context, root string, seen map[fileIdentity]struct{},
 		if err := pacer.step(ctx); err != nil {
 			return err
 		}
-		if entry.Type()&fs.ModeSymlink != 0 || entry.IsDir() {
+		if entry.Type()&fs.ModeSymlink != 0 {
+			return nil
+		}
+		if entry.IsDir() {
+			if path == root || !identifyFilesystem {
+				return nil
+			}
+			info, infoErr := entry.Info()
+			if errors.Is(infoErr, fs.ErrNotExist) {
+				return fs.SkipDir
+			}
+			if infoErr != nil {
+				return infoErr
+			}
+			if device, identifiable := deviceOf(info); identifiable && device != rootDevice {
+				// Container storage contains live overlay and tmpfs mounts. Their
+				// contents are views over already-counted layers, not additional
+				// bytes owned by the component.
+				return fs.SkipDir
+			}
 			return nil
 		}
 		info, err := entry.Info()

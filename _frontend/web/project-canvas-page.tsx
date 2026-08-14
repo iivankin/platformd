@@ -29,7 +29,6 @@ import { ProjectChangeBar } from "@/project-change-bar";
 import { useProjectChanges } from "@/project-changes";
 import { ProjectCreateOverlays } from "@/project-create-overlays";
 import type { CreateKind } from "@/project-create-overlays";
-import { ProjectDeploymentPage } from "@/project-deployment-page";
 import { mergeResourceNodeData, projectFlowElements } from "@/project-flow";
 import type {
   ResourceFlowEdge,
@@ -125,7 +124,6 @@ const EmptyCanvas = ({ visible }: { visible: boolean }) => {
 const ProjectRouteOverlay = ({
   canvas,
   canvasWithDrafts,
-  deploymentID,
   onDraftChange,
   projectID,
   resourceID,
@@ -134,16 +132,12 @@ const ProjectRouteOverlay = ({
 }: {
   canvas: ProjectCanvas | null;
   canvasWithDrafts: ProjectCanvas | null;
-  deploymentID: string;
   onDraftChange: (draft: PendingResourceCreation) => void;
   projectID: string;
   resourceID: string;
   routedDraft?: PendingResourceCreation;
   view: string;
 }) => {
-  if (deploymentID) {
-    return <ProjectDeploymentPage canvas={canvas} />;
-  }
   if (routedDraft?.kind === "service") {
     return (
       <ServiceDraftPage
@@ -191,12 +185,7 @@ export const ProjectCanvasPage = ({
   onProjectUpdated: (project: Project) => void;
 }) => {
   const navigate = useNavigate();
-  const {
-    deploymentID = "",
-    projectID = "",
-    resourceID = "",
-    view = "",
-  } = useParams();
+  const { projectID = "", resourceID = "", view = "" } = useParams();
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
   const [canvasError, setCanvasError] = useState<string | null>(null);
   const [createKind, setCreateKind] = useState<CreateKind>(null);
@@ -594,7 +583,6 @@ export const ProjectCanvasPage = ({
         <ProjectRouteOverlay
           canvas={canvas}
           canvasWithDrafts={canvasWithDrafts}
-          deploymentID={deploymentID}
           key={refreshVersion}
           onDraftChange={(draft) => setResourceDraft(draft.id, draft)}
           projectID={projectID}

@@ -101,7 +101,7 @@ func (controller *Controller) RestoreReplace(
 	if err != nil {
 		return err
 	}
-	if err := controller.engine.StartContainer(ctx, candidateContainer.ID); err != nil {
+	if err := controller.startContainer(ctx, resource, runtimeID, candidateContainer.ID); err != nil {
 		return fmt.Errorf("start managed Redis restore candidate: %w", err)
 	}
 	candidateStarted = true
@@ -192,7 +192,7 @@ func (controller *Controller) recoverOldRuntime(
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), controller.readyTimeout+30*time.Second)
 	defer cancel()
-	if err := controller.engine.StartContainer(ctx, runtime.container.ID); err != nil {
+	if err := controller.startContainer(ctx, runtime.resource, runtime.runtimeID, runtime.container.ID); err != nil {
 		return fmt.Errorf("restart managed Redis after failed restore switch: %w", err)
 	}
 	ready, err := controller.waitReady(ctx, runtime.container.ID, runtime.network, password)

@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/id"
@@ -29,8 +32,9 @@ const (
 	PreviewRetention = 14 * 24 * time.Hour
 	// MaximumUploadChunkBytes matches Cloudflare's proxied request body limit so
 	// uploads through platform.looma.llc (and similar) fail fast instead of hanging.
-	MaximumUploadChunkBytes = 100 << 20
-	assembledArchiveName    = "archive.oci"
+	MaximumUploadChunkBytes   = 100 << 20
+	maximumCommitMessageBytes = 512
+	assembledArchiveName      = "archive.oci"
 )
 
 var (
@@ -81,6 +85,7 @@ type Config struct {
 	Now            func() time.Time
 	NewID          func() (string, error)
 	OnError        func(error)
+	OnComplete     func()
 }
 
 type Application struct {
@@ -96,6 +101,7 @@ type Application struct {
 	now        func() time.Time
 	newID      func() (string, error)
 	onError    func(error)
+	onComplete func()
 
 	mu    sync.Mutex
 	locks map[string]*sync.Mutex
@@ -130,10 +136,14 @@ func New(config Config) (*Application, error) {
 	if onError == nil {
 		onError = func(error) {}
 	}
+	onComplete := config.OnComplete
+	if onComplete == nil {
+		onComplete = func() {}
+	}
 	return &Application{
 		context: config.Context, store: config.Store, engine: config.Engine, runtime: config.Runtime,
 		verifier: config.Verifier, hostname: config.PublicHostname, uploadRoot: config.UploadRoot,
-		imageRoot: config.ImageRoot, now: now, newID: newID, onError: onError,
+		imageRoot: config.ImageRoot, now: now, newID: newID, onError: onError, onComplete: onComplete,
 		growth: config.Growth, locks: make(map[string]*sync.Mutex), runs: make(map[string]runningUpload),
 	}, nil
 }
@@ -349,6 +359,11 @@ func (application *Application) authorizeUpload(
 		writeOIDCError(response)
 		return state.ServiceDesired{}, "", state.ImageUploadIdentity{}, false
 	}
+	identity.CommitMessage, err = parseCommitMessageHeader(request.Header.Get("Upload-Commit-Message"))
+	if err != nil {
+		writeUploadError(response, http.StatusBadRequest, "invalid_commit_message", "Upload-Commit-Message must be valid base64url UTF-8 up to 512 bytes")
+		return state.ServiceDesired{}, "", state.ImageUploadIdentity{}, false
+	}
 	return service, tag, identity, true
 }
 
@@ -535,7 +550,9 @@ func (application *Application) process(projectID, serviceID, uploadID string) {
 		// the tag unique index does not block the next push.
 		application.fail(upload.ID, "completion_failed", err)
 		application.onError(err)
+		return
 	}
+	application.onComplete()
 }
 
 func (application *Application) fail(uploadID, code string, cause error) {
@@ -706,6 +723,26 @@ func parseNonNegativeHeader(value string) (int64, error) {
 	}
 	return number, nil
 }
+
+func parseCommitMessageHeader(value string) (string, error) {
+	encoded := strings.TrimSpace(value)
+	if encoded == "" {
+		return "", nil
+	}
+	if len(encoded) > base64.RawURLEncoding.EncodedLen(maximumCommitMessageBytes) {
+		return "", errors.New("commit message is too long")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil || len(decoded) > maximumCommitMessageBytes || !utf8.Valid(decoded) {
+		return "", errors.New("invalid commit message encoding")
+	}
+	message := strings.TrimSpace(string(decoded))
+	if strings.ContainsFunc(message, unicode.IsControl) {
+		return "", errors.New("commit message contains control characters")
+	}
+	return message, nil
+}
+
 func safeRoot(path string) bool {
 	return filepath.IsAbs(path) && filepath.Clean(path) == path && path != "/"
 }

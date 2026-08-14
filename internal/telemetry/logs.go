@@ -15,9 +15,11 @@ import (
 )
 
 const (
-	logQueueCapacity = 4096
-	logBatchSize     = 256
-	maximumLogBytes  = 64 << 10
+	logQueueCapacity         = 4096
+	logBatchSize             = 256
+	maximumLogBytes          = 64 << 10
+	containerAttachScope     = "platformd.container.attach"
+	beforeDeployCommandScope = "platformd.before_deploy"
 )
 
 type LogMetadata struct {
@@ -26,6 +28,7 @@ type LogMetadata struct {
 	DeploymentID string
 	AttemptID    string
 	Stream       string
+	ScopeName    string
 }
 
 type logRecord struct {
@@ -66,6 +69,15 @@ func (exporter *LogExporter) ContainerWriter(serviceID, serviceName, deploymentI
 	return exporter.Writer(LogMetadata{
 		ServiceID: serviceID, ServiceName: serviceName,
 		DeploymentID: deploymentID, AttemptID: attemptID, Stream: stream,
+		ScopeName: containerAttachScope,
+	})
+}
+
+func (exporter *LogExporter) BeforeDeployWriter(serviceID, serviceName, deploymentID, attemptID, stream string) io.WriteCloser {
+	return exporter.Writer(LogMetadata{
+		ServiceID: serviceID, ServiceName: serviceName,
+		DeploymentID: deploymentID, AttemptID: attemptID, Stream: stream,
+		ScopeName: beforeDeployCommandScope,
 	})
 }
 
@@ -182,6 +194,10 @@ func (exporter *LogExporter) sendLogs(ctx context.Context, records []logRecord) 
 	}
 	resourceLogs := make([]any, 0, len(groups))
 	for metadata, logRecords := range groups {
+		scopeName := metadata.ScopeName
+		if scopeName == "" {
+			scopeName = containerAttachScope
+		}
 		resourceLogs = append(resourceLogs, map[string]any{
 			"resource": map[string]any{"attributes": []any{
 				attribute("service.id", metadata.ServiceID),
@@ -190,7 +206,7 @@ func (exporter *LogExporter) sendLogs(ctx context.Context, records []logRecord) 
 				attribute("service.instance.id", metadata.AttemptID),
 			}},
 			"scopeLogs": []any{map[string]any{
-				"scope":      map[string]any{"name": "platformd.container.attach", "version": "1"},
+				"scope":      map[string]any{"name": scopeName, "version": "1"},
 				"logRecords": logRecords,
 			}},
 		})

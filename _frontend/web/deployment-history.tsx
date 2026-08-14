@@ -1,7 +1,5 @@
-import { Menu } from "@base-ui/react/menu";
 import {
   Files,
-  MoreVertical,
   Play,
   RefreshCw,
   RotateCw,
@@ -14,6 +12,7 @@ import { useState } from "react";
 import type { Deployment } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
+import { DeploymentActionMenu } from "@/deployment-action-menu";
 
 interface DeploymentHistoryProperties {
   activeDeploymentID?: string;
@@ -62,9 +61,9 @@ const confirmationMessage = (confirmation: Confirmation, active: boolean) => {
     return "A new deployment will be created from this exact image digest and configuration snapshot. Volume contents stay current.";
   }
   if (active) {
-    return "This stops the active deployment. Service volumes and deployment logs are preserved.";
+    return "This stops the active deployment. Service volumes and retained telemetry are preserved.";
   }
-  return "This permanently removes this history record and its deployment logs.";
+  return "This permanently removes only this history record. Retained telemetry remains available until its normal expiry.";
 };
 
 const confirmationLabel = (
@@ -114,81 +113,45 @@ const DeploymentActions = ({
     deployActionLabel = "Deploy anyway";
   }
 
+  const actions = [
+    { handleSelect: onViewLogs, icon: ScrollText, label: "View logs" },
+    ...(active
+      ? [
+          {
+            handleSelect: onOpenConsole,
+            icon: SquareTerminal,
+            label: "Console",
+          },
+          { handleSelect: onOpenFiles, icon: Files, label: "Container files" },
+          { handleSelect: onRestart, icon: RotateCw, label: "Restart" },
+          { handleSelect: onRedeploy, icon: RefreshCw, label: "Redeploy" },
+        ]
+      : []),
+    ...(deployable
+      ? [
+          {
+            handleSelect: () =>
+              onConfirm({ action: "deploy", deploymentID: deployment.id }),
+            icon: Play,
+            label: deployActionLabel,
+          },
+        ]
+      : []),
+    {
+      handleSelect: () =>
+        onConfirm({ action: "remove", deploymentID: deployment.id }),
+      icon: Trash2,
+      label: "Remove",
+      tone: "destructive" as const,
+    },
+  ];
+
   return (
-    <Menu.Root>
-      <Menu.Trigger
-        aria-label={`Actions for deployment ${deployment.id}`}
-        className="grid size-8 place-items-center border border-transparent text-muted-foreground hover:border-border hover:bg-muted hover:text-foreground"
-        disabled={busy}
-      >
-        <MoreVertical className="size-3.5" />
-      </Menu.Trigger>
-      <Menu.Portal>
-        <Menu.Positioner align="end" className="z-50" sideOffset={4}>
-          <Menu.Popup className="min-w-48 border border-border bg-popover p-1 text-[10px] text-popover-foreground shadow-lg">
-            <Menu.Item
-              className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-              onClick={onViewLogs}
-            >
-              <ScrollText className="size-3.5" />
-              View logs
-            </Menu.Item>
-            {active && (
-              <>
-                <Menu.Item
-                  className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-                  onClick={onOpenConsole}
-                >
-                  <SquareTerminal className="size-3.5" />
-                  Console
-                </Menu.Item>
-                <Menu.Item
-                  className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-                  onClick={onOpenFiles}
-                >
-                  <Files className="size-3.5" />
-                  Container files
-                </Menu.Item>
-                <Menu.Item
-                  className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-                  onClick={onRestart}
-                >
-                  <RotateCw className="size-3.5" />
-                  Restart
-                </Menu.Item>
-                <Menu.Item
-                  className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-                  onClick={onRedeploy}
-                >
-                  <RefreshCw className="size-3.5" />
-                  Redeploy
-                </Menu.Item>
-              </>
-            )}
-            {deployable && (
-              <Menu.Item
-                className="flex cursor-default items-center gap-2 px-2.5 py-2 outline-none data-[highlighted]:bg-muted"
-                onClick={() =>
-                  onConfirm({ action: "deploy", deploymentID: deployment.id })
-                }
-              >
-                <Play className="size-3.5" />
-                {deployActionLabel}
-              </Menu.Item>
-            )}
-            <Menu.Item
-              className="flex cursor-default items-center gap-2 px-2.5 py-2 text-destructive outline-none data-[highlighted]:bg-destructive/10"
-              onClick={() =>
-                onConfirm({ action: "remove", deploymentID: deployment.id })
-              }
-            >
-              <Trash2 className="size-3.5" />
-              Remove
-            </Menu.Item>
-          </Menu.Popup>
-        </Menu.Positioner>
-      </Menu.Portal>
-    </Menu.Root>
+    <DeploymentActionMenu
+      actions={actions}
+      busy={busy}
+      deploymentID={deployment.id}
+    />
   );
 };
 
@@ -241,6 +204,14 @@ const DeploymentRow = ({
               {shortValue(deployment.id, 18)}
             </code>
           </div>
+          {deployment.commitMessage ? (
+            <p
+              className="mt-1 truncate text-[10px] text-foreground"
+              title={deployment.commitMessage}
+            >
+              {deployment.commitMessage}
+            </p>
+          ) : null}
           <p className="mt-1 truncate text-[9px] text-muted-foreground">
             {shortValue(
               deployment.imageDigest ??
@@ -366,7 +337,7 @@ export const DeploymentHistory = ({
               : "Latest attempt"}
           </h3>
           <p className="mt-1 text-[9px] text-muted-foreground">
-            Open logs and actions for the exact deployment.
+            Open telemetry or runtime tools for the exact deployment.
           </p>
         </div>
         <span className="text-[9px] text-muted-foreground">

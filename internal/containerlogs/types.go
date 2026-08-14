@@ -8,14 +8,19 @@ import (
 var ErrInvalidQuery = errors.New("invalid container log query")
 
 const (
-	DefaultLimit         = 500
-	MaximumLimit         = 2000
-	DefaultScanBytes     = 4 << 20
-	DefaultRecordBytes   = 64 << 10
-	MaximumDownloadBytes = 100 << 20
-	MaximumContainsBytes = 256
-	truncationMarker     = "… [truncated]"
+	DefaultLimit            = 500
+	MaximumLimit            = 2000
+	MaximumFieldFilters     = 8
+	MaximumFieldFilterBytes = 8 << 10
+	MaximumDownloadBytes    = 100 << 20
+	MaximumContainsBytes    = 256
 )
+
+type FieldFilter struct {
+	Path     string `json:"path"`
+	Operator string `json:"operator"`
+	Value    string `json:"value,omitempty"`
+}
 
 const MaximumDownloadRange = 24 * time.Hour
 
@@ -23,6 +28,8 @@ type Query struct {
 	ServiceID    string
 	DeploymentID string
 	Contains     string
+	Cursor       string
+	FieldFilters []FieldFilter
 	SeverityText string
 	TraceID      string
 	SpanID       string
@@ -32,34 +39,32 @@ type Query struct {
 	Ascending    bool
 }
 
-type RuntimeQuery struct {
-	Kind         string
-	ResourceID   string
-	DeploymentID string
-	Contains     string
-	Limit        int
+type ResourceQuery struct {
+	Kind       string
+	ResourceID string
+	Query
 }
 
 type Record struct {
-	Timestamp      time.Time `json:"timestamp"`
-	Stream         string    `json:"stream"`
-	Text           string    `json:"text"`
-	DeploymentID   string    `json:"deploymentId"`
-	AttemptID      string    `json:"attemptId"`
-	TraceID        string    `json:"traceId,omitempty"`
-	SpanID         string    `json:"spanId,omitempty"`
-	SeverityText   string    `json:"severityText,omitempty"`
-	SeverityNumber int32     `json:"severityNumber,omitempty"`
-	Partial        bool      `json:"partial,omitempty"`
-	Truncated      bool      `json:"truncated,omitempty"`
-
-	segment int
-	offset  int64
+	Timestamp      time.Time      `json:"timestamp"`
+	Stream         string         `json:"stream"`
+	Text           string         `json:"text"`
+	DeploymentID   string         `json:"deploymentId"`
+	AttemptID      string         `json:"attemptId"`
+	TraceID        string         `json:"traceId,omitempty"`
+	SpanID         string         `json:"spanId,omitempty"`
+	SeverityText   string         `json:"severityText,omitempty"`
+	SeverityNumber int32          `json:"severityNumber,omitempty"`
+	Phase          string         `json:"phase,omitempty"`
+	Partial        bool           `json:"partial,omitempty"`
+	Truncated      bool           `json:"truncated,omitempty"`
+	Fields         map[string]any `json:"fields,omitempty"`
 }
 
 type Window struct {
-	Records   []Record `json:"records"`
-	Truncated bool     `json:"truncated"`
+	Records    []Record `json:"records"`
+	Truncated  bool     `json:"truncated"`
+	NextCursor string   `json:"nextCursor,omitempty"`
 }
 
 type DownloadQuery struct {

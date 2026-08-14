@@ -95,11 +95,21 @@ func readTools() []Tool {
 			}, []string{"projectId", "serviceId"}),
 		},
 		{
-			Name: "read_service_logs", Description: "Read a bounded, chronological service log window. Use traceId or spanId from an error event or get_service_trace to correlate logs; order selects which matching window is returned.",
+			Name: "read_service_logs", Description: "Read a bounded, chronological service log window. Use traceId or spanId from an error event or get_service_trace to correlate logs; order selects which matching window is returned. If nextCursor is present, pass it back as cursor with the same filters and order to continue.",
 			InputSchema: objectSchema(map[string]any{
 				"projectId": map[string]any{"type": "string"}, "serviceId": map[string]any{"type": "string"},
 				"deploymentId": map[string]any{"type": "string", "description": "Exact deployment ID from list_service_deployments"},
-				"contains":     map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive message text search"},
+				"contains":     map[string]any{"type": "string", "maxLength": 256, "description": "Case-insensitive search across the rendered message and complete structured JSON body"},
+				"cursor":       map[string]any{"type": "string", "description": "Opaque nextCursor from the previous response"},
+				"fieldFilters": map[string]any{
+					"type": "array", "maxItems": containerlogs.MaximumFieldFilters,
+					"description": "Structured JSON body filters. Paths use dot notation such as caller or http.status_code.",
+					"items": objectSchema(map[string]any{
+						"path":     map[string]any{"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*$", "maxLength": 256},
+						"operator": map[string]any{"type": "string", "enum": []string{"equals", "contains", "exists"}},
+						"value":    map[string]any{"type": "string", "maxLength": 512, "description": "Omit for exists"},
+					}, []string{"path", "operator"}),
+				},
 				"severityText": map[string]any{"type": "string", "maxLength": 64, "description": "Exact normalized severity such as ERROR, WARN, or INFO"},
 				"traceId":      map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{32}$", "description": "Exact 32-hex trace ID"},
 				"spanId":       map[string]any{"type": "string", "pattern": "^[0-9a-fA-F]{16}$", "description": "Exact 16-hex span ID"},
@@ -198,9 +208,6 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		}
 		if handler.backups != nil {
 			tools = append(tools, backupAdminTools()...)
-		}
-		if handler.imageGC != nil {
-			tools = append(tools, runContainerImageGCTool())
 		}
 		if handler.networkGateways != nil {
 			tools = append(tools, networkGatewayAdminTools()...)
@@ -362,12 +369,6 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.readDiskPressure(request.Context(), call.Arguments, identity)
-	case "run_container_image_gc":
-		if handler.imageGC == nil {
-			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
-			return
-		}
-		output, err = handler.runContainerImageGC(request.Context(), call.Arguments, identity)
 	case "list_audit_events":
 		if handler.audit == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")

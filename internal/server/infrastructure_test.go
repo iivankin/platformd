@@ -10,7 +10,6 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/cgroupstats"
-	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
 	"github.com/iivankin/platformd/internal/journallogs"
@@ -33,18 +32,6 @@ type capacityStub struct {
 
 type pendingCapacityStub struct {
 	pressureStub
-}
-
-type imageGarbageCollectorStub struct {
-	calls int
-}
-
-func (collector *imageGarbageCollectorStub) ForceGarbageCollect(context.Context) (containerengine.ImageGarbageCollectResult, error) {
-	collector.calls++
-	return containerengine.ImageGarbageCollectResult{
-		FinalImagesRemoved: 2, BuildCacheImagesRemoved: 3, OrphanLayersRemoved: 1,
-		RemovedBytes: 42, Skipped: 4,
-	}, nil
 }
 
 func (capacityStub) Components(context.Context) (diskusage.Snapshot, error) {
@@ -165,7 +152,7 @@ func TestInfrastructureShowsDerivedDiskPressureWithoutPersistentState(t *testing
 		ready: true,
 		snapshot: diskpressure.Snapshot{
 			Level: diskpressure.Critical, ReservePresent: false, CheckedAt: time.UnixMilli(42),
-			Usage: diskpressure.Usage{TotalBytes: 100, AvailableBytes: 4, TotalInodes: 1000, AvailableInodes: 500, ByteBasisPoints: 9600, InodeBasisPoints: 5000},
+			Usage: diskpressure.Usage{TotalBytes: 100, UsedBytes: 90, AvailableBytes: 4, TotalInodes: 1000, AvailableInodes: 500, ByteBasisPoints: 9600, InodeBasisPoints: 5000},
 		},
 	}}))
 	response := httptest.NewRecorder()
@@ -176,7 +163,7 @@ func TestInfrastructureShowsDerivedDiskPressureWithoutPersistentState(t *testing
 	protected := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
 	response = httptest.NewRecorder()
 	protected.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/infrastructure/disk-pressure", ""))
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"level":"critical"`) || !strings.Contains(response.Body.String(), `"byteBasisPoints":9600`) || !strings.Contains(response.Body.String(), `"reservePresent":false`) || !strings.Contains(response.Body.String(), `"id":"volumes","bytes":24`) {
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"level":"critical"`) || !strings.Contains(response.Body.String(), `"byteBasisPoints":9600`) || !strings.Contains(response.Body.String(), `"usedBytes":90`) || !strings.Contains(response.Body.String(), `"reservePresent":false`) || !strings.Contains(response.Body.String(), `"id":"volumes","bytes":24`) {
 		t.Fatalf("disk pressure = %d/%s", response.Code, response.Body)
 	}
 }
@@ -202,30 +189,6 @@ func TestInfrastructureOmitsComponentTimestampUntilBackgroundScanCompletes(t *te
 	}
 	if strings.Contains(response.Body.String(), `"componentsCheckedAt"`) {
 		t.Fatalf("pending component timestamp was published: %s", response.Body)
-	}
-}
-
-func TestInfrastructureRunsSafeImageGarbageCollectionWithAccess(t *testing.T) {
-	t.Parallel()
-	collector := &imageGarbageCollectorStub{}
-	direct := server.Handler(server.DefaultMeta("ready"), server.WithImageGarbageCollector(collector))
-	path := "/api/v1/infrastructure/container-images/gc"
-	response := httptest.NewRecorder()
-	direct.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
-	if response.Code != http.StatusForbidden || collector.calls != 0 {
-		t.Fatalf("direct image GC = %d/%s calls=%d", response.Code, response.Body, collector.calls)
-	}
-	protected := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
-	response = httptest.NewRecorder()
-	request := projectRequest(http.MethodPost, path, "")
-	request.Header.Set("Origin", "https://admin.example.com")
-	protected.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || collector.calls != 1 ||
-		!strings.Contains(response.Body.String(), `"finalImagesRemoved":2`) ||
-		!strings.Contains(response.Body.String(), `"buildCacheImagesRemoved":3`) ||
-		!strings.Contains(response.Body.String(), `"orphanLayersRemoved":1`) ||
-		!strings.Contains(response.Body.String(), `"removedBytes":42`) {
-		t.Fatalf("protected image GC = %d/%s calls=%d", response.Code, response.Body, collector.calls)
 	}
 }
 

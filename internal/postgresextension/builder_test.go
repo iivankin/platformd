@@ -3,6 +3,7 @@ package postgresextension
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,13 @@ func (engine *builderEngine) CreateContainer(_ context.Context, spec containeren
 	return containerengine.Container{ID: "builder"}, nil
 }
 
-func (*builderEngine) StartContainer(context.Context, string) error         { return nil }
+func (*builderEngine) StartContainerAttached(_ context.Context, _ string, stdout, stderr io.WriteCloser) (<-chan error, error) {
+	_ = stdout.Close()
+	_ = stderr.Close()
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
 func (*builderEngine) WaitContainer(context.Context, string) (int32, error) { return 0, nil }
 func (*builderEngine) RemoveContainer(context.Context, string, bool) error  { return nil }
 
@@ -76,8 +83,7 @@ func TestBuilderCachesDerivedImageWithoutDatabaseVolume(t *testing.T) {
 	engine := &builderEngine{images: make(map[string]containerengine.Image)}
 	growth := &builderGrowth{}
 	builder, err := New(Config{
-		Engine: engine, Growth: growth, CacheRoot: root, LogRoot: root,
-		LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+		Engine: engine, Growth: growth, CacheRoot: root,
 		ResolveSource: func(_ context.Context, recipe Recipe) (string, error) {
 			if recipe != VectorRecipe() {
 				t.Fatalf("recipe = %+v", recipe)
@@ -115,6 +121,9 @@ func TestBuilderCachesDerivedImageWithoutDatabaseVolume(t *testing.T) {
 	}
 	if len(spec.DNSServers) != 1 || spec.DNSServers[0] != "10.90.0.1" || len(spec.DNSSearch) != 0 {
 		t.Fatalf("builder DNS = servers=%v search=%v", spec.DNSServers, spec.DNSSearch)
+	}
+	if spec.LogDriver != containerengine.ContainerLogNone || spec.LogPath != "" {
+		t.Fatalf("builder log destination = driver %q path %q", spec.LogDriver, spec.LogPath)
 	}
 	if len(spec.Command) != 1 || !strings.Contains(spec.Command[0], "/etc/alpine-release") ||
 		!strings.Contains(spec.Command[0], "apk add --no-cache --virtual .platformd-pgvector-build build-base") ||

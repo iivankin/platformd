@@ -1,25 +1,9 @@
-import type { LogWindow } from "../web/api";
-import type { MockState } from "./state";
-
-export type MockSocketData =
-  | { kind: "logs"; window: LogWindow }
-  | { kind: "terminal" };
+export interface MockSocketData {
+  kind: "terminal";
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-
-export const upgradeLogSocket = (
-  request: Request,
-  server: Bun.Server<MockSocketData>,
-  state: MockState,
-  serviceID: string
-) =>
-  server.upgrade(request, {
-    data: {
-      kind: "logs",
-      window: state.logs[serviceID] ?? { records: [], truncated: false },
-    },
-  });
 
 export const upgradeTerminalSocket = (
   request: Request,
@@ -40,9 +24,6 @@ export const upgradeTerminalSocket = (
 
 export const mockWebSocketHandlers: Bun.WebSocketHandler<MockSocketData> = {
   message(socket, message) {
-    if (socket.data.kind !== "terminal") {
-      return;
-    }
     if (typeof message === "string") {
       if (message.includes('"type":"resize"')) {
         return;
@@ -54,16 +35,6 @@ export const mockWebSocketHandlers: Bun.WebSocketHandler<MockSocketData> = {
     socket.send(encoder.encode(input));
   },
   open(socket) {
-    if (socket.data.kind === "logs") {
-      socket.send(
-        JSON.stringify({
-          records: socket.data.window.records,
-          truncated: socket.data.window.truncated,
-          type: "snapshot",
-        })
-      );
-      return;
-    }
     socket.send(
       encoder.encode(
         "\r\nplatformd mock terminal\r\nCommands are echoed and never executed.\r\nmock $ "

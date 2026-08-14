@@ -27,6 +27,7 @@ import {
   objectStoreEndpoint,
 } from "@/connection-values";
 import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
+import { ObjectStoreTelemetry } from "@/managed-resource-telemetry";
 import {
   ObjectStorePreviewPane,
   ObjectStoreTable,
@@ -36,16 +37,14 @@ import { ObjectStorePublicAccessSettings } from "@/object-store-public-access";
 import { ObjectStoreStats } from "@/object-store-stats";
 import type { ResourceNodeData } from "@/project-flow";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
-import { ResourceLogs } from "@/resource-logs";
 import { ResourceVariables } from "@/resource-variables";
 import { ResourcePortForwardSettings } from "@/service-port-forward";
 
 export type ObjectStoreWorkspaceView =
   | "backups"
-  | "logs"
   | "objects"
   | "settings"
-  | "stats"
+  | "telemetry"
   | "variables";
 
 interface ObjectStoreDetailPanelProperties {
@@ -335,8 +334,10 @@ export const ObjectStoreDetailPanel = ({
         <ResourceBackupPanel resourceID={storeID} resourceKind="object_store" />
       ) : null}
 
-      {view === "stats" ? (
-        <ObjectStoreStats projectID={projectID} storeID={storeID} />
+      {view === "telemetry" ? (
+        <ObjectStoreTelemetry
+          metrics={<ObjectStoreStats projectID={projectID} storeID={storeID} />}
+        />
       ) : null}
 
       {view === "objects" ? (
@@ -402,14 +403,6 @@ export const ObjectStoreDetailPanel = ({
             </div>
           </div>
         </SectionCard>
-      ) : null}
-
-      {view === "logs" ? (
-        <ResourceLogs
-          kind="object_store"
-          projectID={projectID}
-          resourceID={storeID}
-        />
       ) : null}
 
       {error ? (

@@ -81,7 +81,7 @@ func sidecarEnvironment(base []string, volume, socket string) []string {
 		scannerSpeed  = "RUSTFS_SCANNER_SPEED"
 		scannerCycle  = "RUSTFS_SCANNER_CYCLE"
 	)
-	environment := make([]string, 0, len(base)+5)
+	environment := make([]string, 0, len(base)+4)
 	for _, value := range base {
 		name, _, _ := strings.Cut(value, "=")
 		switch name {

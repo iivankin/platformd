@@ -25,7 +25,7 @@ func decodeMetricValue(sample decodedMetricSample, destination any) error {
 	return nil
 }
 
-func decodeAggregateSamples(samples []decodedMetricSample, kind, id string) ([]state.AggregateMetricSample, error) {
+func decodeAggregateSamples(samples []decodedMetricSample, kind string) ([]state.AggregateMetricSample, error) {
 	result := make([]state.AggregateMetricSample, 0, len(samples))
 	for _, sample := range samples {
 		var value struct {
@@ -37,7 +37,7 @@ func decodeAggregateSamples(samples []decodedMetricSample, kind, id string) ([]s
 			return nil, err
 		}
 		result = append(result, state.AggregateMetricSample{
-			ScopeKind: kind, ScopeID: id, ObservedAt: sample.ObservedAt,
+			ScopeKind: kind, ScopeID: sample.ScopeID, ObservedAt: sample.ObservedAt,
 			RunningResources: value.RunningResources, TotalResources: value.TotalResources,
 			MetricValues: value.MetricValues,
 		})
@@ -48,21 +48,13 @@ func decodeAggregateSamples(samples []decodedMetricSample, kind, id string) ([]s
 func rebuildMetricValue(sample decodedMetricSample) (map[string]any, error) {
 	root := make(map[string]any)
 	for field, encoded := range sample.Values {
-		value, err := parseMetricNumber(encoded, sample.Types[field])
+		value, err := parseMetricNumber(encoded)
 		if err != nil {
 			return nil, fmt.Errorf("decode telemetry metric field %s: %w", field, err)
 		}
 		attributes, err := decodePointAttributes(sample.Attributes[field])
 		if err != nil {
 			return nil, fmt.Errorf("decode telemetry metric attributes for %s: %w", field, err)
-		}
-		if attributes["platformd.value.type"] == "bool" {
-			switch number := value.(type) {
-			case int64:
-				value = number != 0
-			case float64:
-				value = number != 0
-			}
 		}
 		segments := strings.Split(field, ".")
 		setMetricPath(root, segments, value)
@@ -77,38 +69,33 @@ func rebuildMetricValue(sample decodedMetricSample) (map[string]any, error) {
 	return normalizeMetricContainers(root).(map[string]any), nil
 }
 
-func parseMetricNumber(value, kind string) (any, error) {
-	if kind == "int" {
-		return strconv.ParseInt(value, 10, 64)
+func parseMetricNumber(value string) (any, error) {
+	if len(value) < 3 || value[1] != ':' {
+		return nil, fmt.Errorf("invalid tagged metric value")
 	}
-	return strconv.ParseFloat(value, 64)
-}
-
-type pointAttribute struct {
-	Key   string         `json:"key"`
-	Value map[string]any `json:"value"`
+	scalar := value[2:]
+	switch value[0] {
+	case 'b':
+		integer, err := strconv.ParseInt(scalar, 10, 64)
+		return integer != 0, err
+	case 'i':
+		return strconv.ParseInt(scalar, 10, 64)
+	case 'f':
+		return strconv.ParseFloat(scalar, 64)
+	default:
+		return nil, fmt.Errorf("unknown metric value type %q", value[:1])
+	}
 }
 
 func decodePointAttributes(encoded string) (map[string]string, error) {
-	var values []pointAttribute
+	values := make(map[string]string)
+	if encoded == "" {
+		return values, nil
+	}
 	if err := json.Unmarshal([]byte(encoded), &values); err != nil {
 		return nil, err
 	}
-	result := make(map[string]string, len(values))
-	for _, attribute := range values {
-		for _, raw := range attribute.Value {
-			switch value := raw.(type) {
-			case string:
-				result[attribute.Key] = value
-			case float64:
-				result[attribute.Key] = strconv.FormatFloat(value, 'g', -1, 64)
-			case bool:
-				result[attribute.Key] = strconv.FormatBool(value)
-			}
-			break
-		}
-	}
-	return result, nil
+	return values, nil
 }
 
 func metricItemPath(segments []string) []string {

@@ -189,30 +189,20 @@ ENTRYPOINT ["/bin/warp-svc"]
 	if err := writeManagedFile(dockerfile, []byte(contents), 0o600); err != nil {
 		return containerengine.Image{}, err
 	}
-	logWriter := runtime.config.BuildLog
-	var logFile *os.File
-	if logWriter == nil {
-		if err := os.MkdirAll(filepath.Join(runtime.config.LogRoot, "infrastructure"), 0o700); err != nil {
-			return containerengine.Image{}, err
-		}
-		var err error
-		logFile, err = os.OpenFile(
-			filepath.Join(runtime.config.LogRoot, "infrastructure", "cloudflare-mesh-build.log"),
-			os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600,
-		)
-		if err != nil {
-			return containerengine.Image{}, err
-		}
-		defer logFile.Close()
-		logWriter = logFile
-	}
+	systemevent.Info("cloudflare_mesh_image_build_started")
+	logWriter := systemevent.NewLineWriter("cloudflare_mesh_image_build_output")
 	image, err := runtime.config.Engine.Build(ctx, containerengine.BuildRequest{
 		ContextDirectory: contextRoot, Dockerfile: dockerfile, Reference: cloudflareImage,
 		Network: runtime.config.BuildNetwork, Timeout: cloudflareBuildTimeout, Log: logWriter,
 	})
+	closeErr := logWriter.Close()
 	if err != nil {
-		return containerengine.Image{}, fmt.Errorf("build Cloudflare Mesh sidecar image: %w", err)
+		return containerengine.Image{}, fmt.Errorf("build Cloudflare Mesh sidecar image: %w", errors.Join(err, closeErr))
 	}
+	if closeErr != nil {
+		return containerengine.Image{}, fmt.Errorf("record Cloudflare Mesh sidecar image build: %w", closeErr)
+	}
+	systemevent.Info("cloudflare_mesh_image_build_completed")
 	return image, nil
 }
 

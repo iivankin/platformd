@@ -104,6 +104,27 @@ func (engine *postgresRestoreEngine) StartContainer(_ context.Context, id string
 	return nil
 }
 
+func (engine *postgresRestoreEngine) StartContainerAttached(ctx context.Context, id string, stdout, stderr io.WriteCloser) (<-chan error, error) {
+	if err := engine.StartContainer(ctx, id); err != nil {
+		return nil, err
+	}
+	_ = stdout.Close()
+	_ = stderr.Close()
+	done := make(chan error)
+	close(done)
+	return done, nil
+}
+
+type postgresTestLogSink struct{}
+
+func (postgresTestLogSink) ContainerWriter(_, _, _, _, _ string) io.WriteCloser {
+	return postgresTestWriteCloser{Writer: io.Discard}
+}
+
+type postgresTestWriteCloser struct{ io.Writer }
+
+func (postgresTestWriteCloser) Close() error { return nil }
+
 func (engine *postgresRestoreEngine) StopContainer(id string, _ uint) error {
 	container, exists := engine.containers[id]
 	if !exists {
@@ -337,7 +358,7 @@ func TestPostgresRestoreReplaceImportsCandidateAndDeletesOldVolume(t *testing.T)
 	}
 	spec := fixture.engine.created[0]
 	if spec.Name != "platformd-postgres-runtime-id" || spec.Labels["io.platformd.postgres-id"] != "postgres-id" ||
-		!strings.HasSuffix(spec.LogPath, "/postgres/postgres-id/runtime-id/attempt-id.log") {
+		spec.LogDriver != containerengine.ContainerLogNone || spec.LogPath != "" {
 		t.Fatalf("candidate identity/profile = %+v", spec)
 	}
 	if len(spec.Mounts) != 0 || !reflect.DeepEqual(spec.ManagedVolumes, []containerengine.ManagedVolumeMount{{
@@ -457,8 +478,8 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		Dial: func(context.Context, string, string, string, string) (Connection, error) {
 			return connection, nil
 		},
-		VolumeRoot: volumeRoot, LogRoot: filepath.Join(root, "logs"),
-		LogSizeBytes: 1 << 20, LogMaxFiles: 3, ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
+		VolumeRoot: volumeRoot, ContainerLogs: postgresTestLogSink{},
+		ReadyTimeout: time.Second, ProbePeriod: time.Millisecond,
 		MaintenanceDrain: time.Nanosecond,
 		Now:              func() time.Time { return time.UnixMilli(10) },
 		NewID: func() (string, error) {
@@ -474,7 +495,7 @@ func newPostgresRestoreFixture(t *testing.T, switchErr error) postgresRestoreFix
 		t.Fatal(err)
 	}
 	controller.setActive(resource.ID, activeRuntime{
-		resource: resource, container: engine.containers["old-container"], network: "network",
+		resource: resource, container: engine.containers["old-container"], network: "network", runtimeID: "old-deployment",
 	})
 	return postgresRestoreFixture{
 		controller: controller, store: store, engine: engine, connection: connection,

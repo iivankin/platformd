@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/iivankin/platformd/internal/state"
@@ -102,12 +100,6 @@ func (controller *Controller) RemoveDeployment(ctx context.Context, resourceID, 
 			return err
 		}
 		return controller.deployments.StopRuntimeDeployment(ctx, "redis", resourceID, deploymentID, controller.now().UnixMilli())
-	}
-	if !safePathComponent(resourceID) || !safePathComponent(deploymentID) {
-		return state.ErrRuntimeDeploymentInvalid
-	}
-	if err := os.RemoveAll(filepath.Join(controller.logRoot, "redis", resourceID, deploymentID)); err != nil {
-		return fmt.Errorf("remove managed Redis deployment logs: %w", err)
 	}
 	return controller.deployments.DeleteRuntimeDeployment(ctx, "redis", resourceID, deploymentID)
 }

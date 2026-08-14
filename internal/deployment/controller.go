@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
-	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -16,8 +15,8 @@ import (
 	"time"
 
 	"github.com/iivankin/platformd/internal/admission"
-	"github.com/iivankin/platformd/internal/buildlog"
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/projectwebhook"
@@ -68,6 +67,7 @@ type Engine interface {
 
 type ContainerLogSink interface {
 	ContainerWriter(serviceID, serviceName, deploymentID, attemptID, stream string) io.WriteCloser
+	BeforeDeployWriter(serviceID, serviceName, deploymentID, attemptID, stream string) io.WriteCloser
 }
 
 type Placement struct {
@@ -129,7 +129,6 @@ type BeforeDeployRequest struct {
 	Desired            state.ServiceDesired
 	EnvironmentContext EnvironmentContext
 	ImageID            string
-	BuildLogPath       string
 }
 
 type BeforeDeployExecutor interface {
@@ -155,7 +154,6 @@ type Config struct {
 	Webhooks      WebhookDispatcher
 	Admission     *admission.Gate
 	Placement     func(state.ServiceDesired) (Placement, error)
-	LogRoot       string
 	VolumeRoot    string
 	ContainerLogs ContainerLogSink
 	Now           func() time.Time
@@ -180,7 +178,6 @@ type Controller struct {
 	webhooks      WebhookDispatcher
 	admission     *admission.Gate
 	placement     func(state.ServiceDesired) (Placement, error)
-	logRoot       string
 	volumeRoot    string
 	containerLogs ContainerLogSink
 	now           func() time.Time
@@ -196,8 +193,8 @@ func New(config Config) (*Controller, error) {
 	if config.Store == nil || config.Engine == nil || config.Publisher == nil || config.Growth == nil || config.Admission == nil || config.Placement == nil {
 		return nil, errors.New("deployment controller dependencies are incomplete")
 	}
-	if !safeRoot(config.LogRoot) || !safeRoot(config.VolumeRoot) {
-		return nil, errors.New("deployment controller roots must be canonical absolute non-root paths")
+	if !safeRoot(config.VolumeRoot) {
+		return nil, errors.New("deployment controller volume root must be a canonical absolute non-root path")
 	}
 	if config.ContainerLogs == nil {
 		return nil, errors.New("deployment controller container log sink is required")
@@ -231,7 +228,7 @@ func New(config Config) (*Controller, error) {
 		growth:       config.Growth,
 		webhooks:     config.Webhooks,
 		admission:    config.Admission,
-		placement:    config.Placement, logRoot: config.LogRoot, volumeRoot: config.VolumeRoot,
+		placement:    config.Placement, volumeRoot: config.VolumeRoot,
 		containerLogs: config.ContainerLogs,
 		now:           now, newID: newID, httpClient: httpClient,
 		locks: make(map[string]*sync.Mutex), active: make(map[string]activeContainer),
@@ -256,6 +253,7 @@ func (controller *Controller) DeployUploadedImage(
 	}
 	return controller.deploy(ctx, serviceID, deploymentID, &SourceResolution{
 		Image: image, ImageReference: imageReference, ImageRevisionID: imageRevisionID, Revision: identity.SHA,
+		CommitMessage: identity.CommitMessage,
 	}, true)
 }
 
@@ -314,7 +312,6 @@ func (controller *Controller) deploy(
 			return fmt.Errorf("allocate deployment ID: %w", err)
 		}
 	}
-	buildLogPath := controller.buildLogPath(serviceID, deploymentID)
 	phase.Store("disk_growth_check")
 	if err := controller.growth.PermitGrowth(ctx); err != nil {
 		active, activeExists := controller.activeContainer(serviceID)
@@ -443,6 +440,7 @@ func (controller *Controller) deploy(
 			imageReference = "oci-archive:" + revision.ArchivePath
 			imageRevisionID = revision.ID
 			sourceRevision = revision.Identity.SHA
+			commitMessage = revision.Identity.CommitMessage
 		}
 		if imageReference == "" || imageRevisionID == "" {
 			return ErrImageUploadRequired
@@ -465,9 +463,12 @@ func (controller *Controller) deploy(
 
 	if uploaded == nil {
 		phase.Store("source_resolution")
-		if err := appendBuildLog(buildLogPath, "Resolving "+imageReference); err != nil {
-			return failDeployment("build_log_failed", err)
-		}
+		systemevent.Info(
+			"service_image_resolution_started",
+			systemevent.String("service_id", serviceID),
+			systemevent.String("deployment_id", deploymentID),
+			systemevent.String("image_reference", imageReference),
+		)
 		image, err = controller.pull(ctx, containerengine.PullRequest{
 			Reference: imageReference,
 			Username:  credential.Username,
@@ -475,12 +476,14 @@ func (controller *Controller) deploy(
 			Refresh:   normalized.Source.Type != servicesource.DockerImageUpload && !serviceconfig.IsDigestReference(imageReference),
 		})
 		if err != nil {
-			_ = appendBuildLog(buildLogPath, "Source resolution failed: "+err.Error())
 			return failDeployment("source_resolution_failed", fmt.Errorf("resolve and pull service image: %w", err))
 		}
-		if err := appendBuildLog(buildLogPath, "Resolved "+image.Digest); err != nil {
-			return failDeployment("build_log_failed", err)
-		}
+		systemevent.Info(
+			"service_image_resolved",
+			systemevent.String("service_id", serviceID),
+			systemevent.String("deployment_id", deploymentID),
+			systemevent.String("image_digest", image.Digest),
+		)
 	}
 	if image.Digest == "" {
 		return failDeployment("source_resolution_failed", errors.New("resolved image has no digest"))
@@ -526,11 +529,7 @@ func (controller *Controller) deploy(
 		if !ok || active.deploymentID != desired.ActiveDeploymentID {
 			return failDeployment("runtime_state_missing", errors.New("active deployment has no matching runtime container"))
 		}
-		if !deploymentStarted {
-			// Image auto-update polls resolve into a temporary log directory before
-			// the digest is known. No deployment owns that directory on a no-op.
-			_ = os.RemoveAll(filepath.Dir(buildLogPath))
-		} else {
+		if deploymentStarted {
 			if err := controller.store.DiscardDeployment(ctx, deploymentID); err != nil {
 				return err
 			}
@@ -543,7 +542,6 @@ func (controller *Controller) deploy(
 				systemevent.String("error_code", "unchanged"),
 				systemevent.Int64("duration_ms", controller.now().Sub(startedAt).Milliseconds()),
 			)
-			_ = os.RemoveAll(filepath.Dir(buildLogPath))
 		}
 		return controller.publisher.Publish(desired, active.container)
 	}
@@ -555,9 +553,8 @@ func (controller *Controller) deploy(
 		desired.ActiveImageDigest != image.Digest && minimumReleaseAgePending(
 		image.Created, controller.now(), desired.Snapshot.Source.MinimumReleaseAgeDays,
 	) {
-		// Polls do not own deployment history or logs until a candidate becomes
-		// eligible, so leave the active deployment untouched and retry normally.
-		_ = os.RemoveAll(filepath.Dir(buildLogPath))
+		// Polls do not own deployment history until a candidate becomes eligible,
+		// so leave the active deployment untouched and retry normally.
 		return nil
 	}
 	if image.ID == "" {
@@ -592,20 +589,12 @@ func (controller *Controller) deploy(
 		if controller.beforeDeploy == nil {
 			return failDeployment("before_deploy_failed", errors.New("before-deploy executor is not configured"))
 		}
-		if err := appendBuildLog(buildLogPath, "Image ready; running before-deploy actions"); err != nil {
-			return failDeployment("build_log_failed", err)
-		}
 		if err := controller.beforeDeploy.Execute(ctx, BeforeDeployRequest{
 			Desired: desired, EnvironmentContext: environmentContext,
-			ImageID: image.ID, BuildLogPath: buildLogPath,
+			ImageID: image.ID,
 		}); err != nil {
 			return failDeployment("before_deploy_failed", err)
 		}
-		if err := appendBuildLog(buildLogPath, "Before-deploy actions completed; starting deployment"); err != nil {
-			return failDeployment("build_log_failed", err)
-		}
-	} else if err := appendBuildLog(buildLogPath, "Image ready; starting deployment"); err != nil {
-		return failDeployment("build_log_failed", err)
 	}
 	phase.Store("runtime_start")
 	deployErr := controller.runDeployment(ctx, desired, environmentContext, image.ID)
@@ -631,14 +620,6 @@ func minimumReleaseAgePending(created, now time.Time, minimumDays int) bool {
 	}
 	minimumAge := time.Duration(minimumDays) * 24 * time.Hour
 	return created.After(now.Add(-minimumAge))
-}
-
-func (controller *Controller) buildLogPath(serviceID, deploymentID string) string {
-	return filepath.Join(controller.logRoot, "services", serviceID, deploymentID, "build.log")
-}
-
-func appendBuildLog(logPath, message string) error {
-	return buildlog.Append(logPath, fmt.Sprintf("%s %s\n", time.Now().UTC().Format(time.RFC3339), message))
 }
 
 func (controller *Controller) Restore(ctx context.Context, serviceID string) error {
@@ -712,13 +693,6 @@ func (controller *Controller) RestartCurrent(ctx context.Context, serviceID, exp
 	return nil
 }
 
-func (controller *Controller) DeleteDeploymentLogs(serviceID, deploymentID string) error {
-	if serviceID == "" || deploymentID == "" || filepath.Base(serviceID) != serviceID || filepath.Base(deploymentID) != deploymentID {
-		return errors.New("service deployment log identity is invalid")
-	}
-	return os.RemoveAll(filepath.Join(controller.logRoot, "services", serviceID, deploymentID))
-}
-
 // DeleteService removes the live container. State deletion is committed by the
 // caller only after this runtime cutover succeeds, so a deleted service can
 // never keep serving traffic.
@@ -742,13 +716,6 @@ func (controller *Controller) DeleteServiceDuringProjectDeletion(ctx context.Con
 	lock.Lock()
 	defer lock.Unlock()
 	return controller.stopDisabled(ctx, desired)
-}
-
-func (controller *Controller) DeleteServiceLogs(serviceID string) error {
-	if serviceID == "" || filepath.Base(serviceID) != serviceID {
-		return errors.New("service log identity is invalid")
-	}
-	return os.RemoveAll(filepath.Join(controller.logRoot, "services", serviceID))
 }
 
 // QuiesceAll stops active service containers without deleting their libpod
@@ -1187,13 +1154,10 @@ func (controller *Controller) startContainer(
 	containerID string,
 	deploymentID string,
 ) error {
-	stdout := controller.containerLogs.ContainerWriter(
-		desired.ID, desired.Name, deploymentID, containerID, "stdout",
-	)
-	stderr := controller.containerLogs.ContainerWriter(
-		desired.ID, desired.Name, deploymentID, containerID, "stderr",
-	)
-	attached, err := controller.engine.StartContainerAttached(ctx, containerID, stdout, stderr)
+	attached, err := containerlogs.StartAttached(ctx, controller.engine, controller.containerLogs, containerlogs.RuntimeMetadata{
+		ResourceID: desired.ID, ResourceName: desired.Name,
+		DeploymentID: deploymentID, ContainerID: containerID,
+	})
 	if err != nil {
 		return err
 	}

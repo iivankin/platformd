@@ -124,8 +124,8 @@ func TestOfficialRedisProfilePersistsRDBAcrossRuntimeRecreation(t *testing.T) {
 		Placement: func(state.ManagedRedis) (Placement, error) {
 			return Placement{NetworkName: network.Name, Gateway: mustAddr(network.Gateway), DNSSearch: "integration.internal", CgroupParent: filepath.Join(tree.WorkloadRoot(), "redis-integration")}, nil
 		},
-		GeneratedRoot: paths.GeneratedRoot, VolumeRoot: paths.VolumesRoot, LogRoot: paths.LogsRoot,
-		LogSizeBytes: 1 << 20, LogMaxFiles: 2,
+		GeneratedRoot: paths.GeneratedRoot, VolumeRoot: paths.VolumesRoot,
+		ContainerLogs: testLogSink{},
 	})
 	if err != nil {
 		t.Fatal(err)

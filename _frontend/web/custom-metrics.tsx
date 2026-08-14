@@ -77,11 +77,13 @@ const ValueVisualization = ({
   actions,
   chart,
   formatValue,
+  loading,
   series,
 }: {
   actions: ReactNode;
   chart: ServiceMetricChart;
   formatValue: (value: number) => string;
+  loading: boolean;
   series: LoadedMetricSeries[];
 }) => (
   <div>
@@ -116,7 +118,9 @@ const ValueVisualization = ({
           );
         })
       ) : (
-        <p className="text-[9px] text-muted-foreground">No samples in range</p>
+        <p className="text-[9px] text-muted-foreground">
+          {loading ? "Loading metric samples…" : "No samples in range"}
+        </p>
       )}
     </div>
   </div>
@@ -235,34 +239,47 @@ const CustomMetricChart = ({
   );
 
   return (
-    <section className="border border-border bg-card">
-      {chart.visualization === "value" ? (
-        <ValueVisualization
-          actions={actions}
-          chart={chart}
-          formatValue={(value) => formatMetricValue(value, unit)}
-          series={loadedSeries}
-        />
-      ) : (
-        <MetricChart
-          actions={actions}
-          emptyLabel={
-            error ||
-            (loading ? "Loading metric samples…" : "No samples in range")
-          }
-          formatValue={(value) => formatMetricValue(value, unit)}
-          from={bounds.from}
-          minimumMaximum={1}
-          points={[]}
-          series={series}
-          title={chart.title}
-          to={bounds.to}
-          visualization={chart.visualization}
-        />
-      )}
-      <p className="truncate border-t border-border px-4 py-2 text-[8px] text-muted-foreground">
-        {chart.sql.replaceAll(/\s+/gu, " ").trim()}
-      </p>
+    <section aria-busy={loading} className="border border-border bg-card">
+      <div
+        className={`transition-opacity ${loading && loadedSeries.length ? "opacity-45" : "opacity-100"}`}
+      >
+        {chart.visualization === "value" ? (
+          <ValueVisualization
+            actions={actions}
+            chart={chart}
+            formatValue={(value) => formatMetricValue(value, unit)}
+            loading={loading}
+            series={loadedSeries}
+          />
+        ) : (
+          <MetricChart
+            actions={actions}
+            emptyLabel={
+              error ||
+              (loading ? "Loading metric samples…" : "No samples in range")
+            }
+            formatValue={(value) => formatMetricValue(value, unit)}
+            from={bounds.from}
+            minimumMaximum={1}
+            points={[]}
+            series={series}
+            title={chart.title}
+            to={bounds.to}
+            visualization={chart.visualization}
+          />
+        )}
+      </div>
+      <div className="flex items-center gap-3 border-t border-border px-4 py-2 text-[8px] text-muted-foreground">
+        <p className="min-w-0 flex-1 truncate">
+          {chart.sql.replaceAll(/\s+/gu, " ").trim()}
+        </p>
+        {loading ? (
+          <span className="flex shrink-0 items-center gap-1.5">
+            <LoaderCircle className="size-3 animate-spin" />
+            Loading {range}…
+          </span>
+        ) : null}
+      </div>
     </section>
   );
 };
@@ -338,7 +355,6 @@ export const CustomMetrics = ({ scope }: { scope: MetricScope }) => {
     });
     setRevision((value) => value + 1);
   };
-
   return (
     <section>
       <div className="flex flex-wrap items-center gap-2 border-y border-border px-4 py-3">

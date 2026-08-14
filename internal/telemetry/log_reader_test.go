@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,13 +17,15 @@ import (
 func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		var fieldFilters []containerlogs.FieldFilter
+		_ = json.Unmarshal([]byte(request.URL.Query().Get("fieldFilters")), &fieldFilters)
 		if request.URL.Path != "/internal/logs" || request.URL.Query().Get("serviceId") != "service" ||
 			request.URL.Query().Get("deploymentId") != "deployment" || request.URL.Query().Get("contains") != "ready" ||
 			request.URL.Query().Get("severityText") != "error" ||
 			request.URL.Query().Get("traceId") != "0123456789abcdef0123456789abcdef" ||
 			request.URL.Query().Get("spanId") != "0123456789abcdef" ||
 			request.URL.Query().Get("from") != "1000" || request.URL.Query().Get("to") != "2000" ||
-			request.URL.Query().Get("order") != "asc" {
+			request.URL.Query().Get("order") != "asc" || len(fieldFilters) != 1 || fieldFilters[0].Path != "caller" {
 			t.Errorf("unexpected telemetry log request: %s", request.URL.String())
 		}
 		_ = json.NewEncoder(response).Encode(telemetryLogPage{
@@ -31,8 +34,9 @@ func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 				Stream: "stdout", Text: "ready", DeploymentID: "deployment", AttemptID: "attempt",
 				TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef",
 				SeverityText: "info", SeverityNumber: 9,
+				Phase:    "before_deploy",
+				BodyJSON: stringPointer(`{"caller":"server.go:42"}`),
 			}},
-			Revision: "10:00000000-0000-4000-8000-000000000001",
 		})
 	}))
 	defer server.Close()
@@ -41,7 +45,8 @@ func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	window, err := reader.Read(context.Background(), containerlogs.Query{
-		ServiceID: "service", DeploymentID: "deployment", Contains: "ready", SeverityText: "error",
+		ServiceID: "service", DeploymentID: "deployment", Contains: "ready",
+		FieldFilters: []containerlogs.FieldFilter{{Path: "caller", Operator: "equals", Value: "server.go:42"}}, SeverityText: "error",
 		TraceID: "0123456789ABCDEF0123456789ABCDEF", SpanID: "0123456789ABCDEF",
 		From: time.UnixMilli(1000), To: time.UnixMilli(2000), Limit: 20, Ascending: true,
 	})
@@ -52,8 +57,81 @@ func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 		window.Records[0].DeploymentID != "deployment" || window.Records[0].AttemptID != "attempt" ||
 		window.Records[0].TraceID != "0123456789abcdef0123456789abcdef" ||
 		window.Records[0].SpanID != "0123456789abcdef" || window.Records[0].SeverityText != "info" ||
-		window.Records[0].SeverityNumber != 9 {
+		window.Records[0].SeverityNumber != 9 || window.Records[0].Phase != "before_deploy" ||
+		window.Records[0].Fields["caller"] != "server.go:42" {
 		t.Fatalf("telemetry log window = %+v", window)
+	}
+}
+
+func stringPointer(value string) *string {
+	return &value
+}
+
+func TestTelemetryLogReaderUsesOpaqueDescendingCursor(t *testing.T) {
+	t.Parallel()
+	const firstID = "00000000-0000-4000-8000-000000000001"
+	const secondID = "00000000-0000-4000-8000-000000000002"
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		query := request.URL.Query()
+		if query.Get("afterTimeUnixNano") != "20" || query.Get("afterId") != secondID || query.Get("order") != "" {
+			t.Errorf("unexpected cursor request: %s", request.URL.String())
+		}
+		nextTime := uint64(10)
+		nextID := firstID
+		_ = json.NewEncoder(response).Encode(telemetryLogPage{
+			Records:   []telemetryLogRecord{{ID: firstID, TimeUnixNano: 10, Stream: "stdout", Text: "older"}},
+			Truncated: true, NextTimeUnixNano: &nextTime, NextID: &nextID,
+		})
+	}))
+	defer server.Close()
+	reader, err := NewLogReader(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window, err := reader.Read(context.Background(), containerlogs.Query{
+		ServiceID: "service", Cursor: encodeTelemetryLogCursor(telemetryLogCursor{TimeUnixNano: 20, ID: secondID}), Limit: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(window.Records) != 1 || window.Records[0].Text != "older" || window.NextCursor == "" {
+		t.Fatalf("cursor log window = %+v", window)
+	}
+	next, err := decodeTelemetryLogCursor(window.NextCursor)
+	if err != nil || next.TimeUnixNano != 10 || next.ID != firstID {
+		t.Fatalf("next cursor = %+v, %v", next, err)
+	}
+}
+
+func TestTelemetryLogReaderRejectsInvalidCursor(t *testing.T) {
+	t.Parallel()
+	reader, err := NewLogReader("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reader.Read(context.Background(), containerlogs.Query{ServiceID: "service", Cursor: "invalid"})
+	if !errors.Is(err, containerlogs.ErrInvalidQuery) {
+		t.Fatalf("invalid cursor error = %v", err)
+	}
+}
+
+func TestTelemetryLogReaderRejectsInvalidFieldFilters(t *testing.T) {
+	t.Parallel()
+	reader, err := NewLogReader("http://127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, filter := range []containerlogs.FieldFilter{
+		{Path: "caller') OR 1=1", Operator: "equals", Value: "value"},
+		{Path: "caller", Operator: "unknown", Value: "value"},
+		{Path: "caller", Operator: "exists", Value: "unexpected"},
+	} {
+		_, err = reader.Read(context.Background(), containerlogs.Query{
+			ServiceID: "service", FieldFilters: []containerlogs.FieldFilter{filter},
+		})
+		if !errors.Is(err, containerlogs.ErrInvalidQuery) {
+			t.Fatalf("filter %+v error = %v", filter, err)
+		}
 	}
 }
 

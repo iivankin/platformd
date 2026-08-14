@@ -10,6 +10,7 @@ import (
 	"path"
 
 	"github.com/iivankin/platformd/internal/containerengine"
+	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
@@ -18,11 +19,10 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master cryptobox.MasterKey) error {
+func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master cryptobox.MasterKey, logs containerlogs.Sink) error {
 	extensionBuilder, err := postgresextension.New(postgresextension.Config{
 		Engine: stack.engine, Growth: stack.growth,
-		CacheRoot: stack.paths.PostgresExtensionRoot, LogRoot: stack.paths.LogsRoot,
-		LogSizeBytes: serviceLogSegmentBytes, LogMaxFiles: serviceLogMaxFiles,
+		CacheRoot: stack.paths.PostgresExtensionRoot,
 	})
 	if err != nil {
 		return err
@@ -37,8 +37,7 @@ func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master c
 			return managedpostgres.OpenBootstrapPassword(master, resource.ID, resource.BootstrapPasswordEncrypted)
 		},
 		Placement: stack.postgresPlacement, VolumeRoot: stack.paths.VolumesRoot,
-		LogRoot: stack.paths.LogsRoot, LogSizeBytes: serviceLogSegmentBytes,
-		LogMaxFiles: serviceLogMaxFiles,
+		ContainerLogs: logs,
 	})
 	if err != nil {
 		return err

@@ -2,32 +2,51 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 )
 
-func TestImageCleanupStandardUsesExpiryAndProductionRetention(t *testing.T) {
+func TestImageCleanupStandardKeepsSevenLatestRevisionsPerKind(t *testing.T) {
 	ctx := context.Background()
 	store := openImageCleanupStore(t, ctx)
 	defer store.Close()
 
-	insertImageCleanupRevision(t, store, "production-old", "production", "retired", 10, 20, 0)
-	insertImageCleanupRevision(t, store, "production-recent", "production", "retired", 20, 90, 0)
-	insertImageCleanupRevision(t, store, "preview-expired", "preview", "retired", 30, 0, 80)
-	insertImageCleanupRevision(t, store, "preview-current", "preview", "active", 40, 0, 80)
-	insertImageCleanupPreview(t, store, "preview-current-deployment", "preview-current", "active")
+	insertImageCleanupRevision(t, store, "production-active", "production", "active", 100, 0, 0)
+	for index, createdAt := range []int64{90, 80, 70, 60, 50, 40} {
+		id := fmt.Sprintf("production-retired-%d", index)
+		insertImageCleanupRevision(t, store, id, "production", "retired", createdAt, createdAt, 0)
+	}
+	insertImageCleanupRevision(t, store, "production-old", "production", "retired", 30, 30, 0)
+
+	insertImageCleanupRevision(t, store, "preview-active", "preview", "active", 100, 0, 20)
+	for index, createdAt := range []int64{90, 80, 70, 60, 50, 40} {
+		id := fmt.Sprintf("preview-retired-%d", index)
+		insertImageCleanupRevision(t, store, id, "preview", "retired", createdAt, createdAt, 20)
+	}
+	insertImageCleanupRevision(t, store, "preview-old", "preview", "retired", 30, 30, 20)
+	insertImageCleanupRevision(t, store, "production-failed", "production", "failed", 110, 0, 0)
 	insertImageCleanupUpload(t, store, "upload-expired", "succeeded", 90)
 	insertImageCleanupUpload(t, store, "upload-current", "succeeded", 110)
 
-	files, err := store.DeleteImageCleanupCandidates(ctx, ImageCleanupStandard, 100, 50)
+	files, err := store.DeleteImageCleanupCandidates(ctx, ImageCleanupStandard, 100, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertImageCleanupPaths(t, files.ArchivePaths, "/archives/preview-expired", "/archives/production-old")
+	assertImageCleanupPaths(t, files.ArchivePaths,
+		"/archives/preview-old", "/archives/production-failed", "/archives/production-old",
+	)
 	assertImageCleanupPaths(t, files.UploadPaths, "/uploads/upload-expired")
-	assertImageCleanupRevisionIDs(t, store, "preview-current", "production-recent")
+	assertImageCleanupRevisionIDs(t, store,
+		"preview-active",
+		"preview-retired-0", "preview-retired-1", "preview-retired-2",
+		"preview-retired-3", "preview-retired-4", "preview-retired-5",
+		"production-active",
+		"production-retired-0", "production-retired-1", "production-retired-2",
+		"production-retired-3", "production-retired-4", "production-retired-5",
+	)
 }
 
 func TestImageCleanupPressurePreservesRollbackAndRunningBackup(t *testing.T) {
@@ -39,30 +58,29 @@ func TestImageCleanupPressurePreservesRollbackAndRunningBackup(t *testing.T) {
 	insertImageCleanupRevision(t, store, "production-previous", "production", "retired", 40, 40, 0)
 	insertImageCleanupRevision(t, store, "production-old", "production", "retired", 30, 30, 0)
 	insertImageCleanupRevision(t, store, "production-backing-up", "production", "retired", 20, 20, 0)
-	insertImageCleanupRevision(t, store, "preview-stopped", "preview", "retired", 10, 0, 200)
+	insertImageCleanupRevision(t, store, "preview-previous", "preview", "retired", 40, 40, 200)
+	insertImageCleanupRevision(t, store, "preview-old", "preview", "retired", 30, 30, 200)
 	insertImageCleanupRevision(t, store, "preview-active", "preview", "active", 60, 0, 200)
-	insertImageCleanupPreview(t, store, "preview-stopped-deployment", "preview-stopped", "stopped")
-	insertImageCleanupPreview(t, store, "preview-active-deployment", "preview-active", "active")
 	if _, err := store.database.ExecContext(ctx, `
 INSERT INTO backups(id, target_id, resource_kind, resource_id, status, started_at)
 VALUES ('backup-running', 'target', 'image', 'production-backing-up', 'running', 1)`); err != nil {
 		t.Fatal(err)
 	}
 
-	critical, err := store.DeleteImageCleanupCandidates(ctx, ImageCleanupCritical, 100, 50)
+	critical, err := store.DeleteImageCleanupCandidates(ctx, ImageCleanupCritical, 100, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertImageCleanupPaths(t, critical.ArchivePaths, "/archives/preview-stopped", "/archives/production-old")
+	assertImageCleanupPaths(t, critical.ArchivePaths, "/archives/preview-old", "/archives/production-old")
 	assertImageCleanupRevisionIDs(t, store,
-		"preview-active", "production-active", "production-backing-up", "production-previous",
+		"preview-active", "preview-previous", "production-active", "production-backing-up", "production-previous",
 	)
 
-	emergency, err := store.DeleteImageCleanupCandidates(ctx, ImageCleanupEmergency, 100, 50)
+	emergency, err := store.DeleteImageCleanupCandidates(ctx, ImageCleanupEmergency, 100, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertImageCleanupPaths(t, emergency.ArchivePaths, "/archives/production-previous")
+	assertImageCleanupPaths(t, emergency.ArchivePaths, "/archives/preview-previous", "/archives/production-previous")
 	assertImageCleanupRevisionIDs(t, store, "preview-active", "production-active", "production-backing-up")
 }
 
@@ -109,23 +127,6 @@ INSERT INTO service_image_revisions(
  status, created_at, retired_at, expires_at
 ) VALUES (?, 'service', ?, ?, ?, 'sha256', '{}', ?, ?, ?, ?)`,
 		id, id, kind, "/archives/"+id, status, createdAt, retired, expires); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func insertImageCleanupPreview(t *testing.T, store *Store, id string, revisionID string, status string) {
-	t.Helper()
-	finishedAt := any(nil)
-	if status != "active" {
-		finishedAt = int64(50)
-	}
-	if _, err := store.database.ExecContext(context.Background(), `
-INSERT INTO preview_deployments(
- id, service_id, tag, image_revision_id, hostname, target_port, image_digest,
- image_reference, service_config_hash, snapshot_json, status, cloudflare_records_json,
- created_at, updated_at, finished_at, expires_at
-) VALUES (?, 'service', ?, ?, ?, 8080, 'sha256:digest', 'image', 'config', '{}', ?, '[]', 1, 1, ?, 200)`,
-		id, id, revisionID, id+".example.com", status, finishedAt); err != nil {
 		t.Fatal(err)
 	}
 }

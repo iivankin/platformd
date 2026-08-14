@@ -32,8 +32,15 @@ func (StatfsCollector) Collect(path string) (Usage, error) {
 	if err != nil {
 		return Usage{}, err
 	}
+	freeBytes, err := multiply(stat.Bfree, blockSize)
+	if err != nil {
+		return Usage{}, err
+	}
+	if freeBytes > totalBytes {
+		return Usage{}, errors.New("statfs free space exceeds total space")
+	}
 	return Usage{
-		TotalBytes: totalBytes, AvailableBytes: availableBytes,
+		TotalBytes: totalBytes, UsedBytes: totalBytes - freeBytes, AvailableBytes: availableBytes,
 		TotalInodes: stat.Files, AvailableInodes: stat.Ffree,
 	}, nil
 }

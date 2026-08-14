@@ -24,6 +24,7 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { ServiceTraceDetailView } from "@/service-trace-detail";
+import { TelemetryHistogram } from "@/telemetry-histogram";
 import { traceQueryParsers } from "@/telemetry-query-state";
 import {
   TelemetryTimeRangePicker,
@@ -95,65 +96,6 @@ const aiTraceContext = (trace: ServiceTraceSummary) => {
   }
   const model = [trace.aiProvider, trace.aiModel].filter(Boolean).join(" · ");
   return [run, model].filter(Boolean).join(" · ");
-};
-
-const TraceHistogram = ({ traces }: { traces: ServiceTraceSummary[] }) => {
-  const bins = useMemo(() => {
-    if (traces.length === 0) {
-      return [];
-    }
-    const timestamps = traces.map((trace) =>
-      Number(integer(trace.startedAtUnixNano) / 1_000_000n)
-    );
-    const start = Math.min(...timestamps);
-    const end = Math.max(...timestamps);
-    const width = Math.max(1, (end - start) / 28);
-    const result = Array.from({ length: 28 }, () => ({ errors: 0, total: 0 }));
-    for (const [index, trace] of traces.entries()) {
-      const timestamp = timestamps[index] ?? start;
-      const bin = Math.min(
-        result.length - 1,
-        Math.floor((timestamp - start) / width)
-      );
-      const entry = result[bin];
-      if (!entry) {
-        continue;
-      }
-      entry.total += 1;
-      if (trace.errorSpanCount > 0) {
-        entry.errors += 1;
-      }
-    }
-    return result;
-  }, [traces]);
-  const maximum = Math.max(1, ...bins.map((bin) => bin.total));
-
-  return (
-    <div
-      aria-label="Trace volume distribution"
-      className="flex h-20 items-end gap-px border-b border-border px-4 pt-3"
-    >
-      {bins.map((bin, index) => (
-        <div
-          className="group relative flex h-full min-w-0 flex-1 items-end"
-          key={`${index.toString()}:${bin.total}`}
-          title={`${bin.total} traces · ${bin.errors} with errors`}
-        >
-          <span
-            className="block w-full bg-sky-500/65 transition-colors group-hover:bg-sky-400"
-            style={{ height: `${Math.max(2, (bin.total / maximum) * 100)}%` }}
-          >
-            {bin.errors ? (
-              <span
-                className="block w-full bg-rose-500"
-                style={{ height: `${(bin.errors / bin.total) * 100}%` }}
-              />
-            ) : null}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
 };
 
 export const ServiceTraces = ({
@@ -311,6 +253,19 @@ export const ServiceTraces = ({
       );
     });
   }, [query, sort, status, timeFrom, timeRange, timeTo, traces]);
+  const histogramBounds = telemetryTimeBounds({
+    from: timeFrom,
+    range: timeRange,
+    to: timeTo,
+  });
+  const histogramPoints = useMemo(
+    () =>
+      filtered.map((trace) => ({
+        error: trace.errorSpanCount > 0,
+        timestamp: Number(integer(trace.startedAtUnixNano) / 1_000_000n),
+      })),
+    [filtered]
+  );
 
   if (traceID) {
     const currentDetail = detail?.traceId === traceID ? detail : undefined;
@@ -442,7 +397,19 @@ export const ServiceTraces = ({
           {listError}
         </p>
       ) : null}
-      <TraceHistogram traces={filtered} />
+      <TelemetryHistogram
+        ariaLabel="Trace volume over time"
+        bounds={histogramBounds}
+        noun="traces"
+        onSelectRange={(from, to) =>
+          void setTraceState({
+            timeFrom: from,
+            timeRange: "custom",
+            timeTo: to,
+          })
+        }
+        points={histogramPoints}
+      />
       {filtered.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] table-fixed border-collapse">

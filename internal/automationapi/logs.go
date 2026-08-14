@@ -1,6 +1,7 @@
 package automationapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -25,10 +26,18 @@ func readServiceLogs(application *automation.LogApplication) http.HandlerFunc {
 		if !ok {
 			return
 		}
+		var fieldFilters []containerlogs.FieldFilter
+		if value := request.URL.Query().Get("fieldFilters"); value != "" {
+			if len(value) > containerlogs.MaximumFieldFilterBytes || json.Unmarshal([]byte(value), &fieldFilters) != nil {
+				writeError(response, http.StatusBadRequest, "invalid_log_field_filters", "fieldFilters must be a bounded JSON array")
+				return
+			}
+		}
 		window, err := application.ReadService(request.Context(), identity, automation.ReadServiceLogsInput{
 			ProjectID: projectID, ServiceID: request.PathValue("serviceID"),
 			DeploymentID: request.URL.Query().Get("deploymentId"),
-			Contains:     request.URL.Query().Get("contains"), Limit: limit,
+			Contains:     request.URL.Query().Get("contains"), Cursor: request.URL.Query().Get("cursor"),
+			FieldFilters: fieldFilters, Limit: limit,
 		})
 		if writeLogReadError(response, err) {
 			return

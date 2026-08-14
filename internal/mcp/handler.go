@@ -34,7 +34,6 @@ type Handler struct {
 	usage              *automation.UsageApplication
 	infrastructureLogs *automation.InfrastructureLogApplication
 	diskPressure       *automation.DiskPressureApplication
-	imageGC            *automation.ImageGCApplication
 	audit              *automation.AuditApplication
 	images             ManagedImageCatalog
 	redis              *automation.ManagedRedisApplication
@@ -65,7 +64,6 @@ type Config struct {
 	Usage              *automation.UsageApplication
 	InfrastructureLogs *automation.InfrastructureLogApplication
 	DiskPressure       *automation.DiskPressureApplication
-	ImageGC            *automation.ImageGCApplication
 	Audit              *automation.AuditApplication
 	Images             ManagedImageCatalog
 	Redis              *automation.ManagedRedisApplication
@@ -127,7 +125,7 @@ func New(config Config) (*Handler, error) {
 		hostname: config.Hostname, version: config.Version, repository: config.Repository,
 		projects: config.Projects, services: config.Services, domains: config.Domains,
 		logs: config.Logs, usage: config.Usage, infrastructureLogs: config.InfrastructureLogs,
-		diskPressure: config.DiskPressure, imageGC: config.ImageGC, audit: config.Audit,
+		diskPressure: config.DiskPressure, audit: config.Audit,
 		images: config.Images, redis: config.Redis, postgres: config.Postgres, objectStores: config.ObjectStores,
 		managed: config.Managed, managedDeployments: config.ManagedDeployments, managedStats: config.ManagedStats,
 		networkGateways: config.NetworkGateways, backups: config.Backups, versions: config.Versions,

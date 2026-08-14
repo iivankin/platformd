@@ -317,6 +317,7 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     reservePresent: true,
     totalBytes: 238_370_684_928,
     totalInodes: 9_500_000,
+    usedBytes: 60_129_542_144,
   },
   domains: {},
   identity: {
@@ -447,6 +448,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
   state.containerPorts["redis:redis-cache"] = [{ port: 6379, protocol: "tcp" }];
   state.deployments[service.id] = [
     {
+      commitMessage: "Add checkout inventory guard",
       createdAt: now - 90_000,
       finishedAt: now - 70_000,
       id: "deployment-demo",
@@ -462,6 +464,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
         source: service.source,
         volumeMounts: [],
       },
+      sourceRevision: "92e1e94049fc11f69e4a",
       status: "succeeded",
     },
     {
@@ -592,6 +595,11 @@ export const createMockState = (scenario: MockScenario): MockState => {
       {
         attemptId: "attempt-demo",
         deploymentId: "deployment-demo",
+        fields: {
+          caller: "server/http.go:84",
+          http: { method: "GET", route: "/health", status_code: 200 },
+          request_id: "req-health-01",
+        },
         stream: "stdout",
         text: "HTTP server listening on :8080",
         timestamp: iso(-2),
@@ -600,7 +608,7 @@ export const createMockState = (scenario: MockScenario): MockState => {
         attemptId: "attempt-demo",
         deploymentId: "deployment-demo",
         stream: "stdout",
-        text: "GET /health 200 2ms",
+        text: "\u001B[36mGET\u001B[0m /health \u001B[32m200\u001B[0m \u001B[2m2ms\u001B[0m",
         timestamp: iso(-1),
       },
       {
@@ -640,18 +648,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
         stream: "stderr",
         text: "database system is ready to accept connections",
         timestamp: iso(-3),
-      },
-    ],
-    truncated: false,
-  };
-  state.logs[objectStore.id] = {
-    records: [
-      {
-        attemptId: "object-activity-demo",
-        deploymentId: objectStore.id,
-        stream: "stdout",
-        text: "object_store.create succeeded",
-        timestamp: iso(-5),
       },
     ],
     truncated: false,
