@@ -337,7 +337,9 @@ jobs:
           PLATFORMD_TELEMETRY_TEST_SERVICE_ID: tz4a98xxat96iws9zmbrgj3a
         run: |
           telemetry_volume="$RUNNER_TEMP/telemetry-conformance"
-          mkdir -p "$telemetry_volume"
+          mkdir -p "$telemetry_volume" dist
+          # Prebuild the gateway so startup is not racing go compile on a cold runner.
+          go build -o dist/telemetry-conformance-gateway ./telemetry/conformance
           PLATFORMD_TELEMETRY_GEOIP_SOURCE=cloudflare \
           PLATFORMD_TELEMETRY_SENTRY_LISTEN=127.0.0.1:18081 \
           PLATFORMD_TELEMETRY_VOLUME="$telemetry_volume" \
@@ -346,7 +348,7 @@ jobs:
           PLATFORMD_CONFORMANCE_LISTEN=0.0.0.0:18080 \
           PLATFORMD_CONFORMANCE_SERVICE_ID="$PLATFORMD_TELEMETRY_TEST_SERVICE_ID" \
           PLATFORMD_CONFORMANCE_UPSTREAM=http://127.0.0.1:18081 \
-            go run ./telemetry/conformance >"$RUNNER_TEMP/telemetry-gateway.log" 2>&1 &
+            dist/telemetry-conformance-gateway >"$RUNNER_TEMP/telemetry-gateway.log" 2>&1 &
           gateway_pid=$!
           cleanup() {
             kill "$gateway_pid" 2>/dev/null || true
@@ -356,7 +358,7 @@ jobs:
           }
           trap cleanup EXIT
 
-          for _ in $(seq 1 50); do
+          for _ in $(seq 1 150); do
             if curl -fsS http://127.0.0.1:18080/health >/dev/null; then
               break
             fi
