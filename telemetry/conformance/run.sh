@@ -83,16 +83,17 @@ profile_trace_ids() {
 valid_profile_trace() {
   trace_id=$1
   trace=$(api_get "traces/$trace_id" || true)
+  # Bind $start/$end with `as … |`, then assert with `and`. Plain `as … and` is invalid jq.
   printf '%s' "$trace" | jq -e '
-    (.profiles | length) > 0 and
-    ([.profiles[].sampleCount] | add) > 1 and
-    ([.profiles[].stacks | length] | add) > 0 and
-    ([.spans[].startTimeUnixNano | tonumber] | min) as $start and
-    ([.spans[].endTimeUnixNano | tonumber] | max) as $end and
-    all(.profiles[];
-      (.startedAtUnixNano | tonumber) >= $start and
-      (.endedAtUnixNano | tonumber) <= $end
-    )' >/dev/null
+    (([.spans[].startTimeUnixNano | tonumber] | min) as $start |
+     ([.spans[].endTimeUnixNano | tonumber] | max) as $end |
+     (.profiles | length) > 0 and
+     ([.profiles[].sampleCount] | add) > 1 and
+     ([.profiles[].stacks | length] | add) > 0 and
+     all(.profiles[];
+       (.startedAtUnixNano | tonumber) >= $start and
+       (.endedAtUnixNano | tonumber) <= $end
+     ))' >/dev/null
 }
 
 has_failed_crash_event() {
