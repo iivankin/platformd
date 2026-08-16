@@ -2,7 +2,9 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@sentry/browser": "10.69.0",
     "@sentry/node": "10.69.0",
+    "@sentry/profiling-node": "10.69.0",
     "express": "5.1.0"
   }
 }

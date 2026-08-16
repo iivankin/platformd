@@ -73,8 +73,14 @@ export const api = {
     }),
   event: (_serviceId: string, eventId: string) =>
     request<EventDetail>(`/errors/events/${encodeURIComponent(eventId)}`),
-  issue: (_serviceId: string, issueId: string) =>
-    request<IssueDetail>(`/errors/issues/${encodeURIComponent(issueId)}`),
+  events: (_serviceId: string, query = "") =>
+    request<ListResponse<StoredDocument>>(
+      `/errors/events?limit=100&query=${encodeURIComponent(query)}`
+    ),
+  issue: (_serviceId: string, issueId: string, offset = 0) =>
+    request<IssueDetail>(
+      `/errors/issues/${encodeURIComponent(issueId)}?limit=100&offset=${offset}`
+    ),
   issues: (_serviceId: string, query = "") =>
     request<ListResponse<Issue>>(
       `/errors/issues?limit=100&query=${encodeURIComponent(query)}`
@@ -82,6 +88,10 @@ export const api = {
   replayRecording: (_serviceId: string, replayId: string) =>
     request<ReplayRecording>(
       `/errors/replays/${encodeURIComponent(replayId)}/recording`
+    ),
+  replayVideoUrl: (replayId: string, segmentId: number) =>
+    endpoint(
+      `/errors/replays/${encodeURIComponent(replayId)}/video/${segmentId}`
     ),
   rotateUploadToken: (_serviceId: string) =>
     request<UploadToken>("/telemetry/artifact-token", { method: "POST" }),

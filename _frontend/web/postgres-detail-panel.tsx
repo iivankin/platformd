@@ -6,6 +6,7 @@ import { ConnectionDetails } from "@/connection-details";
 import { postgresConnectionURL } from "@/connection-values";
 import { DatabaseVersionChange } from "@/database-version-change";
 import { projectNameFromInternalHostname } from "@/github-action-example-dialog";
+import { cn } from "@/lib/utils";
 import { ManagedDeploymentHistory } from "@/managed-deployment-history";
 import { ManagedContainerTelemetry } from "@/managed-resource-telemetry";
 import { PostgresDatabase } from "@/postgres-database";
@@ -93,10 +94,17 @@ export const PostgresDetailPanel = ({
       ]
     : [];
 
+  const internallyScrollable = view === "database" || view === "telemetry";
+
   return (
-    <div>
+    <div
+      className={cn(
+        internallyScrollable && "flex h-full min-h-0 flex-col overflow-hidden"
+      )}
+    >
       <WorkspaceView
         active={view}
+        internallyScrollable={internallyScrollable}
         views={{
           backups: (
             <ResourceBackupPanel

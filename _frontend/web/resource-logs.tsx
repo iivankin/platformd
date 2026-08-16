@@ -16,10 +16,11 @@ import {
 import { useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { ResourceLogKind } from "@/api";
+import type { MetricScope, ResourceLogKind } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import { LogExportMenu } from "@/log-export-menu";
 import type { LogFieldFilter } from "@/log-field-filter";
 import { LogFilterChips, LogFilterPanel } from "@/log-filter-panel";
 import { atLeastLogSeverity, logSeverity } from "@/log-severity";
@@ -31,7 +32,8 @@ import {
   TelemetryTimeRangePicker,
   telemetryTimeBounds,
 } from "@/telemetry-time-range";
-import { useResourceLogWindow } from "@/use-resource-log-window";
+import { useTelemetryLogWindow } from "@/use-resource-log-window";
+import type { TelemetryLogSource } from "@/use-resource-log-window";
 
 const inTimeRange = (
   timestamp: string,
@@ -44,19 +46,53 @@ const inTimeRange = (
   );
 };
 
+const logCorrelation = (
+  acceptsTraceContext: boolean,
+  traceID: string | null,
+  spanID: string | null
+) => {
+  if (!acceptsTraceContext) {
+    return {};
+  }
+  return {
+    spanID: spanID ?? undefined,
+    traceID: traceID ?? undefined,
+  };
+};
+
+const logSourceContext = (source: TelemetryLogSource) => {
+  if (source.kind === "resource") {
+    return {
+      acceptsTraceContext: source.resourceKind === "service",
+      exportName: source.resourceID,
+      scoped: false,
+    };
+  }
+  if (source.scope.kind === "project") {
+    return {
+      acceptsTraceContext: true,
+      exportName: source.scope.projectID,
+      scoped: true,
+    };
+  }
+  return {
+    acceptsTraceContext: true,
+    exportName: "installation",
+    scoped: true,
+  };
+};
+
 // TanStack Table exposes callback-rich mutable state, so React Compiler must
 // leave this component alone; the table owns its own memoization.
 // oxlint-disable-next-line react/react-compiler
-export const ResourceLogs = ({
+export const TelemetryLogs = ({
   deploymentID,
-  kind,
-  projectID,
-  resourceID,
+  serviceName,
+  source,
 }: {
   deploymentID?: string;
-  kind: ResourceLogKind;
-  projectID: string;
-  resourceID: string;
+  serviceName?: (serviceID: string) => string | undefined;
+  source: TelemetryLogSource;
 }) => {
   "use no memo";
   const [logState, setLogState] = useQueryStates(logQueryParsers);
@@ -67,13 +103,22 @@ export const ResourceLogs = ({
     logOrder,
     logQuery: appliedQuery,
     logSort,
+    logSpan,
+    logTrace,
     timeFrom,
     timeRange,
     timeTo,
   } = logState;
+  const { acceptsTraceContext, exportName, scoped } = logSourceContext(source);
   const activeDeploymentID = deploymentID ?? urlDeploymentID ?? undefined;
   const activeFieldFilters = fieldFilters;
+  const { spanID: activeSpanID, traceID: activeTraceID } = logCorrelation(
+    acceptsTraceContext,
+    logTrace,
+    logSpan
+  );
   const [controlsOpen, setControlsOpen] = useState(false);
+  const [jumpedLogRowID, setJumpedLogRowID] = useState<string>();
   const sorting = useMemo<SortingState>(
     () => [{ desc: logOrder === "desc", id: logSort }],
     [logOrder, logSort]
@@ -89,16 +134,16 @@ export const ResourceLogs = ({
     refresh,
     setLive,
     window,
-  } = useResourceLogWindow({
+  } = useTelemetryLogWindow({
     contains: appliedQuery,
     deploymentID: activeDeploymentID,
     fieldFilters: activeFieldFilters,
-    kind,
-    projectID,
-    resourceID,
+    source,
+    spanID: activeSpanID,
     timeFrom,
     timeRange,
     timeTo,
+    traceID: activeTraceID,
   });
 
   useEffect(() => {
@@ -139,8 +184,9 @@ export const ResourceLogs = ({
   });
   const histogramPoints = useMemo(
     () =>
-      filtered.map((record) => ({
+      filtered.map((record, index) => ({
         error: logSeverity(record) === "error",
+        id: index.toString(),
         timestamp: new Date(record.timestamp).getTime(),
       })),
     [filtered]
@@ -163,8 +209,8 @@ export const ResourceLogs = ({
     [activeFieldFilters, setLogState]
   );
   const columns = useMemo(
-    () => logTableColumns(addFieldFilter),
-    [addFieldFilter]
+    () => logTableColumns(addFieldFilter, { serviceName, showService: scoped }),
+    [addFieldFilter, scoped, serviceName]
   );
   const table = useReactTable({
     columns,
@@ -181,22 +227,47 @@ export const ResourceLogs = ({
     },
     state: { sorting },
   });
+  const displayedRecords = table.getRowModel().rows.map((row) => row.original);
+
+  const jumpToLog = (rowID?: string) => {
+    if (!rowID) {
+      return;
+    }
+    setJumpedLogRowID(rowID);
+    requestAnimationFrame(() => {
+      const viewport = scrollViewportRef.current;
+      const row = viewport?.querySelector<HTMLTableRowElement>(
+        `[data-log-row-id="${rowID}"]`
+      );
+      if (!(viewport && row)) {
+        return;
+      }
+      viewport.scrollTo({
+        behavior: "smooth",
+        top: row.offsetTop - viewport.clientHeight / 2 + row.clientHeight / 2,
+      });
+    });
+  };
 
   const resetFilters = () => {
     void setLogState({
       ...(deploymentID ? {} : { deployment: null }),
       logFields: null,
       logLevel: "info",
+      logSpan: null,
+      logTrace: null,
     });
   };
   const activeFilters =
     Number(severityFilter !== "info") +
     Number(Boolean(urlDeploymentID && !deploymentID)) +
+    Number(Boolean(activeTraceID)) +
+    Number(Boolean(activeSpanID)) +
     activeFieldFilters.length;
 
   return (
-    <div className="min-h-[34rem] border-y border-border bg-background">
-      <header className="flex min-h-12 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden border-y border-border bg-background">
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2">
         <div className="flex items-baseline gap-2">
           <span className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
             Log window
@@ -217,6 +288,7 @@ export const ResourceLogs = ({
             }
             value={{ from: timeFrom, range: timeRange, to: timeTo }}
           />
+          <LogExportMenu records={displayedRecords} resourceID={exportName} />
           <Button
             aria-label="Refresh logs"
             onClick={refresh}
@@ -238,27 +310,22 @@ export const ResourceLogs = ({
       </header>
 
       {error ? (
-        <div className="flex items-center gap-2 border-b border-destructive/40 bg-destructive/5 px-4 py-3 text-[10px] text-destructive">
+        <div className="flex shrink-0 items-center gap-2 border-b border-destructive/40 bg-destructive/5 px-4 py-3 text-[10px] text-destructive">
           <AlertTriangle className="size-3.5" />
           {error}
         </div>
       ) : null}
-      <TelemetryHistogram
-        ariaLabel="Log volume over time"
-        bounds={histogramBounds}
-        noun="logs"
-        onSelectRange={(from, to) => {
-          setLive(false);
-          void setLogState({
-            timeFrom: from,
-            timeRange: "custom",
-            timeTo: to,
-          });
-        }}
-        points={histogramPoints}
-      />
+      <div className="shrink-0">
+        <TelemetryHistogram
+          ariaLabel="Log volume over time"
+          bounds={histogramBounds}
+          noun="logs"
+          onJumpTo={(point) => jumpToLog(point.id)}
+          points={histogramPoints}
+        />
+      </div>
 
-      <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b border-border px-3 py-2">
         <form
           className="relative min-w-64 flex-1"
           onSubmit={(event) => {
@@ -299,7 +366,13 @@ export const ResourceLogs = ({
               ),
             })
           }
+          onRemoveSpan={() => void setLogState({ logSpan: null })}
+          onRemoveTrace={() =>
+            void setLogState({ logSpan: null, logTrace: null })
+          }
           severity={severityFilter}
+          spanID={activeSpanID}
+          traceID={activeTraceID}
         />
         <Button
           aria-pressed={controlsOpen}
@@ -314,25 +387,21 @@ export const ResourceLogs = ({
       </div>
 
       {controlsOpen ? (
-        <LogFilterPanel
-          fieldFilters={activeFieldFilters}
-          onAddFieldFilter={addFieldFilter}
-          onReset={resetFilters}
-          onSeverityChange={(value) => void setLogState({ logLevel: value })}
-          records={records}
-          severity={severityFilter}
-          structured
-        />
+        <div className="shrink-0">
+          <LogFilterPanel
+            fieldFilters={activeFieldFilters}
+            onAddFieldFilter={addFieldFilter}
+            onReset={resetFilters}
+            onSeverityChange={(value) => void setLogState({ logLevel: value })}
+            records={records}
+            severity={severityFilter}
+            structured
+          />
+        </div>
       ) : null}
 
-      <div className="min-h-[31rem]">
-        <div
-          className={cn(
-            "min-h-[31rem] min-w-0 overflow-auto",
-            controlsOpen ? "h-[calc(100vh-21rem)]" : "h-[calc(100vh-17.5rem)]"
-          )}
-          ref={scrollViewportRef}
-        >
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="h-full min-w-0 overflow-auto" ref={scrollViewportRef}>
           <table className="w-full min-w-[980px] border-collapse font-mono text-[9px]">
             <thead className="sticky top-0 z-10 bg-background">
               {table.getHeaderGroups().map((headerGroup) => (
@@ -363,7 +432,14 @@ export const ResourceLogs = ({
             </thead>
             <tbody>
               {table.getRowModel().rows.map((row) => (
-                <tr className="align-top hover:bg-muted/25" key={row.id}>
+                <tr
+                  className={cn(
+                    "align-top transition-colors hover:bg-muted/25",
+                    jumpedLogRowID === row.id && "bg-sky-500/10"
+                  )}
+                  data-log-row-id={row.id}
+                  key={row.id}
+                >
                   {row.getVisibleCells().map((cell) => (
                     <td
                       className="border-r border-b border-border/65 px-3 py-2.5 last:border-r-0"
@@ -403,4 +479,48 @@ export const ResourceLogs = ({
       </div>
     </div>
   );
+};
+
+export const ResourceLogs = ({
+  deploymentID,
+  kind,
+  projectID,
+  resourceID,
+}: {
+  deploymentID?: string;
+  kind: ResourceLogKind;
+  projectID: string;
+  resourceID: string;
+}) => {
+  const source = useMemo<TelemetryLogSource>(
+    () => ({
+      kind: "resource",
+      projectID,
+      resourceID,
+      resourceKind: kind,
+    }),
+    [kind, projectID, resourceID]
+  );
+  return <TelemetryLogs deploymentID={deploymentID} source={source} />;
+};
+
+export const ScopedTelemetryLogs = ({
+  scope,
+  serviceName,
+}: {
+  scope: Exclude<MetricScope, { kind: "service" }>;
+  serviceName?: (serviceID: string) => string | undefined;
+}) => {
+  const projectID = scope.kind === "project" ? scope.projectID : undefined;
+  const source = useMemo<TelemetryLogSource>(
+    () => ({
+      kind: "scope",
+      scope:
+        scope.kind === "project" && projectID
+          ? { kind: "project", projectID }
+          : { kind: "installation" },
+    }),
+    [projectID, scope.kind]
+  );
+  return <TelemetryLogs serviceName={serviceName} source={source} />;
 };

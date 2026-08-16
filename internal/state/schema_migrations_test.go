@@ -193,3 +193,32 @@ PRAGMA user_version = 14;`); err != nil {
 		t.Fatalf("migrated scoped chart = version %d, %s, %s, %s", version, scopeKind, serviceID, title)
 	}
 }
+
+func TestMigrateSchemaVersionFifteenAddsBrowserTunnelPath(t *testing.T) {
+	t.Parallel()
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE services (id TEXT PRIMARY KEY) STRICT;
+INSERT INTO services(id) VALUES ('service');
+PRAGMA user_version = 15;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionFifteen(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	var columnCount int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT count(*) FROM pragma_table_info('services') WHERE name = 'sentry_tunnel_path'").Scan(&columnCount); err != nil {
+		t.Fatal(err)
+	}
+	if version != 16 || columnCount != 1 {
+		t.Fatalf("schema version/tunnel column = %d/%d", version, columnCount)
+	}
+}

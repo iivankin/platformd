@@ -85,6 +85,9 @@ CREATE TABLE services (
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
   active_deployment_id TEXT,
   sentry_public_hostname TEXT,
+  sentry_tunnel_path TEXT CHECK (
+    sentry_tunnel_path IS NULL OR length(sentry_tunnel_path) BETWEEN 2 AND 256
+  ),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (active_deployment_id) REFERENCES deployments(id) DEFERRABLE INITIALLY DEFERRED,
@@ -520,4 +523,4 @@ CREATE TABLE audit_events (
 CREATE INDEX audit_events_created_idx ON audit_events(created_at DESC);
 CREATE INDEX audit_events_project_created_idx ON audit_events(project_id, created_at DESC);
 
-PRAGMA user_version = 15;
+PRAGMA user_version = 16;

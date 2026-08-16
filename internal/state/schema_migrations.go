@@ -610,3 +610,24 @@ FROM service_metric_charts_v14`,
 	}
 	return nil
 }
+
+func migrateSchemaVersionFifteen(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 15 to 16: %w", err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE services ADD COLUMN sentry_tunnel_path TEXT CHECK (
+  sentry_tunnel_path IS NULL OR length(sentry_tunnel_path) BETWEEN 2 AND 256
+)`,
+		`PRAGMA user_version = 16`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 15 to 16: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 15 to 16: %w", err)
+	}
+	return nil
+}

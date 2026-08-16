@@ -54,7 +54,7 @@ export const PostgresQueryRunner = ({
   };
 
   return (
-    <div className="flex min-h-[36rem] flex-col overflow-hidden border border-border">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden border border-border">
       <header className="flex h-10 shrink-0 items-center justify-between border-b border-border px-3">
         <div>
           <h3 className="text-[10px] font-medium">SQL editor</h3>

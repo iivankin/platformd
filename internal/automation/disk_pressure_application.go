@@ -39,8 +39,9 @@ type DiskPressureDTO struct {
 }
 
 type DiskComponentDTO struct {
-	ID    string `json:"id"`
-	Bytes uint64 `json:"bytes"`
+	ID     string `json:"id"`
+	Bytes  uint64 `json:"bytes"`
+	Parent string `json:"parent,omitempty"`
 }
 
 func NewDiskPressureApplication(pressure DiskPressureSnapshotter, components DiskPressureComponents) (*DiskPressureApplication, error) {
@@ -75,7 +76,9 @@ func (application *DiskPressureApplication) Read(ctx context.Context, identity I
 	}
 	result.Components = make([]DiskComponentDTO, 0, len(usage.Components))
 	for _, component := range usage.Components {
-		result.Components = append(result.Components, DiskComponentDTO{ID: component.ID, Bytes: component.Bytes})
+		result.Components = append(result.Components, DiskComponentDTO{
+			ID: component.ID, Bytes: component.Bytes, Parent: component.Parent,
+		})
 	}
 	if !usage.CheckedAt.IsZero() {
 		result.ComponentsCheckedAt = usage.CheckedAt.UnixMilli()

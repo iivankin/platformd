@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { fetchResourceLogs } from "@/api";
-import type { LogWindow, ResourceLogKind } from "@/api";
+import { fetchResourceLogs, fetchTelemetryLogs } from "@/api";
+import type { LogWindow, MetricScope, ResourceLogKind } from "@/api";
 import type { LogFieldFilter } from "@/log-field-filter";
 import type { TelemetryTimeRange } from "@/telemetry-query-state";
 import { telemetryTimeBounds } from "@/telemetry-time-range";
@@ -9,26 +9,62 @@ import { telemetryTimeBounds } from "@/telemetry-time-range";
 const logPageSize = 200;
 const refreshIntervalMilliseconds = 2000;
 
-export const useResourceLogWindow = ({
+export type TelemetryLogSource =
+  | {
+      kind: "resource";
+      projectID: string;
+      resourceID: string;
+      resourceKind: ResourceLogKind;
+    }
+  | {
+      kind: "scope";
+      scope: Exclude<MetricScope, { kind: "service" }>;
+    };
+
+const sourceIdentity = (source: TelemetryLogSource) =>
+  source.kind === "resource"
+    ? [source.kind, source.projectID, source.resourceKind, source.resourceID]
+    : [
+        source.kind,
+        source.scope.kind,
+        source.scope.kind === "project" ? source.scope.projectID : "",
+      ];
+
+const fetchWindow = (
+  source: TelemetryLogSource,
+  options: Parameters<typeof fetchResourceLogs>[3],
+  signal?: AbortSignal
+) =>
+  source.kind === "resource"
+    ? fetchResourceLogs(
+        source.projectID,
+        source.resourceKind,
+        source.resourceID,
+        options,
+        signal
+      )
+    : fetchTelemetryLogs(source.scope, options, signal);
+
+export const useTelemetryLogWindow = ({
   contains,
   deploymentID,
   fieldFilters,
-  kind,
-  projectID,
-  resourceID,
+  source,
+  spanID,
   timeFrom,
   timeRange,
   timeTo,
+  traceID,
 }: {
   contains: string;
   deploymentID?: string;
   fieldFilters: LogFieldFilter[];
-  kind: ResourceLogKind;
-  projectID: string;
-  resourceID: string;
+  source: TelemetryLogSource;
+  spanID?: string;
   timeFrom: number | null;
   timeRange: TelemetryTimeRange;
   timeTo: number | null;
+  traceID?: string;
 }) => {
   const [window, setWindow] = useState<LogWindow>();
   const [refreshVersion, setRefreshVersion] = useState(0);
@@ -44,23 +80,23 @@ export const useResourceLogWindow = ({
         contains,
         deploymentID,
         fieldFilters,
-        kind,
-        projectID,
-        resourceID,
+        sourceIdentity(source),
+        spanID,
         timeFrom,
         timeRange,
         timeTo,
+        traceID,
       ]),
     [
       contains,
       deploymentID,
       fieldFilters,
-      kind,
-      projectID,
-      resourceID,
+      source,
+      spanID,
       timeFrom,
       timeRange,
       timeTo,
+      traceID,
     ]
   );
   const activeQueryRef = useRef(activeQueryKey);
@@ -91,16 +127,16 @@ export const useResourceLogWindow = ({
           range: timeRange,
           to: timeTo,
         });
-        const nextWindow = await fetchResourceLogs(
-          projectID,
-          kind,
-          resourceID,
+        const nextWindow = await fetchWindow(
+          source,
           {
             contains: contains || undefined,
             deploymentId: deploymentID,
             fieldFilters,
+            spanId: spanID,
             ...bounds,
             limit: logPageSize,
+            traceId: traceID,
           },
           controller.signal
         );
@@ -136,13 +172,13 @@ export const useResourceLogWindow = ({
     contains,
     deploymentID,
     fieldFilters,
-    kind,
-    projectID,
     refreshVersion,
-    resourceID,
+    source,
+    spanID,
     timeFrom,
     timeRange,
     timeTo,
+    traceID,
   ]);
 
   useEffect(() => {
@@ -168,13 +204,15 @@ export const useResourceLogWindow = ({
         range: timeRange,
         to: timeTo,
       });
-      const page = await fetchResourceLogs(projectID, kind, resourceID, {
+      const page = await fetchWindow(source, {
         contains: contains || undefined,
         cursor,
         deploymentId: deploymentID,
         fieldFilters,
+        spanId: spanID,
         ...bounds,
         limit: logPageSize,
+        traceId: traceID,
       });
       if (activeQueryRef.current !== requestKey) {
         return;
@@ -202,13 +240,13 @@ export const useResourceLogWindow = ({
     contains,
     deploymentID,
     fieldFilters,
-    kind,
     loadingMore,
-    projectID,
-    resourceID,
+    source,
+    spanID,
     timeFrom,
     timeRange,
     timeTo,
+    traceID,
     window?.nextCursor,
   ]);
 
@@ -222,4 +260,27 @@ export const useResourceLogWindow = ({
     setLive,
     window,
   };
+};
+
+export const useResourceLogWindow = (
+  options: Omit<Parameters<typeof useTelemetryLogWindow>[0], "source"> & {
+    kind: ResourceLogKind;
+    projectID: string;
+    resourceID: string;
+  }
+) => {
+  const { kind, projectID, resourceID, ...query } = options;
+  const source = useMemo<TelemetryLogSource>(
+    () => ({
+      kind: "resource",
+      projectID,
+      resourceID,
+      resourceKind: kind,
+    }),
+    [kind, projectID, resourceID]
+  );
+  return useTelemetryLogWindow({
+    ...query,
+    source,
+  });
 };

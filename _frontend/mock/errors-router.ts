@@ -43,8 +43,39 @@ const handleIssues = async ({
     return jsonError("issue not found", 404);
   }
   if (request.method === "GET") {
-    const events = state.events.filter((event) => event.issue_id === issue.id);
-    return Response.json({ eventTotal: events.length, events, issue });
+    const events = state.events
+      .filter((event) => event.issue_id === issue.id)
+      .toSorted(
+        (left, right) =>
+          Date.parse(right.timestamp) - Date.parse(left.timestamp)
+      );
+    const offset = Math.max(0, Number(url.searchParams.get("offset") ?? 0));
+    const limit = Math.min(
+      100,
+      Math.max(1, Number(url.searchParams.get("limit") ?? 100))
+    );
+    const distributions = [
+      ["release", "storefront@2.8.1"],
+      ["environment", "production"],
+      ["browser", "Chrome 127"],
+      ["device", "Desktop"],
+    ].map(([key, value]) => ({ count: events.length, key, value }));
+    const [latest] = events;
+    const first = events.at(-1);
+    const recommended =
+      events.find((event) => event.replay_id && event.user) ?? latest;
+    return Response.json({
+      activity: events.length > 0 ? [{ bin: 31, count: events.length }] : [],
+      distributions,
+      eventTotal: events.length,
+      events: events.slice(offset, offset + limit),
+      firstEventId: first?.event_id ?? "",
+      issue,
+      latestEventId: latest?.event_id ?? "",
+      recommendedEventId: recommended?.event_id ?? "",
+      userCount: new Set(events.map((event) => event.user).filter(Boolean))
+        .size,
+    });
   }
   if (request.method !== "PATCH") {
     return jsonError("method not allowed", 405);
@@ -67,15 +98,34 @@ const symbolication = (event: StoredDocument): StoredDocument => ({
         frames: [
           {
             colno: 11,
+            context_line:
+              "throw new CheckoutInvariantError('Inventory reservation expired');",
             filename: "webpack:///src/checkout/cart.ts",
             function: "reserveInventory",
+            in_app: true,
             lineno: 71,
+            module: "checkout/cart",
+            post_context: ["}", "", "export async function checkout() {"],
+            pre_context: [
+              "if (!reservation.active) {",
+              "  inventory.release(reservation.id);",
+            ],
           },
           {
             colno: 17,
             filename: "webpack:///src/checkout/submit.ts",
             function: "finalizeOrder",
+            in_app: true,
             lineno: 184,
+            module: "checkout/submit",
+          },
+          {
+            colno: 21,
+            filename: "https://shop.example.com/chunk-runtime.js",
+            function: "dispatch",
+            in_app: false,
+            lineno: 1,
+            module: "runtime",
           },
         ],
       },

@@ -22,6 +22,7 @@ export const DetailPage = ({
   notify,
   onBack,
   onIssueUpdated,
+  onOpenTrace,
   openDetail,
   target,
 }: {
@@ -29,6 +30,7 @@ export const DetailPage = ({
   notify: (message: string) => void;
   onBack: () => void;
   onIssueUpdated: () => void;
+  onOpenTrace?: (traceId: string) => void;
   openDetail: (target: DetailTarget) => void;
   target: DetailTarget;
 }) => {
@@ -106,15 +108,18 @@ export const DetailPage = ({
           appId={app.id}
           detail={current.data.value}
           notify={notify}
+          onOpenTrace={onOpenTrace}
         />
       ) : null}
       {current?.data?.kind === "issue" ? (
         <IssueDetailView
           appId={app.id}
           detail={current.data.value}
+          key={current.data.value.issue.id}
           latestEvent={current.data.latestEvent}
           notify={notify}
           onIssueUpdated={onIssueUpdated}
+          onOpenTrace={onOpenTrace}
           openDetail={openDetail}
         />
       ) : null}

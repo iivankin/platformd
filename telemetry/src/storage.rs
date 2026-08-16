@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
@@ -23,11 +23,14 @@ use crate::model::{Document, SearchClause, SearchQuery, SearchRequest, SearchRes
 
 const MAX_CONTENT_CHUNKS: usize = 128;
 const ANALYTICS_DATABASE: &str = "telemetry";
+const RECORDING_DOC_KINDS: &str = "'replay_event', 'replay_recording', 'replay_video'";
+const RECORDING_RETENTION: &str = "INTERVAL 14 DAY";
 
 #[derive(Clone, Copy)]
 pub(crate) enum SignalTable {
     Logs,
     Metrics,
+    Profiles,
     Spans,
 }
 
@@ -36,6 +39,7 @@ impl SignalTable {
         match self {
             Self::Logs => "logs",
             Self::Metrics => "metrics",
+            Self::Profiles => "profiles",
             Self::Spans => "spans",
         }
     }
@@ -103,7 +107,7 @@ struct SourceRow {
 }
 
 pub(crate) struct LogQuery {
-    pub service_id: String,
+    pub service_ids: Vec<String>,
     pub deployment_id: Option<String>,
     pub contains: Option<String>,
     pub field_filters: Vec<LogFieldFilter>,
@@ -139,6 +143,8 @@ pub(crate) enum LogFieldOperator {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct LogRecord {
     pub id: String,
+    #[serde(alias = "service_id")]
+    pub service_id: String,
     #[serde(alias = "time_unix_nano")]
     pub time_unix_nano: u64,
     pub stream: String,
@@ -175,6 +181,9 @@ pub(crate) struct LogPage {
 #[serde(rename_all(serialize = "camelCase"))]
 pub(crate) struct TraceSummary {
     pub trace_id: String,
+    pub segment_id: String,
+    #[serde(alias = "root_service_id")]
+    pub service_id: String,
     pub name: String,
     #[serde(serialize_with = "serialize_u64_string")]
     pub started_at_unix_nano: u64,
@@ -200,17 +209,92 @@ pub(crate) struct TraceSummary {
     pub ai_tool_call_count: u64,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum TraceSummaryOrder {
+    Latest,
+    Slowest,
+    Spans,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum TraceSummaryStatus {
+    All,
+    Error,
+    Ok,
+}
+
+pub(crate) struct TraceSummaryQuery {
+    pub anchor_service_id: Option<String>,
+    pub service_ids: Vec<String>,
+    pub from_unix_nano: Option<u64>,
+    pub to_unix_nano: Option<u64>,
+    pub search: Option<String>,
+    pub status: TraceSummaryStatus,
+    pub order: TraceSummaryOrder,
+    pub limit: usize,
+    pub offset: usize,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct TraceDetail {
     pub trace_id: String,
+    pub segment_id: String,
     pub spans: Vec<TraceSpan>,
+    pub related_segments: Vec<RelatedTraceSegment>,
+    pub metrics: Vec<TraceMetricSample>,
+    pub profiles: Vec<TraceProfile>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct RelatedTraceSegment {
+    pub segment_id: String,
+    #[serde(alias = "segment_service_id")]
+    pub service_id: String,
+    pub name: String,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub started_at_unix_nano: u64,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub duration_nano: u64,
+    pub span_count: u64,
+    pub error_span_count: u64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TraceProfile {
+    pub service_id: String,
+    pub profile_id: String,
+    pub profiler_id: String,
+    pub platform: String,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub started_at_unix_nano: u64,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub ended_at_unix_nano: u64,
+    pub sample_count: u64,
+    pub stacks: Vec<TraceProfileStack>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TraceProfileStack {
+    pub thread_id: String,
+    pub thread_name: String,
+    pub span_id: String,
+    pub sample_count: u64,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub duration_nano: u64,
+    pub frames: Value,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
 pub(crate) struct TraceSpan {
+    pub service_id: String,
     pub trace_id: String,
+    pub segment_id: String,
+    pub is_segment: bool,
     pub span_id: String,
     pub parent_span_id: String,
     pub trace_state: String,
@@ -244,6 +328,94 @@ pub(crate) struct TraceSpan {
     pub ai_cost_usd: Option<f64>,
     pub ai_ttft_seconds: Option<f64>,
     pub ai_tokens_per_second: Option<f64>,
+    #[serde(default)]
+    pub baseline_duration_nano: Option<f64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct TraceMetricSample {
+    pub name: String,
+    pub unit: String,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub time_unix_nano: u64,
+    pub value: Option<f64>,
+    pub span_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct IssueInsights {
+    pub user_count: u64,
+    pub distributions: Vec<IssueDistribution>,
+    pub activity: Vec<IssueActivityBin>,
+    pub first_event_id: String,
+    pub latest_event_id: String,
+    pub recommended_event_id: String,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct IssueDistribution {
+    pub key: String,
+    pub value: String,
+    pub count: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+pub(crate) struct IssueActivityBin {
+    pub bin: u64,
+    pub count: u64,
+}
+
+#[derive(Deserialize)]
+struct IssueUserCount {
+    user_count: u64,
+    first_event_id: String,
+    latest_event_id: String,
+    recommended_event_id: String,
+}
+
+#[derive(Deserialize)]
+struct TraceBaselineRow {
+    name: String,
+    kind: i32,
+    baseline_duration_nano: f64,
+}
+
+#[derive(Deserialize)]
+struct TraceMetricRow {
+    name: String,
+    unit: String,
+    time_unix_nano: u64,
+    value: Option<f64>,
+    exemplars: String,
+}
+
+#[derive(Deserialize)]
+struct TraceIdRow {
+    trace_id: String,
+}
+
+#[derive(Deserialize)]
+struct TraceSegmentIdRow {
+    segment_id: String,
+}
+
+#[derive(Deserialize)]
+struct TraceProfileRow {
+    service_id: String,
+    profile_key: String,
+    stored_profile_id: String,
+    profiler_id: String,
+    platform: String,
+    thread_id: String,
+    thread_name: String,
+    span_id: String,
+    sample_count: u64,
+    total_duration_nano: u64,
+    started_at_unix_nano: u64,
+    ended_at_unix_nano: u64,
+    stack: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -352,7 +524,23 @@ impl Store {
             .read()
             .map_err(|_| Error::Storage("telemetry maintenance lock is poisoned".into()))?;
         let mut body = String::new();
-        for row in rows {
+        for mut row in rows {
+            if matches!(table, SignalTable::Spans)
+                && let Some(row) = row.as_object_mut()
+            {
+                row.entry("replay_id")
+                    .or_insert_with(|| Value::String(String::new()));
+                if !row
+                    .get("segment_id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.is_empty())
+                    || !row.get("is_segment").is_some_and(Value::is_boolean)
+                {
+                    return Err(Error::InvalidRequest(
+                        "telemetry span has no segment identity".into(),
+                    ));
+                }
+            }
             serde_json::to_writer(StringWriter(&mut body), &row)
                 .map_err(|error| Error::Storage(format!("encode OTLP row: {error}")))?;
             body.push('\n');
@@ -413,7 +601,7 @@ impl Store {
             .analytics
             .lock()
             .map_err(|_| Error::Storage("chDB session lock is poisoned".into()))?;
-        for table in ["documents", "spans", "logs", "metrics"] {
+        for table in ["documents", "spans", "logs", "metrics", "profiles"] {
             analytics
                 .execute(
                     &format!(
@@ -667,10 +855,7 @@ impl Store {
     pub(crate) async fn log_records(&self, request: LogQuery) -> Result<LogPage> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
-            let mut clauses = vec![format!(
-                "service_id = {}",
-                chdb_string(&request.service_id)
-            )];
+            let mut clauses = vec![service_filter(&request.service_ids)];
             if let Some(deployment_id) = request.deployment_id.as_deref() {
                 clauses.push(format!(
                     "deployment_id = {}",
@@ -715,7 +900,7 @@ impl Store {
             }
             let direction = if request.ascending { "ASC" } else { "DESC" };
             let query = format!(
-                "SELECT toString(id) AS id, time_unix_nano, stream, leftUTF8(message, 65536) AS text, partial, \
+                "SELECT toString(id) AS id, service_id, time_unix_nano, stream, leftUTF8(message, 65536) AS text, partial, \
                  deployment_id, attempt_id, trace_id, span_id, severity_number, severity_text, body_json, \
                  if(JSON_VALUE(scope, '$.name') = 'platformd.before_deploy', 'before_deploy', '') AS phase \
                  FROM {ANALYTICS_DATABASE}.logs WHERE {} \
@@ -760,33 +945,60 @@ impl Store {
 
     pub(crate) async fn trace_summaries(
         &self,
-        service_id: String,
-        from_unix_nano: Option<u64>,
-        to_unix_nano: Option<u64>,
-        search: Option<String>,
-        limit: usize,
-        offset: usize,
+        request: TraceSummaryQuery,
     ) -> Result<Vec<TraceSummary>> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
-            let mut time_clauses = Vec::new();
-            if let Some(from) = from_unix_nano {
-                time_clauses.push(format!("started_at_unix_nano >= {from}"));
+            let mut having_clauses = Vec::new();
+            if let Some(from) = request.from_unix_nano {
+                having_clauses.push(format!("started_at_unix_nano >= {from}"));
             }
-            if let Some(to) = to_unix_nano {
-                time_clauses.push(format!("started_at_unix_nano <= {to}"));
+            if let Some(to) = request.to_unix_nano {
+                having_clauses.push(format!("started_at_unix_nano <= {to}"));
             }
-            let having = if time_clauses.is_empty() {
+            match request.status {
+                TraceSummaryStatus::All => {}
+                TraceSummaryStatus::Error => having_clauses.push("error_span_count > 0".into()),
+                TraceSummaryStatus::Ok => having_clauses.push("error_span_count = 0".into()),
+            }
+            let parsed_search = trace_search(request.search.as_deref());
+            having_clauses.extend(parsed_search.having_clauses);
+            let having = if having_clauses.is_empty() {
                 String::new()
             } else {
-                format!(" HAVING {}", time_clauses.join(" AND "))
+                format!(" HAVING {}", having_clauses.join(" AND "))
             };
-            let search_filter = trace_search_filter(&service_id, search.as_deref());
+            let services = service_filter(&request.service_ids);
+            let anchor_filter = request.anchor_service_id.as_deref().map_or_else(
+                || String::new(),
+                |anchor| {
+                    format!(
+                        " AND (trace_id, segment_id) IN (SELECT trace_id, segment_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {} AND notEmpty(segment_id))",
+                        chdb_string(anchor)
+                    )
+                },
+            );
+            let search_filter =
+                trace_search_filter(&request.service_ids, parsed_search.text.as_deref());
+            let order = match request.order {
+                TraceSummaryOrder::Latest => {
+                    "started_at_unix_nano DESC, trace_id DESC, segment_id DESC"
+                }
+                TraceSummaryOrder::Slowest => {
+                    "duration_nano DESC, started_at_unix_nano DESC, trace_id DESC, segment_id DESC"
+                }
+                TraceSummaryOrder::Spans => {
+                    "span_count DESC, started_at_unix_nano DESC, trace_id DESC, segment_id DESC"
+                }
+            };
             let query = format!(
-                "SELECT trace_id, \
-                 if(empty(argMinIf(name, start_time_unix_nano, empty(parent_span_id))), \
+                "SELECT trace_id, segment_id, \
+                 if(empty(argMinIf(service_id, start_time_unix_nano, is_segment)), \
+                    argMin(service_id, start_time_unix_nano), \
+                    argMinIf(service_id, start_time_unix_nano, is_segment)) AS root_service_id, \
+                 if(empty(argMinIf(name, start_time_unix_nano, is_segment)), \
                     argMin(name, start_time_unix_nano), \
-                    argMinIf(name, start_time_unix_nano, empty(parent_span_id))) AS name, \
+                    argMinIf(name, start_time_unix_nano, is_segment)) AS name, \
                  min(start_time_unix_nano) AS started_at_unix_nano, \
                  greatest(max(end_time_unix_nano), min(start_time_unix_nano)) - min(start_time_unix_nano) AS duration_nano, \
                  count() AS span_count, countIf(status_code = 2) AS error_span_count, \
@@ -821,9 +1033,10 @@ impl Store {
                  countIf(ai_kind IN ('model', 'embedding', 'rerank')) AS ai_model_call_count, \
                  countIf(ai_kind = 'tool') AS ai_tool_call_count \
                  FROM {ANALYTICS_DATABASE}.spans FINAL \
-                 WHERE service_id = {}{search_filter} \
-                 GROUP BY trace_id{having} ORDER BY started_at_unix_nano DESC, trace_id DESC LIMIT {limit} OFFSET {offset}",
-                chdb_string(&service_id)
+                 WHERE {services} AND notEmpty(segment_id){anchor_filter}{search_filter} \
+                 GROUP BY trace_id, segment_id{having} ORDER BY {order} LIMIT {limit} OFFSET {offset}",
+                limit = request.limit,
+                offset = request.offset,
             );
             store.with_analytics(|analytics| {
                 let output = analytics
@@ -848,21 +1061,64 @@ impl Store {
         .map_err(|error| Error::Storage(format!("query telemetry traces task: {error}")))?
     }
 
-    pub(crate) async fn trace(&self, service_id: String, trace_id: String) -> Result<TraceDetail> {
+    pub(crate) async fn trace(
+        &self,
+        anchor_service_id: Option<String>,
+        service_ids: Vec<String>,
+        trace_id: String,
+        requested_segment_id: Option<String>,
+    ) -> Result<TraceDetail> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
+            let services = service_filter(&service_ids);
+            let segment_id = if let Some(segment_id) = requested_segment_id {
+                segment_id
+            } else {
+                let anchor = anchor_service_id
+                    .as_deref()
+                    .map_or_else(|| services.clone(), |service_id| {
+                        format!("service_id = {}", chdb_string(service_id))
+                    });
+                let segment_query = format!(
+                    "SELECT segment_id FROM {ANALYTICS_DATABASE}.spans FINAL \
+                     WHERE {anchor} AND trace_id = {} AND notEmpty(segment_id) \
+                     ORDER BY is_segment DESC, start_time_unix_nano DESC LIMIT 1",
+                    chdb_string(&trace_id)
+                );
+                store.with_analytics(|analytics| {
+                    let output = analytics
+                        .execute(
+                            &segment_query,
+                            Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                        )
+                        .map_err(|error| {
+                            Error::Storage(format!("query chDB trace segment: {error}"))
+                        })?;
+                    output
+                        .data_utf8_lossy()
+                        .lines()
+                        .find(|line| !line.is_empty())
+                        .map(serde_json::from_str::<TraceSegmentIdRow>)
+                        .transpose()
+                        .map_err(|error| {
+                            Error::Storage(format!("decode chDB trace segment: {error}"))
+                        })?
+                        .map(|row| row.segment_id)
+                        .ok_or(Error::NotFound)
+                })?
+            };
             let query = format!(
-                "SELECT trace_id, span_id, parent_span_id, trace_state, name, kind, \
+                "SELECT service_id, trace_id, segment_id, is_segment, span_id, parent_span_id, trace_state, name, kind, \
                  start_time_unix_nano, end_time_unix_nano, duration_nano, status_code, \
                  status_message, flags, resource, scope, span, received_at_unix_nano, source, \
                  ai_kind, ai_operation, ai_provider, ai_model, ai_agent, ai_input_tokens, \
                  ai_output_tokens, ai_cache_read_tokens, ai_cache_write_tokens, ai_reasoning_tokens, \
                  ai_cost_usd, ai_ttft_seconds, ai_tokens_per_second \
                  FROM {ANALYTICS_DATABASE}.spans FINAL \
-                 WHERE service_id = {} AND trace_id = {} \
+                 WHERE {services} AND trace_id = {} AND segment_id = {} AND notEmpty(segment_id) \
                  ORDER BY start_time_unix_nano, span_id",
-                chdb_string(&service_id),
-                chdb_string(&trace_id)
+                chdb_string(&trace_id),
+                chdb_string(&segment_id)
             );
             store.with_analytics(|analytics| {
                 let output = analytics
@@ -871,7 +1127,7 @@ impl Store {
                         Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
                     )
                     .map_err(|error| Error::Storage(format!("query chDB trace: {error}")))?;
-                let mut spans = Vec::new();
+                let mut spans: Vec<TraceSpan> = Vec::new();
                 for line in output
                     .data_utf8_lossy()
                     .lines()
@@ -903,7 +1159,141 @@ impl Store {
                 if spans.is_empty() {
                     return Err(Error::NotFound);
                 }
-                Ok(TraceDetail { trace_id, spans })
+                let trace_start = spans
+                    .iter()
+                    .map(|span| span.start_time_unix_nano)
+                    .min()
+                    .unwrap_or_default();
+                let trace_end = spans
+                    .iter()
+                    .map(|span| span.end_time_unix_nano.max(span.start_time_unix_nano))
+                    .max()
+                    .unwrap_or(trace_start);
+                let baseline_query = format!(
+                    "SELECT name, kind, avg(duration_nano) AS baseline_duration_nano \
+                     FROM {ANALYTICS_DATABASE}.spans FINAL \
+                     WHERE {services} AND duration_nano > 0 \
+                     AND start_time_unix_nano >= toUnixTimestamp64Nano(now64(9) - INTERVAL 24 HOUR) \
+                     GROUP BY name, kind",
+                );
+                let baseline_output = analytics
+                    .execute(
+                        &baseline_query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB trace baselines: {error}"))
+                    })?;
+                let mut baselines = HashMap::new();
+                for line in baseline_output
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                {
+                    let row: TraceBaselineRow = serde_json::from_str(line).map_err(|error| {
+                        Error::Storage(format!("decode chDB trace baseline: {error}"))
+                    })?;
+                    baselines.insert((row.name, row.kind), row.baseline_duration_nano);
+                }
+                for span in &mut spans {
+                    span.baseline_duration_nano = baselines
+                        .get(&(span.name.clone(), span.kind))
+                        .copied();
+                }
+
+                let metric_query = format!(
+                    "SELECT name, unit, time_unix_nano, \
+                     coalesce(value_double, toFloat64(value_int), sum, toFloat64(count)) AS value, exemplars \
+                     FROM {ANALYTICS_DATABASE}.metrics \
+                     WHERE {services} AND positionCaseInsensitive(exemplars, {}) > 0 \
+                     ORDER BY time_unix_nano LIMIT 100",
+                    chdb_string(&trace_id)
+                );
+                let metric_output = analytics
+                    .execute(
+                        &metric_query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB trace metric exemplars: {error}"))
+                    })?;
+                let span_ids = spans
+                    .iter()
+                    .map(|span| span.span_id.as_str())
+                    .collect::<HashSet<_>>();
+                let metrics = metric_output
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        let row: TraceMetricRow = serde_json::from_str(line).map_err(|error| {
+                            Error::Storage(format!("decode chDB trace metric exemplar: {error}"))
+                        })?;
+                        let span_id = exemplar_span_id(&row.exemplars, &trace_id)?;
+                        Ok(TraceMetricSample {
+                            name: row.name,
+                            unit: row.unit,
+                            time_unix_nano: row.time_unix_nano,
+                            value: row.value,
+                            span_id,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?
+                    .into_iter()
+                    .filter(|metric| span_ids.contains(metric.span_id.as_str()))
+                    .collect();
+                let related_query = format!(
+                    "SELECT segment_id, \
+                     if(empty(argMinIf(service_id, start_time_unix_nano, is_segment)), \
+                        argMin(service_id, start_time_unix_nano), \
+                        argMinIf(service_id, start_time_unix_nano, is_segment)) AS segment_service_id, \
+                     if(empty(argMinIf(name, start_time_unix_nano, is_segment)), \
+                        argMin(name, start_time_unix_nano), \
+                        argMinIf(name, start_time_unix_nano, is_segment)) AS name, \
+                     min(start_time_unix_nano) AS started_at_unix_nano, \
+                     greatest(max(end_time_unix_nano), min(start_time_unix_nano)) - min(start_time_unix_nano) AS duration_nano, \
+                     count() AS span_count, countIf(status_code = 2) AS error_span_count \
+                     FROM {ANALYTICS_DATABASE}.spans FINAL \
+                     WHERE {services} AND trace_id = {} AND notEmpty(segment_id) AND segment_id != {} \
+                     GROUP BY segment_id ORDER BY started_at_unix_nano LIMIT 100",
+                    chdb_string(&trace_id),
+                    chdb_string(&segment_id)
+                );
+                let related_output = analytics
+                    .execute(
+                        &related_query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB related trace segments: {error}"))
+                    })?;
+                let related_segments = related_output
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_str(line).map_err(|error| {
+                            Error::Storage(format!("decode chDB related trace segment: {error}"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let profile_ids = trace_profile_ids(&spans);
+                let profiles = trace_profiles(
+                    analytics,
+                    &service_ids,
+                    &trace_id,
+                    &profile_ids,
+                    trace_start,
+                    trace_end,
+                )?;
+                Ok(TraceDetail {
+                    trace_id,
+                    segment_id,
+                    spans,
+                    related_segments,
+                    metrics,
+                    profiles,
+                })
             })
         })
         .await
@@ -948,6 +1338,196 @@ impl Store {
         })
         .await
         .map_err(|error| Error::Storage(format!("query telemetry metric catalog task: {error}")))?
+    }
+
+    pub(crate) async fn replay_trace_ids(
+        &self,
+        service_id: String,
+        replay_id: String,
+        from_unix_nano: Option<u64>,
+        to_unix_nano: Option<u64>,
+    ) -> Result<Vec<String>> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut clauses = vec![
+                format!("service_id = {}", chdb_string(&service_id)),
+                format!("replay_id = {}", chdb_string(&replay_id)),
+            ];
+            if let Some(from) = from_unix_nano {
+                clauses.push(format!("end_time_unix_nano >= {from}"));
+            }
+            if let Some(to) = to_unix_nano {
+                clauses.push(format!("start_time_unix_nano <= {to}"));
+            }
+            let query = format!(
+                "SELECT DISTINCT trace_id FROM {ANALYTICS_DATABASE}.spans FINAL \
+                 WHERE {} ORDER BY trace_id LIMIT 1000",
+                clauses.join(" AND ")
+            );
+            store.with_analytics(|analytics| {
+                let output = analytics
+                    .execute(
+                        &query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB replay traces: {error}"))
+                    })?;
+                output
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_str::<TraceIdRow>(line)
+                            .map(|row| row.trace_id)
+                            .map_err(|error| {
+                                Error::Storage(format!("decode chDB replay trace: {error}"))
+                            })
+                    })
+                    .collect()
+            })
+        })
+        .await
+        .map_err(|error| Error::Storage(format!("query replay traces task: {error}")))?
+    }
+
+    pub(crate) async fn issue_insights(
+        &self,
+        service_id: String,
+        issue_id: String,
+    ) -> Result<IssueInsights> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let filter = format!(
+                "doc_kind = 'event' AND service_id = {} AND issue_id = {}",
+                chdb_string(&service_id),
+                chdb_string(&issue_id)
+            );
+            let dimensions = [
+                ("release", "ifNull(release, '')"),
+                ("environment", "ifNull(environment, '')"),
+                ("platform", "ifNull(platform, '')"),
+                ("user", "ifNull(user, '')"),
+                (
+                    "browser",
+                    "ifNull(JSON_VALUE(source, '$.payload.contexts.browser.name'), '')",
+                ),
+                (
+                    "device",
+                    "coalesce(JSON_VALUE(source, '$.payload.contexts.device.name'), JSON_VALUE(source, '$.payload.contexts.device.model'), '')",
+                ),
+                (
+                    "os",
+                    "ifNull(JSON_VALUE(source, '$.payload.contexts.os.name'), '')",
+                ),
+            ];
+            let distribution_query = dimensions
+                .iter()
+                .map(|(key, expression)| {
+                    format!(
+                        "SELECT {} AS key, value, count FROM (\
+                         SELECT {expression} AS value, count() AS count \
+                         FROM {ANALYTICS_DATABASE}.documents FINAL WHERE {filter} \
+                         GROUP BY value HAVING notEmpty(value) ORDER BY count DESC LIMIT 5)",
+                        chdb_string(key)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" UNION ALL ");
+            store.with_analytics(|analytics| {
+                let user_query = format!(
+                    "SELECT uniqExactIf(ifNull(user, ''), notEmpty(ifNull(user, ''))) AS user_count, \
+                     argMin(ifNull(event_id, ''), timestamp) AS first_event_id, \
+                     argMax(ifNull(event_id, ''), timestamp) AS latest_event_id, \
+                     argMax(ifNull(event_id, ''), tuple( \
+                       toUInt8(notEmpty(ifNull(replay_id, ''))) * 4 + toUInt8(notEmpty(ifNull(user, ''))) * 2 + \
+                       toUInt8(position(source, '\"stacktrace\"') > 0), timestamp)) AS recommended_event_id \
+                     FROM {ANALYTICS_DATABASE}.documents FINAL WHERE {filter}"
+                );
+                let user_count = analytics
+                    .execute(
+                        &user_query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB issue user count: {error}"))
+                    })?;
+                let user_count = user_count
+                    .data_utf8_lossy()
+                    .lines()
+                    .find(|line| !line.is_empty())
+                    .map(serde_json::from_str::<IssueUserCount>)
+                    .transpose()
+                    .map_err(|error| {
+                        Error::Storage(format!("decode chDB issue user count: {error}"))
+                    })?
+                    .unwrap_or(IssueUserCount {
+                        user_count: 0,
+                        first_event_id: String::new(),
+                        latest_event_id: String::new(),
+                        recommended_event_id: String::new(),
+                    });
+                let output = analytics
+                    .execute(
+                        &distribution_query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB issue distributions: {error}"))
+                    })?;
+                let distributions = output
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_str(line).map_err(|error| {
+                            Error::Storage(format!(
+                                "decode chDB issue distribution: {error}"
+                            ))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let activity_query = format!(
+                    "SELECT bin, count() AS count FROM ( \
+                       SELECT least(31, intDiv(timestamp_millis - first_millis, \
+                         greatest(1, intDiv(last_millis - first_millis, 32) + 1))) AS bin \
+                       FROM ( \
+                         SELECT toUInt64(toUnixTimestamp64Milli(timestamp)) AS timestamp_millis, \
+                           min(toUInt64(toUnixTimestamp64Milli(timestamp))) OVER () AS first_millis, \
+                           max(toUInt64(toUnixTimestamp64Milli(timestamp))) OVER () AS last_millis \
+                         FROM {ANALYTICS_DATABASE}.documents FINAL WHERE {filter} \
+                       ) \
+                     ) GROUP BY bin ORDER BY bin"
+                );
+                let activity = analytics
+                    .execute(
+                        &activity_query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query chDB issue activity: {error}"))
+                    })?
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_str(line).map_err(|error| {
+                            Error::Storage(format!("decode chDB issue activity: {error}"))
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                Ok(IssueInsights {
+                    user_count: user_count.user_count,
+                    distributions,
+                    activity,
+                    first_event_id: user_count.first_event_id,
+                    latest_event_id: user_count.latest_event_id,
+                    recommended_event_id: user_count.recommended_event_id,
+                })
+            })
+        })
+        .await
+        .map_err(|error| Error::Storage(format!("query issue insights task: {error}")))?
     }
 
     pub(crate) async fn metric_sql(
@@ -1047,6 +1627,61 @@ impl Store {
         Ok(bytes)
     }
 
+    pub async fn recording_bytes(&self) -> Result<u64> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.recording_bytes_blocking())
+            .await
+            .map_err(|error| Error::Storage(format!("measure recording blobs task: {error}")))?
+    }
+
+    fn recording_bytes_blocking(&self) -> Result<u64> {
+        let _maintenance = self
+            .inner
+            .maintenance
+            .read()
+            .map_err(|_| Error::Storage("telemetry maintenance lock is poisoned".into()))?;
+        let blob_ids = {
+            let analytics = self
+                .inner
+                .analytics
+                .lock()
+                .map_err(|_| Error::Storage("chDB session lock is poisoned".into()))?;
+            recording_blob_ids(&analytics)?
+        };
+        allocated_blob_total(&self.inner.blob_dir, &blob_ids)
+    }
+
+    pub(crate) async fn reclaim_expired_recordings(&self) -> Result<()> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.reclaim_expired_recordings_blocking())
+            .await
+            .map_err(|error| Error::Storage(format!("reclaim expired recordings task: {error}")))?
+    }
+
+    fn reclaim_expired_recordings_blocking(&self) -> Result<()> {
+        let _maintenance = self
+            .inner
+            .maintenance
+            .write()
+            .map_err(|_| Error::Storage("telemetry maintenance lock is poisoned".into()))?;
+        let analytics = self
+            .inner
+            .analytics
+            .lock()
+            .map_err(|_| Error::Storage("chDB session lock is poisoned".into()))?;
+        mutate_documents(
+            &analytics,
+            &format!(
+                "doc_kind IN ({RECORDING_DOC_KINDS}) AND timestamp < now('UTC') - {RECORDING_RETENTION}"
+            ),
+            "expire telemetry recordings",
+        )?;
+        delete_orphaned_content_chunks(&analytics)?;
+        let referenced = referenced_blobs(&analytics)?;
+        drop(analytics);
+        remove_unreferenced_blobs(&self.inner.blob_dir, &referenced)
+    }
+
     pub async fn load_content(
         &self,
         doc_kind: &str,
@@ -1118,6 +1753,153 @@ impl Store {
     }
 }
 
+fn trace_profile_ids(spans: &[TraceSpan]) -> HashSet<String> {
+    let mut ids = HashSet::new();
+    for span in spans {
+        collect_profile_ids(&span.span, &mut ids);
+        collect_profile_ids(&span.resource, &mut ids);
+    }
+    ids
+}
+
+fn collect_profile_ids(value: &Value, ids: &mut HashSet<String>) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                collect_profile_ids(value, ids);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(key) = object.get("key").and_then(Value::as_str)
+                && is_profile_id_key(key)
+                && let Some(value) = object.get("value").and_then(attribute_string)
+            {
+                insert_profile_id(ids, value);
+            }
+            for (key, value) in object {
+                if is_profile_id_key(key)
+                    && let Some(value) = attribute_string(value)
+                {
+                    insert_profile_id(ids, value);
+                }
+                collect_profile_ids(value, ids);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn is_profile_id_key(key: &str) -> bool {
+    matches!(
+        key.chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+            .as_str(),
+        "profileid" | "profilerid" | "sentryprofileid" | "sentryprofilerid"
+    )
+}
+
+fn attribute_string(value: &Value) -> Option<&str> {
+    value.as_str().or_else(|| {
+        value
+            .as_object()
+            .and_then(|value| {
+                value
+                    .get("stringValue")
+                    .or_else(|| value.get("string_value"))
+            })
+            .and_then(Value::as_str)
+    })
+}
+
+fn insert_profile_id(ids: &mut HashSet<String>, value: &str) {
+    let value = value.replace('-', "").to_ascii_lowercase();
+    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        ids.insert(value);
+    }
+}
+
+fn trace_profiles(
+    analytics: &Session,
+    service_ids: &[String],
+    trace_id: &str,
+    profile_ids: &HashSet<String>,
+    trace_start: u64,
+    trace_end: u64,
+) -> Result<Vec<TraceProfile>> {
+    let id_filter = if profile_ids.is_empty() {
+        String::new()
+    } else {
+        let ids = profile_ids
+            .iter()
+            .map(|value| chdb_string(value))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(" OR profiler_id IN ({ids}) OR profile_id IN ({ids})")
+    };
+    let services = service_filter(service_ids);
+    let query = format!(
+        "SELECT service_id, if(notEmpty(profiler_id), profiler_id, profile_id) AS profile_key, \
+         any(profile_id) AS stored_profile_id, profiler_id, any(platform) AS platform, \
+         thread_id, any(thread_name) AS thread_name, \
+         span_id, count() AS sample_count, \
+         sum(least(sample_time_unix_nano + duration_nano, {trace_end}) - greatest(sample_time_unix_nano, {trace_start})) AS total_duration_nano, \
+         min(greatest(sample_time_unix_nano, {trace_start})) AS started_at_unix_nano, \
+         max(least(sample_time_unix_nano + duration_nano, {trace_end})) AS ended_at_unix_nano, stack \
+         FROM {ANALYTICS_DATABASE}.profiles FINAL \
+         WHERE {services} AND sample_time_unix_nano <= {trace_end} \
+         AND sample_time_unix_nano + duration_nano >= {trace_start} \
+         AND (trace_id = {}{id_filter}) \
+         GROUP BY service_id, profile_key, profiler_id, thread_id, span_id, stack \
+         ORDER BY started_at_unix_nano, profile_key, total_duration_nano DESC LIMIT 20000",
+        chdb_string(trace_id),
+    );
+    let output = analytics
+        .execute(
+            &query,
+            Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+        )
+        .map_err(|error| Error::Storage(format!("query chDB trace profiles: {error}")))?;
+    let mut profiles: HashMap<(String, String), TraceProfile> = HashMap::new();
+    for line in output
+        .data_utf8_lossy()
+        .lines()
+        .filter(|line| !line.is_empty())
+    {
+        let row: TraceProfileRow = serde_json::from_str(line)
+            .map_err(|error| Error::Storage(format!("decode chDB trace profile: {error}")))?;
+        let frames = serde_json::from_str(&row.stack)
+            .map_err(|error| Error::Storage(format!("decode chDB profile stack: {error}")))?;
+        let profile = profiles
+            .entry((row.service_id.clone(), row.profile_key))
+            .or_insert_with(|| TraceProfile {
+                service_id: row.service_id,
+                profile_id: row.stored_profile_id,
+                profiler_id: row.profiler_id,
+                platform: row.platform,
+                started_at_unix_nano: row.started_at_unix_nano,
+                ended_at_unix_nano: row.ended_at_unix_nano,
+                sample_count: 0,
+                stacks: Vec::new(),
+            });
+        profile.started_at_unix_nano = profile.started_at_unix_nano.min(row.started_at_unix_nano);
+        profile.ended_at_unix_nano = profile.ended_at_unix_nano.max(row.ended_at_unix_nano);
+        profile.sample_count += row.sample_count;
+        profile.stacks.push(TraceProfileStack {
+            thread_id: row.thread_id,
+            thread_name: row.thread_name,
+            span_id: row.span_id,
+            sample_count: row.sample_count,
+            duration_nano: row.total_duration_nano,
+            frames,
+        });
+    }
+    let mut profiles = profiles.into_values().collect::<Vec<_>>();
+    profiles.sort_unstable_by_key(|profile| profile.started_at_unix_nano);
+    Ok(profiles)
+}
+
 fn log_field_clause(filter: &LogFieldFilter) -> String {
     let path = chdb_string(&format!("$.{}", filter.path));
     let value = chdb_string(&filter.value);
@@ -1186,6 +1968,22 @@ impl<'a> AnalyticsRow<'a> {
 
 struct StringWriter<'a>(&'a mut String);
 
+fn exemplar_span_id(exemplars: &str, trace_id: &str) -> Result<String> {
+    let values: Value = serde_json::from_str(exemplars)
+        .map_err(|error| Error::Storage(format!("decode metric exemplars: {error}")))?;
+    Ok(values
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find_map(|value| {
+            (value.get("traceId").and_then(Value::as_str) == Some(trace_id))
+                .then(|| value.get("spanId").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_owned)
+        })
+        .unwrap_or_default())
+}
+
 impl std::io::Write for StringWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let text = std::str::from_utf8(bytes)
@@ -1232,17 +2030,32 @@ fn initialize_analytics(session: &Session) -> Result<()> {
              CHECK doc_kind != 'issue' OR (isNotNull(issue_id) AND version > 0)"
         ),
         format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.documents MODIFY TTL timestamp + {RECORDING_RETENTION} \
+             DELETE WHERE doc_kind IN ({RECORDING_DOC_KINDS})"
+        ),
+        format!(
             "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.spans (\n\
              service_id String, trace_id FixedString(32), span_id FixedString(16), parent_span_id String,\n\
+             segment_id String, is_segment Bool,\n\
              trace_state String, name String, kind Int32, start_time_unix_nano UInt64, end_time_unix_nano UInt64,\n\
              duration_nano UInt64, status_code Int32, status_message String, flags UInt32,\n\
-             resource String, scope String, span String, received_at_unix_nano UInt64, version UInt64, source LowCardinality(String),\n\
+             resource String, scope String, span String, received_at_unix_nano UInt64, version UInt64, source LowCardinality(String), replay_id String,\n\
              ai_kind LowCardinality(String), ai_operation String, ai_provider LowCardinality(String), ai_model String, ai_agent String,\n\
              ai_input_tokens Nullable(UInt64), ai_output_tokens Nullable(UInt64), ai_cache_read_tokens Nullable(UInt64),\n\
              ai_cache_write_tokens Nullable(UInt64), ai_reasoning_tokens Nullable(UInt64), ai_cost_usd Nullable(Float64),\n\
              ai_ttft_seconds Nullable(Float64), ai_tokens_per_second Nullable(Float64), search_text String,\n\
              INDEX spans_search_text_idx search_text TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1\n\
-             ) ENGINE=ReplacingMergeTree(version) ORDER BY (service_id, trace_id, span_id)"
+             ) ENGINE=ReplacingMergeTree(version) ORDER BY (service_id, trace_id, span_id) \
+             TTL toDateTime(start_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.profiles (\n\
+             service_id String, profile_id String, profiler_id String, trace_id String, span_id String,\n\
+             platform LowCardinality(String), thread_id String, thread_name String,\n\
+             sample_time_unix_nano UInt64, duration_nano UInt64, stack String,\n\
+             received_at_unix_nano UInt64, sample_id String, version UInt64\n\
+             ) ENGINE=ReplacingMergeTree(version) ORDER BY (service_id, profile_id, sample_id) \
+             TTL toDateTime(sample_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
         ),
         format!(
             "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.logs (\n\
@@ -1275,6 +2088,15 @@ fn initialize_analytics(session: &Session) -> Result<()> {
             .map_err(|error| Error::Storage(format!("initialize embedded chDB schema: {error}")))?;
     }
     for statement in [
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS segment_id String AFTER parent_span_id"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS is_segment Bool AFTER segment_id"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS replay_id String AFTER source"
+        ),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_kind LowCardinality(String) AFTER source"
         ),
@@ -1321,6 +2143,9 @@ fn initialize_analytics(session: &Session) -> Result<()> {
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD INDEX IF NOT EXISTS spans_search_text_idx search_text TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1"
         ),
         format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans MODIFY TTL toDateTime(start_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
+        ),
+        format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.metrics ADD COLUMN IF NOT EXISTS attribute_keys Array(String) AFTER flags"
         ),
         format!(
@@ -1358,7 +2183,62 @@ fn initialize_analytics(session: &Session) -> Result<()> {
     Ok(())
 }
 
-fn trace_search_filter(service_id: &str, search: Option<&str>) -> String {
+struct TraceSearch {
+    text: Option<String>,
+    having_clauses: Vec<String>,
+}
+
+fn trace_search(search: Option<&str>) -> TraceSearch {
+    let mut text = Vec::new();
+    let mut having_clauses = Vec::new();
+    for token in search.unwrap_or_default().split_whitespace() {
+        let normalized = token.to_ascii_lowercase();
+        if let Some(status) = normalized.strip_prefix("status:") {
+            having_clauses.push(match status {
+                "error" => "error_span_count > 0".into(),
+                "ok" => "error_span_count = 0".into(),
+                _ => "0".into(),
+            });
+            continue;
+        }
+        if let Some(duration) = normalized.strip_prefix("duration:") {
+            having_clauses.push(trace_duration_clause(duration).unwrap_or_else(|| "0".into()));
+            continue;
+        }
+        text.push(token);
+    }
+    TraceSearch {
+        text: (!text.is_empty()).then(|| text.join(" ")),
+        having_clauses,
+    }
+}
+
+fn trace_duration_clause(value: &str) -> Option<String> {
+    let (operator, value) = if let Some(value) = value.strip_prefix(">=") {
+        (">=", value)
+    } else if let Some(value) = value.strip_prefix("<=") {
+        ("<=", value)
+    } else if let Some(value) = value.strip_prefix('>') {
+        (">", value)
+    } else if let Some(value) = value.strip_prefix('<') {
+        ("<", value)
+    } else {
+        ("=", value)
+    };
+    let (amount, multiplier) = if let Some(amount) = value.strip_suffix("ms") {
+        (amount, 1_000_000_f64)
+    } else {
+        (value.strip_suffix('s')?, 1_000_000_000_f64)
+    };
+    let amount = amount.parse::<f64>().ok()?;
+    let nanos = amount * multiplier;
+    if !nanos.is_finite() || nanos < 0.0 || nanos > u64::MAX as f64 {
+        return None;
+    }
+    Some(format!("duration_nano {operator} {:.0}", nanos.round()))
+}
+
+fn trace_search_filter(service_ids: &[String], search: Option<&str>) -> String {
     let Some(search) = search.map(str::trim).filter(|search| !search.is_empty()) else {
         return String::new();
     };
@@ -1382,8 +2262,8 @@ fn trace_search_filter(service_id: &str, search: Option<&str>) -> String {
         (None, true) => return String::new(),
     };
     format!(
-        " AND trace_id IN (SELECT trace_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {} AND {matches})",
-        chdb_string(service_id)
+        " AND trace_id IN (SELECT trace_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE {} AND {matches})",
+        service_filter(service_ids)
     )
 }
 
@@ -1527,7 +2407,7 @@ fn stable_storage_id(document: &Document) -> Option<String> {
             "symbolication:{service_id}:{}",
             document.event_id.as_deref()?
         )),
-        "replay_event" | "replay_recording" => Some(format!(
+        "replay_event" | "replay_recording" | "replay_video" => Some(format!(
             "replay:{}:{service_id}:{}:{}",
             document.doc_kind,
             document.replay_id.as_deref()?,
@@ -1640,16 +2520,107 @@ fn remove_unreferenced_blobs(blob_dir: &Path, referenced: &HashSet<String>) -> R
 }
 
 fn referenced_blobs(analytics: &Session) -> Result<HashSet<String>> {
+    query_string_set(
+        analytics,
+        &format!(
+            "SELECT DISTINCT assumeNotNull(blob_id) FROM {ANALYTICS_DATABASE}.documents FINAL WHERE isNotNull(blob_id)"
+        ),
+        "list referenced telemetry blobs",
+    )
+}
+
+fn recording_blob_ids(analytics: &Session) -> Result<HashSet<String>> {
+    let mut blob_ids = query_string_set(
+        analytics,
+        &format!(
+            "SELECT DISTINCT assumeNotNull(blob_id) FROM {ANALYTICS_DATABASE}.documents FINAL \
+             WHERE isNotNull(blob_id) AND doc_kind IN ({RECORDING_DOC_KINDS})"
+        ),
+        "list recording telemetry blobs",
+    )?;
+    let content_ids = query_string_set(
+        analytics,
+        &format!(
+            "SELECT DISTINCT assumeNotNull(content_id) FROM {ANALYTICS_DATABASE}.documents FINAL \
+             WHERE isNotNull(content_id) AND doc_kind IN ({RECORDING_DOC_KINDS})"
+        ),
+        "list recording content identifiers",
+    )?;
+    if let Some(content_filter) = sql_in_list(&content_ids) {
+        blob_ids.extend(query_string_set(
+            analytics,
+            &format!(
+                "SELECT DISTINCT assumeNotNull(blob_id) FROM {ANALYTICS_DATABASE}.documents FINAL \
+                 WHERE isNotNull(blob_id) AND doc_kind = 'content_chunk' AND content_id IN ({content_filter})"
+            ),
+            "list recording content blobs",
+        )?);
+    }
+    Ok(blob_ids)
+}
+
+fn delete_orphaned_content_chunks(analytics: &Session) -> Result<()> {
+    let referenced = query_string_set(
+        analytics,
+        &format!(
+            "SELECT DISTINCT assumeNotNull(content_id) FROM {ANALYTICS_DATABASE}.documents FINAL \
+             WHERE isNotNull(content_id) AND doc_kind NOT IN ('content_chunk', 'artifact_content_chunk', 'upload_chunk')"
+        ),
+        "list referenced telemetry content",
+    )?;
+    let chunks = query_string_set(
+        analytics,
+        &format!(
+            "SELECT DISTINCT assumeNotNull(content_id) FROM {ANALYTICS_DATABASE}.documents FINAL \
+             WHERE doc_kind = 'content_chunk' AND isNotNull(content_id)"
+        ),
+        "list telemetry content chunks",
+    )?;
+    let orphans = chunks
+        .into_iter()
+        .filter(|content_id| !referenced.contains(content_id))
+        .collect::<HashSet<_>>();
+    let Some(content_filter) = sql_in_list(&orphans) else {
+        return Ok(());
+    };
+    mutate_documents(
+        analytics,
+        &format!("doc_kind = 'content_chunk' AND content_id IN ({content_filter})"),
+        "expire orphaned recording content",
+    )
+}
+
+fn mutate_documents(analytics: &Session, predicate: &str, label: &str) -> Result<()> {
     analytics
         .execute(
             &format!(
-                "SELECT DISTINCT assumeNotNull(blob_id) FROM {ANALYTICS_DATABASE}.documents FINAL WHERE isNotNull(blob_id)"
+                "ALTER TABLE {ANALYTICS_DATABASE}.documents DELETE WHERE {predicate} SETTINGS mutations_sync=2"
             ),
             None,
         )
-        .map_err(|error| Error::Storage(format!("list referenced telemetry blobs: {error}")))?
+        .map_err(|error| Error::Storage(format!("{label}: {error}")))?;
+    Ok(())
+}
+
+fn sql_in_list(values: &HashSet<String>) -> Option<String> {
+    if values.is_empty() {
+        return None;
+    }
+    Some(
+        values
+            .iter()
+            .map(|value| chdb_string(value))
+            .collect::<Vec<_>>()
+            .join(", "),
+    )
+}
+
+fn query_string_set(analytics: &Session, statement: &str, label: &str) -> Result<HashSet<String>> {
+    analytics
+        .execute(statement, None)
+        .map_err(|error| Error::Storage(format!("{label}: {error}")))?
         .data_utf8()
-        .map_err(|error| Error::Storage(format!("decode referenced telemetry blobs: {error}")))
+        .map_err(|error| Error::Storage(format!("decode {label}: {error}")))
         .map(|output| {
             output
                 .lines()
@@ -1657,6 +2628,35 @@ fn referenced_blobs(analytics: &Session) -> Result<HashSet<String>> {
                 .map(str::to_owned)
                 .collect()
         })
+}
+
+fn allocated_blob_total(blob_dir: &Path, blob_ids: &HashSet<String>) -> Result<u64> {
+    let mut total = 0_u64;
+    for blob_id in blob_ids {
+        let path = blob_path(blob_dir, blob_id)?;
+        match fs::metadata(&path) {
+            Ok(metadata) => total = total.saturating_add(allocated_blob_bytes(&metadata)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(Error::Storage(format!(
+                    "stat recording blob {blob_id}: {error}"
+                )));
+            }
+        }
+    }
+    Ok(total)
+}
+
+fn allocated_blob_bytes(metadata: &fs::Metadata) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let blocks = metadata.blocks();
+        if blocks > 0 {
+            return blocks.saturating_mul(512);
+        }
+    }
+    metadata.len()
 }
 
 fn write_chdb_config(path: &Path, backup_dir: &Path) -> Result<()> {
@@ -1978,6 +2978,29 @@ mod tests {
         Document::base(kind, app, timestamp, timestamp)
     }
 
+    fn recording_documents(
+        kind: &str,
+        timestamp: &str,
+        replay_id: &str,
+        segment_id: u64,
+        payload: Vec<u8>,
+    ) -> Vec<Document> {
+        let content_id = format!("{:x}", Sha256::digest(&payload));
+        let mut recording = document(kind, "app", timestamp);
+        recording.replay_id = Some(replay_id.to_owned());
+        recording.segment_id = Some(segment_id);
+        recording.content_id = Some(content_id.clone());
+        recording.chunk_count = Some(1);
+        recording.size_bytes = Some(payload.len() as u64);
+        let mut chunk = document("content_chunk", "app", timestamp);
+        chunk.content_id = Some(content_id);
+        chunk.sequence = Some(0);
+        chunk.chunk_count = Some(1);
+        chunk.size_bytes = Some(payload.len() as u64);
+        chunk.content = Some(payload);
+        vec![recording, chunk]
+    }
+
     fn now_unix_nanos() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -2052,6 +3075,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn aggregates_issue_users_and_runtime_distributions() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let mut events = Vec::new();
+        for (index, user) in ["alex@example.com", "alex@example.com", "sam@example.com"]
+            .into_iter()
+            .enumerate()
+        {
+            let mut event = document("event", "app", &format!("2026-08-09T10:00:0{index}Z"));
+            event.event_id = Some(format!("event-{index}"));
+            event.issue_id = Some("issue-1".into());
+            event.user = Some(user.into());
+            event.release = Some(if index < 2 { "1.2.0" } else { "1.3.0" }.into());
+            event.environment = Some("production".into());
+            event.platform = Some("javascript".into());
+            event.payload = Some(json!({
+                "contexts": {
+                    "browser": {"name": if index < 2 { "Chrome" } else { "Safari" }},
+                    "device": {"model": "Desktop"},
+                    "os": {"name": "macOS"}
+                }
+            }));
+            events.push(event);
+        }
+        store.ingest(events).await.unwrap();
+
+        let insights = store
+            .issue_insights("app".into(), "issue-1".into())
+            .await
+            .unwrap();
+        assert_eq!(insights.user_count, 2);
+        assert!(insights.distributions.iter().any(|distribution| {
+            distribution.key == "release"
+                && distribution.value == "1.2.0"
+                && distribution.count == 2
+        }));
+        assert!(insights.distributions.iter().any(|distribution| {
+            distribution.key == "browser"
+                && distribution.value == "Chrome"
+                && distribution.count == 2
+        }));
+    }
+
+    #[tokio::test]
     async fn queries_container_logs_with_stable_pagination_metadata() {
         let volume = TempDir::new().unwrap();
         let store = Store::open(volume.path().to_owned()).await.unwrap();
@@ -2087,7 +3154,7 @@ mod tests {
 
         let page = store
             .log_records(LogQuery {
-                service_id: "service".into(),
+                service_ids: vec!["service".into()],
                 deployment_id: Some("deployment".into()),
                 contains: None,
                 field_filters: vec![],
@@ -2113,7 +3180,7 @@ mod tests {
 
         let older = store
             .log_records(LogQuery {
-                service_id: "service".into(),
+                service_ids: vec!["service".into()],
                 deployment_id: Some("deployment".into()),
                 contains: None,
                 field_filters: vec![],
@@ -2135,7 +3202,7 @@ mod tests {
 
         let filtered = store
             .log_records(LogQuery {
-                service_id: "service".into(),
+                service_ids: vec!["service".into()],
                 deployment_id: None,
                 contains: Some("SERVER.GO:42".into()),
                 field_filters: vec![
@@ -2253,7 +3320,7 @@ mod tests {
         assert_eq!(issues.num_hits, 1);
         let logs = restored_store
             .log_records(LogQuery {
-                service_id: "app".into(),
+                service_ids: vec!["app".into()],
                 deployment_id: None,
                 contains: None,
                 field_filters: vec![],
@@ -2332,7 +3399,7 @@ mod tests {
         assert!(
             store
                 .log_records(LogQuery {
-                    service_id: "removed".into(),
+                    service_ids: vec!["removed".into()],
                     deployment_id: None,
                     contains: None,
                     field_filters: vec![],
@@ -2353,6 +3420,139 @@ mod tests {
         );
         assert!(!store.inner.blob_dir.join(removed_blob).exists());
         assert!(store.inner.blob_dir.join(retained_blob).exists());
+    }
+
+    #[tokio::test]
+    async fn recording_bytes_count_unique_replay_blobs() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let recording_payload = vec![7; 4096];
+        let mut event = document("event", "app", "2026-08-09T10:00:01Z");
+        event.event_id = Some("cccccccccccccccccccccccccccccccc".into());
+        event.content_id = Some("event-content".into());
+        event.chunk_count = Some(1);
+        event.size_bytes = Some(4096);
+        let mut event_chunk = document("content_chunk", "app", "2026-08-09T10:00:01Z");
+        event_chunk.content_id = Some("event-content".into());
+        event_chunk.sequence = Some(0);
+        event_chunk.chunk_count = Some(1);
+        event_chunk.size_bytes = Some(4096);
+        event_chunk.content = Some(vec![9; 4096]);
+        let mut documents = recording_documents(
+            "replay_recording",
+            "2026-08-09T10:00:00Z",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            0,
+            recording_payload.clone(),
+        );
+        documents.extend([event, event_chunk]);
+        store.ingest(documents).await.unwrap();
+
+        let recording_blob = format!("{:x}", Sha256::digest(recording_payload));
+        let want =
+            allocated_blob_bytes(&fs::metadata(store.inner.blob_dir.join(recording_blob)).unwrap());
+        assert_eq!(store.recording_bytes().await.unwrap(), want);
+    }
+
+    #[tokio::test]
+    async fn expired_recordings_are_reclaimed_after_fourteen_days() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let expired_payload = vec![7; 4096];
+        let kept_payload = vec![8; 4096];
+        let video_payload = vec![6; 4096];
+        let event_payload = vec![9; 4096];
+        let mut event = document("event", "app", "2020-01-01T00:00:00Z");
+        event.event_id = Some("cccccccccccccccccccccccccccccccc".into());
+        event.content_id = Some("event-content".into());
+        event.chunk_count = Some(1);
+        event.size_bytes = Some(event_payload.len() as u64);
+        let mut event_chunk = document("content_chunk", "app", "2020-01-01T00:00:00Z");
+        event_chunk.content_id = Some("event-content".into());
+        event_chunk.sequence = Some(0);
+        event_chunk.chunk_count = Some(1);
+        event_chunk.size_bytes = Some(event_payload.len() as u64);
+        event_chunk.content = Some(event_payload.clone());
+        let mut documents = recording_documents(
+            "replay_recording",
+            "2020-01-01T00:00:00Z",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            0,
+            expired_payload.clone(),
+        );
+        documents.extend(recording_documents(
+            "replay_recording",
+            "2099-01-01T00:00:00Z",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            0,
+            kept_payload.clone(),
+        ));
+        documents.extend(recording_documents(
+            "replay_video",
+            "2020-01-01T00:00:00Z",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            0,
+            video_payload.clone(),
+        ));
+        documents.extend([event, event_chunk]);
+        store.ingest(documents).await.unwrap();
+
+        let expired_blob = format!("{:x}", Sha256::digest(expired_payload));
+        let kept_blob = format!("{:x}", Sha256::digest(kept_payload));
+        let video_blob = format!("{:x}", Sha256::digest(video_payload));
+        let event_blob = format!("{:x}", Sha256::digest(event_payload));
+        store.reclaim_expired_recordings().await.unwrap();
+        assert!(!store.inner.blob_dir.join(expired_blob).exists());
+        assert!(!store.inner.blob_dir.join(video_blob).exists());
+        assert!(store.inner.blob_dir.join(kept_blob).exists());
+        assert!(store.inner.blob_dir.join(event_blob).exists());
+        let leftover = store
+            .search(SearchRequest {
+                query: all([term("doc_kind", "replay_recording")]),
+                max_hits: 10,
+                start_offset: None,
+                sort_by: "timestamp".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(leftover.num_hits, 1);
+        assert_eq!(
+            leftover.hits[0]["replay_id"],
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_video_reuses_stable_storage_id() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let payload = vec![4; 2048];
+        let first = recording_documents(
+            "replay_video",
+            "2026-08-09T10:00:00Z",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            7,
+            payload.clone(),
+        );
+        let second = recording_documents(
+            "replay_video",
+            "2026-08-09T10:00:01Z",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            7,
+            payload,
+        );
+        store.ingest(first).await.unwrap();
+        store.ingest(second).await.unwrap();
+        let result = store
+            .search(SearchRequest {
+                query: all([term("doc_kind", "replay_video")]),
+                max_hits: 10,
+                start_offset: None,
+                sort_by: "timestamp".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.num_hits, 1);
     }
 
     #[tokio::test]
@@ -2423,25 +3623,28 @@ mod tests {
                 vec![
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
-                        "span_id": "0123456789abcdef", "parent_span_id": "", "trace_state": "",
+                        "span_id": "0123456789abcdef", "parent_span_id": "",
+                        "segment_id": "0123456789abcdef", "is_segment": true, "trace_state": "",
                         "name": "GET /checkout", "kind": 2,
                         "start_time_unix_nano": started, "end_time_unix_nano": started + 10_000_000,
                         "duration_nano": 10_000_000, "status_code": 0, "status_message": "", "flags": 1,
-                        "resource": "{\"attributes\":[]}", "scope": "{}", "span": "{\"attributes\":[]}",
+                        "resource": "{\"attributes\":[]}", "scope": "{}", "span": "{\"attributes\":[{\"key\":\"profiler_id\",\"value\":{\"stringValue\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}}]}",
                         "received_at_unix_nano": started + 10_000_000, "version": 1, "source": "otlp"
                     }),
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
-                        "span_id": "fedcba9876543210", "parent_span_id": "0123456789abcdef", "trace_state": "",
+                        "span_id": "fedcba9876543210", "parent_span_id": "0123456789abcdef",
+                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
                         "name": "SELECT cart", "kind": 3,
                         "start_time_unix_nano": started + 1_000_000, "end_time_unix_nano": started + 8_000_000,
-                        "duration_nano": 7_000_000, "status_code": 2, "status_message": "failed", "flags": 1,
+                        "duration_nano": 7_000_000, "status_code": 0, "status_message": "", "flags": 1,
                         "resource": "{}", "scope": "{}", "span": "{}",
                         "received_at_unix_nano": started + 10_000_000, "version": 1, "source": "sentry"
                     }),
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
-                        "span_id": "1111222233334444", "parent_span_id": "0123456789abcdef", "trace_state": "",
+                        "span_id": "1111222233334444", "parent_span_id": "0123456789abcdef",
+                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
                         "name": "invoke_agent checkout-agent", "kind": 1,
                         "start_time_unix_nano": started + 1_500_000, "end_time_unix_nano": started + 6_500_000,
                         "duration_nano": 5_000_000, "status_code": 1, "status_message": "", "flags": 1,
@@ -2452,7 +3655,8 @@ mod tests {
                     }),
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
-                        "span_id": "aabbccdd11223344", "parent_span_id": "1111222233334444", "trace_state": "",
+                        "span_id": "aabbccdd11223344", "parent_span_id": "1111222233334444",
+                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
                         "name": "chat gpt-5-mini", "kind": 3,
                         "start_time_unix_nano": started + 2_000_000, "end_time_unix_nano": started + 6_000_000,
                         "duration_nano": 4_000_000, "status_code": 1, "status_message": "", "flags": 1,
@@ -2464,17 +3668,76 @@ mod tests {
                         "ai_cost_usd": 0.002, "ai_ttft_seconds": 0.2, "ai_tokens_per_second": 75.0,
                         "search_text": "find invoice 42 awaiting bank confirmation"
                     }),
+                    json!({
+                        "service_id": "service-2", "trace_id": trace_id,
+                        "span_id": "9999aaaa5555bbbb", "parent_span_id": "0123456789abcdef",
+                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
+                        "name": "POST inventory", "kind": 2,
+                        "start_time_unix_nano": started + 3_000_000, "end_time_unix_nano": started + 20_000_000,
+                        "duration_nano": 17_000_000, "status_code": 2, "status_message": "out of stock", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 20_000_000, "version": 1, "source": "otlp",
+                        "search_text": "warehouse inventory reservation"
+                    }),
+                    json!({
+                        "service_id": "service-1", "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "span_id": "aaaaaaaaaaaaaaaa", "parent_span_id": "",
+                        "segment_id": "aaaaaaaaaaaaaaaa", "is_segment": true, "trace_state": "",
+                        "name": "GET /slow", "kind": 2,
+                        "start_time_unix_nano": started - 1_000_000, "end_time_unix_nano": started + 4_000_000,
+                        "duration_nano": 5_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 100_000_000, "version": 1, "source": "otlp"
+                    }),
+                    json!({
+                        "service_id": "service-2", "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "span_id": "bbbbbbbbbbbbbbbb", "parent_span_id": "aaaaaaaaaaaaaaaa",
+                        "segment_id": "aaaaaaaaaaaaaaaa", "is_segment": false, "trace_state": "",
+                        "name": "slow worker", "kind": 2,
+                        "start_time_unix_nano": started, "end_time_unix_nano": started + 99_000_000,
+                        "duration_nano": 99_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 100_000_000, "version": 1, "source": "otlp"
+                    }),
+                    json!({
+                        "service_id": "service-2", "trace_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "span_id": "cccccccccccccccc", "parent_span_id": "",
+                        "segment_id": "cccccccccccccccc", "is_segment": true, "trace_state": "",
+                        "name": "foreign only", "kind": 2,
+                        "start_time_unix_nano": started + 1_000_000, "end_time_unix_nano": started + 500_000_000,
+                        "duration_nano": 499_000_000, "status_code": 2, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 500_000_000, "version": 1, "source": "otlp"
+                    }),
                 ],
             )
             .await
             .unwrap();
+        let summary_query = |search: Option<&str>, status, order, limit, from| TraceSummaryQuery {
+            anchor_service_id: Some("service-1".into()),
+            service_ids: vec!["service-1".into(), "service-2".into()],
+            from_unix_nano: from,
+            to_unix_nano: None,
+            search: search.map(str::to_owned),
+            status,
+            order,
+            limit,
+            offset: 0,
+        };
         let summaries = store
-            .trace_summaries("service-1".into(), None, None, None, 10, 0)
+            .trace_summaries(summary_query(
+                None,
+                TraceSummaryStatus::All,
+                TraceSummaryOrder::Latest,
+                10,
+                None,
+            ))
             .await
             .unwrap();
-        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries.len(), 2);
         assert_eq!(summaries[0].name, "GET /checkout");
-        assert_eq!(summaries[0].span_count, 4);
+        assert_eq!(summaries[0].duration_nano, 20_000_000);
+        assert_eq!(summaries[0].span_count, 5);
         assert_eq!(summaries[0].error_span_count, 1);
         assert!(summaries[0].is_ai);
         assert_eq!(summaries[0].ai_agent, "checkout-agent");
@@ -2488,14 +3751,13 @@ mod tests {
         assert_eq!(summaries[0].ai_cost_usd, Some(0.002));
         assert_eq!(
             store
-                .trace_summaries(
-                    "service-1".into(),
-                    None,
-                    None,
-                    Some("invoice bank".into()),
+                .trace_summaries(summary_query(
+                    Some("invoice bank"),
+                    TraceSummaryStatus::All,
+                    TraceSummaryOrder::Latest,
                     10,
-                    0,
-                )
+                    None,
+                ))
                 .await
                 .unwrap()
                 .len(),
@@ -2503,31 +3765,138 @@ mod tests {
         );
         assert!(
             store
-                .trace_summaries(
-                    "service-1".into(),
-                    None,
-                    None,
-                    Some("weather".into()),
+                .trace_summaries(summary_query(
+                    Some("weather"),
+                    TraceSummaryStatus::All,
+                    TraceSummaryOrder::Latest,
                     10,
-                    0,
-                )
+                    None,
+                ))
                 .await
                 .unwrap()
                 .is_empty()
         );
+        let remote_search = store
+            .trace_summaries(summary_query(
+                Some("warehouse status:error duration:>15ms"),
+                TraceSummaryStatus::All,
+                TraceSummaryOrder::Latest,
+                10,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(remote_search.len(), 1);
+        assert_eq!(remote_search[0].trace_id, trace_id);
+        let slowest = store
+            .trace_summaries(summary_query(
+                None,
+                TraceSummaryStatus::Ok,
+                TraceSummaryOrder::Slowest,
+                1,
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(slowest.len(), 1);
+        assert_eq!(slowest[0].trace_id, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        assert_eq!(slowest[0].duration_nano, 100_000_000);
         assert!(
             store
-                .trace_summaries("service-1".into(), Some(started + 1), None, None, 10, 0)
+                .trace_summaries(summary_query(
+                    None,
+                    TraceSummaryStatus::All,
+                    TraceSummaryOrder::Latest,
+                    10,
+                    Some(started + 1),
+                ))
                 .await
                 .unwrap()
                 .is_empty()
         );
+        store
+            .ingest_signal_rows(
+                SignalTable::Profiles,
+                vec![
+                    json!({
+                        "service_id": "service-1", "profile_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "profiler_id": "", "trace_id": trace_id, "span_id": "0123456789abcdef",
+                        "platform": "node", "thread_id": "main", "thread_name": "MainThread",
+                        "sample_time_unix_nano": started, "duration_nano": 10_000_000,
+                        "stack": "[{\"function\":\"main\"},{\"function\":\"checkout\"}]",
+                        "received_at_unix_nano": started, "sample_id": "sample-1", "version": started
+                    }),
+                    json!({
+                        "service_id": "service-1", "profile_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        "profiler_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "trace_id": "", "span_id": "",
+                        "platform": "node", "thread_id": "main", "thread_name": "MainThread",
+                        "sample_time_unix_nano": started + 4_000_000, "duration_nano": 1_000_000,
+                        "stack": "[{\"function\":\"continuous-inside\"}]",
+                        "received_at_unix_nano": started, "sample_id": "sample-2", "version": started
+                    }),
+                    json!({
+                        "service_id": "service-1", "profile_id": "cccccccccccccccccccccccccccccccc",
+                        "profiler_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "trace_id": "", "span_id": "",
+                        "platform": "node", "thread_id": "main", "thread_name": "MainThread",
+                        "sample_time_unix_nano": started + 100_000_000_000, "duration_nano": 1_000_000,
+                        "stack": "[{\"function\":\"continuous-outside\"}]",
+                        "received_at_unix_nano": started, "sample_id": "sample-3", "version": started
+                    }),
+                ],
+            )
+            .await
+            .unwrap();
         let detail = store
-            .trace("service-1".into(), trace_id.into())
+            .trace(
+                Some("service-1".into()),
+                vec!["service-1".into()],
+                trace_id.into(),
+                None,
+            )
             .await
             .unwrap();
         assert_eq!(detail.spans.len(), 4);
         assert!(detail.spans[0].resource.is_object());
+        assert_eq!(detail.profiles.len(), 2);
+        assert_eq!(detail.profiles[0].sample_count, 1);
+        assert_eq!(
+            detail.profiles[0].stacks[0].frames[1]["function"],
+            "checkout"
+        );
+        assert_eq!(
+            detail
+                .profiles
+                .iter()
+                .map(|profile| profile.sample_count)
+                .sum::<u64>(),
+            2
+        );
+        assert!(detail.profiles.iter().all(|profile| {
+            profile.stacks.iter().all(|stack| {
+                stack
+                    .frames
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .all(|frame| frame["function"] != "continuous-outside")
+            })
+        }));
+        let project_detail = store
+            .trace(
+                Some("service-1".into()),
+                vec!["service-1".into(), "service-2".into()],
+                trace_id.into(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(project_detail.spans.len(), 5);
+        assert!(
+            project_detail
+                .spans
+                .iter()
+                .any(|span| span.service_id == "service-2")
+        );
 
         store
             .ingest_signal_rows(
@@ -2537,7 +3906,11 @@ mod tests {
                         "id": Uuid::new_v4().to_string(), "service_id": "service-1",
                         "name": "checkout.queue.depth", "description": "Pending checkouts", "unit": "{item}", "kind": "gauge",
                         "time_unix_nano": started, "value_int": 2,
-                        "attribute_keys": ["region"], "attribute_values": ["eu-west"]
+                        "attribute_keys": ["region"], "attribute_values": ["eu-west"],
+                        "exemplars": serde_json::to_string(&json!([{
+                            "traceId": trace_id,
+                            "spanId": "0123456789abcdef"
+                        }])).unwrap()
                     }),
                     json!({
                         "id": Uuid::new_v4().to_string(), "service_id": "service-1",
@@ -2549,6 +3922,18 @@ mod tests {
             )
             .await
             .unwrap();
+        let detail_with_metric = store
+            .trace(
+                Some("service-1".into()),
+                vec!["service-1".into()],
+                trace_id.into(),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_with_metric.metrics.len(), 1);
+        assert_eq!(detail_with_metric.metrics[0].name, "checkout.queue.depth");
+        assert_eq!(detail_with_metric.metrics[0].span_id, "0123456789abcdef");
         let catalog = store
             .metric_catalog(vec!["service-1".into()])
             .await
@@ -2689,6 +4074,73 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(percentiles[0].value, 20.0);
+    }
+
+    #[tokio::test]
+    async fn trace_list_and_detail_are_scoped_to_transaction_segments() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let trace_id = "0123456789abcdef0123456789abcdef";
+        let span = |segment_id: &str, offset: u64| {
+            json!({
+                "service_id": "service-1", "trace_id": trace_id,
+                "span_id": segment_id, "parent_span_id": "remoteparent0000",
+                "segment_id": segment_id, "is_segment": true, "trace_state": "",
+                "name": "GET /checkout", "kind": 2,
+                "start_time_unix_nano": started + offset,
+                "end_time_unix_nano": started + offset + 1_000_000_000,
+                "duration_nano": 1_000_000_000, "status_code": 1,
+                "status_message": "", "flags": 0, "resource": "{}", "scope": "{}",
+                "span": "{}", "received_at_unix_nano": started + offset,
+                "version": started + offset, "source": "sentry"
+            })
+        };
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![
+                    span("1111111111111111", 0),
+                    span("2222222222222222", 86_400_000_000_000),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let summaries = store
+            .trace_summaries(TraceSummaryQuery {
+                anchor_service_id: Some("service-1".into()),
+                service_ids: vec!["service-1".into()],
+                from_unix_nano: None,
+                to_unix_nano: None,
+                search: None,
+                status: TraceSummaryStatus::All,
+                order: TraceSummaryOrder::Latest,
+                limit: 10,
+                offset: 0,
+            })
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 2);
+        assert!(
+            summaries
+                .iter()
+                .all(|summary| summary.duration_nano == 1_000_000_000)
+        );
+
+        let detail = store
+            .trace(
+                Some("service-1".into()),
+                vec!["service-1".into()],
+                trace_id.into(),
+                Some("1111111111111111".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail.segment_id, "1111111111111111");
+        assert_eq!(detail.spans.len(), 1);
+        assert_eq!(detail.related_segments.len(), 1);
+        assert_eq!(detail.related_segments[0].segment_id, "2222222222222222");
     }
 
     #[tokio::test]

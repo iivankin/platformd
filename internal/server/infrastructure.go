@@ -53,8 +53,9 @@ type diskPressureResponse struct {
 }
 
 type diskComponentResponse struct {
-	ID    string `json:"id"`
-	Bytes uint64 `json:"bytes"`
+	ID     string `json:"id"`
+	Bytes  uint64 `json:"bytes"`
+	Parent string `json:"parent,omitempty"`
 }
 
 type resourceUsageResponse struct {
@@ -196,7 +197,9 @@ func registerInfrastructureRoutes(
 				}
 				components = make([]diskComponentResponse, 0, len(usage.Components))
 				for _, component := range usage.Components {
-					components = append(components, diskComponentResponse{ID: component.ID, Bytes: component.Bytes})
+					components = append(components, diskComponentResponse{
+						ID: component.ID, Bytes: component.Bytes, Parent: component.Parent,
+					})
 				}
 				if !usage.CheckedAt.IsZero() {
 					componentsCheckedAt = usage.CheckedAt.UnixMilli()

@@ -18,19 +18,58 @@ func (resolve targetResolverFunc) Target(serviceID string) (*url.URL, bool) {
 func TestDataPlanePathAllowed(t *testing.T) {
 	t.Parallel()
 	tests := map[string]bool{
-		"/public/api/v1/apps":                    false,
-		"/public/mcp":                            false,
-		"/api/project/envelope/":                 true,
-		"/api/project/minidump/":                 true,
-		"/api/0/organizations/org/chunk-upload/": true,
-		"/api/v1/apps":                           false,
-		"/health":                                false,
-		"/public/mcp/tools":                      false,
+		"/public/api/v1/apps":                                   false,
+		"/public/mcp":                                           false,
+		"/api/1/envelope/":                                      true,
+		"/api/1/minidump/":                                      true,
+		"/api/project/envelope/":                                false,
+		"/api/0/organizations/org/chunk-upload/":                true,
+		"/api/0/organizations/org/artifactbundle/assemble/":     true,
+		"/api/0/projects/org/project/files/difs/assemble/":      true,
+		"/api/0/organizations/org/unrelated/":                   false,
+		"/api/0/projects/org/project/files/difs/assemble/extra": false,
+		"/api/v1/apps":                                          false,
+		"/health":                                               false,
+		"/public/mcp/tools":                                     false,
 	}
 	for path, allowed := range tests {
 		if actual := DataPlanePathAllowed(path); actual != allowed {
 			t.Errorf("DataPlanePathAllowed(%q) = %t, want %t", path, actual, allowed)
 		}
+	}
+}
+
+func TestPublicDataPlanePathReservesOnlyExactIngestAndArtifactRoutes(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		method string
+		path   string
+		want   string
+		ok     bool
+	}{
+		{http.MethodPost, "/api/1/envelope/", "/api/1/envelope/", true},
+		{http.MethodPost, "/api/1/store/", "/api/1/store/", true},
+		{http.MethodPost, "/api/1/minidump/", "/api/1/minidump/", true},
+		{http.MethodPost, "/api/1/apple-crash-report/", "/api/1/apple-crash-report/", true},
+		{http.MethodPost, "/api/1/envelope", "", false},
+		{http.MethodGet, "/api/1/envelope/", "", false},
+		{http.MethodPost, "/_sentry/api/1/envelope/", "", false},
+		{http.MethodGet, "/api/0/organizations/org/chunk-upload/", "/api/0/organizations/org/chunk-upload/", true},
+		{http.MethodPost, "/api/0/organizations/org/artifactbundle/assemble/", "/api/0/organizations/org/artifactbundle/assemble/", true},
+		{http.MethodPost, "/api/0/projects/org/project/files/difs/assemble/", "/api/0/projects/org/project/files/difs/assemble/", true},
+		{http.MethodGet, "/api/0/organizations/org/artifactbundle/assemble/", "", false},
+		{http.MethodPost, "/api/0/organizations/org/artifactbundle/assemble", "", false},
+		{http.MethodPost, "/api/0/organizations/org/releases/", "", false},
+		{http.MethodGet, "/api/0/users/me/", "", false},
+	}
+	for _, test := range tests {
+		got, ok := PublicDataPlanePath(test.method, test.path, "")
+		if got != test.want || ok != test.ok {
+			t.Errorf("PublicDataPlanePath(%q, %q) = %q, %t; want %q, %t", test.method, test.path, got, ok, test.want, test.ok)
+		}
+	}
+	if got, ok := PublicDataPlanePath(http.MethodPost, "/client-report", "/client-report"); !ok || got != "/api/1/envelope/" {
+		t.Fatalf("browser tunnel path = %q, %t", got, ok)
 	}
 }
 

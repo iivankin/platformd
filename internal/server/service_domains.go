@@ -186,6 +186,8 @@ func writeDomainMutationError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrDomainNotFound):
 		writeAPIError(response, http.StatusNotFound, "domain_not_found", "Domain not found on this service")
+	case errors.Is(err, state.ErrDomainTelemetryUse):
+		writeAPIError(response, http.StatusConflict, "domain_used_by_telemetry", err.Error())
 	case errors.Is(err, state.ErrHostnameInUse):
 		writeAPIError(response, http.StatusConflict, "hostname_in_use", err.Error())
 	case errors.Is(err, state.ErrCertificateCoverage):

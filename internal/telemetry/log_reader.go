@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,7 @@ type LogReader struct {
 
 type telemetryLogRecord struct {
 	ID             string  `json:"id"`
+	ServiceID      string  `json:"serviceId"`
 	TimeUnixNano   uint64  `json:"timeUnixNano"`
 	Stream         string  `json:"stream"`
 	Text           string  `json:"text"`
@@ -64,7 +66,7 @@ type telemetryLogCursor struct {
 }
 
 type telemetryLogRequest struct {
-	serviceID         string
+	serviceIDs        []string
 	deploymentID      string
 	contains          string
 	fieldFilters      []containerlogs.FieldFilter
@@ -101,8 +103,12 @@ func (reader *LogReader) Read(ctx context.Context, query containerlogs.Query) (c
 	if limit == 0 {
 		limit = containerlogs.DefaultLimit
 	}
+	serviceIDs := query.ServiceIDs
+	if len(serviceIDs) == 0 {
+		serviceIDs = []string{query.ServiceID}
+	}
 	page, err := reader.page(ctx, telemetryLogRequest{
-		serviceID: query.ServiceID, deploymentID: query.DeploymentID,
+		serviceIDs: serviceIDs, deploymentID: query.DeploymentID,
 		contains: query.Contains, fieldFilters: query.FieldFilters, severityText: query.SeverityText,
 		traceID: strings.ToLower(query.TraceID), spanID: strings.ToLower(query.SpanID),
 		afterTimeUnixNano: cursorTime(cursor), afterID: cursorID(cursor),
@@ -205,7 +211,7 @@ func (reader *LogReader) Download(
 			return result, err
 		}
 		page, err := reader.page(ctx, telemetryLogRequest{
-			serviceID: query.ServiceID, deploymentID: query.DeploymentID,
+			serviceIDs: []string{query.ServiceID}, deploymentID: query.DeploymentID,
 			from: &query.From, to: &query.To, afterTimeUnixNano: afterTime, afterID: afterID,
 			limit: containerlogs.MaximumLimit, ascending: true,
 		})
@@ -254,7 +260,7 @@ func (reader *LogReader) page(ctx context.Context, input telemetryLogRequest) (t
 		return telemetryLogPage{}, err
 	}
 	query := endpoint.Query()
-	query.Set("serviceId", input.serviceID)
+	query.Set("serviceIds", strings.Join(input.serviceIDs, ","))
 	query.Set("limit", strconv.Itoa(input.limit))
 	if input.deploymentID != "" {
 		query.Set("deploymentId", input.deploymentID)
@@ -313,7 +319,12 @@ func (reader *LogReader) page(ctx context.Context, input telemetryLogRequest) (t
 }
 
 func validateTelemetryLogQuery(query containerlogs.Query) error {
-	if !telemetryLogID.MatchString(query.ServiceID) ||
+	serviceIDs := query.ServiceIDs
+	if len(serviceIDs) == 0 {
+		serviceIDs = []string{query.ServiceID}
+	}
+	if len(serviceIDs) == 0 || len(serviceIDs) > 10_000 ||
+		slices.ContainsFunc(serviceIDs, func(serviceID string) bool { return !telemetryLogID.MatchString(serviceID) }) ||
 		(query.DeploymentID != "" && !telemetryLogID.MatchString(query.DeploymentID)) ||
 		len(query.Contains) > containerlogs.MaximumContainsBytes || bytes.IndexByte([]byte(query.Contains), 0) >= 0 ||
 		len(query.SeverityText) > 64 || bytes.IndexByte([]byte(query.SeverityText), 0) >= 0 ||
@@ -381,6 +392,7 @@ func publicLogRecord(stored telemetryLogRecord) (containerlogs.Record, error) {
 		stream = "otel"
 	}
 	record := containerlogs.Record{
+		ServiceID: stored.ServiceID,
 		Timestamp: time.Unix(0, int64(stored.TimeUnixNano)).UTC(), Stream: stream, Text: stored.Text,
 		DeploymentID: stored.DeploymentID, AttemptID: stored.AttemptID, Partial: stored.Partial,
 		TraceID: stored.TraceID, SpanID: stored.SpanID, SeverityText: stored.SeverityText,

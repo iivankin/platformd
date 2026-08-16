@@ -40,7 +40,6 @@ describe("Sentry event context", () => {
       ["replayId", "replay"],
     ]);
     expect(eventContextGroups(payload).map(([name]) => name)).toEqual([
-      "trace",
       "Extra",
     ]);
   });

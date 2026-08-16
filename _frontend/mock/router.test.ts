@@ -54,12 +54,15 @@ import {
   fetchServiceDomains,
   fetchServiceListeners,
   fetchServiceTelemetry,
+  fetchScopedIssues,
   fetchServiceMetricCatalog,
   fetchServiceMetricCharts,
   fetchServiceMetricQuery,
   fetchServiceReplayRecording,
   fetchServiceTrace,
   fetchServiceTraces,
+  fetchTelemetryLogs,
+  fetchTelemetryTraces,
   fetchVolumes,
   scanManagedRedisKeys,
   setAdminHostname,
@@ -67,6 +70,7 @@ import {
   setManagedPostgresExtension,
   uploadContainerFile,
   updateServiceMetricChart,
+  updateServiceTelemetryBrowserTunnel,
   updateServiceTelemetryPublicAccess,
   queryManagedPostgres,
 } from "../web/api";
@@ -425,6 +429,16 @@ describe("mock API", () => {
     expect(selectedDeploymentLogs.records[0]?.deploymentId).toBe(
       selectedDeployment.id
     );
+    const correlatedLogs = await fetchResourceLogs(
+      "project-demo",
+      "service",
+      "service-api",
+      { traceId: "4c79f60c11214eb38604f4ae0781bfb2" },
+      undefined,
+      mockFetch
+    );
+    expect(correlatedLogs.records).toHaveLength(1);
+    expect(correlatedLogs.records[0]?.spanId).toBe("8f3a0f34b17c9d20");
   });
 
   test("mock managed stats snapshots and history are available", async () => {
@@ -736,6 +750,17 @@ describe("mock API", () => {
     const consolePayload = await consoleResponse.json();
     expect(consolePayload.total).toBeGreaterThan(0);
     expect(updated.publicHostname).toBe("errors.mock.local");
+
+    const tunneled = await updateServiceTelemetryBrowserTunnel(
+      "project-demo",
+      "service-api",
+      {
+        browserTunnelPath: "/client-report",
+        expectedUpdatedAt: updated.updatedAt,
+      },
+      mockFetch
+    );
+    expect(tunneled.browserTunnelPath).toBe("/client-report");
   });
 
   test("mock service exposes traces with context and custom metric graphs", async () => {
@@ -871,26 +896,38 @@ describe("mock API", () => {
         mockFetch
       ),
     ]);
-    const [projectCharts, installationCharts, projectSeries] =
-      await Promise.all([
-        fetchMetricCharts(projectScope, undefined, mockFetch),
-        fetchMetricCharts(installationScope, undefined, mockFetch),
-        fetchMetricQuery(
-          projectScope,
-          {
-            from: Date.now() - 60_000,
-            sql: projectChart.sql,
-            step: 10_000,
-            to: Date.now(),
-          },
-          undefined,
-          mockFetch
-        ),
-      ]);
+    const [
+      projectCharts,
+      installationCharts,
+      projectSeries,
+      projectLogs,
+      projectIssues,
+      installationTraces,
+    ] = await Promise.all([
+      fetchMetricCharts(projectScope, undefined, mockFetch),
+      fetchMetricCharts(installationScope, undefined, mockFetch),
+      fetchMetricQuery(
+        projectScope,
+        {
+          from: Date.now() - 60_000,
+          sql: projectChart.sql,
+          step: 10_000,
+          to: Date.now(),
+        },
+        undefined,
+        mockFetch
+      ),
+      fetchTelemetryLogs(projectScope, {}, undefined, mockFetch),
+      fetchScopedIssues(projectScope, "", undefined, mockFetch),
+      fetchTelemetryTraces(installationScope, undefined, mockFetch),
+    ]);
     expect(projectCatalog).toEqual(installationCatalog);
     expect(projectCharts).toEqual([projectChart]);
     expect(installationCharts).toEqual([installationChart]);
     expect(projectSeries.length).toBeGreaterThan(0);
+    expect(projectLogs.records.some((record) => record.serviceId)).toBe(true);
+    expect(projectIssues.data.some((issue) => issue.serviceId)).toBe(true);
+    expect(installationTraces.length).toBeGreaterThan(0);
   });
 
   test("deletes a project and all of its mock-owned resources", async () => {

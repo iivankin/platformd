@@ -71,8 +71,10 @@ export const formatTelemetryRange = (
   locale?: Intl.LocalesArgument
 ) => {
   const showSeconds = to - from < 60_000;
+  const showMilliseconds = to - from < 1000;
   return new Intl.DateTimeFormat(locale, {
     day: "numeric",
+    fractionalSecondDigits: showMilliseconds ? 3 : undefined,
     hour: "numeric",
     minute: "2-digit",
     month: "short",

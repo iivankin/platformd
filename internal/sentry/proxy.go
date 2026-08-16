@@ -13,7 +13,10 @@ import (
 	"sync"
 )
 
-const webhookEventsHeader = "X-Platformd-Telemetry-Events"
+const (
+	ProtocolProjectID   = "1"
+	webhookEventsHeader = "X-Platformd-Telemetry-Events"
+)
 
 type targetContextKey struct{}
 
@@ -182,11 +185,39 @@ func (handler *Proxy) serve(
 }
 
 func DataPlanePathAllowed(path string) bool {
-	if strings.HasPrefix(path, "/api/0/organizations/") || strings.HasPrefix(path, "/api/0/projects/") {
-		return true
-	}
 	parts := strings.Split(strings.Trim(path, "/"), "/")
-	if len(parts) != 3 || parts[0] != "api" || parts[1] == "" {
+	if len(parts) == 3 && parts[0] == "api" && parts[1] == ProtocolProjectID {
+		switch parts[2] {
+		case "envelope", "store", "minidump", "apple-crash-report":
+			return true
+		}
+	}
+	return artifactPathParts(parts)
+}
+
+// PublicDataPlanePath reserves only routes implemented by the embedded
+// telemetry server. Every other path remains available to an application that
+// shares the hostname.
+func PublicDataPlanePath(method, requestPath, browserTunnelPath string) (string, bool) {
+	if method == http.MethodPost && browserTunnelPath != "" && requestPath == browserTunnelPath {
+		return "/api/" + ProtocolProjectID + "/envelope/", true
+	}
+	if method == http.MethodPost && strings.HasSuffix(requestPath, "/") && ingestPath(requestPath) {
+		return requestPath, true
+	}
+	if artifactMethodAllowed(method, requestPath) {
+		return requestPath, true
+	}
+	return "", false
+}
+
+func artifactPath(path string) bool {
+	return artifactPathParts(strings.Split(strings.Trim(path, "/"), "/"))
+}
+
+func ingestPath(path string) bool {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) != 3 || parts[0] != "api" || parts[1] != ProtocolProjectID {
 		return false
 	}
 	switch parts[2] {
@@ -197,8 +228,36 @@ func DataPlanePathAllowed(path string) bool {
 	}
 }
 
-func artifactPath(path string) bool {
-	return strings.HasPrefix(path, "/api/0/organizations/") || strings.HasPrefix(path, "/api/0/projects/")
+func artifactPathParts(parts []string) bool {
+	if len(parts) < 5 || parts[0] != "api" || parts[1] != "0" {
+		return false
+	}
+	switch {
+	case len(parts) == 5:
+		return parts[2] == "organizations" && parts[3] != "" && parts[4] == "chunk-upload"
+	case len(parts) == 6:
+		return parts[2] == "organizations" && parts[3] != "" &&
+			parts[4] == "artifactbundle" && parts[5] == "assemble"
+	case len(parts) == 8:
+		return parts[2] == "projects" && parts[3] != "" && parts[4] != "" &&
+			parts[5] == "files" && parts[6] == "difs" && parts[7] == "assemble"
+	default:
+		return false
+	}
+}
+
+func artifactMethodAllowed(method, path string) bool {
+	if !strings.HasSuffix(path, "/") {
+		return false
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if !artifactPathParts(parts) {
+		return false
+	}
+	if len(parts) == 5 {
+		return method == http.MethodGet || method == http.MethodPost
+	}
+	return method == http.MethodPost
 }
 
 func bearerToken(headers http.Header) (string, bool) {

@@ -19,7 +19,7 @@ func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		var fieldFilters []containerlogs.FieldFilter
 		_ = json.Unmarshal([]byte(request.URL.Query().Get("fieldFilters")), &fieldFilters)
-		if request.URL.Path != "/internal/logs" || request.URL.Query().Get("serviceId") != "service" ||
+		if request.URL.Path != "/internal/logs" || request.URL.Query().Get("serviceIds") != "service" ||
 			request.URL.Query().Get("deploymentId") != "deployment" || request.URL.Query().Get("contains") != "ready" ||
 			request.URL.Query().Get("severityText") != "error" ||
 			request.URL.Query().Get("traceId") != "0123456789abcdef0123456789abcdef" ||
@@ -30,7 +30,7 @@ func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 		}
 		_ = json.NewEncoder(response).Encode(telemetryLogPage{
 			Records: []telemetryLogRecord{{
-				ID: "00000000-0000-4000-8000-000000000001", TimeUnixNano: 10,
+				ID: "00000000-0000-4000-8000-000000000001", ServiceID: "service", TimeUnixNano: 10,
 				Stream: "stdout", Text: "ready", DeploymentID: "deployment", AttemptID: "attempt",
 				TraceID: "0123456789abcdef0123456789abcdef", SpanID: "0123456789abcdef",
 				SeverityText: "info", SeverityNumber: 9,
@@ -53,7 +53,7 @@ func TestTelemetryLogReaderReturnsChronologicalServiceWindow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(window.Records) != 1 || window.Records[0].Text != "ready" ||
+	if len(window.Records) != 1 || window.Records[0].ServiceID != "service" || window.Records[0].Text != "ready" ||
 		window.Records[0].DeploymentID != "deployment" || window.Records[0].AttemptID != "attempt" ||
 		window.Records[0].TraceID != "0123456789abcdef0123456789abcdef" ||
 		window.Records[0].SpanID != "0123456789abcdef" || window.Records[0].SeverityText != "info" ||

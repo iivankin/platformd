@@ -229,7 +229,13 @@ export const ObjectStoreDetailPanel = ({
     : `http://${data.internalHostname}:9000`;
 
   return (
-    <PageStack>
+    <PageStack
+      className={
+        view === "objects"
+          ? "h-full min-h-0 grid-rows-[minmax(0,1fr)_auto] overflow-hidden"
+          : undefined
+      }
+    >
       {view === "settings" ? (
         <>
           <SectionCard className="grid shrink-0 grid-cols-3 text-[10px]">
@@ -341,7 +347,7 @@ export const ObjectStoreDetailPanel = ({
       ) : null}
 
       {view === "objects" ? (
-        <SectionCard>
+        <SectionCard className="flex min-h-0 flex-col">
           <header className="flex min-h-14 items-center justify-between border-b border-border px-4 py-3">
             <div>
               <h3 className="text-[10px] font-medium">Object browser</h3>

@@ -17,6 +17,7 @@ import (
 
 type LogRepository interface {
 	ResourceLogs(context.Context, string, containerlogs.ResourceQuery) (containerlogs.Window, error)
+	ScopeLogs(context.Context, state.MetricScope, containerlogs.Query) (containerlogs.Window, error)
 	DownloadServiceLogs(context.Context, string, containerlogs.DownloadQuery, io.Writer) (containerlogs.DownloadResult, error)
 }
 
@@ -25,6 +26,31 @@ func registerLogRoutes(mux *http.ServeMux, repository LogRepository) {
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{resourceID}/logs", getResourceLogs(repository, "redis", "resourceID"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{resourceID}/logs", getResourceLogs(repository, "postgres", "resourceID"))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/services/{serviceID}/logs/download", downloadServiceLogs(repository))
+	mux.HandleFunc("GET /api/v1/projects/{projectID}/telemetry/logs", getScopeLogs(repository, projectMetricScope))
+	mux.HandleFunc("GET /api/v1/telemetry/logs", getScopeLogs(repository, installationMetricScope))
+}
+
+func getScopeLogs(repository LogRepository, scope metricScopeFromRequest) http.HandlerFunc {
+	return func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		query, ok := parseLogQuery(response, request)
+		if !ok {
+			return
+		}
+		window, err := repository.ScopeLogs(request.Context(), scope(request), query)
+		switch {
+		case err == nil:
+			writeJSON(response, http.StatusOK, window)
+		case errors.Is(err, state.ErrMetricScopeNotFound):
+			writeAPIError(response, http.StatusNotFound, "telemetry_scope_not_found", "Telemetry scope was not found")
+		case errors.Is(err, containerlogs.ErrInvalidQuery):
+			writeAPIError(response, http.StatusBadRequest, "invalid_log_query", err.Error())
+		default:
+			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read telemetry logs")
+		}
+	}
 }
 
 func getResourceLogs(repository LogRepository, kind, resourcePathValue string) http.HandlerFunc {
@@ -33,29 +59,14 @@ func getResourceLogs(repository LogRepository, kind, resourcePathValue string) h
 			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
 			return
 		}
-		limit, err := logLimit(request)
-		if err != nil {
-			writeAPIError(response, http.StatusBadRequest, "invalid_log_limit", err.Error())
-			return
-		}
-		from, to, err := optionalLogRange(request)
-		if err != nil {
-			writeAPIError(response, http.StatusBadRequest, "invalid_log_range", err.Error())
-			return
-		}
-		fieldFilters, err := logFieldFilters(request)
-		if err != nil {
-			writeAPIError(response, http.StatusBadRequest, "invalid_log_field_filters", err.Error())
+		query, ok := parseLogQuery(response, request)
+		if !ok {
 			return
 		}
 		window, err := repository.ResourceLogs(
 			request.Context(), request.PathValue("projectID"), containerlogs.ResourceQuery{
 				Kind: kind, ResourceID: request.PathValue(resourcePathValue),
-				Query: containerlogs.Query{
-					DeploymentID: request.URL.Query().Get("deploymentId"), Contains: request.URL.Query().Get("contains"),
-					Cursor: request.URL.Query().Get("cursor"), FieldFilters: fieldFilters,
-					From: from, To: to, Limit: limit,
-				},
+				Query: query,
 			},
 		)
 		switch {
@@ -69,6 +80,30 @@ func getResourceLogs(repository LogRepository, kind, resourcePathValue string) h
 			writeAPIError(response, http.StatusInternalServerError, "log_read_failed", "Unable to read resource logs")
 		}
 	}
+}
+
+func parseLogQuery(response http.ResponseWriter, request *http.Request) (containerlogs.Query, bool) {
+	limit, err := logLimit(request)
+	if err != nil {
+		writeAPIError(response, http.StatusBadRequest, "invalid_log_limit", err.Error())
+		return containerlogs.Query{}, false
+	}
+	from, to, err := optionalLogRange(request)
+	if err != nil {
+		writeAPIError(response, http.StatusBadRequest, "invalid_log_range", err.Error())
+		return containerlogs.Query{}, false
+	}
+	fieldFilters, err := logFieldFilters(request)
+	if err != nil {
+		writeAPIError(response, http.StatusBadRequest, "invalid_log_field_filters", err.Error())
+		return containerlogs.Query{}, false
+	}
+	return containerlogs.Query{
+		DeploymentID: request.URL.Query().Get("deploymentId"), Contains: request.URL.Query().Get("contains"),
+		Cursor: request.URL.Query().Get("cursor"), FieldFilters: fieldFilters,
+		TraceID: request.URL.Query().Get("traceId"), SpanID: request.URL.Query().Get("spanId"),
+		From: from, To: to, Limit: limit,
+	}, true
 }
 
 func downloadServiceLogs(repository LogRepository) http.HandlerFunc {

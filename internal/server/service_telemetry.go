@@ -26,7 +26,9 @@ type ServiceTelemetryRepository interface {
 	DeleteMetricChart(context.Context, state.MetricScope, string) error
 	QueryMetricScope(context.Context, state.MetricScope, string, json.RawMessage) (telemetry.MetricScopeResponse, error)
 	UpdateServiceTelemetryPublicAccess(context.Context, state.UpdateServiceSentryPublicAccess) (telemetry.ServiceConfiguration, error)
+	UpdateServiceTelemetryTunnel(context.Context, state.UpdateServiceTelemetryTunnel) (telemetry.ServiceConfiguration, error)
 	ServeServiceTelemetry(http.ResponseWriter, *http.Request, string, string)
+	ServeTelemetryScope(http.ResponseWriter, *http.Request, state.MetricScope)
 }
 
 type serviceTelemetryResponse struct {
@@ -36,6 +38,7 @@ type serviceTelemetryResponse struct {
 	InternalOTLPEndpoint string                            `json:"internalOtlpEndpoint"`
 	PublicHostname       string                            `json:"publicHostname,omitempty"`
 	PublicDSN            string                            `json:"publicDsn,omitempty"`
+	BrowserTunnelPath    string                            `json:"browserTunnelPath,omitempty"`
 	UpdatedAt            int64                             `json:"updatedAt"`
 	Webhooks             []serviceTelemetryWebhookResponse `json:"webhooks"`
 }
@@ -53,14 +56,79 @@ func registerServiceTelemetryRoutes(mux *http.ServeMux, config handlerConfig) {
 	pattern := "/api/v1/projects/{projectID}/services/{serviceID}/telemetry"
 	mux.HandleFunc("GET "+pattern, getServiceTelemetry(config.serviceTelemetry))
 	mux.HandleFunc("PUT "+pattern+"/public-access", updateServiceTelemetryPublicAccess(config))
+	mux.HandleFunc("PUT "+pattern+"/browser-tunnel", updateServiceTelemetryTunnel(config))
 	mux.HandleFunc("POST "+pattern+"/artifact-token", rotateServiceArtifactToken(config.serviceTelemetry))
 	mux.HandleFunc("POST "+pattern+"/webhooks", createServiceTelemetryWebhook(config.serviceTelemetry))
 	mux.HandleFunc("DELETE "+pattern+"/webhooks/{webhookID}", deleteServiceTelemetryWebhook(config.serviceTelemetry))
 	registerMetricScopeRoutes(mux, config.serviceTelemetry, pattern, serviceMetricScope)
 	registerMetricScopeRoutes(mux, config.serviceTelemetry, "/api/v1/projects/{projectID}/telemetry", projectMetricScope)
 	registerMetricScopeRoutes(mux, config.serviceTelemetry, "/api/v1/telemetry", installationMetricScope)
+	mux.Handle("/api/v1/projects/{projectID}/telemetry/{path...}", telemetryScopeConsole(config.serviceTelemetry, projectMetricScope))
+	mux.Handle("/api/v1/telemetry/{path...}", telemetryScopeConsole(config.serviceTelemetry, installationMetricScope))
 	mux.Handle(pattern+"/{path...}", serviceTelemetryConsole(config.serviceTelemetry))
 	mux.Handle("/api/v1/projects/{projectID}/services/{serviceID}/errors/{path...}", serviceTelemetryConsole(config.serviceTelemetry))
+}
+
+func telemetryScopeConsole(repository ServiceTelemetryRepository, scope metricScopeFromRequest) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if _, ok := requireAccessIdentity(response, request); !ok {
+			return
+		}
+		forwarded := request.Clone(request.Context())
+		forwarded.URL.Path = "/" + request.PathValue("path")
+		forwarded.URL.RawPath = ""
+		forwarded.Header = request.Header.Clone()
+		forwarded.Header.Del("Authorization")
+		forwarded.Header.Del("Cookie")
+		forwarded.Header.Del("Cf-Access-Jwt-Assertion")
+		repository.ServeTelemetryScope(response, forwarded, scope(request))
+	})
+}
+
+func updateServiceTelemetryTunnel(config handlerConfig) http.HandlerFunc {
+	type requestBody struct {
+		BrowserTunnelPath string `json:"browserTunnelPath"`
+		ExpectedUpdatedAt int64  `json:"expectedUpdatedAt"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := access.IdentityFromContext(request.Context())
+		if !ok {
+			writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
+			return
+		}
+		if !requireJSONContentType(response, request) {
+			return
+		}
+		request.Body = http.MaxBytesReader(response, request.Body, maximumServiceTelemetryRequestBytes)
+		decoder := json.NewDecoder(request.Body)
+		decoder.DisallowUnknownFields()
+		var body requestBody
+		if err := decoder.Decode(&body); err != nil || requireJSONEnd(decoder) != nil || body.ExpectedUpdatedAt <= 0 {
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_telemetry", "Browser tunnel fields are invalid")
+			return
+		}
+		_, auditID, correlationID, err := createRequestIDs()
+		if err != nil {
+			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate telemetry mutation identifiers")
+			return
+		}
+		configuration, err := config.serviceTelemetry.UpdateServiceTelemetryTunnel(request.Context(), state.UpdateServiceTelemetryTunnel{
+			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"), Path: body.BrowserTunnelPath,
+			ExpectedUpdatedMillis: body.ExpectedUpdatedAt, AuditEventID: auditID,
+			ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
+			RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
+		})
+		if err != nil {
+			writeServiceTelemetryError(response, err)
+			return
+		}
+		webhooks, err := config.serviceTelemetry.ServiceTelemetryWebhooks(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+		if err != nil {
+			writeServiceTelemetryError(response, err)
+			return
+		}
+		writeJSON(response, http.StatusOK, publicServiceTelemetry(configuration, webhooks))
+	}
 }
 
 func getServiceTelemetry(repository ServiceTelemetryRepository) http.HandlerFunc {
@@ -223,8 +291,9 @@ func publicServiceTelemetry(configuration telemetry.ServiceConfiguration, webhoo
 		ServiceID: configuration.ServiceID, InternalHostname: configuration.InternalHostname,
 		InternalDSN: configuration.InternalDSN, InternalOTLPEndpoint: configuration.InternalOTLPEndpoint,
 		PublicHostname: configuration.PublicHostname, PublicDSN: configuration.PublicDSN,
-		UpdatedAt: configuration.UpdatedAt,
-		Webhooks:  items,
+		BrowserTunnelPath: configuration.BrowserTunnelPath,
+		UpdatedAt:         configuration.UpdatedAt,
+		Webhooks:          items,
 	}
 }
 
@@ -248,6 +317,10 @@ func writeServiceTelemetryError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusNotFound, "metric_scope_not_found", err.Error())
 	case errors.Is(err, state.ErrServiceTelemetryWebhookInvalid):
 		writeAPIError(response, http.StatusBadRequest, "invalid_webhook", err.Error())
+	case errors.Is(err, state.ErrServiceTelemetryTunnelPathInvalid):
+		writeAPIError(response, http.StatusBadRequest, "invalid_browser_tunnel", err.Error())
+	case errors.Is(err, state.ErrServiceTelemetryTunnelNeedsDomain):
+		writeAPIError(response, http.StatusBadRequest, "public_telemetry_required", err.Error())
 	case errors.Is(err, state.ErrServiceTelemetryWebhookNotFound):
 		writeAPIError(response, http.StatusNotFound, "webhook_not_found", err.Error())
 	default:

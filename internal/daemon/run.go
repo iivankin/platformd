@@ -181,12 +181,16 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	recordings := &telemetryRecordingUsage{}
+	telemetryVolume := filepath.Join(paths.DataRoot, "telemetry")
 	diskComponents, err := diskusage.NewScanner([]diskusage.Path{
 		{ID: containerImagesDiskComponent, Path: paths.ContainerCache},
 		{ID: "volumes", Path: paths.VolumesRoot},
 		{ID: "images", Path: paths.ImagesRoot},
 		{ID: "image_uploads", Path: paths.ImageUploadsRoot},
 		{ID: "object_storage", Path: paths.ObjectsRoot},
+		{ID: "telemetry", Path: telemetryVolume},
+		{ID: "recordings", Path: telemetryVolume, Parent: "telemetry", Measure: recordings.Bytes},
 		{ID: "backup_work", Path: paths.BackupWorkRoot},
 		{ID: "cloudflare_mesh", Path: paths.CloudflareMeshRoot},
 		{ID: "postgres_extensions", Path: paths.PostgresExtensionRoot},
@@ -334,11 +338,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	telemetryProcess, err := telemetry.StartProcess(ctx, telemetry.ProcessConfig{
 		Binary: filepath.Join(paths.Current, "runtime", "platformd-telemetry"),
-		Volume: filepath.Join(paths.DataRoot, "telemetry"),
+		Volume: telemetryVolume,
 	})
 	if err != nil {
 		return fmt.Errorf("start embedded telemetry: %w", err)
 	}
+	recordings.Set(telemetryProcess)
+	diskComponents.Invalidate("recordings")
 	defer func() { returnErr = errors.Join(returnErr, telemetryProcess.Close()) }()
 	if !installation.RecoveryMode {
 		controlJob, err = backup.NewControlJob(backup.ControlJobConfig{

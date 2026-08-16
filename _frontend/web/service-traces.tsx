@@ -11,8 +11,12 @@ import { useQueryStates } from "nuqs";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
 import { calculateAiPrice, formatAiPrice } from "@/ai-price";
-import { fetchServiceTrace, fetchServiceTraces } from "@/api";
-import type { ServiceTraceDetail, ServiceTraceSummary } from "@/api";
+import { fetchTelemetryTrace, fetchTelemetryTraces } from "@/api";
+import type {
+  MetricScope,
+  ServiceTraceDetail,
+  ServiceTraceSummary,
+} from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -30,7 +34,6 @@ import {
   TelemetryTimeRangePicker,
   telemetryTimeBounds,
 } from "@/telemetry-time-range";
-import { matchesTraceQuery, traceSearchText } from "@/trace-query";
 
 const integer = (value: string) => globalThis.BigInt(value);
 
@@ -98,12 +101,16 @@ const aiTraceContext = (trace: ServiceTraceSummary) => {
   return [run, model].filter(Boolean).join(" · ");
 };
 
-export const ServiceTraces = ({
-  projectID,
-  serviceID,
+export const TelemetryTraces = ({
+  onOpenError,
+  onOpenLogs,
+  scope,
+  serviceName,
 }: {
-  projectID: string;
-  serviceID: string;
+  onOpenError?: (issueID: string, eventID?: string) => void;
+  onOpenLogs?: (traceID: string, spanID?: string) => void;
+  scope: MetricScope;
+  serviceName?: (serviceID: string) => string | undefined;
 }) => {
   const [traceState, setTraceState] = useQueryStates(traceQueryParsers);
   const {
@@ -111,13 +118,14 @@ export const ServiceTraces = ({
     timeRange,
     timeTo,
     trace: selectedTrace,
+    traceSegment: selectedSegment,
     traceQuery: query,
     traceSort: sort,
     traceStatus: status,
   } = traceState;
   const traceID = selectedTrace ?? "";
+  const segmentID = selectedSegment ?? "";
   const deferredQuery = useDeferredValue(query);
-  const serverQuery = traceSearchText(deferredQuery);
   const [traces, setTraces] = useState<ServiceTraceSummary[]>([]);
   const [detail, setDetail] = useState<ServiceTraceDetail>();
   const [listLoading, setListLoading] = useState(true);
@@ -128,6 +136,7 @@ export const ServiceTraces = ({
     traceID: string;
   }>();
   const [revision, setRevision] = useState(0);
+  const [jumpedTraceID, setJumpedTraceID] = useState("");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -139,12 +148,11 @@ export const ServiceTraces = ({
           range: timeRange,
           to: timeTo,
         });
-        const nextTraces = await fetchServiceTraces(
-          projectID,
-          serviceID,
+        const nextTraces = await fetchTelemetryTraces(
+          scope,
           controller.signal,
           globalThis.fetch,
-          { ...bounds, query: serverQuery }
+          { ...bounds, query: deferredQuery, sort, status }
         );
         setTraces(nextTraces);
         setListError("");
@@ -169,10 +177,11 @@ export const ServiceTraces = ({
     void load();
     return () => controller.abort();
   }, [
-    projectID,
     revision,
-    serverQuery,
-    serviceID,
+    deferredQuery,
+    scope,
+    sort,
+    status,
     timeFrom,
     timeRange,
     timeTo,
@@ -188,11 +197,12 @@ export const ServiceTraces = ({
       setDetailError(undefined);
       try {
         setDetail(
-          await fetchServiceTrace(
-            projectID,
-            serviceID,
+          await fetchTelemetryTrace(
+            scope,
             traceID,
-            controller.signal
+            controller.signal,
+            globalThis.fetch,
+            segmentID || undefined
           )
         );
         setDetailError(undefined);
@@ -218,41 +228,14 @@ export const ServiceTraces = ({
     };
     void load();
     return () => controller.abort();
-  }, [projectID, serviceID, traceID]);
+  }, [scope, segmentID, traceID]);
 
   const closeTrace = () => {
-    void setTraceState({ trace: null }, { history: "push" });
+    void setTraceState(
+      { trace: null, traceSegment: null },
+      { history: "push" }
+    );
   };
-  const filtered = useMemo(() => {
-    const bounds = telemetryTimeBounds({
-      from: timeFrom,
-      range: timeRange,
-      to: timeTo,
-    });
-    const result = traces.filter((trace) => {
-      const started = Number(integer(trace.startedAtUnixNano) / 1_000_000n);
-      return (
-        matchesTraceQuery(trace, query) &&
-        (status === "all" ||
-          (status === "error"
-            ? trace.errorSpanCount > 0
-            : trace.errorSpanCount === 0)) &&
-        (bounds.from === undefined || started >= bounds.from) &&
-        (bounds.to === undefined || started <= bounds.to)
-      );
-    });
-    return result.toSorted((left, right) => {
-      if (sort === "slowest") {
-        return Number(integer(right.durationNano) - integer(left.durationNano));
-      }
-      if (sort === "spans") {
-        return right.spanCount - left.spanCount;
-      }
-      return Number(
-        integer(right.startedAtUnixNano) - integer(left.startedAtUnixNano)
-      );
-    });
-  }, [query, sort, status, timeFrom, timeRange, timeTo, traces]);
   const histogramBounds = telemetryTimeBounds({
     from: timeFrom,
     range: timeRange,
@@ -260,25 +243,52 @@ export const ServiceTraces = ({
   });
   const histogramPoints = useMemo(
     () =>
-      filtered.map((trace) => ({
+      traces.map((trace) => ({
         error: trace.errorSpanCount > 0,
+        id: `${trace.traceId}:${trace.segmentId}`,
         timestamp: Number(integer(trace.startedAtUnixNano) / 1_000_000n),
       })),
-    [filtered]
+    [traces]
   );
 
+  const jumpToTrace = (identity?: string) => {
+    if (!identity) {
+      return;
+    }
+    setJumpedTraceID(identity);
+    requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLElement>(`#${CSS.escape(`trace-row-${identity}`)}`)
+        ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  };
+
   if (traceID) {
-    const currentDetail = detail?.traceId === traceID ? detail : undefined;
+    const currentDetail =
+      detail?.traceId === traceID &&
+      (!segmentID || detail.segmentId === segmentID)
+        ? detail
+        : undefined;
     const currentDetailError =
       detailError?.traceID === traceID ? detailError.message : "";
     if (currentDetail) {
       return (
         <ServiceTraceDetailView
           detail={currentDetail}
-          key={currentDetail.traceId}
+          key={`${currentDetail.traceId}:${currentDetail.segmentId}`}
           onBack={closeTrace}
-          projectID={projectID}
-          serviceID={serviceID}
+          onOpenError={onOpenError}
+          onOpenLogs={onOpenLogs}
+          onOpenTrace={(nextTraceID, nextSegmentID) =>
+            void setTraceState(
+              {
+                trace: nextTraceID,
+                traceSegment: nextSegmentID ?? null,
+              },
+              { history: "push" }
+            )
+          }
+          scope={scope}
         />
       );
     }
@@ -381,7 +391,7 @@ export const ServiceTraces = ({
           </SelectContent>
         </Select>
         <span className="px-2 text-[9px] text-muted-foreground tabular-nums">
-          {filtered.length} / {traces.length}
+          {traces.length}
         </span>
         <Button
           aria-label="Refresh traces"
@@ -401,16 +411,10 @@ export const ServiceTraces = ({
         ariaLabel="Trace volume over time"
         bounds={histogramBounds}
         noun="traces"
-        onSelectRange={(from, to) =>
-          void setTraceState({
-            timeFrom: from,
-            timeRange: "custom",
-            timeTo: to,
-          })
-        }
+        onJumpTo={(point) => jumpToTrace(point.id)}
         points={histogramPoints}
       />
-      {filtered.length > 0 ? (
+      {traces.length > 0 ? (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] table-fixed border-collapse">
             <thead>
@@ -418,6 +422,11 @@ export const ServiceTraces = ({
                 <th className="w-[34%] border-b border-border px-4 font-normal">
                   Trace
                 </th>
+                {scope.kind === "service" ? null : (
+                  <th className="border-b border-border px-4 font-normal">
+                    Service
+                  </th>
+                )}
                 <th className="border-b border-border px-4 font-normal">
                   Started
                 </th>
@@ -439,82 +448,97 @@ export const ServiceTraces = ({
               </tr>
             </thead>
             <tbody>
-              {filtered.map((trace) => (
-                <tr className="hover:bg-muted/30" key={trace.traceId}>
-                  <td className="border-b border-border/70 px-4 py-3">
-                    <button
-                      aria-label={`Open trace ${trace.name || trace.traceId}`}
-                      className="block max-w-full text-left"
-                      onClick={() =>
-                        void setTraceState(
-                          { trace: trace.traceId },
-                          { history: "push" }
-                        )
-                      }
-                      type="button"
-                    >
-                      <span className="block truncate text-[10px] font-medium">
-                        {trace.isAi ? (
-                          <Bot className="mr-1.5 inline size-3 text-violet-500" />
-                        ) : null}
-                        {trace.name || "Unnamed trace"}
-                      </span>
-                      <code className="mt-1 block text-[8px] text-muted-foreground">
-                        {trace.isAi
-                          ? aiTraceContext(trace) || shortID(trace.traceId)
-                          : shortID(trace.traceId)}
-                      </code>
-                    </button>
-                  </td>
-                  <td className="border-b border-border/70 px-4 py-3 text-[9px] text-muted-foreground">
-                    {nanosToDate(trace.startedAtUnixNano).toLocaleString()}
-                  </td>
-                  <td className="border-b border-border/70 px-4 py-3 text-[9px] tabular-nums">
-                    {formatDuration(trace.durationNano)}
-                  </td>
-                  <td className="border-b border-border/70 px-4 py-3 text-[9px] tabular-nums">
-                    <TraceUsage trace={trace} />
-                  </td>
-                  <td className="border-b border-border/70 px-4 py-3 text-[9px] tabular-nums">
-                    {trace.isAi
-                      ? [
-                          trace.aiAgentRunCount > 0
-                            ? `${trace.aiAgentRunCount.toString()} agent`
-                            : "",
-                          `${trace.aiModelCallCount.toString()} model`,
-                          `${trace.aiToolCallCount.toString()} tool`,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")
-                      : trace.spanCount}
-                  </td>
-                  <td className="border-b border-border/70 px-4 py-3 text-[9px]">
-                    {trace.errorSpanCount > 0 ? (
-                      <span className="text-destructive">
-                        {trace.errorSpanCount} error
-                        {trace.errorSpanCount === 1 ? "" : "s"}
-                      </span>
-                    ) : (
-                      <span className="text-emerald-600">ok</span>
+              {traces.map((trace) => {
+                const identity = `${trace.traceId}:${trace.segmentId}`;
+                const open = () =>
+                  void setTraceState(
+                    { trace: trace.traceId, traceSegment: trace.segmentId },
+                    { history: "push" }
+                  );
+                return (
+                  <tr
+                    className={cn(
+                      "cursor-pointer transition-colors hover:bg-muted/30",
+                      jumpedTraceID === identity && "bg-sky-500/10"
                     )}
-                  </td>
-                  <td className="border-b border-border/70">
-                    <button
-                      aria-label={`Open trace ${trace.traceId}`}
-                      className="grid size-9 place-items-center text-muted-foreground hover:text-foreground"
-                      onClick={() =>
-                        void setTraceState(
-                          { trace: trace.traceId },
-                          { history: "push" }
-                        )
-                      }
-                      type="button"
-                    >
-                      <ChevronRight className="size-3.5" />
-                    </button>
-                  </td>
-                </tr>
-              ))}
+                    id={`trace-row-${identity}`}
+                    key={identity}
+                    onClick={open}
+                  >
+                    <td className="border-b border-border/70 px-4 py-3">
+                      <button
+                        aria-label={`Open trace ${trace.name || trace.traceId}`}
+                        className="block max-w-full text-left focus-visible:ring-1 focus-visible:ring-ring focus-visible:outline-none"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          open();
+                        }}
+                        type="button"
+                      >
+                        <span className="block truncate text-[10px] font-medium">
+                          {trace.isAi ? (
+                            <Bot className="mr-1.5 inline size-3 text-violet-500" />
+                          ) : null}
+                          {trace.name || "Unnamed trace"}
+                        </span>
+                        <code className="mt-1 block text-[8px] text-muted-foreground">
+                          {trace.isAi
+                            ? aiTraceContext(trace) || shortID(trace.traceId)
+                            : shortID(trace.traceId)}
+                        </code>
+                      </button>
+                    </td>
+                    {scope.kind === "service" ? null : (
+                      <td className="border-b border-border/70 px-4 py-3 text-[9px] text-muted-foreground">
+                        <span
+                          className="block max-w-36 truncate"
+                          title={trace.serviceId}
+                        >
+                          {serviceName?.(trace.serviceId) ??
+                            shortID(trace.serviceId)}
+                        </span>
+                      </td>
+                    )}
+                    <td className="border-b border-border/70 px-4 py-3 text-[9px] text-muted-foreground">
+                      {nanosToDate(trace.startedAtUnixNano).toLocaleString()}
+                    </td>
+                    <td className="border-b border-border/70 px-4 py-3 text-[9px] tabular-nums">
+                      {formatDuration(trace.durationNano)}
+                    </td>
+                    <td className="border-b border-border/70 px-4 py-3 text-[9px] tabular-nums">
+                      <TraceUsage trace={trace} />
+                    </td>
+                    <td className="border-b border-border/70 px-4 py-3 text-[9px] tabular-nums">
+                      {trace.isAi
+                        ? [
+                            trace.aiAgentRunCount > 0
+                              ? `${trace.aiAgentRunCount.toString()} agent`
+                              : "",
+                            `${trace.aiModelCallCount.toString()} model`,
+                            `${trace.aiToolCallCount.toString()} tool`,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")
+                        : trace.spanCount}
+                    </td>
+                    <td className="border-b border-border/70 px-4 py-3 text-[9px]">
+                      {trace.errorSpanCount > 0 ? (
+                        <span className="text-destructive">
+                          {trace.errorSpanCount} error
+                          {trace.errorSpanCount === 1 ? "" : "s"}
+                        </span>
+                      ) : (
+                        <span className="text-emerald-600">ok</span>
+                      )}
+                    </td>
+                    <td className="border-b border-border/70">
+                      <span className="grid size-9 place-items-center text-muted-foreground">
+                        <ChevronRight className="size-3.5" />
+                      </span>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -536,5 +560,29 @@ export const ServiceTraces = ({
         </div>
       )}
     </div>
+  );
+};
+
+export const ServiceTraces = ({
+  onOpenError,
+  onOpenLogs,
+  projectID,
+  serviceID,
+}: {
+  onOpenError?: (issueID: string, eventID?: string) => void;
+  onOpenLogs?: (traceID: string, spanID?: string) => void;
+  projectID: string;
+  serviceID: string;
+}) => {
+  const scope = useMemo<MetricScope>(
+    () => ({ kind: "service", projectID, serviceID }),
+    [projectID, serviceID]
+  );
+  return (
+    <TelemetryTraces
+      onOpenError={onOpenError}
+      onOpenLogs={onOpenLogs}
+      scope={scope}
+    />
   );
 };

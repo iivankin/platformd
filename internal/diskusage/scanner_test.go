@@ -2,6 +2,7 @@ package diskusage
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -176,5 +177,84 @@ func TestScannerRunRefreshesInBackground(t *testing.T) {
 	cancel()
 	if err := <-done; err != context.Canceled {
 		t.Fatalf("run error = %v, want context canceled", err)
+	}
+}
+
+func TestScannerKeepsMeasuredComponentDirtyAfterError(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	calls := 0
+	scanner, err := NewScanner([]Path{{
+		ID: "recordings", Path: root,
+		Measure: func(context.Context) (uint64, error) {
+			calls++
+			if calls == 1 {
+				return 0, errors.New("telemetry disk usage unavailable")
+			}
+			return 2048, nil
+		},
+	}}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scanner.refreshDirty(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := scanner.Components(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Components[0].Bytes != 0 {
+		t.Fatalf("failed measure published = %+v", snapshot.Components)
+	}
+	if err := scanner.refreshDirty(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = scanner.Components(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 || snapshot.Components[0].Bytes != 2048 {
+		t.Fatalf("retried measure = calls %d snapshot %+v", calls, snapshot.Components)
+	}
+}
+
+func TestScannerNestsMeasuredComponentsUnderAParent(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "data"), make([]byte, 4096), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scanner, err := NewScanner([]Path{
+		{ID: "data", Path: root},
+		{
+			ID: "nested", Path: root, Parent: "data",
+			Measure: func(context.Context) (uint64, error) { return 1024, nil },
+		},
+	}, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scanner.entriesPerSecond = 0
+	if err := scanner.refreshDirty(context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := scanner.Components(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Components) != 2 ||
+		snapshot.Components[0].ID != "data" || snapshot.Components[0].Parent != "" ||
+		snapshot.Components[1] != (Component{ID: "nested", Bytes: 1024, Parent: "data"}) {
+		t.Fatalf("nested components = %+v", snapshot.Components)
+	}
+}
+
+func TestScannerRejectsUnknownNestedParents(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	_, err := NewScanner([]Path{{ID: "nested", Path: root, Parent: "missing"}}, time.Hour)
+	if err == nil {
+		t.Fatal("expected unknown nested parent to fail")
 	}
 }

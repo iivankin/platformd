@@ -312,7 +312,13 @@ export const ServiceDetailPanel = ({
   };
 
   return (
-    <div>
+    <div
+      className={
+        view === "telemetry"
+          ? "flex h-full min-h-0 flex-col overflow-hidden"
+          : undefined
+      }
+    >
       <WorkspaceView
         active={view}
         views={{

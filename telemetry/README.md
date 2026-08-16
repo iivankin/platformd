@@ -25,11 +25,14 @@ normal waterfall retains HTTP, database, queue, and sibling-agent context.
 
 ## Identity and state
 
-platformd's SQLite `services.id` is the only service identity. A service DSN is
-derived as `<scheme>://<service-id>@<hostname>/1`: the public key is the service
-ID and Sentry's protocol project ID is the constant `1`. The trusted gateway
-resolves the host to a service and injects that exact identity before forwarding
-traffic, so a client cannot select another service by changing its DSN.
+platformd's SQLite `services.id` is the only service identity. An internal DSN
+is derived as `<scheme>://<service-id>@<hostname>/1`; a public DSN uses the
+same root-path shape. Telemetry can share an application hostname because
+platformd reserves only exact Sentry SDK and artifact-upload routes. The public
+key is the CUID2 service ID and Sentry's protocol project ID is the constant
+`1`. The trusted gateway resolves the host to a service and injects that exact
+identity before forwarding traffic, so a client cannot select another service
+by changing its DSN.
 
 SQLite stores artifact-token verifiers, webhook configuration, encrypted
 webhook secrets, public hostnames, and all other control-plane state. chDB never

@@ -36,10 +36,11 @@ use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, metric};
 use opentelemetry_proto::tonic::resource::v1::Resource;
-use opentelemetry_proto::tonic::trace::v1::ResourceSpans;
+use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, SpanFlags};
 use prost::Message;
 use serde::Serialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tokio::sync::{mpsc, oneshot};
 use tonic::{Code, Request, Response as GrpcResponse, Status};
 use uuid::Uuid;
@@ -440,11 +441,29 @@ fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
     let mut rows = Vec::new();
     for resource_spans in resources {
         let service_id = service_id(resource_spans.resource.as_ref());
+        let resource_replay_id = resource_spans.resource.as_ref().and_then(|resource| {
+            resource.attributes.iter().find_map(|candidate| {
+                replay_attribute_key(&candidate.key)
+                    .then(|| attribute(&resource.attributes, &candidate.key))
+                    .flatten()
+            })
+        });
         let resource = json_string(&resource_spans.resource, "trace resource")?;
         for scope_spans in resource_spans.scope_spans {
             let scope = json_string(&scope_spans.scope, "trace scope")?;
             for span in scope_spans.spans {
                 let ai = gen_ai::index_span(&span);
+                let replay_id = span
+                    .attributes
+                    .iter()
+                    .find_map(|candidate| {
+                        replay_attribute_key(&candidate.key)
+                            .then(|| attribute(&span.attributes, &candidate.key))
+                            .flatten()
+                    })
+                    .or_else(|| resource_replay_id.clone())
+                    .and_then(|value| normalize_replay_id(&value))
+                    .unwrap_or_default();
                 let trace_id = valid_binary_id(&span.trace_id, 16)
                     .ok_or_else(|| Error::InvalidRequest("OTLP span trace ID is invalid".into()))?;
                 let span_id = valid_binary_id(&span.span_id, 8)
@@ -462,11 +481,15 @@ fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
                     .status
                     .as_ref()
                     .map_or("", |status| status.message.as_str());
+                let is_segment = parent_span_id.is_empty()
+                    || span.flags & SpanFlags::ContextIsRemoteMask as u32 != 0;
                 rows.push(json!({
                     "service_id": service_id,
                     "trace_id": trace_id,
                     "span_id": span_id,
                     "parent_span_id": parent_span_id,
+                    "segment_id": trace_id,
+                    "is_segment": is_segment,
                     "trace_state": span.trace_state,
                     "name": span.name,
                     "kind": span.kind,
@@ -482,6 +505,7 @@ fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
                     "received_at_unix_nano": received_at,
                     "version": (1_u64 << 63) | received_at,
                     "source": "otlp",
+                    "replay_id": replay_id,
                     "ai_kind": ai.kind,
                     "ai_operation": ai.operation,
                     "ai_provider": ai.provider,
@@ -519,12 +543,19 @@ pub(crate) fn sentry_trace_rows(service_id: &str, payload: &Value) -> Result<Vec
     }))
     .map_err(|error| Error::Storage(format!("encode Sentry trace resource: {error}")))?;
     let scope = r#"{"name":"sentry","version":"1"}"#;
+    let segment_id = trace
+        .get("span_id")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_hex_id(value, 16))
+        .ok_or_else(|| Error::InvalidRequest("Sentry transaction span ID is invalid".into()))?;
     let mut spans = Vec::new();
     spans.push(sentry_span_row(
         service_id,
         &trace_id,
         trace.get("span_id").and_then(Value::as_str),
         trace.get("parent_span_id").and_then(Value::as_str),
+        &segment_id,
+        true,
         payload
             .get("transaction")
             .and_then(Value::as_str)
@@ -540,19 +571,29 @@ pub(crate) fn sentry_trace_rows(service_id: &str, payload: &Value) -> Result<Vec
     )?);
     if let Some(children) = payload.get("spans").and_then(Value::as_array) {
         for span in children {
+            // Relay closes unfinished child spans at the transaction boundary so
+            // partially-finished SDK transactions remain usable for tracing.
+            let child_end = span.get("timestamp").or_else(|| payload.get("timestamp"));
+            let child_status = if span.get("timestamp").is_none() {
+                Some("deadline_exceeded")
+            } else {
+                span.get("status").and_then(Value::as_str)
+            };
             spans.push(sentry_span_row(
                 service_id,
                 &trace_id,
                 span.get("span_id").and_then(Value::as_str),
                 span.get("parent_span_id").and_then(Value::as_str),
+                &segment_id,
+                false,
                 span.get("description")
                     .or_else(|| span.get("op"))
                     .and_then(Value::as_str)
                     .unwrap_or("span"),
                 span.get("start_timestamp"),
-                span.get("timestamp"),
+                child_end,
                 span.get("op").and_then(Value::as_str),
-                span.get("status").and_then(Value::as_str),
+                child_status,
                 &resource,
                 scope,
                 span,
@@ -560,7 +601,176 @@ pub(crate) fn sentry_trace_rows(service_id: &str, payload: &Value) -> Result<Vec
             )?);
         }
     }
+    if let Some(replay_id) = sentry_replay_id(payload) {
+        for span in &mut spans {
+            if let Some(span) = span.as_object_mut() {
+                span.insert("replay_id".into(), replay_id.clone().into());
+            }
+        }
+    }
     Ok(spans)
+}
+
+pub(crate) fn sentry_error_trace_row(
+    service_id: &str,
+    event: &crate::ingest::IngestedEvent,
+) -> Result<Option<Value>> {
+    let Some(trace) = event
+        .payload
+        .pointer("/contexts/trace")
+        .and_then(Value::as_object)
+    else {
+        return Ok(None);
+    };
+    let Some(trace_id) = trace
+        .get("trace_id")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_hex_id(value, 32))
+    else {
+        return Ok(None);
+    };
+    let parent_span_id = trace
+        .get("span_id")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_hex_id(value, 16))
+        .unwrap_or_default();
+    let Some(segment_id) = sentry_trace_segment_id(trace)
+        .or_else(|| (!parent_span_id.is_empty()).then(|| parent_span_id.clone()))
+    else {
+        return Ok(None);
+    };
+    let timestamp = Timestamp::from_str(&event.timestamp)
+        .ok()
+        .and_then(|value| u64::try_from(value.as_nanosecond()).ok())
+        .ok_or_else(|| Error::InvalidRequest("Sentry error timestamp is invalid".into()))?;
+    let received_at = unix_nanos()?;
+    let marker_id = format!("{:x}", Sha256::digest(format!("error:{}", event.event_id)));
+    let span_id = &marker_id[..16];
+    let resource = serde_json::to_string(&json!({
+        "attributes": [{"key": "service.id", "value": {"stringValue": service_id}}]
+    }))
+    .map_err(|error| Error::Storage(format!("encode Sentry error resource: {error}")))?;
+    let marker = json!({
+        "event_id": event.event_id,
+        "issue_id": event.issue_id,
+        "title": event.title,
+        "level": event.level,
+        "replay_id": event.payload.get("replay_id"),
+        "trace": trace,
+    });
+    Ok(Some(json!({
+        "service_id": service_id,
+        "trace_id": trace_id,
+        "span_id": span_id,
+        "parent_span_id": parent_span_id,
+        "segment_id": segment_id,
+        "is_segment": false,
+        "trace_state": "",
+        "name": event.title,
+        "kind": 1,
+        "start_time_unix_nano": timestamp,
+        "end_time_unix_nano": timestamp,
+        "duration_nano": 0,
+        "status_code": 2,
+        "status_message": event.level,
+        "flags": 0,
+        "resource": resource,
+        "scope": r#"{"name":"sentry","version":"1"}"#,
+        "span": serde_json::to_string(&marker)
+            .map_err(|error| Error::Storage(format!("encode Sentry error marker: {error}")))?,
+        "received_at_unix_nano": received_at,
+        "version": received_at,
+        "source": "sentry_error",
+        "replay_id": sentry_replay_id(&event.payload).unwrap_or_default(),
+        "search_text": format!("{} {} {}", event.title, event.event_id, event.issue_id),
+    })))
+}
+
+pub(crate) fn sentry_standalone_span_row(
+    service_id: &str,
+    payload: &Value,
+    version: crate::ingest::StandaloneSpanVersion,
+) -> Result<Value> {
+    let span = payload
+        .as_object()
+        .ok_or_else(|| Error::InvalidRequest("Sentry span must be an object".into()))?;
+    let trace_id = span
+        .get("trace_id")
+        .and_then(Value::as_str)
+        .and_then(|value| normalize_hex_id(value, 32))
+        .ok_or_else(|| Error::InvalidRequest("Sentry span trace ID is invalid".into()))?;
+    let span_id = span.get("span_id").and_then(Value::as_str);
+    let parent_span_id = span.get("parent_span_id").and_then(Value::as_str);
+    let received_at = unix_nanos()?;
+    let resource = serde_json::to_string(&json!({
+        "attributes": [{"key": "service.id", "value": {"stringValue": service_id}}]
+    }))
+    .map_err(|error| Error::Storage(format!("encode Sentry span resource: {error}")))?;
+    let (name, start, end, operation, status, scope) = match version {
+        crate::ingest::StandaloneSpanVersion::Legacy => (
+            span.get("description")
+                .or_else(|| span.get("op"))
+                .and_then(Value::as_str)
+                .unwrap_or("span"),
+            span.get("start_timestamp"),
+            span.get("timestamp").or_else(|| span.get("end_timestamp")),
+            span.get("op").and_then(Value::as_str),
+            span.get("status").and_then(Value::as_str),
+            r#"{"name":"sentry","version":"1"}"#,
+        ),
+        crate::ingest::StandaloneSpanVersion::V2 => {
+            let name = span
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::InvalidRequest("Sentry span name is missing".into()))?;
+            let status = span
+                .get("status")
+                .and_then(Value::as_str)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| Error::InvalidRequest("Sentry span status is missing".into()))?;
+            (
+                name,
+                span.get("start_timestamp"),
+                span.get("end_timestamp"),
+                sentry_span_attribute_text(payload, "sentry.op"),
+                Some(status),
+                r#"{"name":"sentry","version":"2"}"#,
+            )
+        }
+    };
+    let normalized_span_id = span_id
+        .and_then(|value| normalize_hex_id(value, 16))
+        .ok_or_else(|| Error::InvalidRequest("Sentry span ID is invalid".into()))?;
+    let is_segment = span
+        .get("is_segment")
+        .and_then(Value::as_bool)
+        .or_else(|| span.get("is_remote").and_then(Value::as_bool))
+        .unwrap_or(parent_span_id.is_none());
+    let segment_id = span
+        .get("segment_id")
+        .and_then(Value::as_str)
+        .or_else(|| sentry_span_attribute_text(payload, "sentry.segment.id"))
+        .or_else(|| sentry_span_attribute_text(payload, "sentry.segment_id"))
+        .and_then(|value| normalize_hex_id(value, 16))
+        .unwrap_or_else(|| normalized_span_id.clone());
+    sentry_span_row(
+        service_id,
+        &trace_id,
+        span_id,
+        parent_span_id,
+        &segment_id,
+        is_segment,
+        name,
+        start,
+        end,
+        operation,
+        status,
+        &resource,
+        scope,
+        payload,
+        received_at,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -569,6 +779,8 @@ fn sentry_span_row(
     trace_id: &str,
     span_id: Option<&str>,
     parent_span_id: Option<&str>,
+    segment_id: &str,
+    is_segment: bool,
     name: &str,
     start: Option<&Value>,
     end: Option<&Value>,
@@ -589,9 +801,15 @@ fn sentry_span_row(
         .ok_or_else(|| Error::InvalidRequest("Sentry transaction start time is invalid".into()))?;
     let end = sentry_timestamp_nanos(end)
         .ok_or_else(|| Error::InvalidRequest("Sentry transaction end time is invalid".into()))?;
+    if end < start {
+        return Err(Error::InvalidRequest(
+            "Sentry transaction end time is before its start time".into(),
+        ));
+    }
     let status_code = match status.unwrap_or_default() {
         "ok" => 1,
-        "cancelled"
+        "error"
+        | "cancelled"
         | "unknown"
         | "invalid_argument"
         | "deadline_exceeded"
@@ -627,6 +845,8 @@ fn sentry_span_row(
         "trace_id": trace_id,
         "span_id": span_id,
         "parent_span_id": parent_span_id,
+        "segment_id": segment_id,
+        "is_segment": is_segment,
         "trace_state": "",
         "name": name,
         "kind": kind,
@@ -642,7 +862,95 @@ fn sentry_span_row(
         "received_at_unix_nano": received_at,
         "version": received_at,
         "source": "sentry",
+        "replay_id": sentry_replay_id(payload).unwrap_or_default(),
     }))
+}
+
+fn sentry_trace_segment_id(trace: &serde_json::Map<String, Value>) -> Option<String> {
+    trace
+        .get("segment_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            trace
+                .get("data")
+                .and_then(Value::as_object)
+                .and_then(|data| {
+                    data.get("sentry.segment.id")
+                        .or_else(|| data.get("sentry.segment_id"))
+                })
+                .and_then(Value::as_str)
+        })
+        .and_then(|value| normalize_hex_id(value, 16))
+}
+
+fn replay_attribute_key(key: &str) -> bool {
+    matches!(
+        key.chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+            .as_str(),
+        "replayid" | "sentryreplayid"
+    )
+}
+
+fn sentry_span_attribute_text<'a>(payload: &'a Value, key: &str) -> Option<&'a str> {
+    let value = payload.get("attributes")?.get(key)?;
+    value
+        .as_str()
+        .or_else(|| value.get("value").and_then(Value::as_str))
+}
+
+fn normalize_replay_id(value: &str) -> Option<String> {
+    let value = value.replace('-', "").to_ascii_lowercase();
+    (value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(value)
+}
+
+fn sentry_replay_id(payload: &Value) -> Option<String> {
+    let direct = payload
+        .get("replay_id")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            payload
+                .pointer("/contexts/replay/replay_id")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            payload.get("tags").and_then(|tags| match tags {
+                Value::Object(tags) => tags
+                    .iter()
+                    .find(|(key, _)| replay_attribute_key(key))
+                    .and_then(|(_, value)| value.as_str()),
+                Value::Array(tags) => tags.iter().find_map(|tag| match tag {
+                    Value::Array(pair)
+                        if pair
+                            .first()
+                            .and_then(Value::as_str)
+                            .is_some_and(replay_attribute_key) =>
+                    {
+                        pair.get(1).and_then(Value::as_str)
+                    }
+                    _ => None,
+                }),
+                _ => None,
+            })
+        })
+        .or_else(|| {
+            payload
+                .get("data")
+                .and_then(Value::as_object)
+                .and_then(|data| {
+                    data.iter()
+                        .find(|(key, _)| replay_attribute_key(key))
+                        .and_then(|(_, value)| value.as_str())
+                })
+        })
+        .or_else(|| {
+            ["sentry.replay_id", "sentry.replay.id", "replay_id"]
+                .into_iter()
+                .find_map(|key| sentry_span_attribute_text(payload, key))
+        });
+    direct.and_then(normalize_replay_id)
 }
 
 fn sentry_timestamp_nanos(value: Option<&Value>) -> Option<u64> {
@@ -1220,6 +1528,45 @@ mod tests {
         assert!(matches!(result, Err(Error::InvalidRequest(_))));
     }
 
+    #[test]
+    fn otlp_spans_keep_one_distributed_trace_across_remote_parents() {
+        let trace_id = vec![1; 16];
+        let rows = trace_rows(vec![ResourceSpans {
+            scope_spans: vec![ScopeSpans {
+                spans: vec![
+                    Span {
+                        trace_id: trace_id.clone(),
+                        span_id: vec![1; 8],
+                        ..Default::default()
+                    },
+                    Span {
+                        trace_id: trace_id.clone(),
+                        span_id: vec![2; 8],
+                        parent_span_id: vec![1; 8],
+                        flags: (1 << 8) | (1 << 9),
+                        ..Default::default()
+                    },
+                    Span {
+                        trace_id,
+                        span_id: vec![3; 8],
+                        parent_span_id: vec![2; 8],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }])
+        .unwrap();
+
+        assert_eq!(rows[0]["segment_id"], "01010101010101010101010101010101");
+        assert_eq!(rows[0]["is_segment"], true);
+        assert_eq!(rows[1]["segment_id"], rows[0]["segment_id"]);
+        assert_eq!(rows[1]["is_segment"], true);
+        assert_eq!(rows[2]["segment_id"], rows[0]["segment_id"]);
+        assert_eq!(rows[2]["is_segment"], false);
+    }
+
     #[tokio::test]
     async fn invalid_otlp_batch_does_not_stop_the_consumer() {
         let (confirmation, received) = oneshot::channel();
@@ -1304,10 +1651,119 @@ mod tests {
 
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0]["source"], "sentry");
+        assert_eq!(rows[0]["segment_id"], "0123456789abcdef");
+        assert_eq!(rows[0]["is_segment"], true);
         assert_eq!(rows[0]["kind"], 2);
         assert_eq!(rows[0]["duration_nano"], 250_000_000);
         assert_eq!(rows[1]["kind"], 3);
         assert_eq!(rows[1]["parent_span_id"], "0123456789abcdef");
+        assert_eq!(rows[1]["segment_id"], "0123456789abcdef");
+        assert_eq!(rows[1]["is_segment"], false);
         assert!(rows[0]["version"].as_u64().unwrap() < 1_u64 << 63);
+    }
+
+    #[test]
+    fn sentry_transaction_closes_unfinished_children_at_transaction_end() {
+        let rows = sentry_trace_rows(
+            "service-1",
+            &json!({
+                "transaction": "GET /checkout",
+                "start_timestamp": 1_700_000_000.0,
+                "timestamp": 1_700_000_001.0,
+                "contexts": {"trace": {
+                    "trace_id": "0123456789abcdef0123456789abcdef",
+                    "span_id": "0123456789abcdef"
+                }},
+                "spans": [{
+                    "span_id": "fedcba9876543210",
+                    "parent_span_id": "0123456789abcdef",
+                    "start_timestamp": 1_700_000_000.25
+                }]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(rows[1]["end_time_unix_nano"], 1_700_000_001_000_000_000_u64);
+        assert_eq!(rows[1]["status_code"], 2);
+        assert_eq!(rows[1]["status_message"], "deadline_exceeded");
+    }
+
+    #[test]
+    fn sentry_transaction_rejects_negative_span_duration() {
+        let error = sentry_trace_rows(
+            "service-1",
+            &json!({
+                "start_timestamp": 1_700_000_001.0,
+                "timestamp": 1_700_000_000.0,
+                "contexts": {"trace": {
+                    "trace_id": "0123456789abcdef0123456789abcdef",
+                    "span_id": "0123456789abcdef"
+                }}
+            }),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("before its start time"));
+    }
+
+    #[test]
+    fn sentry_v2_standalone_spans_join_the_shared_trace_model() {
+        let row = sentry_standalone_span_row(
+            "service-1",
+            &json!({
+                "trace_id": "0123456789abcdef0123456789abcdef",
+                "span_id": "fedcba9876543210",
+                "parent_span_id": "0123456789abcdef",
+                "name": "SELECT cart",
+                "status": "error",
+                "start_timestamp": 1_700_000_000.0,
+                "end_timestamp": 1_700_000_000.25,
+                "attributes": {
+                    "sentry.op": {"type": "string", "value": "db.sql.query"},
+                    "sentry.replay_id": {
+                        "type": "string",
+                        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                }
+            }),
+            crate::ingest::StandaloneSpanVersion::V2,
+        )
+        .unwrap();
+
+        assert_eq!(row["trace_id"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(row["parent_span_id"], "0123456789abcdef");
+        assert_eq!(row["kind"], 3);
+        assert_eq!(row["status_code"], 2);
+        assert_eq!(row["duration_nano"], 250_000_000);
+        assert_eq!(row["replay_id"], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    }
+
+    #[test]
+    fn sentry_errors_become_trace_issue_markers() {
+        let row = sentry_error_trace_row(
+            "service-1",
+            &crate::ingest::IngestedEvent {
+                event_id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
+                issue_id: "issue-checkout".into(),
+                title: "CheckoutInvariantError".into(),
+                level: "error".into(),
+                platform: "javascript".into(),
+                timestamp: "2026-08-15T10:00:00Z".into(),
+                payload: json!({
+                    "contexts": {"trace": {
+                        "trace_id": "0123456789abcdef0123456789abcdef",
+                        "span_id": "0123456789abcdef"
+                    }}
+                }),
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(row["source"], "sentry_error");
+        assert_eq!(row["trace_id"], "0123456789abcdef0123456789abcdef");
+        assert_eq!(row["parent_span_id"], "0123456789abcdef");
+        assert_eq!(row["status_code"], 2);
+        assert_eq!(row["span_id"].as_str().unwrap().len(), 16);
     }
 }

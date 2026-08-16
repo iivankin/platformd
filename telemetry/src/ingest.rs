@@ -18,12 +18,28 @@ const MAX_TITLE_BYTES: usize = 2048;
 const MAX_MESSAGE_BYTES: usize = 16 << 10;
 const MAX_ATTRIBUTE_BYTES: usize = 2048;
 const MAX_FINGERPRINT_COMPONENTS: usize = 32;
+const MAX_GROUPING_FRAMES: usize = 5;
+const SPAN_V2_CONTENT_TYPE: &str = "application/vnd.sentry.items.span.v2+json";
 
 pub struct PreparedIngest {
     pub documents: Vec<Document>,
     pub events: Vec<IngestedEvent>,
+    pub profiles: Vec<Value>,
+    pub standalone_spans: Vec<StandaloneSpan>,
     pub transactions: Vec<Value>,
     pub response_event_id: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct StandaloneSpan {
+    pub payload: Value,
+    pub version: StandaloneSpanVersion,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StandaloneSpanVersion {
+    Legacy,
+    V2,
 }
 
 #[derive(Clone, Debug)]
@@ -53,8 +69,11 @@ pub fn prepare(
         .and_then(Value::as_object)
         .and_then(|trace| string(trace, "replay_id"))
         .and_then(normalize_event_id);
+    validate_span_items(&envelope.items)?;
     let mut documents = Vec::new();
     let mut events = Vec::new();
+    let mut profiles = Vec::new();
+    let mut standalone_spans = Vec::new();
     let mut transactions = Vec::new();
 
     let mut envelope_document = Document::base("envelope", &service.id, &received_at, &received_at);
@@ -71,13 +90,18 @@ pub fn prepare(
     );
     documents.push(envelope_document);
 
-    for (item_index, item) in envelope.items.into_iter().enumerate() {
-        let is_event_or_transaction = matches!(item.item_type.as_str(), "event" | "transaction");
-        let mut parsed = if is_event_or_transaction || item.payload.len() <= MAX_INDEXED_JSON_BYTES
-        {
+    for (item_index, mut item) in envelope.items.into_iter().enumerate() {
+        let replay_video = (item.item_type == "replay_video")
+            .then(|| crate::replay_video::decode(&item.payload))
+            .transpose()?;
+        let is_required_json = matches!(
+            item.item_type.as_str(),
+            "event" | "transaction" | "profile" | "profile_chunk"
+        ) || is_span_v2_container(&item);
+        let mut parsed = if is_required_json || item.payload.len() <= MAX_INDEXED_JSON_BYTES {
             match serde_json::from_slice::<Value>(&item.payload) {
                 Ok(value) => Some(value),
-                Err(error) if is_event_or_transaction => {
+                Err(error) if is_required_json => {
                     return Err(Error::InvalidRequest(format!(
                         "invalid {} JSON: {error}",
                         item.item_type
@@ -88,30 +112,71 @@ pub fn prepare(
         } else {
             None
         };
+        if matches!(item.item_type.as_str(), "event" | "transaction" | "span")
+            && let Some(payload) = parsed.as_mut()
+        {
+            scrub_sensitive_data(payload);
+            item.payload = serde_json::to_vec(payload).map_err(|error| {
+                Error::Storage(format!(
+                    "encode scrubbed {} payload: {error}",
+                    item.item_type
+                ))
+            })?;
+        }
+        if let Some(replay_video) = replay_video.as_ref() {
+            parsed = Some(replay_video.event.clone());
+        }
         let replay_header = (item.item_type == "replay_recording")
             .then(|| replay_recording_header(&item.payload))
             .flatten();
-        let replay_metadata =
-            matches!(item.item_type.as_str(), "replay_event" | "replay_recording").then(|| {
-                let payload = parsed
+        let replay_metadata = matches!(
+            item.item_type.as_str(),
+            "replay_event" | "replay_recording" | "replay_video"
+        )
+        .then(|| {
+            let payload = parsed
+                .as_ref()
+                .or(replay_header.as_ref())
+                .and_then(Value::as_object);
+            let replay_id = payload
+                .and_then(|payload| {
+                    string(payload, "replay_id").or_else(|| string(payload, "event_id"))
+                })
+                .and_then(normalize_event_id)
+                .or_else(|| {
+                    replay_video
+                        .as_ref()
+                        .and_then(|replay_video| replay_video.replay_id.clone())
+                })
+                .or_else(|| envelope_event_id.clone());
+            let segment_id = payload
+                .and_then(|payload| payload.get("segment_id"))
+                .and_then(replay_segment_id);
+            let segment_id = segment_id.or_else(|| {
+                replay_video
                     .as_ref()
-                    .or(replay_header.as_ref())
-                    .and_then(Value::as_object);
-                let replay_id = payload
-                    .and_then(|payload| {
-                        string(payload, "replay_id").or_else(|| string(payload, "event_id"))
-                    })
-                    .and_then(normalize_event_id)
-                    .or_else(|| envelope_event_id.clone());
-                let segment_id = payload
-                    .and_then(|payload| payload.get("segment_id"))
-                    .and_then(replay_segment_id);
-                (replay_id, segment_id)
+                    .and_then(|replay_video| replay_video.segment_id)
             });
+            (replay_id, segment_id)
+        });
         if item.item_type == "transaction"
             && let Some(transaction) = parsed.as_ref()
         {
             transactions.push(transaction.clone());
+        }
+        if item.item_type == "span" {
+            standalone_spans.extend(standalone_span_items(&item, parsed.as_ref())?);
+        }
+        if matches!(item.item_type.as_str(), "profile" | "profile_chunk")
+            && let Some(profile) = parsed.as_ref()
+        {
+            let received_at_unix_nano =
+                u64::try_from(Timestamp::now().as_nanosecond()).unwrap_or_default();
+            profiles.extend(crate::profile::sentry_profile_rows(
+                &service.id,
+                profile,
+                received_at_unix_nano,
+            ));
         }
         let event = if item.item_type == "event" {
             Some(
@@ -151,7 +216,7 @@ pub fn prepare(
             string(&item.headers, "filename").map(|value| bounded(value, MAX_ATTRIBUTE_BYTES));
         document.content_type =
             string(&item.headers, "content_type").map(|value| bounded(value, MAX_ATTRIBUTE_BYTES));
-        if item.payload.len() <= MAX_INDEXED_JSON_BYTES {
+        if item.payload.len() <= MAX_INDEXED_JSON_BYTES || replay_video.is_some() {
             document.payload = event
                 .as_ref()
                 .map(|event| Value::Object(event.payload.clone()))
@@ -212,9 +277,169 @@ pub fn prepare(
     Ok(PreparedIngest {
         documents,
         events,
+        profiles,
+        standalone_spans,
         transactions,
         response_event_id,
     })
+}
+
+fn scrub_sensitive_data(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, value) in object {
+                let normalized = key
+                    .chars()
+                    .filter(|character| character.is_ascii_alphanumeric())
+                    .flat_map(char::to_lowercase)
+                    .collect::<String>();
+                if normalized == "cookies" {
+                    scrub_container_values(value);
+                } else if sensitive_key(&normalized) {
+                    *value = Value::String("[Filtered]".into());
+                } else if normalized == "headers" {
+                    scrub_headers(value);
+                    scrub_sensitive_data(value);
+                } else {
+                    scrub_sensitive_data(value);
+                }
+            }
+        }
+        Value::Array(values) => values.iter_mut().for_each(scrub_sensitive_data),
+        _ => {}
+    }
+}
+
+fn scrub_container_values(value: &mut Value) {
+    match value {
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                *value = Value::String("[Filtered]".into());
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                if let Some(pair) = value.as_array_mut()
+                    && let Some(value) = pair.get_mut(1)
+                {
+                    *value = Value::String("[Filtered]".into());
+                } else {
+                    *value = Value::String("[Filtered]".into());
+                }
+            }
+        }
+        Value::Null => {}
+        _ => *value = Value::String("[Filtered]".into()),
+    }
+}
+
+fn scrub_headers(value: &mut Value) {
+    let Value::Array(headers) = value else {
+        return;
+    };
+    for header in headers {
+        let Some(pair) = header.as_array_mut() else {
+            continue;
+        };
+        let sensitive = pair
+            .first()
+            .and_then(Value::as_str)
+            .map(normalized_sensitive_key)
+            .is_some_and(|key| sensitive_key(&key));
+        if sensitive && let Some(value) = pair.get_mut(1) {
+            *value = Value::String("[Filtered]".into());
+        }
+    }
+}
+
+fn normalized_sensitive_key(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn sensitive_key(value: &str) -> bool {
+    matches!(
+        value,
+        "authorization"
+            | "proxyauthorization"
+            | "cookie"
+            | "setcookie"
+            | "password"
+            | "passwd"
+            | "secret"
+            | "apikey"
+            | "accesstoken"
+            | "refreshtoken"
+            | "sessionid"
+            | "csrftoken"
+            | "xcsrftoken"
+            | "xsrftoken"
+    )
+}
+
+fn standalone_span_items(
+    item: &crate::envelope::Item,
+    parsed: Option<&Value>,
+) -> Result<Vec<StandaloneSpan>> {
+    if is_span_v2_container(item) {
+        let items = parsed
+            .and_then(Value::as_object)
+            .and_then(|container| container.get("items"))
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::InvalidRequest("invalid Sentry span container".into()))?;
+        let expected = item.headers.get("item_count").and_then(Value::as_u64);
+        if expected != Some(items.len() as u64) {
+            return Err(Error::InvalidRequest(format!(
+                "Sentry span container item_count {expected:?} does not match {} items",
+                items.len()
+            )));
+        }
+        return Ok(items
+            .iter()
+            .filter(|span| span.is_object())
+            .cloned()
+            .map(|payload| StandaloneSpan {
+                payload,
+                version: StandaloneSpanVersion::V2,
+            })
+            .collect());
+    }
+    Ok(parsed
+        .filter(|span| span.is_object())
+        .cloned()
+        .map(|payload| {
+            vec![StandaloneSpan {
+                payload,
+                version: StandaloneSpanVersion::Legacy,
+            }]
+        })
+        .unwrap_or_default())
+}
+
+fn is_span_v2_container(item: &crate::envelope::Item) -> bool {
+    item.item_type == "span"
+        && string(&item.headers, "content_type")
+            .is_some_and(|value| value.eq_ignore_ascii_case(SPAN_V2_CONTENT_TYPE))
+}
+
+fn validate_span_items(items: &[crate::envelope::Item]) -> Result<()> {
+    let container_count = items
+        .iter()
+        .filter(|item| is_span_v2_container(item))
+        .count();
+    let legacy_count = items
+        .iter()
+        .filter(|item| item.item_type == "span" && !is_span_v2_container(item))
+        .count();
+    if container_count > 1 || (container_count == 1 && legacy_count > 0) {
+        return Err(Error::InvalidRequest(
+            "duplicate or mixed Sentry span items in one envelope".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn replay_recording_header(payload: &[u8]) -> Option<Value> {
@@ -298,7 +523,7 @@ fn normalize_event_with_geoip(
         string(&payload, "platform").unwrap_or("other"),
         MAX_ATTRIBUTE_BYTES,
     );
-    let issue_id = issue_id(&payload, exception, &title, &platform);
+    let issue_id = issue_id(&payload, &title, &platform);
     let timestamp =
         event_timestamp(payload.get("timestamp")).unwrap_or_else(|| received_at.to_owned());
     let sdk = payload.get("sdk").and_then(Value::as_object);
@@ -429,12 +654,7 @@ fn event_tag<'a>(tags: Option<&'a Value>, key: &str) -> Option<&'a str> {
     }
 }
 
-fn issue_id(
-    payload: &Map<String, Value>,
-    exception: Option<&Map<String, Value>>,
-    title: &str,
-    platform: &str,
-) -> String {
+fn issue_id(payload: &Map<String, Value>, title: &str, platform: &str) -> String {
     let mut canonical = String::new();
     let fingerprint = payload
         .get("fingerprint")
@@ -446,58 +666,342 @@ fn issue_id(
             .filter_map(Value::as_str)
             .take(MAX_FINGERPRINT_COMPONENTS)
         {
-            if value.replace(' ', "") == "{{default}}" {
-                append_default_fingerprint(&mut canonical, exception, title, platform);
-            } else {
-                canonical.push_str("custom\0");
-                canonical.push_str(&bounded(value, MAX_ATTRIBUTE_BYTES));
-                canonical.push('\0');
+            match fingerprint_variable(value) {
+                Some("default") => {
+                    append_default_fingerprint(&mut canonical, payload, title, platform);
+                }
+                Some(variable) => {
+                    canonical.push_str("custom\0");
+                    canonical.push_str(&bounded(
+                        &resolve_fingerprint_variable(variable, payload),
+                        MAX_ATTRIBUTE_BYTES,
+                    ));
+                    canonical.push('\0');
+                }
+                None => {
+                    canonical.push_str("custom\0");
+                    canonical.push_str(&bounded(
+                        &normalize_fingerprint_literal(value, payload),
+                        MAX_ATTRIBUTE_BYTES,
+                    ));
+                    canonical.push('\0');
+                }
             }
         }
     } else {
-        append_default_fingerprint(&mut canonical, exception, title, platform);
+        append_default_fingerprint(&mut canonical, payload, title, platform);
     }
     format!("{:x}", Sha256::digest(canonical.as_bytes()))
 }
 
+fn fingerprint_variable(value: &str) -> Option<&str> {
+    let value = value.trim();
+    let variable = value.strip_prefix("{{")?.strip_suffix("}}")?.trim();
+    (!variable.is_empty() && !variable.chars().any(char::is_whitespace)).then_some(variable)
+}
+
+fn resolve_fingerprint_variable(variable: &str, payload: &Map<String, Value>) -> String {
+    let exception = last_exception(payload);
+    let frame = crash_frame(payload);
+    let resolved = match variable {
+        "transaction" => string(payload, "transaction")
+            .unwrap_or("<no-transaction>")
+            .to_owned(),
+        "message" | "raw_message" => fingerprint_message(payload)
+            .unwrap_or("<no-message>")
+            .to_owned(),
+        "type" | "error.type" => exception
+            .and_then(|exception| string(exception, "type"))
+            .unwrap_or("<no-type>")
+            .to_owned(),
+        "value" | "raw_value" | "error.value" | "error.raw_value" => exception
+            .and_then(|exception| string(exception, "value"))
+            .unwrap_or("<no-value>")
+            .to_owned(),
+        "function" | "stack.function" => frame
+            .and_then(|frame| string(frame, "function"))
+            .unwrap_or("<no-function>")
+            .to_owned(),
+        "path" | "stack.abs_path" => frame
+            .and_then(|frame| string(frame, "abs_path").or_else(|| string(frame, "filename")))
+            .unwrap_or("<no-abs-path>")
+            .to_owned(),
+        "stack.filename" => frame
+            .and_then(|frame| string(frame, "filename").or_else(|| string(frame, "abs_path")))
+            .unwrap_or("<no-filename>")
+            .to_owned(),
+        "module" | "stack.module" => frame
+            .and_then(|frame| string(frame, "module"))
+            .unwrap_or("<no-module>")
+            .to_owned(),
+        "package" | "stack.package" => frame
+            .and_then(|frame| string(frame, "package"))
+            .map(path_basename)
+            .unwrap_or("<no-package>")
+            .to_owned(),
+        "level" => string(payload, "level").unwrap_or("<no-level>").to_owned(),
+        "logger" => string(payload, "logger")
+            .unwrap_or("<no-logger>")
+            .to_owned(),
+        variable if variable.starts_with("tags.") => {
+            return event_tag(payload.get("tags"), &variable[5..])
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("<no-value-for-tag-{}>", &variable[5..]));
+        }
+        _ => return format!("<unrecognized-variable-{variable}>"),
+    };
+    if matches!(variable, "message" | "value" | "error.value")
+        && !matches!(resolved.as_str(), "<no-message>" | "<no-value>")
+    {
+        normalize_grouping_message(&resolved)
+    } else {
+        resolved
+    }
+}
+
+fn normalize_fingerprint_literal(value: &str, payload: &Map<String, Value>) -> String {
+    let matches_message = fingerprint_messages(payload).any(|message| message == value);
+    if matches_message {
+        normalize_grouping_message(value)
+    } else {
+        value.to_owned()
+    }
+}
+
+fn fingerprint_message(payload: &Map<String, Value>) -> Option<&str> {
+    payload
+        .get("logentry")
+        .and_then(Value::as_object)
+        .and_then(|entry| string(entry, "formatted").or_else(|| string(entry, "message")))
+        .or_else(|| string(payload, "message"))
+        .or_else(|| last_exception(payload).and_then(|exception| string(exception, "value")))
+}
+
+fn fingerprint_messages(payload: &Map<String, Value>) -> impl Iterator<Item = &str> {
+    let canonical = fingerprint_message(payload).into_iter();
+    let exceptions = payload
+        .get("exception")
+        .and_then(Value::as_object)
+        .and_then(|exception| exception.get("values"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_object)
+        .filter_map(|exception| string(exception, "value"));
+    canonical.chain(exceptions)
+}
+
+fn last_exception(payload: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    payload
+        .get("exception")?
+        .as_object()?
+        .get("values")?
+        .as_array()?
+        .last()?
+        .as_object()
+}
+
+fn crash_frame(payload: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    let frames = last_exception(payload)
+        .and_then(|exception| exception.get("stacktrace"))
+        .and_then(Value::as_object)
+        .and_then(|stacktrace| stacktrace.get("frames"))
+        .and_then(Value::as_array)
+        .or_else(|| {
+            payload
+                .get("stacktrace")
+                .and_then(Value::as_object)
+                .and_then(|stacktrace| stacktrace.get("frames"))
+                .and_then(Value::as_array)
+        })
+        .or_else(|| {
+            let threads = payload
+                .get("threads")?
+                .as_object()?
+                .get("values")?
+                .as_array()?;
+            (threads.len() == 1)
+                .then(|| threads[0].as_object())
+                .flatten()?
+                .get("stacktrace")?
+                .as_object()?
+                .get("frames")?
+                .as_array()
+        })?;
+    let mut fallback = None;
+    for frame in frames.iter().rev().filter_map(Value::as_object) {
+        if frame.get("in_app").and_then(Value::as_bool) == Some(true) {
+            return Some(frame);
+        }
+        fallback.get_or_insert(frame);
+    }
+    fallback
+}
+
+fn path_basename(value: &str) -> &str {
+    value.rsplit(['/', '\\']).next().unwrap_or(value)
+}
+
 fn append_default_fingerprint(
     canonical: &mut String,
-    exception: Option<&Map<String, Value>>,
+    payload: &Map<String, Value>,
     title: &str,
     platform: &str,
 ) {
     canonical.push_str("default\0");
     canonical.push_str(platform);
-    canonical.push('\0');
-    canonical.push_str(title);
-    if let Some(frame) = exception
-        .and_then(|value| value.get("stacktrace"))
+    let exceptions = payload
+        .get("exception")
         .and_then(Value::as_object)
-        .and_then(|value| value.get("frames"))
-        .and_then(Value::as_array)
-        .and_then(|frames| {
-            frames
-                .iter()
-                .rev()
-                .find(|frame| frame.get("in_app").and_then(Value::as_bool).unwrap_or(true))
-        })
-        .and_then(Value::as_object)
-    {
-        for field in ["module", "function", "filename", "abs_path", "lineno"] {
-            canonical.push('\0');
-            if let Some(value) = frame.get(field) {
-                match value {
-                    Value::String(value) => {
-                        canonical.push_str(&bounded(value, MAX_ATTRIBUTE_BYTES));
-                    }
-                    Value::Number(_) | Value::Bool(_) | Value::Null => {
-                        canonical.push_str(&value.to_string());
-                    }
-                    Value::Array(_) | Value::Object(_) => {}
-                }
+        .and_then(|exception| exception.get("values"))
+        .and_then(Value::as_array);
+    if let Some(exceptions) = exceptions {
+        for exception in exceptions.iter().filter_map(Value::as_object) {
+            canonical.push_str("\0exception\0");
+            let synthetic = exception
+                .get("mechanism")
+                .and_then(Value::as_object)
+                .and_then(|mechanism| mechanism.get("synthetic"))
+                .and_then(Value::as_bool)
+                == Some(true);
+            if !synthetic {
+                canonical.push_str(string(exception, "type").unwrap_or("Error"));
+            }
+            let stacktrace = exception.get("stacktrace").and_then(Value::as_object);
+            if !append_grouping_stack(canonical, stacktrace) {
+                canonical.push_str("\0value\0");
+                canonical.push_str(&normalize_grouping_message(
+                    string(exception, "value").unwrap_or(title),
+                ));
             }
         }
     }
+    if exceptions.is_none_or(|values| values.is_empty()) {
+        if append_grouping_stack(
+            canonical,
+            payload.get("stacktrace").and_then(Value::as_object),
+        ) {
+            return;
+        }
+        if let Some(stacktrace) = grouping_thread_stacktrace(payload)
+            && append_grouping_stack(canonical, Some(stacktrace))
+        {
+            return;
+        }
+        canonical.push_str("\0message\0");
+        canonical.push_str(&normalize_grouping_message(title));
+    }
+}
+
+fn append_grouping_stack(canonical: &mut String, stacktrace: Option<&Map<String, Value>>) -> bool {
+    let Some(frames) = stacktrace
+        .and_then(|stacktrace| stacktrace.get("frames"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+    let mut meaningful = Vec::new();
+    let mut previous = None;
+    for frame in frames.iter().filter_map(Value::as_object) {
+        let recursive = previous.is_some_and(|prior| same_grouping_frame(frame, prior));
+        previous = Some(frame);
+        if !recursive && grouping_frame(frame).is_some() {
+            meaningful.push(frame);
+        }
+    }
+    let in_app = meaningful
+        .iter()
+        .copied()
+        .filter(|frame| frame.get("in_app").and_then(Value::as_bool) != Some(false))
+        .collect::<Vec<_>>();
+    let selected = if in_app.is_empty() {
+        &meaningful
+    } else {
+        &in_app
+    };
+    let mut contributed = false;
+    for frame in selected.iter().rev().take(MAX_GROUPING_FRAMES).rev() {
+        let Some(frame) = grouping_frame(frame) else {
+            continue;
+        };
+        contributed = true;
+        canonical.push_str("\0frame\0");
+        canonical.push_str(&frame);
+    }
+    contributed
+}
+
+fn same_grouping_frame(left: &Map<String, Value>, right: &Map<String, Value>) -> bool {
+    [
+        "abs_path", "package", "module", "filename", "function", "lineno", "colno",
+    ]
+    .iter()
+    .all(|key| left.get(*key) == right.get(*key))
+}
+
+fn grouping_thread_stacktrace(payload: &Map<String, Value>) -> Option<&Map<String, Value>> {
+    let threads = payload
+        .get("threads")?
+        .as_object()?
+        .get("values")?
+        .as_array()?;
+    let threads = threads
+        .iter()
+        .filter_map(Value::as_object)
+        .collect::<Vec<_>>();
+    let select_one = |key: &str| {
+        let selected = threads
+            .iter()
+            .copied()
+            .filter(|thread| thread.get(key).and_then(Value::as_bool) == Some(true))
+            .collect::<Vec<_>>();
+        (selected.len() == 1).then_some(selected[0])
+    };
+    let thread = select_one("crashed")
+        .or_else(|| select_one("current"))
+        .or_else(|| (threads.len() == 1).then_some(threads[0]))?;
+    thread.get("stacktrace")?.as_object()
+}
+
+fn grouping_frame(frame: &Map<String, Value>) -> Option<String> {
+    let module = string(frame, "module").unwrap_or_default();
+    let function = string(frame, "function").unwrap_or_default();
+    let path = string(frame, "filename")
+        .or_else(|| string(frame, "abs_path"))
+        .unwrap_or_default();
+    let filename = path
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(path)
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or_default();
+    if module.is_empty() && function.is_empty() && filename.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}\0{}\0{}",
+        normalize_grouping_message(module),
+        normalize_grouping_message(function),
+        normalize_grouping_message(filename)
+    ))
+}
+
+fn normalize_grouping_message(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|token| {
+            let trimmed = token.trim_matches(|character: char| {
+                !character.is_ascii_alphanumeric() && character != '-' && character != '_'
+            });
+            let compact = trimmed.replace('-', "");
+            let dynamic = (compact.len() >= 16
+                && compact.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                || (trimmed.len() >= 3 && trimmed.bytes().all(|byte| byte.is_ascii_digit()));
+            if dynamic { "#" } else { token }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 struct ContentInput<'a> {
@@ -667,6 +1171,57 @@ mod tests {
     }
 
     #[test]
+    fn scrubs_credentials_before_indexing_or_storing_event_content() {
+        let prepared = prepare(
+            &fixture(),
+            Envelope {
+                headers: Map::new(),
+                items: vec![Item {
+                    headers: Map::new(),
+                    item_type: "event".into(),
+                    payload: serde_json::to_vec(&json!({
+                        "event_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "message": "failed request",
+                        "request": {
+                            "cookies": {"session": "cookie-secret"},
+                            "headers": [
+                                ["Authorization", "Bearer header-secret"],
+                                ["Content-Type", "application/json"]
+                            ]
+                        },
+                        "contexts": {"auth": {
+                            "access_token": "context-secret",
+                            "account": "visible"
+                        }}
+                    }))
+                    .unwrap(),
+                }],
+            },
+            None,
+            None,
+            &GeoIpLookup::empty(),
+        )
+        .unwrap();
+
+        let event = &prepared.events[0].payload;
+        assert_eq!(event["request"]["cookies"]["session"], "[Filtered]");
+        assert_eq!(event["request"]["headers"][0][1], "[Filtered]");
+        assert_eq!(event["request"]["headers"][1][1], "application/json");
+        assert_eq!(event["contexts"]["auth"]["access_token"], "[Filtered]");
+        assert_eq!(event["contexts"]["auth"]["account"], "visible");
+        let content = prepared
+            .documents
+            .iter()
+            .filter(|document| document.doc_kind == "content_chunk")
+            .flat_map(|document| document.content.iter().flatten().copied())
+            .collect::<Vec<_>>();
+        let content = String::from_utf8(content).unwrap();
+        assert!(!content.contains("cookie-secret"));
+        assert!(!content.contains("header-secret"));
+        assert!(!content.contains("context-secret"));
+    }
+
+    #[test]
     fn links_events_to_replays_from_sdk_tags_or_envelope_trace() {
         let tagged = normalize_event(
             Some(json!({
@@ -775,6 +1330,187 @@ mod tests {
     }
 
     #[test]
+    fn groups_dynamic_exception_values_with_the_same_stack() {
+        let event = |value: &str, line: u64| {
+            normalize_event(
+                Some(json!({
+                    "platform": "javascript",
+                    "exception": {"values": [{
+                        "type": "CheckoutError",
+                        "value": value,
+                        "stacktrace": {"frames": [{
+                            "filename": "webpack:///src/checkout.ts",
+                            "function": "finalizeOrder",
+                            "in_app": true,
+                            "lineno": line
+                        }]}
+                    }]}
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            event("order 019f9a10f2187ddfb150cfede57eff49 failed", 71).issue_id,
+            event("order 019f9a10f2187ddfb150cfede57eff50 failed", 96).issue_id
+        );
+    }
+
+    #[test]
+    fn distinguishes_different_in_app_call_sites() {
+        let event = |function: &str| {
+            normalize_event(
+                Some(json!({
+                    "exception": {"values": [{
+                        "type": "Error",
+                        "value": "failed",
+                        "stacktrace": {"frames": [{
+                            "filename": "/src/orders.ts",
+                            "function": function,
+                            "in_app": true
+                        }]}
+                    }]}
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_ne!(
+            event("reserveOrder").issue_id,
+            event("cancelOrder").issue_id
+        );
+    }
+
+    #[test]
+    fn normalizes_dynamic_values_when_no_stack_is_available() {
+        let event = |value: &str| {
+            normalize_event(
+                Some(json!({
+                    "exception": {"values": [{"type": "Error", "value": value}]}
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            event("request 12345 failed").issue_id,
+            event("request 67890 failed").issue_id
+        );
+    }
+
+    #[test]
+    fn chained_exception_without_stack_still_contributes_its_value() {
+        let event = |cause: &str| {
+            normalize_event(
+                Some(json!({
+                    "exception": {"values": [
+                        {
+                            "type": "DatabaseError",
+                            "value": "query failed",
+                            "stacktrace": {"frames": [{
+                                "filename": "/src/db.rs",
+                                "function": "execute",
+                                "in_app": true
+                            }]}
+                        },
+                        {"type": "RequestError", "value": cause}
+                    ]}
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_ne!(
+            event("checkout failed").issue_id,
+            event("login failed").issue_id
+        );
+    }
+
+    #[test]
+    fn synthetic_exception_type_does_not_split_the_same_stack() {
+        let event = |exception_type: &str| {
+            normalize_event(
+                Some(json!({
+                    "exception": {"values": [{
+                        "type": exception_type,
+                        "mechanism": {"synthetic": true},
+                        "stacktrace": {"frames": [{
+                            "filename": "/src/tasks.ts",
+                            "function": "runTask",
+                            "in_app": true
+                        }]}
+                    }]}
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            event("Error").issue_id,
+            event("SyntheticException").issue_id
+        );
+    }
+
+    #[test]
+    fn groups_by_event_and_thread_stacktraces_when_exception_is_absent() {
+        let direct = normalize_event(
+            Some(json!({
+                "message": "dynamic 12345",
+                "stacktrace": {"frames": [{
+                    "filename": "/src/worker.go",
+                    "function": "poll",
+                    "in_app": true
+                }]}
+            })),
+            None,
+            None,
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .unwrap();
+        let thread = normalize_event(
+            Some(json!({
+                "message": "dynamic 67890",
+                "threads": {"values": [{
+                    "crashed": true,
+                    "stacktrace": {"frames": [{
+                        "filename": "/src/worker.go",
+                        "function": "poll",
+                        "in_app": true
+                    }]}
+                }]}
+            })),
+            None,
+            None,
+            "2026-01-01T00:00:00Z",
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(direct.issue_id, thread.issue_id);
+    }
+
+    #[test]
     fn default_fingerprint_keeps_custom_components() {
         let payload_a = json!({
             "fingerprint": ["{{ default }}", "tenant-a"],
@@ -787,6 +1523,92 @@ mod tests {
         let a = normalize_event(Some(payload_a), None, None, "2026-01-01T00:00:00Z", None).unwrap();
         let b = normalize_event(Some(payload_b), None, None, "2026-01-01T00:00:00Z", None).unwrap();
         assert_ne!(a.issue_id, b.issue_id);
+    }
+
+    #[test]
+    fn resolves_transaction_and_tag_fingerprint_variables() {
+        let event = |transaction: &str, tenant: &str| {
+            normalize_event(
+                Some(json!({
+                    "fingerprint": ["{{ transaction }}", "{{ tags.tenant }}"],
+                    "message": "shared failure",
+                    "transaction": transaction,
+                    "tags": [["tenant", tenant]]
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_ne!(
+            event("checkout", "tenant-a").issue_id,
+            event("checkout", "tenant-b").issue_id
+        );
+        assert_ne!(
+            event("checkout", "tenant-a").issue_id,
+            event("login", "tenant-a").issue_id
+        );
+    }
+
+    #[test]
+    fn stack_fingerprint_uses_highest_in_app_crash_frame() {
+        let event = |function: &str, sdk_function: &str| {
+            normalize_event(
+                Some(json!({
+                    "fingerprint": ["{{ stack.function }}"],
+                    "exception": {"values": [{
+                        "type": "Failure",
+                        "stacktrace": {"frames": [
+                            {"function": function, "in_app": true},
+                            {"function": sdk_function, "in_app": false}
+                        ]}
+                    }]}
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            event("checkout", "sdkA").issue_id,
+            event("checkout", "sdkB").issue_id
+        );
+        assert_ne!(
+            event("checkout", "sdkA").issue_id,
+            event("login", "sdkA").issue_id
+        );
+    }
+
+    #[test]
+    fn message_fingerprint_variable_parameterizes_dynamic_values() {
+        let event = |variable: &str, message: &str| {
+            normalize_event(
+                Some(json!({
+                    "fingerprint": [variable],
+                    "message": message
+                })),
+                None,
+                None,
+                "2026-01-01T00:00:00Z",
+                None,
+            )
+            .unwrap()
+        };
+
+        assert_eq!(
+            event("{{ message }}", "request 12345 failed").issue_id,
+            event("{{ message }}", "request 67890 failed").issue_id
+        );
+        assert_ne!(
+            event("{{ raw_message }}", "request 12345 failed").issue_id,
+            event("{{ raw_message }}", "request 67890 failed").issue_id
+        );
     }
 
     #[test]
@@ -813,6 +1635,38 @@ mod tests {
             event_timestamp(Some(&Value::Number(timestamp))).as_deref(),
             Some("1970-01-01T00:00:02Z")
         );
+    }
+
+    #[test]
+    fn extracts_sentry_v2_span_container_only_when_item_count_matches() {
+        let payload = json!({
+            "version": 2,
+            "items": [{
+                "trace_id": "0123456789abcdef0123456789abcdef",
+                "span_id": "0123456789abcdef"
+            }]
+        });
+        let item = Item {
+            headers: Map::from_iter([
+                (
+                    "content_type".into(),
+                    Value::String("application/vnd.sentry.items.span.v2+json".into()),
+                ),
+                ("item_count".into(), Value::from(1)),
+            ]),
+            item_type: "span".into(),
+            payload: Vec::new(),
+        };
+
+        let spans = standalone_span_items(&item, Some(&payload)).unwrap();
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].version, StandaloneSpanVersion::V2);
+
+        let mut mismatched = item;
+        mismatched
+            .headers
+            .insert("item_count".into(), Value::from(2));
+        assert!(standalone_span_items(&mismatched, Some(&payload)).is_err());
     }
 
     #[test]
@@ -973,5 +1827,85 @@ mod tests {
         .err()
         .expect("malformed events must be rejected");
         assert!(error.to_string().contains("invalid event JSON"));
+    }
+
+    #[test]
+    fn rejects_malformed_v2_span_containers_but_drops_malformed_legacy_spans() {
+        let app = fixture();
+        let error = prepare(
+            &app,
+            Envelope {
+                headers: Map::new(),
+                items: vec![Item {
+                    headers: Map::from_iter([
+                        (
+                            "content_type".into(),
+                            Value::String(SPAN_V2_CONTENT_TYPE.into()),
+                        ),
+                        ("item_count".into(), Value::from(1)),
+                    ]),
+                    item_type: "span".into(),
+                    payload: b"not-json".to_vec(),
+                }],
+            },
+            None,
+            None,
+            &GeoIpLookup::empty(),
+        )
+        .err()
+        .expect("malformed v2 span containers must be rejected");
+        assert!(error.to_string().contains("invalid span JSON"));
+
+        let prepared = prepare(
+            &app,
+            Envelope {
+                headers: Map::new(),
+                items: vec![Item {
+                    headers: Map::new(),
+                    item_type: "span".into(),
+                    payload: b"not-json".to_vec(),
+                }],
+            },
+            None,
+            None,
+            &GeoIpLookup::empty(),
+        )
+        .expect("Relay discards malformed legacy spans individually");
+        assert!(prepared.standalone_spans.is_empty());
+    }
+
+    #[test]
+    fn rejects_mixed_legacy_and_v2_span_items() {
+        let app = fixture();
+        let error = prepare(
+            &app,
+            Envelope {
+                headers: Map::new(),
+                items: vec![
+                    Item {
+                        headers: Map::new(),
+                        item_type: "span".into(),
+                        payload: b"{}".to_vec(),
+                    },
+                    Item {
+                        headers: Map::from_iter([
+                            (
+                                "content_type".into(),
+                                Value::String(SPAN_V2_CONTENT_TYPE.into()),
+                            ),
+                            ("item_count".into(), Value::from(0)),
+                        ]),
+                        item_type: "span".into(),
+                        payload: br#"{"items":[]}"#.to_vec(),
+                    },
+                ],
+            },
+            None,
+            None,
+            &GeoIpLookup::empty(),
+        )
+        .err()
+        .expect("mixed standalone span ingress must be rejected");
+        assert!(error.to_string().contains("duplicate or mixed"));
     }
 }

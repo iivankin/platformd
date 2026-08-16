@@ -26,6 +26,7 @@ const MaximumDownloadRange = 24 * time.Hour
 
 type Query struct {
 	ServiceID    string
+	ServiceIDs   []string
 	DeploymentID string
 	Contains     string
 	Cursor       string
@@ -46,6 +47,7 @@ type ResourceQuery struct {
 }
 
 type Record struct {
+	ServiceID      string         `json:"serviceId,omitempty"`
 	Timestamp      time.Time      `json:"timestamp"`
 	Stream         string         `json:"stream"`
 	Text           string         `json:"text"`

@@ -38,10 +38,10 @@ export const TelemetryWorkspace = ({
     : (availableViews[0] ?? "metrics");
 
   return (
-    <div className="min-h-[28rem] overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <nav
         aria-label="Telemetry views"
-        className="flex h-12 items-stretch overflow-x-auto border-b border-border px-3"
+        className="flex h-12 shrink-0 items-stretch overflow-x-auto border-b border-border px-3"
       >
         {availableViews.map((view) => (
           <button
@@ -57,7 +57,14 @@ export const TelemetryWorkspace = ({
           </button>
         ))}
       </nav>
-      {views[activeView]}
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          activeView === "logs" ? "overflow-hidden" : "overflow-auto"
+        )}
+      >
+        {views[activeView]}
+      </div>
     </div>
   );
 };

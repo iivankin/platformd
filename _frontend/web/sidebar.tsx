@@ -8,6 +8,7 @@ import {
   LogOut,
   Plus,
   Settings,
+  Waypoints,
 } from "lucide-react";
 import { useState } from "react";
 import type { ComponentType } from "react";
@@ -26,7 +27,8 @@ export interface NavigationItem {
 }
 
 export const globalNavigation: NavigationItem[] = [
-  { icon: Activity, label: "Monitoring", path: "/monitoring" },
+  { icon: Waypoints, label: "Telemetry", path: "/telemetry" },
+  { icon: Activity, label: "System", path: "/system" },
   { icon: Settings, label: "Settings", path: "/settings" },
 ];
 

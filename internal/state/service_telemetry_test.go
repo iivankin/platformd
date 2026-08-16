@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -96,5 +97,109 @@ func TestServiceTelemetryStateUsesServiceForeignKey(t *testing.T) {
 		if err != nil || len(serviceIDs) != 1 || serviceIDs[0] != "service" {
 			t.Fatalf("metric scope services = %v, %v", serviceIDs, err)
 		}
+	}
+}
+
+func TestServiceTelemetryCanShareAnOwnedApplicationDomain(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(ctx, CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var first ServiceDesired
+	for index, service := range []CreateService{
+		{ID: "service-a", ProjectID: "project", Name: "api", Enabled: true, Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")}, AuditEventID: "service-audit-a", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 2},
+		{ID: "service-b", ProjectID: "project", Name: "web", Enabled: true, Snapshot: serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")}, AuditEventID: "service-audit-b", ActorKind: "access", ActorID: "actor", ActorEmail: "admin@example.com", CreatedAtMillis: 3},
+	} {
+		created, err := store.CreateService(ctx, service)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			first = created
+		}
+	}
+	for index, domain := range []struct{ serviceID, hostname string }{
+		{"service-a", "api.example.com"},
+		{"service-b", "web.example.com"},
+	} {
+		if _, err := store.AttachServiceDomain(ctx, AttachServiceDomainInput{
+			ProjectID: "project", ServiceID: domain.serviceID, Hostname: domain.hostname, TargetPort: 8080,
+			AuditEventID: fmt.Sprintf("domain-audit-%d", index), ActorKind: "access", ActorID: "actor",
+			ActorEmail: "admin@example.com", CreatedAtMillis: int64(4 + index),
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
+		ID: "service-a", ProjectID: "project", Path: "/client-report",
+		ExpectedUpdatedMillis: first.UpdatedAtMillis, AuditEventID: "missing-domain-tunnel-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
+	}); !errors.Is(err, ErrServiceTelemetryTunnelNeedsDomain) {
+		t.Fatalf("browser tunnel without public domain = %v", err)
+	}
+	updated, err := store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com",
+		ExpectedUpdatedMillis: first.UpdatedAtMillis, AuditEventID: "telemetry-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
+	})
+	if err != nil || updated.SentryPublicHostname != "api.example.com" {
+		t.Fatalf("shared telemetry domain = %q, %v", updated.SentryPublicHostname, err)
+	}
+	updated, err = store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
+		ID: "service-a", ProjectID: "project", Path: " /client-report ",
+		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "tunnel-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 7,
+	})
+	if err != nil || updated.SentryTunnelPath != "/client-report" {
+		t.Fatalf("browser telemetry tunnel = %q, %v", updated.SentryTunnelPath, err)
+	}
+	resolved, err := store.ServiceBySentryHostname(ctx, "api.example.com")
+	if err != nil || resolved.ID != "service-a" {
+		t.Fatalf("service telemetry public domain = %q, %v", resolved.ID, err)
+	}
+	if _, err := store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
+		ID: "service-a", ProjectID: "project", Path: "/client/../report",
+		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "invalid-tunnel-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 8,
+	}); !errors.Is(err, ErrServiceTelemetryTunnelPathInvalid) {
+		t.Fatalf("invalid browser telemetry tunnel = %v", err)
+	}
+	if err := store.DetachServiceDomain(ctx, DetachServiceDomainInput{
+		ProjectID: "project", ServiceID: "service-a", Hostname: "api.example.com",
+		AuditEventID: "detach-audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 9,
+	}); !errors.Is(err, ErrDomainTelemetryUse) {
+		t.Fatalf("detach selected telemetry domain = %v", err)
+	}
+	if _, err := store.AttachServiceDomain(ctx, AttachServiceDomainInput{
+		ProjectID: "project", ServiceID: "service-b", Hostname: "api.example.com", TargetPort: 8080, Move: true,
+		AuditEventID: "move-audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 10,
+	}); !errors.Is(err, ErrDomainTelemetryUse) {
+		t.Fatalf("move selected telemetry domain = %v", err)
+	}
+	if _, err := store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "web.example.com",
+		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "foreign-domain-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 11,
+	}); !errors.Is(err, ErrHostnameInUse) {
+		t.Fatalf("foreign service telemetry domain = %v", err)
+	}
+	cleared, err := store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "",
+		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "clear-telemetry-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 12,
+	})
+	if err != nil || cleared.SentryPublicHostname != "" || cleared.SentryTunnelPath != "" {
+		t.Fatalf("cleared telemetry endpoint = hostname %q, tunnel %q, %v", cleared.SentryPublicHostname, cleared.SentryTunnelPath, err)
 	}
 }

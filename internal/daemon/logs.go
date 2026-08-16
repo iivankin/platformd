@@ -19,6 +19,22 @@ type telemetryLogReader interface {
 	Read(context.Context, containerlogs.Query) (containerlogs.Window, error)
 }
 
+func (repository liveLogRepository) ScopeLogs(
+	ctx context.Context,
+	scope state.MetricScope,
+	query containerlogs.Query,
+) (containerlogs.Window, error) {
+	serviceIDs, err := repository.store.MetricScopeServiceIDs(ctx, scope)
+	if err != nil {
+		return containerlogs.Window{}, err
+	}
+	if len(serviceIDs) == 0 {
+		return containerlogs.Window{Records: []containerlogs.Record{}}, nil
+	}
+	query.ServiceIDs = serviceIDs
+	return repository.telemetryReader.Read(ctx, query)
+}
+
 func (repository liveLogRepository) DownloadServiceLogs(
 	ctx context.Context,
 	projectID string,

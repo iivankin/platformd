@@ -72,22 +72,24 @@ func TestRouterDispatchesAdminAndRejectsHostSNIMismatch(t *testing.T) {
 }
 
 func TestRouterDispatchesResourceHandlersAndPreservesIndependentRouteViews(t *testing.T) {
+	telemetryPaths := make(chan string, 4)
 	router, err := New(Config{
 		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
 		ObjectStoreHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 			response.WriteHeader(http.StatusCreated)
 		}),
-		ServiceTelemetryHandler: http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		ServiceTelemetryHandler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			telemetryPaths <- request.URL.Path
 			response.WriteHeader(http.StatusAccepted)
 		}),
-		Backends: backendStub{},
+		Backends: backendStub{}, Traffic: trafficmetrics.NewRegistry(),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	router.ReloadObjectStores([]string{"objects.example.com"})
-	router.ReloadServiceTelemetry([]string{"errors.example.com"})
+	router.ReloadServiceTelemetry(map[string]ServiceTelemetryRoute{"errors.example.com": {}})
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-b", TargetPort: 8081}})
 
 	response := httptest.NewRecorder()
@@ -96,9 +98,20 @@ func TestRouterDispatchesResourceHandlersAndPreservesIndependentRouteViews(t *te
 		t.Fatalf("object store status = %d", response.Code)
 	}
 	response = httptest.NewRecorder()
-	router.ServeHTTP(response, tlsRequest("errors.example.com", "errors.example.com"))
+	telemetryRequest := tlsRequest("errors.example.com", "errors.example.com")
+	telemetryRequest.Method = http.MethodPost
+	telemetryRequest.URL.Path = "/api/1/envelope/"
+	router.ServeHTTP(response, telemetryRequest)
 	if response.Code != http.StatusAccepted {
 		t.Fatalf("Sentry ingress status = %d", response.Code)
+	}
+	if path := <-telemetryPaths; path != "/api/1/envelope/" {
+		t.Fatalf("Sentry upstream path = %q", path)
+	}
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, tlsRequest("errors.example.com", "errors.example.com"))
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("unreserved dedicated hostname path status = %d", response.Code)
 	}
 	if router.routes.Load().services["app.example.com"].ServiceID != "service-b" {
 		t.Fatalf("service routes were lost: %#v", router.routes.Load().services)
@@ -112,6 +125,65 @@ func TestRouterDispatchesResourceHandlersAndPreservesIndependentRouteViews(t *te
 	router.ServeHTTP(response, tlsRequest("errors.example.com", "errors.example.com"))
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("released Sentry hostname status = %d", response.Code)
+	}
+}
+
+func TestRouterSharesServiceHostnameWithTelemetryOnReservedPaths(t *testing.T) {
+	telemetryPaths := make(chan string, 2)
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		ServiceTelemetryHandler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			telemetryPaths <- request.URL.Path
+			response.WriteHeader(http.StatusAccepted)
+		}),
+		Backends: backendStub{}, Traffic: trafficmetrics.NewRegistry(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
+	router.ReloadServiceTelemetry(map[string]ServiceTelemetryRoute{
+		"app.example.com": {BrowserTunnelPath: "/client-report"},
+	})
+
+	ingest := tlsRequest("app.example.com", "app.example.com")
+	ingest.Method = http.MethodPost
+	ingest.URL.Path = "/api/1/envelope/"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, ingest)
+	if response.Code != http.StatusAccepted || <-telemetryPaths != "/api/1/envelope/" {
+		t.Fatalf("shared Sentry ingest = %d", response.Code)
+	}
+
+	tunnel := tlsRequest("app.example.com", "app.example.com")
+	tunnel.Method = http.MethodPost
+	tunnel.URL.Path = "/client-report"
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, tunnel)
+	if response.Code != http.StatusAccepted || <-telemetryPaths != "/api/1/envelope/" {
+		t.Fatalf("shared browser tunnel = %d", response.Code)
+	}
+
+	artifact := tlsRequest("app.example.com", "app.example.com")
+	artifact.Method = http.MethodPost
+	artifact.URL.Path = "/api/0/organizations/platformd/artifactbundle/assemble/"
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, artifact)
+	if response.Code != http.StatusAccepted || <-telemetryPaths != artifact.URL.Path {
+		t.Fatalf("shared Sentry artifact upload = %d", response.Code)
+	}
+
+	for _, path := range []string{"/", "/client-report/", "/api/0/users/me/", "/api/1/envelope", "/_sentry/api/1/envelope/"} {
+		request := tlsRequest("app.example.com", "app.example.com")
+		request.URL.Path = path
+		if strings.Contains(path, "envelope") {
+			request.Method = http.MethodPost
+		}
+		response = httptest.NewRecorder()
+		router.ServeHTTP(response, request)
+		if response.Code != http.StatusServiceUnavailable {
+			t.Errorf("application path %q status = %d", path, response.Code)
+		}
 	}
 }
 

@@ -130,7 +130,7 @@ func mutationTargetSchema(base map[string]any, rollback bool) map[string]any {
 func isAdminMutationTool(name string) bool {
 	switch name {
 	case "create_project", "create_service", "update_service", "redeploy_service", "rollback_service",
-		"update_service_issue_status", "set_service_telemetry_domain", "rotate_service_artifact_token",
+		"update_service_issue_status", "set_service_telemetry_domain", "set_service_browser_tunnel", "rotate_service_artifact_token",
 		"create_service_telemetry_webhook", "delete_service_telemetry_webhook",
 		"create_metric_chart", "update_metric_chart", "delete_metric_chart",
 		"delete_service", "restart_service_deployment", "remove_service_deployment",

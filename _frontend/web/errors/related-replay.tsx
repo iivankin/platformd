@@ -10,6 +10,7 @@ import type { ReplayRecording } from "./types";
 export const RelatedReplay = ({
   appId,
   loadRecording,
+  onOpenTrace,
   replayId,
 }: {
   appId: string;
@@ -17,6 +18,7 @@ export const RelatedReplay = ({
     replayId: string,
     signal: AbortSignal
   ) => Promise<ReplayRecording>;
+  onOpenTrace?: (traceID: string) => void;
   replayId: string;
 }) => {
   const requestKey = `${appId}:${replayId}`;
@@ -82,8 +84,15 @@ export const RelatedReplay = ({
           {current.error}
         </p>
       ) : null}
+      {current?.recording?.warnings?.length || current?.recording?.truncated ? (
+        <div className="border-y border-amber-500/30 bg-amber-500/5 px-4 py-2 text-[9px] text-amber-500">
+          {current.recording.truncated
+            ? "Replay is longer than the browser-safe playback window. Showing the available portion."
+            : current.recording.warnings?.join(" · ")}
+        </div>
+      ) : null}
       {current?.recording ? (
-        <ReplayPlayer recording={current.recording} />
+        <ReplayPlayer onOpenTrace={onOpenTrace} recording={current.recording} />
       ) : null}
     </section>
   );

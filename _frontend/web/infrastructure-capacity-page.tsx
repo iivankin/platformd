@@ -19,25 +19,44 @@ const otherComponentPresentation = {
   label: "System & untracked data",
 };
 
-const componentPresentation: Record<string, { color: string; label: string }> =
-  {
-    backup_work: { color: "bg-violet-500", label: "Backup work files" },
-    cloudflare_mesh: { color: "bg-blue-500", label: "Cloudflare Mesh state" },
-    container_images: { color: "bg-sky-500", label: "Container images" },
-    emergency_reserve: { color: "bg-zinc-500", label: "Emergency reserve" },
-    image_uploads: { color: "bg-orange-500", label: "Image uploads" },
-    images: { color: "bg-rose-500", label: "Uploaded images" },
-    logs: { color: "bg-amber-500", label: "Logs" },
-    object_storage: { color: "bg-cyan-500", label: "Object storage" },
-    other: otherComponentPresentation,
-    platform_state: { color: "bg-fuchsia-500", label: "Platform state" },
-    postgres_extensions: {
-      color: "bg-indigo-500",
-      label: "PostgreSQL extension cache",
-    },
-    releases: { color: "bg-lime-500", label: "Platform releases" },
-    volumes: { color: "bg-emerald-500", label: "Volumes" },
-  };
+const componentPresentation: Record<
+  string,
+  { color: string; label: string; retention?: string }
+> = {
+  backup_work: { color: "bg-violet-500", label: "Backup work files" },
+  cloudflare_mesh: { color: "bg-blue-500", label: "Cloudflare Mesh state" },
+  container_images: {
+    color: "bg-sky-500",
+    label: "Container images",
+    retention: "unused 14d",
+  },
+  emergency_reserve: { color: "bg-zinc-500", label: "Emergency reserve" },
+  image_uploads: {
+    color: "bg-orange-500",
+    label: "Image uploads",
+    retention: "24h",
+  },
+  images: {
+    color: "bg-rose-500",
+    label: "Uploaded images",
+    retention: "last 7 · previews 14d",
+  },
+  object_storage: { color: "bg-cyan-500", label: "Object storage" },
+  other: otherComponentPresentation,
+  platform_state: { color: "bg-fuchsia-500", label: "Platform state" },
+  postgres_extensions: {
+    color: "bg-indigo-500",
+    label: "PostgreSQL extension cache",
+  },
+  recordings: { color: "bg-teal-300", label: "Recordings", retention: "14d" },
+  releases: { color: "bg-lime-500", label: "Platform releases" },
+  telemetry: {
+    color: "bg-teal-500",
+    label: "Telemetry",
+    retention: "logs 7d · traces 30d · metrics 30d",
+  },
+  volumes: { color: "bg-emerald-500", label: "Volumes" },
+};
 
 const bytes = (value: number) => {
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -48,6 +67,174 @@ const bytes = (value: number) => {
     unit += 1;
   }
   return `${current.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+};
+
+type DiskComponent = DiskPressure["components"][number];
+const emptyDiskComponents: DiskComponent[] = [];
+
+const nestedComponents = (components: DiskComponent[]) => {
+  const nested = new Map<string, DiskComponent[]>();
+  for (const component of components) {
+    if (!component.parent) {
+      continue;
+    }
+    const children = nested.get(component.parent) ?? [];
+    children.push(component);
+    nested.set(component.parent, children);
+  }
+  return nested;
+};
+
+const presentationFor = (id: string) =>
+  componentPresentation[id] ?? otherComponentPresentation;
+
+const ComponentLabel = ({
+  muted,
+  presentation,
+}: {
+  muted?: boolean;
+  presentation: { label: string; retention?: string };
+}) => (
+  <span className="min-w-0 flex-1">
+    <span
+      className={cn(
+        "block truncate text-[10px]",
+        muted && "text-muted-foreground"
+      )}
+    >
+      {presentation.label}
+    </span>
+    {presentation.retention ? (
+      <span className="block truncate text-[9px] text-muted-foreground">
+        {presentation.retention}
+      </span>
+    ) : null}
+  </span>
+);
+
+const ComponentSwatch = ({
+  bytes: size,
+  id,
+  nested,
+}: {
+  bytes: number;
+  id: string;
+  nested?: DiskComponent[];
+}) => {
+  const presentation = presentationFor(id);
+  const children = (nested ?? emptyDiskComponents).filter(
+    (child) => child.bytes > 0
+  );
+  const childTotal = children.reduce((total, child) => total + child.bytes, 0);
+  const nestedBytes = Math.min(childTotal, size);
+  const remainder = size - nestedBytes;
+  if (children.length === 0) {
+    return (
+      <div
+        className={cn("h-full", presentation.color)}
+        title={`${presentation.label}: ${bytes(size)}`}
+      />
+    );
+  }
+  return (
+    <div
+      className="flex h-full"
+      title={`${presentation.label}: ${bytes(size)}`}
+    >
+      {children.map((child) => {
+        const childPresentation = presentationFor(child.id);
+        return (
+          <div
+            className={cn("h-full", childPresentation.color)}
+            key={child.id}
+            style={{
+              width: `${(child.bytes / childTotal) * (nestedBytes / size) * 100}%`,
+            }}
+            title={`${childPresentation.label}: ${bytes(child.bytes)}`}
+          />
+        );
+      })}
+      {remainder > 0 ? (
+        <div
+          className={cn("h-full", presentation.color)}
+          style={{ width: `${(remainder / size) * 100}%` }}
+        />
+      ) : null}
+    </div>
+  );
+};
+
+const ComponentRow = ({
+  bytes: size,
+  id,
+  index,
+  nested,
+}: {
+  bytes: number;
+  id: string;
+  index: number;
+  nested?: DiskComponent[];
+}) => {
+  const presentation = presentationFor(id);
+  return (
+    <div
+      className={cn(
+        "border-t border-border px-5 py-3",
+        index === 0 && "border-t-0",
+        index < 2 && "sm:border-t-0",
+        index >= 2 && "sm:border-t",
+        index % 2 === 1 && "sm:border-l",
+        index < 3 && "xl:border-t-0",
+        index >= 3 && "xl:border-t",
+        index % 3 === 0 && "xl:border-l-0",
+        index % 3 !== 0 && "xl:border-l"
+      )}
+    >
+      <div className="flex items-center gap-3">
+        <span className={cn("size-2 shrink-0", presentation.color)} />
+        <ComponentLabel presentation={presentation} />
+        <span className="text-[10px] text-muted-foreground tabular-nums">
+          {bytes(size)}
+        </span>
+      </div>
+      {(nested ?? emptyDiskComponents)
+        .filter((child) => child.bytes > 0)
+        .map((child) => {
+          const childPresentation = presentationFor(child.id);
+          return (
+            <div className="mt-2 flex items-center gap-3 pl-5" key={child.id}>
+              <span
+                className={cn("size-2 shrink-0", childPresentation.color)}
+              />
+              <ComponentLabel muted presentation={childPresentation} />
+              <span className="text-[10px] text-muted-foreground tabular-nums">
+                {bytes(child.bytes)}
+              </span>
+            </div>
+          );
+        })}
+    </div>
+  );
+};
+
+const diskBreakdown = (pressure?: DiskPressure) => {
+  const usedBytes = pressure?.usedBytes ?? 0;
+  const topLevel = (pressure?.components ?? emptyDiskComponents).filter(
+    (component) => !component.parent
+  );
+  const trackedBytes = topLevel.reduce(
+    (total, component) => total + component.bytes,
+    0
+  );
+  return {
+    breakdownBytes: Math.max(usedBytes, trackedBytes),
+    components:
+      usedBytes > trackedBytes
+        ? [...topLevel, { bytes: usedBytes - trackedBytes, id: "other" }]
+        : topLevel,
+    nested: nestedComponents(pressure?.components ?? emptyDiskComponents),
+    usedBytes,
+  };
 };
 
 const Meter = ({
@@ -73,7 +260,7 @@ const Meter = ({
   </div>
 );
 
-export const InfrastructureCapacityPage = () => {
+const useDiskPressure = () => {
   const [pressure, setPressure] = useState<DiskPressure>();
   const [error, setError] = useState<string>();
 
@@ -112,21 +299,13 @@ export const InfrastructureCapacityPage = () => {
     };
   }, []);
 
-  const usedBytes = pressure?.usedBytes ?? 0;
-  const trackedBytes =
-    pressure?.components.reduce(
-      (total, component) => total + component.bytes,
-      0
-    ) ?? 0;
-  const components = pressure
-    ? [
-        ...pressure.components,
-        ...(usedBytes > trackedBytes
-          ? [{ bytes: usedBytes - trackedBytes, id: "other" }]
-          : []),
-      ]
-    : [];
-  const breakdownBytes = Math.max(usedBytes, trackedBytes);
+  return { error, pressure };
+};
+
+export const InfrastructureCapacityPage = () => {
+  const { error, pressure } = useDiskPressure();
+  const { breakdownBytes, components, nested, usedBytes } =
+    diskBreakdown(pressure);
   return (
     <PageStack>
       <SectionCard className="flex min-h-24 items-center px-5 py-5">
@@ -205,24 +384,21 @@ export const InfrastructureCapacityPage = () => {
           >
             {components
               .filter((component) => component.bytes > 0)
-              .map((component) => {
-                const presentation =
-                  componentPresentation[component.id] ??
-                  otherComponentPresentation;
-                return (
-                  <div
-                    className={cn(
-                      "h-full border-r border-background/50 last:border-r-0",
-                      presentation.color
-                    )}
-                    key={component.id}
-                    style={{
-                      width: `${breakdownBytes > 0 ? (component.bytes / breakdownBytes) * 100 : 0}%`,
-                    }}
-                    title={`${presentation.label}: ${bytes(component.bytes)}`}
+              .map((component) => (
+                <div
+                  className="h-full border-r border-background/50 last:border-r-0"
+                  key={component.id}
+                  style={{
+                    width: `${breakdownBytes > 0 ? (component.bytes / breakdownBytes) * 100 : 0}%`,
+                  }}
+                >
+                  <ComponentSwatch
+                    bytes={component.bytes}
+                    id={component.id}
+                    nested={nested.get(component.id)}
                   />
-                );
-              })}
+                </div>
+              ))}
           </div>
           <div className="mt-3 flex items-center justify-between text-[9px] text-muted-foreground">
             <span>{bytes(usedBytes)} used</span>
@@ -231,34 +407,15 @@ export const InfrastructureCapacityPage = () => {
         </div>
 
         <div className="grid border-t border-border sm:grid-cols-2 xl:grid-cols-3">
-          {components.map((component, index) => {
-            const presentation =
-              componentPresentation[component.id] ?? otherComponentPresentation;
-            return (
-              <div
-                className={cn(
-                  "flex items-center gap-3 border-t border-border px-5 py-3",
-                  index === 0 && "border-t-0",
-                  index < 2 && "sm:border-t-0",
-                  index >= 2 && "sm:border-t",
-                  index % 2 === 1 && "sm:border-l",
-                  index < 3 && "xl:border-t-0",
-                  index >= 3 && "xl:border-t",
-                  index % 3 === 0 && "xl:border-l-0",
-                  index % 3 !== 0 && "xl:border-l"
-                )}
-                key={component.id}
-              >
-                <span className={cn("size-2 shrink-0", presentation.color)} />
-                <span className="min-w-0 flex-1 truncate text-[10px]">
-                  {presentation.label}
-                </span>
-                <span className="text-[10px] text-muted-foreground tabular-nums">
-                  {bytes(component.bytes)}
-                </span>
-              </div>
-            );
-          })}
+          {components.map((component, index) => (
+            <ComponentRow
+              bytes={component.bytes}
+              id={component.id}
+              index={index}
+              key={component.id}
+              nested={nested.get(component.id)}
+            />
+          ))}
         </div>
       </SectionCard>
     </PageStack>

@@ -14,6 +14,11 @@ interface MarkerGroup {
   position: number;
 }
 
+export interface ReplayTimelineGap {
+  end: number;
+  start: number;
+}
+
 const markerStyles: Record<ReplayMarkerKind, string> = {
   console: "bg-stone-400",
   error: "bg-red-500",
@@ -33,6 +38,7 @@ const markerPriority: ReplayMarkerKind[] = [
 ];
 
 const tooltipCollisionAvoidance = { align: "shift", side: "flip" } as const;
+const noTimelineGaps: ReplayTimelineGap[] = [];
 
 const formatPosition = (milliseconds: number) => {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
@@ -119,6 +125,7 @@ export const ReplayTimeline = ({
   markers,
   onSeek,
   startTime,
+  unavailableRanges = noTimelineGaps,
 }: {
   currentTime: number;
   disabled: boolean;
@@ -126,6 +133,7 @@ export const ReplayTimeline = ({
   markers: ReplayMarker[];
   onSeek: (position: number) => void;
   startTime: number;
+  unavailableRanges?: ReplayTimelineGap[];
 }) => {
   const groups = useMemo(
     () => groupReplayMarkers(markers, startTime, duration),
@@ -135,6 +143,19 @@ export const ReplayTimeline = ({
 
   return (
     <div className="relative h-8 min-w-24 flex-1">
+      {unavailableRanges.map((range) => {
+        const left = duration > 0 ? (range.start / duration) * 100 : 0;
+        const width =
+          duration > 0 ? ((range.end - range.start) / duration) * 100 : 0;
+        return (
+          <span
+            className="pointer-events-none absolute top-1/2 h-5 -translate-y-1/2 bg-muted-foreground/15"
+            key={`${range.start}:${range.end}`}
+            style={{ left: `${left}%`, width: `${width}%` }}
+            title="Video unavailable"
+          />
+        );
+      })}
       <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-border" />
       <div
         className="absolute top-1/2 left-0 h-px -translate-y-1/2 bg-foreground"

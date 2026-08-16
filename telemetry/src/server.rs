@@ -4,6 +4,7 @@ use std::io::Read;
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::{Body, Bytes};
 use axum::extract::{
@@ -90,6 +91,12 @@ struct BackupView {
     id: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiskUsageView {
+    recording_bytes: u64,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MetricHistoryQuery {
@@ -102,7 +109,7 @@ struct MetricHistoryQuery {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct LogHistoryQuery {
-    service_id: String,
+    service_ids: String,
     deployment_id: Option<String>,
     contains: Option<String>,
     field_filters: Option<String>,
@@ -127,6 +134,28 @@ struct TraceListQuery {
     from: Option<u64>,
     to: Option<u64>,
     query: Option<String>,
+    #[serde(default)]
+    status: TraceListStatus,
+    #[serde(default)]
+    sort: TraceListSort,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TraceListStatus {
+    #[default]
+    All,
+    Error,
+    Ok,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum TraceListSort {
+    #[default]
+    Latest,
+    Slowest,
+    Spans,
 }
 
 #[derive(Deserialize)]
@@ -149,6 +178,32 @@ struct MetricSqlRequest {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct MetricScopeRequest {
+    service_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TraceScopeRequest {
+    anchor_service_id: Option<String>,
+    service_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TraceDetailQuery {
+    segment: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct TraceListScopeRequest {
+    anchor_service_id: Option<String>,
+    service_ids: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct IssueScopeRequest {
     service_ids: Vec<String>,
 }
 
@@ -178,6 +233,15 @@ pub(crate) struct ListQuery {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct IssueDetailQuery {
+    #[serde(default = "default_limit")]
+    limit: usize,
+    #[serde(default)]
+    offset: usize,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ItemQuery {
     item_type: String,
     #[serde(default = "default_limit")]
@@ -189,6 +253,7 @@ struct ItemQuery {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct IssueView {
+    service_id: String,
     id: String,
     title: String,
     level: String,
@@ -284,8 +349,12 @@ impl TelemetryServer {
         Router::new()
             .route("/health", get(health))
             .route("/internal/backups", post(create_internal_backup))
+            .route("/internal/disk-usage", get(internal_disk_usage))
             .route("/internal/logs", get(internal_logs))
             .route("/internal/metrics", get(internal_metrics))
+            .route("/internal/issue-scopes", post(internal_issues))
+            .route("/internal/trace-scopes", post(internal_traces))
+            .route("/internal/trace-scopes/{trace_id}", post(internal_trace))
             .route(
                 "/internal/metric-scopes/catalog",
                 post(internal_metric_catalog),
@@ -317,14 +386,26 @@ impl TelemetryServer {
             self.router()
                 .into_make_service_with_connect_info::<SocketAddr>(),
         );
-        tokio::try_join!(
+        let store = self.state.store.clone();
+        let reclaim = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60 * 60));
+            loop {
+                interval.tick().await;
+                if let Err(error) = store.reclaim_expired_recordings().await {
+                    tracing::warn!(error = %error, "telemetry recording reclaim failed");
+                }
+            }
+        });
+        let result = tokio::try_join!(
             async move { http.await.map_err(anyhow::Error::from) },
             crate::telemetry::serve(
                 self.state.store.clone(),
                 self.otlp_grpc_listen,
                 self.otlp_http_listen,
             ),
-        )?;
+        );
+        reclaim.abort();
+        result?;
         Ok(())
     }
 }
@@ -343,6 +424,7 @@ fn service_routes() -> Router<Arc<ServerState>> {
         .route("/replays", get(replays))
         .route("/replays/{replay_id}", get(replay))
         .route("/replays/{replay_id}/recording", get(replay_recording))
+        .route("/replays/{replay_id}/video/{segment_id}", get(replay_video))
         .route("/issues", get(issues))
         .route("/issues/{issue_id}", get(issue).patch(update_issue))
         .route("/artifacts", get(artifacts))
@@ -360,6 +442,38 @@ async fn traces(
     Query(query): Query<TraceListQuery>,
 ) -> Result<Json<Vec<crate::storage::TraceSummary>>> {
     ServiceContext::parse(&service_id)?;
+    trace_summaries(state, Some(service_id.clone()), vec![service_id], query).await
+}
+
+async fn internal_traces(
+    State(state): State<Arc<ServerState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Query(query): Query<TraceListQuery>,
+    Json(scope): Json<TraceListScopeRequest>,
+) -> Result<Json<Vec<crate::storage::TraceSummary>>> {
+    require_loopback(peer)?;
+    validate_service_ids(&scope.service_ids)?;
+    if let Some(anchor) = scope.anchor_service_id.as_deref() {
+        ServiceContext::parse(anchor)?;
+        if !scope
+            .service_ids
+            .iter()
+            .any(|service_id| service_id == anchor)
+        {
+            return Err(Error::InvalidRequest(
+                "trace anchor is outside the service scope".into(),
+            ));
+        }
+    }
+    trace_summaries(state, scope.anchor_service_id, scope.service_ids, query).await
+}
+
+async fn trace_summaries(
+    state: Arc<ServerState>,
+    anchor_service_id: Option<String>,
+    service_ids: Vec<String>,
+    query: TraceListQuery,
+) -> Result<Json<Vec<crate::storage::TraceSummary>>> {
     if query.limit == 0 || query.limit > 200 || query.offset > 10_000 {
         return Err(Error::InvalidRequest("invalid trace page".into()));
     }
@@ -384,14 +498,25 @@ async fn traces(
     };
     state
         .store
-        .trace_summaries(
-            service_id,
-            millis_to_nanos(query.from, "start")?,
-            millis_to_nanos(query.to, "end")?,
-            query.query,
-            query.limit,
-            query.offset,
-        )
+        .trace_summaries(crate::storage::TraceSummaryQuery {
+            anchor_service_id,
+            service_ids,
+            from_unix_nano: millis_to_nanos(query.from, "start")?,
+            to_unix_nano: millis_to_nanos(query.to, "end")?,
+            search: query.query,
+            status: match query.status {
+                TraceListStatus::All => crate::storage::TraceSummaryStatus::All,
+                TraceListStatus::Error => crate::storage::TraceSummaryStatus::Error,
+                TraceListStatus::Ok => crate::storage::TraceSummaryStatus::Ok,
+            },
+            order: match query.sort {
+                TraceListSort::Latest => crate::storage::TraceSummaryOrder::Latest,
+                TraceListSort::Slowest => crate::storage::TraceSummaryOrder::Slowest,
+                TraceListSort::Spans => crate::storage::TraceSummaryOrder::Spans,
+            },
+            limit: query.limit,
+            offset: query.offset,
+        })
         .await
         .map(Json)
 }
@@ -399,16 +524,75 @@ async fn traces(
 async fn trace(
     State(state): State<Arc<ServerState>>,
     Path((service_id, trace_id)): Path<(String, String)>,
+    Query(query): Query<TraceDetailQuery>,
 ) -> Result<Json<crate::storage::TraceDetail>> {
     ServiceContext::parse(&service_id)?;
     if trace_id.len() != 32 || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::InvalidRequest("invalid trace identifier".into()));
     }
+    validate_trace_segment(query.segment.as_deref())?;
     state
         .store
-        .trace(service_id, trace_id.to_ascii_lowercase())
+        .trace(
+            Some(service_id.clone()),
+            vec![service_id],
+            trace_id.to_ascii_lowercase(),
+            query.segment,
+        )
         .await
         .map(Json)
+}
+
+async fn internal_trace(
+    State(state): State<Arc<ServerState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Path(trace_id): Path<String>,
+    Query(query): Query<TraceDetailQuery>,
+    Json(scope): Json<TraceScopeRequest>,
+) -> Result<Json<crate::storage::TraceDetail>> {
+    require_loopback(peer)?;
+    validate_service_ids(&scope.service_ids)?;
+    if let Some(anchor) = scope.anchor_service_id.as_deref() {
+        ServiceContext::parse(anchor)?;
+        if !scope
+            .service_ids
+            .iter()
+            .any(|service_id| service_id == anchor)
+        {
+            return Err(Error::InvalidRequest(
+                "trace anchor is outside the service scope".into(),
+            ));
+        }
+    }
+    if trace_id.len() != 32 || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::InvalidRequest("invalid trace identifier".into()));
+    }
+    validate_trace_segment(query.segment.as_deref())?;
+    state
+        .store
+        .trace(
+            scope.anchor_service_id,
+            scope.service_ids,
+            trace_id.to_ascii_lowercase(),
+            query.segment,
+        )
+        .await
+        .map(Json)
+}
+
+fn validate_trace_segment(segment_id: Option<&str>) -> Result<()> {
+    if segment_id.is_some_and(|value| {
+        value.is_empty()
+            || value.len() > 64
+            || !value
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    }) {
+        return Err(Error::InvalidRequest(
+            "invalid trace segment identifier".into(),
+        ));
+    }
+    Ok(())
 }
 
 async fn metric_catalog(
@@ -438,7 +622,7 @@ async fn internal_metric_catalog(
     Json(scope): Json<MetricScopeRequest>,
 ) -> Result<Json<Vec<crate::storage::MetricDescriptor>>> {
     require_loopback(peer)?;
-    validate_metric_service_ids(&scope.service_ids)?;
+    validate_service_ids(&scope.service_ids)?;
     state
         .store
         .metric_catalog(scope.service_ids)
@@ -452,7 +636,7 @@ async fn internal_metric_sql(
     Json(request): Json<ScopedMetricSqlRequest>,
 ) -> Result<Json<Vec<crate::metric_sql::MetricSqlRow>>> {
     require_loopback(peer)?;
-    validate_metric_service_ids(&request.service_ids)?;
+    validate_service_ids(&request.service_ids)?;
     state
         .store
         .metric_sql(request.service_ids, metric_sql_query(request.query)?)
@@ -474,10 +658,10 @@ fn metric_sql_query(query: MetricSqlRequest) -> Result<MetricSqlQuery> {
     })
 }
 
-fn validate_metric_service_ids(service_ids: &[String]) -> Result<()> {
+fn validate_service_ids(service_ids: &[String]) -> Result<()> {
     if service_ids.len() > 10_000 {
         return Err(Error::InvalidRequest(
-            "metric scope contains too many services".into(),
+            "telemetry scope contains too many services".into(),
         ));
     }
     for service_id in service_ids {
@@ -491,6 +675,16 @@ async fn health() -> Json<Health> {
         status: "ok",
         version: env!("CARGO_PKG_VERSION"),
     })
+}
+
+async fn internal_disk_usage(
+    State(state): State<Arc<ServerState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+) -> Result<Json<DiskUsageView>> {
+    require_loopback(peer)?;
+    Ok(Json(DiskUsageView {
+        recording_bytes: state.store.recording_bytes().await?,
+    }))
 }
 
 async fn delete_internal_service(
@@ -557,7 +751,15 @@ async fn internal_logs(
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
     };
-    if !valid_id(&query.service_id)
+    let service_ids = query
+        .service_ids
+        .split(',')
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if service_ids.is_empty()
+        || service_ids.len() > 10_000
+        || service_ids.iter().any(|value| !valid_id(value))
         || query
             .deployment_id
             .as_deref()
@@ -612,7 +814,7 @@ async fn internal_logs(
     state
         .store
         .log_records(LogQuery {
-            service_id: query.service_id,
+            service_ids,
             deployment_id: query.deployment_id,
             contains: query.contains.filter(|value| !value.is_empty()),
             field_filters,
@@ -1134,6 +1336,8 @@ async fn ingest(
     let PreparedIngest {
         mut documents,
         mut events,
+        profiles,
+        standalone_spans,
         transactions,
         response_event_id,
     } = prepared;
@@ -1167,7 +1371,7 @@ async fn ingest(
                 .map(str::to_owned)
         }));
     }
-    if !events.is_empty() && duplicate_event_ids.len() == events.len() {
+    if !events.is_empty() && duplicate_event_ids.len() == events.len() && profiles.is_empty() {
         return Ok(IngestResult {
             event_id: response_event_id,
             notifications: Vec::new(),
@@ -1250,12 +1454,28 @@ async fn ingest(
             transaction,
         )?);
     }
+    for span in &standalone_spans {
+        match crate::telemetry::sentry_standalone_span_row(&service.id, &span.payload, span.version)
+        {
+            Ok(row) => sentry_spans.push(row),
+            Err(error) => tracing::warn!(%error, "discarding invalid standalone Sentry span"),
+        }
+    }
+    for event in &events {
+        if let Some(marker) = crate::telemetry::sentry_error_trace_row(&service.id, event)? {
+            sentry_spans.push(marker);
+        }
+    }
     // Persist replaceable spans first. If the document commit fails, an SDK retry
     // can safely upsert the same spans; committing documents first could make the
     // duplicate-event fast path permanently skip spans after a partial failure.
     state
         .store
         .ingest_signal_rows(crate::storage::SignalTable::Spans, sentry_spans)
+        .await?;
+    state
+        .store
+        .ingest_signal_rows(crate::storage::SignalTable::Profiles, profiles)
         .await?;
     state.store.ingest(documents).await?;
     drop(ingest_guard);
@@ -1502,7 +1722,7 @@ pub(crate) async fn replays(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<ListResponse>> {
     ServiceContext::parse(&service_id)?;
-    search_documents(&state, &service_id, "replay_event", query).await
+    search_documents(&state, &service_id, "replay", query).await
 }
 
 pub(crate) async fn replay(
@@ -1518,6 +1738,7 @@ pub(crate) async fn replay(
                 any([
                     term("doc_kind", "replay_event"),
                     term("doc_kind", "replay_recording"),
+                    term("doc_kind", "replay_video"),
                 ]),
                 term("service_id", &service_id),
                 term("replay_id", &replay_id),
@@ -1562,7 +1783,10 @@ pub(crate) async fn replay_recording(
         .store
         .search_all(
             all([
-                term("doc_kind", "replay_recording"),
+                any([
+                    term("doc_kind", "replay_recording"),
+                    term("doc_kind", "replay_video"),
+                ]),
                 term("service_id", &service_id),
                 term("replay_id", &replay_id),
             ]),
@@ -1585,17 +1809,92 @@ pub(crate) async fn replay_recording(
         return Err(Error::NotFound);
     }
 
+    let replay_events = state
+        .store
+        .search_all(
+            all([
+                any([
+                    term("doc_kind", "replay_event"),
+                    term("doc_kind", "replay_video"),
+                ]),
+                term("service_id", &service_id),
+                term("replay_id", &replay_id),
+            ]),
+            "timestamp",
+        )
+        .await?;
+    let (started_at, finished_at) = replay_time_bounds(&replay_events);
+    let mut trace_ids = replay_trace_ids(&replay_events)
+        .into_iter()
+        .collect::<HashSet<_>>();
+    let millis_to_nanos = |value: Option<f64>| {
+        value
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| (value * 1_000_000.0).round() as u64)
+    };
+    let padding = 1_000_000_000;
+    let indexed_trace_ids = state
+        .store
+        .replay_trace_ids(
+            service_id.clone(),
+            replay_id.clone(),
+            millis_to_nanos(started_at).map(|value| value.saturating_sub(padding)),
+            millis_to_nanos(finished_at).map(|value| value.saturating_add(padding)),
+        )
+        .await?;
+    trace_ids.extend(indexed_trace_ids);
+    let mut trace_ids = trace_ids.into_iter().collect::<Vec<_>>();
+    trace_ids.sort_unstable();
+
     let segment_count = recordings.len();
     let mut decoded_bytes = 0;
     let mut events = Vec::new();
-    for recording in recordings {
-        let content_id = recording
-            .get("content_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::Storage("replay recording has no content ID".into()))?;
-        let content = load_item_content(&state, &service_id, content_id).await?;
+    let mut warnings = Vec::new();
+    let mut truncated = false;
+    for (index, recording) in recordings.into_iter().enumerate() {
+        let Some(content_id) = recording.get("content_id").and_then(Value::as_str) else {
+            warnings.push(format!("Segment {} has no recording content", index + 1));
+            continue;
+        };
+        let content = match load_item_content(&state, &service_id, content_id).await {
+            Ok(content) => content,
+            Err(error) => {
+                warnings.push(format!(
+                    "Segment {} could not be loaded: {error}",
+                    index + 1
+                ));
+                continue;
+            }
+        };
         let remaining = MAX_REPLAY_PLAYER_BYTES.saturating_sub(decoded_bytes);
-        let (segment_events, segment_bytes) = decode_replay_recording(&content, remaining)?;
+        if remaining == 0 {
+            truncated = true;
+            break;
+        }
+        let recording_content =
+            if recording.get("doc_kind").and_then(Value::as_str) == Some("replay_video") {
+                match crate::replay_video::decode(&content) {
+                    Ok(video) => video.recording,
+                    Err(error) => {
+                        warnings.push(format!("Segment {} is corrupt: {error}", index + 1));
+                        continue;
+                    }
+                }
+            } else {
+                content
+            };
+        let (segment_events, segment_bytes) =
+            match decode_replay_recording(&recording_content, remaining) {
+                Ok(decoded) => decoded,
+                Err(error) if error.to_string().contains("player limit") => {
+                    truncated = true;
+                    break;
+                }
+                Err(error) => {
+                    warnings.push(format!("Segment {} is corrupt: {error}", index + 1));
+                    continue;
+                }
+            };
         decoded_bytes += segment_bytes;
         events.extend(segment_events);
     }
@@ -1624,10 +1923,181 @@ pub(crate) async fn replay_recording(
     Ok(Json(json!({
         "errorEvents": error_events,
         "events": events,
+        "finishedAt": finished_at,
         "replayId": replay_id,
         "segmentCount": segment_count,
+        "startedAt": started_at,
+        "traceIds": trace_ids,
+        "truncated": truncated,
         "totalEventCount": total_event_count,
+        "warnings": warnings,
     })))
+}
+
+async fn replay_video(
+    State(state): State<Arc<ServerState>>,
+    Path((service_id, replay_id, segment_id)): Path<(String, String, u64)>,
+    headers: HeaderMap,
+) -> Result<Response> {
+    ServiceContext::parse(&service_id)?;
+    let replay_id = replay_id.replace('-', "").to_ascii_lowercase();
+    let recordings = state
+        .store
+        .search_all(
+            all([
+                term("doc_kind", "replay_video"),
+                term("service_id", &service_id),
+                term("replay_id", &replay_id),
+            ]),
+            "timestamp",
+        )
+        .await?;
+    let recording = recordings
+        .into_iter()
+        .find(|recording| recording.get("segment_id").and_then(Value::as_u64) == Some(segment_id))
+        .ok_or(Error::NotFound)?;
+    let content_id = recording
+        .get("content_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Storage("replay video has no content".into()))?;
+    let content = load_item_content(&state, &service_id, content_id).await?;
+    let video = crate::replay_video::decode(&content)?.video;
+    let range = headers
+        .get(header::RANGE)
+        .and_then(|value| value.to_str().ok());
+    let selected = parse_byte_range(range, video.len());
+    let (status, start, end) = match selected {
+        Ok(Some((start, end))) => (StatusCode::PARTIAL_CONTENT, start, end),
+        Ok(None) => (StatusCode::OK, 0, video.len().saturating_sub(1)),
+        Err(()) => {
+            return Response::builder()
+                .status(StatusCode::RANGE_NOT_SATISFIABLE)
+                .header(header::CONTENT_RANGE, format!("bytes */{}", video.len()))
+                .body(Body::empty())
+                .map_err(|error| Error::Storage(format!("build replay video response: {error}")));
+        }
+    };
+    let body = if video.is_empty() {
+        Vec::new()
+    } else {
+        video[start..=end].to_vec()
+    };
+    let mut response = Response::builder()
+        .status(status)
+        .header(header::ACCEPT_RANGES, "bytes")
+        .header(header::CONTENT_TYPE, "video/mp4")
+        .header(header::CONTENT_LENGTH, body.len());
+    if status == StatusCode::PARTIAL_CONTENT {
+        response = response.header(
+            header::CONTENT_RANGE,
+            format!("bytes {start}-{end}/{}", video.len()),
+        );
+    }
+    response
+        .body(Body::from(body))
+        .map_err(|error| Error::Storage(format!("build replay video response: {error}")))
+}
+
+fn parse_byte_range(
+    range: Option<&str>,
+    size: usize,
+) -> std::result::Result<Option<(usize, usize)>, ()> {
+    let Some(range) = range else {
+        return Ok(None);
+    };
+    if size == 0 || !range.starts_with("bytes=") || range.contains(',') {
+        return Err(());
+    }
+    let (start, end) = range[6..].split_once('-').ok_or(())?;
+    if start.is_empty() {
+        let suffix = end.parse::<usize>().map_err(|_| ())?;
+        if suffix == 0 {
+            return Err(());
+        }
+        return Ok(Some((size.saturating_sub(suffix), size - 1)));
+    }
+    let start = start.parse::<usize>().map_err(|_| ())?;
+    if start >= size {
+        return Err(());
+    }
+    let end = if end.is_empty() {
+        size - 1
+    } else {
+        end.parse::<usize>().map_err(|_| ())?.min(size - 1)
+    };
+    if end < start {
+        return Err(());
+    }
+    Ok(Some((start, end)))
+}
+
+fn replay_trace_ids(events: &[Value]) -> Vec<String> {
+    fn insert(value: &str, trace_ids: &mut HashSet<String>) {
+        let value = value.replace('-', "").to_ascii_lowercase();
+        if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            trace_ids.insert(value);
+        }
+    }
+
+    fn collect(value: &Value, trace_ids: &mut HashSet<String>) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    collect(value, trace_ids);
+                }
+            }
+            Value::Object(object) => {
+                for (key, value) in object {
+                    let key = key
+                        .chars()
+                        .filter(|character| character.is_ascii_alphanumeric())
+                        .flat_map(char::to_lowercase)
+                        .collect::<String>();
+                    if matches!(key.as_str(), "traceid" | "traceids") {
+                        if let Some(value) = value.as_str() {
+                            insert(value, trace_ids);
+                        } else if let Some(values) = value.as_array() {
+                            for value in values.iter().filter_map(Value::as_str) {
+                                insert(value, trace_ids);
+                            }
+                        }
+                    }
+                    collect(value, trace_ids);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut trace_ids = HashSet::new();
+    for event in events {
+        if let Some(payload) = event.get("payload") {
+            collect(payload, &mut trace_ids);
+        }
+    }
+    let mut trace_ids = trace_ids.into_iter().collect::<Vec<_>>();
+    trace_ids.sort_unstable();
+    trace_ids
+}
+
+fn replay_time_bounds(events: &[Value]) -> (Option<f64>, Option<f64>) {
+    let timestamp = |event: &Value, field: &str| {
+        event
+            .get("payload")
+            .and_then(|payload| payload.get(field))
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite())
+            .map(|value| value * 1000.0)
+    };
+    let started_at = events
+        .iter()
+        .filter_map(|event| timestamp(event, "replay_start_timestamp"))
+        .min_by(f64::total_cmp);
+    let finished_at = events
+        .iter()
+        .filter_map(|event| timestamp(event, "timestamp"))
+        .max_by(f64::total_cmp);
+    (started_at, finished_at)
 }
 
 pub(crate) async fn issues(
@@ -1636,7 +2106,32 @@ pub(crate) async fn issues(
     Query(query): Query<ListQuery>,
 ) -> Result<Json<Value>> {
     ServiceContext::parse(&service_id)?;
-    let mut search_query = all([term("doc_kind", "issue"), term("service_id", &service_id)]);
+    issue_list(&state, vec![service_id], query).await
+}
+
+async fn internal_issues(
+    State(state): State<Arc<ServerState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Query(query): Query<ListQuery>,
+    Json(scope): Json<IssueScopeRequest>,
+) -> Result<Json<Value>> {
+    require_loopback(peer)?;
+    validate_service_ids(&scope.service_ids)?;
+    issue_list(&state, scope.service_ids, query).await
+}
+
+async fn issue_list(
+    state: &ServerState,
+    service_ids: Vec<String>,
+    query: ListQuery,
+) -> Result<Json<Value>> {
+    if service_ids.is_empty() {
+        return Ok(Json(json!({ "data": [], "total": 0 })));
+    }
+    let service_clause = any(service_ids
+        .iter()
+        .map(|service_id| term("service_id", service_id)));
+    let mut search_query = all([term("doc_kind", "issue"), service_clause]);
     if let Some(search) = search_text(query.query.as_deref())? {
         search_query.text = Some(search.to_owned());
     }
@@ -1664,6 +2159,7 @@ fn issue_view(document: &Value) -> Result<IssueView> {
         .ok_or_else(|| Error::Storage("issue document has no issue ID".into()))?;
     let last_seen = value_string(document, "timestamp", "");
     Ok(IssueView {
+        service_id: value_string(document, "service_id", ""),
         id: id.to_owned(),
         title: value_string(document, "title", "Unknown error"),
         level: value_string(document, "level", "error"),
@@ -1681,6 +2177,7 @@ fn issue_view(document: &Value) -> Result<IssueView> {
 
 fn issue_document_view(document: &Document) -> Result<IssueView> {
     Ok(IssueView {
+        service_id: document.service_id.clone(),
         id: document
             .issue_id
             .clone()
@@ -1728,8 +2225,12 @@ async fn load_issue_for_update(
 pub(crate) async fn issue(
     State(state): State<Arc<ServerState>>,
     Path((service_id, issue_id)): Path<(String, String)>,
+    Query(query): Query<IssueDetailQuery>,
 ) -> Result<Json<Value>> {
     ServiceContext::parse(&service_id)?;
+    if query.limit == 0 || query.limit > 100 || query.offset > 1_000_000 {
+        return Err(Error::InvalidRequest("invalid issue event page".into()));
+    }
     let issue = load_issue_view(&state, &service_id, &issue_id).await?;
     let events = state
         .store
@@ -1739,8 +2240,8 @@ pub(crate) async fn issue(
                 term("service_id", &service_id),
                 term("issue_id", &issue_id),
             ]),
-            max_hits: 100,
-            start_offset: None,
+            max_hits: query.limit,
+            start_offset: Some(query.offset),
             sort_by: "timestamp".into(),
         })
         .await?;
@@ -1750,10 +2251,17 @@ pub(crate) async fn issue(
         .into_iter()
         .map(event_summary)
         .collect::<Vec<_>>();
+    let insights = state.store.issue_insights(service_id, issue_id).await?;
     Ok(Json(json!({
         "issue": issue,
         "events": events,
-        "eventTotal": event_total
+        "eventTotal": event_total,
+        "userCount": insights.user_count,
+        "distributions": insights.distributions,
+        "activity": insights.activity,
+        "firstEventId": insights.first_event_id,
+        "latestEventId": insights.latest_event_id,
+        "recommendedEventId": insights.recommended_event_id,
     })))
 }
 
@@ -1920,7 +2428,15 @@ async fn search_documents(
     doc_kind: &str,
     list: ListQuery,
 ) -> Result<Json<ListResponse>> {
-    let mut query = all([term("doc_kind", doc_kind), term("service_id", service_id)]);
+    let kind_query = if doc_kind == "replay" {
+        any([
+            term("doc_kind", "replay_event"),
+            term("doc_kind", "replay_video"),
+        ])
+    } else {
+        term("doc_kind", doc_kind)
+    };
+    let mut query = all([kind_query, term("service_id", service_id)]);
     if let Some(search) = search_text(list.query.as_deref())? {
         query.text = Some(search.to_owned());
     }
@@ -1935,7 +2451,7 @@ async fn search_documents(
         .await?;
     let data = match doc_kind {
         "event" => response.hits.into_iter().map(event_summary).collect(),
-        "replay_event" => response.hits.into_iter().map(replay_summary).collect(),
+        "replay" => response.hits.into_iter().map(replay_summary).collect(),
         _ => response.hits,
     };
     Ok(Json(ListResponse {
@@ -2181,15 +2697,18 @@ mod tests {
     #[test]
     fn sentry_identity_is_the_trusted_service_and_transport_project_one() {
         let mut headers = HeaderMap::new();
-        headers.insert(SERVICE_ID_HEADER, HeaderValue::from_static("service-123"));
+        headers.insert(
+            SERVICE_ID_HEADER,
+            HeaderValue::from_static("tz4a98xxat96iws9zmbrgj3a"),
+        );
 
         assert_eq!(
-            sentry_service(&headers, SENTRY_PROJECT_ID, "service-123")
+            sentry_service(&headers, SENTRY_PROJECT_ID, "tz4a98xxat96iws9zmbrgj3a")
                 .unwrap()
                 .id,
-            "service-123"
+            "tz4a98xxat96iws9zmbrgj3a"
         );
-        assert!(sentry_service(&headers, "2", "service-123").is_err());
+        assert!(sentry_service(&headers, "2", "tz4a98xxat96iws9zmbrgj3a").is_err());
         assert!(sentry_service(&headers, SENTRY_PROJECT_ID, "another-service").is_err());
     }
 
@@ -2223,5 +2742,57 @@ mod tests {
             ))
             .is_err()
         );
+    }
+
+    #[test]
+    fn replay_bounds_cover_all_replay_event_segments() {
+        let events = [
+            json!({
+                "payload": {
+                    "replay_start_timestamp": 1_786_756_532.5,
+                    "timestamp": 1_786_756_540.0
+                }
+            }),
+            json!({
+                "payload": {
+                    "replay_start_timestamp": 1_786_756_533.0,
+                    "timestamp": 1_786_756_550.25
+                }
+            }),
+        ];
+
+        assert_eq!(
+            replay_time_bounds(&events),
+            (Some(1_786_756_532_500.0), Some(1_786_756_550_250.0))
+        );
+    }
+
+    #[test]
+    fn replay_trace_ids_are_normalized_and_deduplicated() {
+        let events = [
+            json!({"payload": {"trace_ids": ["4b25bc58-f142-43d8-b208-d1e22a054164"]}}),
+            json!({"payload": {"contexts": {"trace": {"trace_id": "4b25bc58f14243d8b208d1e22a054164"}}}}),
+        ];
+
+        assert_eq!(
+            replay_trace_ids(&events),
+            ["4b25bc58f14243d8b208d1e22a054164"]
+        );
+    }
+
+    #[test]
+    fn replay_video_ranges_support_browser_seek_requests() {
+        assert_eq!(parse_byte_range(None, 100), Ok(None));
+        assert_eq!(
+            parse_byte_range(Some("bytes=10-19"), 100),
+            Ok(Some((10, 19)))
+        );
+        assert_eq!(parse_byte_range(Some("bytes=90-"), 100), Ok(Some((90, 99))));
+        assert_eq!(parse_byte_range(Some("bytes=-10"), 100), Ok(Some((90, 99))));
+        assert_eq!(parse_byte_range(Some("bytes=-200"), 100), Ok(Some((0, 99))));
+        assert!(parse_byte_range(Some("bytes=100-"), 100).is_err());
+        assert!(parse_byte_range(Some("bytes=20-10"), 100).is_err());
+        assert!(parse_byte_range(Some("items=0-10"), 100).is_err());
+        assert!(parse_byte_range(Some("bytes=0-1,4-5"), 100).is_err());
     }
 }

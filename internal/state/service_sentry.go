@@ -6,6 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
+	"strings"
 
 	"github.com/iivankin/platformd/internal/publichostname"
 )
@@ -14,6 +17,24 @@ type UpdateServiceSentryPublicAccess struct {
 	ID                    string
 	ProjectID             string
 	PublicHostname        string
+	ExpectedUpdatedMillis int64
+	AuditEventID          string
+	ActorKind             string
+	ActorID               string
+	ActorEmail            string
+	RequestCorrelationID  string
+	UpdatedAtMillis       int64
+}
+
+var (
+	ErrServiceTelemetryTunnelPathInvalid = errors.New("browser tunnel path is invalid")
+	ErrServiceTelemetryTunnelNeedsDomain = errors.New("browser tunnel requires a public telemetry domain")
+)
+
+type UpdateServiceTelemetryTunnel struct {
+	ID                    string
+	ProjectID             string
+	Path                  string
 	ExpectedUpdatedMillis int64
 	AuditEventID          string
 	ActorKind             string
@@ -46,10 +67,14 @@ func (store *Store) UpdateServiceSentryPublicAccess(ctx context.Context, input U
 			}
 		}
 		updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
+		hostname := nullableString(input.PublicHostname)
 		result, err := transaction.ExecContext(ctx, `
-UPDATE services SET sentry_public_hostname = ?, updated_at = ?
+UPDATE services
+SET sentry_public_hostname = ?,
+    sentry_tunnel_path = CASE WHEN ? IS NULL THEN NULL ELSE sentry_tunnel_path END,
+    updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
-			nullableString(input.PublicHostname), updatedAt, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+			hostname, hostname, updatedAt, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
 		)
 		if err != nil {
 			return fmt.Errorf("update service Sentry public access: %w", err)
@@ -95,15 +120,95 @@ func (store *Store) ServiceBySentryHostname(ctx context.Context, hostname string
 	return store.DesiredService(ctx, serviceID)
 }
 
+func (store *Store) UpdateServiceTelemetryTunnel(ctx context.Context, input UpdateServiceTelemetryTunnel) (ServiceDesired, error) {
+	if input.ID == "" || input.ProjectID == "" || input.ExpectedUpdatedMillis <= 0 || input.AuditEventID == "" ||
+		input.UpdatedAtMillis <= 0 || validateMutationActor(input.ActorKind, input.ActorID, input.ActorEmail) != nil {
+		return ServiceDesired{}, errors.New("update service telemetry tunnel input is incomplete")
+	}
+	normalized, err := normalizeServiceTelemetryTunnelPath(input.Path)
+	if err != nil {
+		return ServiceDesired{}, err
+	}
+	input.Path = normalized
+	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
+		var publicHostname sql.NullString
+		var currentUpdatedAt int64
+		err := transaction.QueryRowContext(ctx, `
+SELECT sentry_public_hostname, updated_at
+FROM services
+WHERE id = ? AND project_id = ?`, input.ID, input.ProjectID).Scan(&publicHostname, &currentUpdatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrServiceNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("load service telemetry tunnel state: %w", err)
+		}
+		if currentUpdatedAt != input.ExpectedUpdatedMillis {
+			return ErrServiceChanged
+		}
+		if !publicHostname.Valid {
+			return ErrServiceTelemetryTunnelNeedsDomain
+		}
+		updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
+		result, err := transaction.ExecContext(ctx, `
+UPDATE services SET sentry_tunnel_path = ?, updated_at = ?
+WHERE id = ? AND project_id = ? AND updated_at = ?`,
+			nullableString(input.Path), updatedAt, input.ID, input.ProjectID, input.ExpectedUpdatedMillis,
+		)
+		if err != nil {
+			return fmt.Errorf("update service telemetry tunnel: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 1 {
+			return ErrServiceChanged
+		}
+		metadata, err := json.Marshal(map[string]string{"path": input.Path, "actorEmail": input.ActorEmail})
+		if err != nil {
+			return err
+		}
+		_, err = transaction.ExecContext(ctx, `
+INSERT INTO audit_events(
+  id, project_id, actor_kind, actor_id, action, target_kind, target_id,
+  request_correlation_id, result, metadata_json, created_at
+) VALUES (?, ?, ?, ?, 'service.telemetry.tunnel.update', 'service', ?, ?, 'succeeded', ?, ?)`,
+			input.AuditEventID, input.ProjectID, input.ActorKind, input.ActorID, input.ID,
+			nullableString(input.RequestCorrelationID), string(metadata), updatedAt,
+		)
+		return err
+	})
+	if err != nil {
+		return ServiceDesired{}, err
+	}
+	return store.Service(ctx, input.ProjectID, input.ID)
+}
+
+func normalizeServiceTelemetryTunnelPath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) > 256 || value == "/" || !strings.HasPrefix(value, "/") || path.Clean(value) != value {
+		return "", ErrServiceTelemetryTunnelPathInvalid
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != value || parsed.RawPath != "" {
+		return "", ErrServiceTelemetryTunnelPathInvalid
+	}
+	return value, nil
+}
+
 func publicHostnameRoleExistsExceptServiceSentry(ctx context.Context, transaction *sql.Tx, hostname, serviceID string) (bool, error) {
 	var exists int
 	err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
   SELECT 1 FROM installation WHERE admin_hostname = ?
-  UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
+  UNION ALL SELECT 1 FROM service_domains WHERE hostname = ? AND service_id != ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
   UNION ALL SELECT 1 FROM services WHERE sentry_public_hostname = ? AND id != ?
-)`, hostname, hostname, hostname, hostname, serviceID).Scan(&exists)
+)`, hostname, hostname, serviceID, hostname, hostname, serviceID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check public hostname roles: %w", err)
 	}

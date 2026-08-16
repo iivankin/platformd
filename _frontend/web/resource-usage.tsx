@@ -1092,36 +1092,28 @@ export const ProjectUsage = ({ projectID }: { projectID: string }) => {
   const [range, setRange] = useState<ResourceUsageRange>("1h");
   const metrics = useScopeUsage({ id: projectID, kind: "project" }, range);
   return (
-    <div>
-      <header className="border-b border-border px-6 py-5">
-        <h3 className="text-sm font-medium">Usage</h3>
-        <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">
-          CPU, memory, persistent disk, and public traffic split by workload.
-        </p>
-      </header>
-      <div className="space-y-4 p-4 lg:p-6">
-        <UsageContent
-          aggregate
-          cpuMillicores={metrics.cpuMillicores}
-          currentError={metrics.currentError}
-          history={metrics.history}
-          historyError={metrics.historyError}
-          historyLoading={metrics.historyLoading}
-          network={metrics.network}
-          onRangeChange={setRange}
-          range={range}
-          title="Project resources"
-          usage={metrics.usage}
-        />
-        <CustomMetrics scope={{ kind: "project", projectID }} />
-        <ProtocolUsage
-          aggregate
-          history={metrics.history}
-          historyError={metrics.historyError}
-          usage={metrics.usage}
-        />
-      </div>
-    </div>
+    <main className="space-y-4 p-4 lg:p-6">
+      <UsageContent
+        aggregate
+        cpuMillicores={metrics.cpuMillicores}
+        currentError={metrics.currentError}
+        history={metrics.history}
+        historyError={metrics.historyError}
+        historyLoading={metrics.historyLoading}
+        network={metrics.network}
+        onRangeChange={setRange}
+        range={range}
+        title="Project resources"
+        usage={metrics.usage}
+      />
+      <ProtocolUsage
+        aggregate
+        history={metrics.history}
+        historyError={metrics.historyError}
+        usage={metrics.usage}
+      />
+      <CustomMetrics scope={{ kind: "project", projectID }} />
+    </main>
   );
 };
 

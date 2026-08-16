@@ -355,6 +355,7 @@ const serviceSchema = z.object({
 export type Service = z.infer<typeof serviceSchema>;
 
 const serviceTelemetrySchema = z.object({
+  browserTunnelPath: z.string().min(2).max(256).optional(),
   internalDsn: z.string().url(),
   internalHostname: z.string().min(1),
   internalOtlpEndpoint: z.string().url(),
@@ -402,6 +403,8 @@ const serviceTraceSummarySchema = z.object({
   errorSpanCount: z.number().int().nonnegative(),
   isAi: z.boolean(),
   name: z.string(),
+  segmentId: z.string().min(1),
+  serviceId: z.string().min(1),
   sources: z.array(z.string()),
   spanCount: z.number().int().nonnegative(),
   startedAtUnixNano: z.string().regex(/^\d+$/u),
@@ -422,15 +425,19 @@ const serviceTraceSpanSchema = z.object({
   aiReasoningTokens: z.number().int().nonnegative().nullable(),
   aiTokensPerSecond: z.number().nonnegative().nullable(),
   aiTtftSeconds: z.number().nonnegative().nullable(),
+  baselineDurationNano: z.number().nonnegative().nullable().optional(),
   durationNano: z.string().regex(/^\d+$/u),
   endTimeUnixNano: z.string().regex(/^\d+$/u),
   flags: z.number().int().nonnegative(),
+  isSegment: z.boolean(),
   kind: z.number().int(),
   name: z.string(),
   parentSpanId: z.string(),
   receivedAtUnixNano: z.string().regex(/^\d+$/u),
   resource: z.unknown(),
   scope: z.unknown(),
+  segmentId: z.string().min(1),
+  serviceId: z.string().min(1),
   source: z.string(),
   span: z.unknown(),
   spanId: z.string().length(16),
@@ -441,7 +448,51 @@ const serviceTraceSpanSchema = z.object({
   traceState: z.string(),
 });
 
+const serviceTraceMetricSampleSchema = z.object({
+  name: z.string(),
+  spanId: z.string(),
+  timeUnixNano: z.string().regex(/^\d+$/u),
+  unit: z.string(),
+  value: z.number().nullable(),
+});
+
+const serviceTraceProfileStackSchema = z.object({
+  durationNano: z.string().regex(/^\d+$/u),
+  frames: z.array(z.record(z.string(), z.unknown())),
+  sampleCount: z.number().int().nonnegative(),
+  spanId: z.string(),
+  threadId: z.string(),
+  threadName: z.string(),
+});
+
+const serviceTraceProfileSchema = z.object({
+  endedAtUnixNano: z.string().regex(/^\d+$/u),
+  platform: z.string(),
+  profileId: z.string().min(1),
+  profilerId: z.string(),
+  sampleCount: z.number().int().nonnegative(),
+  serviceId: z.string().min(1),
+  stacks: z.array(serviceTraceProfileStackSchema),
+  startedAtUnixNano: z.string().regex(/^\d+$/u),
+});
+
 const serviceTraceDetailSchema = z.object({
+  metrics: z.array(serviceTraceMetricSampleSchema).default([]),
+  profiles: z.array(serviceTraceProfileSchema).default([]),
+  relatedSegments: z
+    .array(
+      z.object({
+        durationNano: z.string().regex(/^\d+$/u),
+        errorSpanCount: z.number().int().nonnegative(),
+        name: z.string(),
+        segmentId: z.string().min(1),
+        serviceId: z.string().min(1),
+        spanCount: z.number().int().nonnegative(),
+        startedAtUnixNano: z.string().regex(/^\d+$/u),
+      })
+    )
+    .default([]),
+  segmentId: z.string().min(1),
   spans: z.array(serviceTraceSpanSchema),
   traceId: z.string().length(32),
 });
@@ -477,6 +528,13 @@ const serviceMetricChartSchema = z.object({
 
 export type ServiceTraceSummary = z.infer<typeof serviceTraceSummarySchema>;
 export type ServiceTraceSpan = z.infer<typeof serviceTraceSpanSchema>;
+export type ServiceTraceMetricSample = z.infer<
+  typeof serviceTraceMetricSampleSchema
+>;
+export type ServiceTraceProfile = z.infer<typeof serviceTraceProfileSchema>;
+export type ServiceTraceProfileStack = z.infer<
+  typeof serviceTraceProfileStackSchema
+>;
 export type ServiceTraceDetail = z.infer<typeof serviceTraceDetailSchema>;
 export type ServiceMetricDescriptor = z.infer<
   typeof serviceMetricDescriptorSchema
@@ -623,6 +681,7 @@ const logRecordSchema = z.object({
   fields: z.record(z.string(), z.unknown()).optional(),
   partial: z.boolean().optional(),
   phase: z.enum(["before_deploy"]).optional(),
+  serviceId: z.string().optional(),
   severityNumber: z.number().int().optional(),
   severityText: z.string().optional(),
   spanId: z.string().optional(),
@@ -662,6 +721,7 @@ const diskPressureSchema = z.object({
     z.object({
       bytes: z.number().int().nonnegative(),
       id: z.string().min(1),
+      parent: z.string().min(1).optional(),
     })
   ),
   componentsCheckedAt: z.number().int().positive().optional(),
@@ -1979,7 +2039,7 @@ export const fetchService = async (
 const serviceTelemetryPath = (projectID: string, serviceID: string) =>
   `/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}/telemetry`;
 
-const metricScopePath = (scope: MetricScope) => {
+export const telemetryScopePath = (scope: MetricScope) => {
   if (scope.kind === "installation") {
     return "/api/v1/telemetry";
   }
@@ -1988,6 +2048,22 @@ const metricScopePath = (scope: MetricScope) => {
   }
   return serviceTelemetryPath(scope.projectID, scope.serviceID);
 };
+
+const scopedIssueSchema = z.object({
+  eventCount: z.number().int().nonnegative(),
+  firstSeen: z.string(),
+  id: z.string().min(1),
+  lastEventId: z.string(),
+  lastSeen: z.string(),
+  level: z.string(),
+  platform: z.string(),
+  projectId: z.string().min(1).optional(),
+  serviceId: z.string().min(1),
+  status: z.enum(["ignored", "open", "resolved"]),
+  title: z.string(),
+});
+
+export type ScopedIssue = z.infer<typeof scopedIssueSchema>;
 
 export const fetchServiceTelemetry = async (
   projectID: string,
@@ -2028,25 +2104,59 @@ export const updateServiceTelemetryPublicAccess = async (
   return serviceTelemetrySchema.parse(await response.json());
 };
 
-export const fetchServiceTraces = async (
+export const updateServiceTelemetryBrowserTunnel = async (
   projectID: string,
   serviceID: string,
+  input: { browserTunnelPath: string; expectedUpdatedAt: number },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceTelemetry> => {
+  const response = await fetcher(
+    `${serviceTelemetryPath(projectID, serviceID)}/browser-tunnel`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "service telemetry tunnel update failed");
+  }
+  return serviceTelemetrySchema.parse(await response.json());
+};
+
+export const fetchTelemetryTraces = async (
+  scope: MetricScope,
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch,
-  bounds: { from?: number; query?: string; to?: number } = {}
+  options: {
+    from?: number;
+    query?: string;
+    sort?: "latest" | "slowest" | "spans";
+    status?: "all" | "error" | "ok";
+    to?: number;
+  } = {}
 ): Promise<ServiceTraceSummary[]> => {
   const query = new URLSearchParams({ limit: "200" });
-  if (bounds.from !== undefined) {
-    query.set("from", String(bounds.from));
+  if (options.from !== undefined) {
+    query.set("from", String(options.from));
   }
-  if (bounds.to !== undefined) {
-    query.set("to", String(bounds.to));
+  if (options.to !== undefined) {
+    query.set("to", String(options.to));
   }
-  if (bounds.query) {
-    query.set("query", bounds.query);
+  if (options.query) {
+    query.set("query", options.query);
+  }
+  if (options.status && options.status !== "all") {
+    query.set("status", options.status);
+  }
+  if (options.sort && options.sort !== "latest") {
+    query.set("sort", options.sort);
   }
   const response = await fetcher(
-    `${serviceTelemetryPath(projectID, serviceID)}/traces?${query.toString()}`,
+    `${telemetryScopePath(scope)}/traces?${query.toString()}`,
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
@@ -2055,21 +2165,83 @@ export const fetchServiceTraces = async (
   return z.array(serviceTraceSummarySchema).parse(await response.json());
 };
 
-export const fetchServiceTrace = async (
+export const fetchServiceTraces = (
   projectID: string,
   serviceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch,
+  options: {
+    from?: number;
+    query?: string;
+    sort?: "latest" | "slowest" | "spans";
+    status?: "all" | "error" | "ok";
+    to?: number;
+  } = {}
+): Promise<ServiceTraceSummary[]> =>
+  fetchTelemetryTraces(
+    { kind: "service", projectID, serviceID },
+    signal,
+    fetcher,
+    options
+  );
+
+export const fetchTelemetryTrace = async (
+  scope: MetricScope,
   traceID: string,
   signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch
+  fetcher: Fetcher = globalThis.fetch,
+  segmentID?: string
 ): Promise<ServiceTraceDetail> => {
+  const query = new URLSearchParams();
+  if (segmentID) {
+    query.set("segment", segmentID);
+  }
   const response = await fetcher(
-    `${serviceTelemetryPath(projectID, serviceID)}/traces/${encodeURIComponent(traceID)}`,
+    `${telemetryScopePath(scope)}/traces/${encodeURIComponent(traceID)}${query.size > 0 ? `?${query.toString()}` : ""}`,
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
     throw await apiError(response, "service trace request failed");
   }
   return serviceTraceDetailSchema.parse(await response.json());
+};
+
+export const fetchServiceTrace = (
+  projectID: string,
+  serviceID: string,
+  traceID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch,
+  segmentID?: string
+): Promise<ServiceTraceDetail> =>
+  fetchTelemetryTrace(
+    { kind: "service", projectID, serviceID },
+    traceID,
+    signal,
+    fetcher,
+    segmentID
+  );
+
+export const fetchScopedIssues = async (
+  scope: Exclude<MetricScope, { kind: "service" }>,
+  query = "",
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<{ data: ScopedIssue[]; total: number }> => {
+  const parameters = new URLSearchParams({ limit: "100" });
+  if (query) {
+    parameters.set("query", query);
+  }
+  const response = await fetcher(
+    `${telemetryScopePath(scope)}/errors/issues?${parameters.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "telemetry issues request failed");
+  }
+  return z
+    .object({ data: z.array(scopedIssueSchema), total: z.number().int() })
+    .parse(await response.json());
 };
 
 export const fetchServiceReplayRecording = async (
@@ -2094,10 +2266,13 @@ export const fetchMetricCatalog = async (
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceMetricDescriptor[]> => {
-  const response = await fetcher(`${metricScopePath(scope)}/metrics/catalog`, {
-    headers: { Accept: "application/json" },
-    signal,
-  });
+  const response = await fetcher(
+    `${telemetryScopePath(scope)}/metrics/catalog`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
   if (!response.ok) {
     throw await apiError(response, "service metric catalog request failed");
   }
@@ -2127,7 +2302,7 @@ export const fetchMetricQuery = async (
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceMetricSqlRow[]> => {
-  const response = await fetcher(`${metricScopePath(scope)}/metrics/query`, {
+  const response = await fetcher(`${telemetryScopePath(scope)}/metrics/query`, {
     body: JSON.stringify({
       from: Math.floor(input.from),
       sql: input.sql,
@@ -2171,7 +2346,7 @@ export const fetchMetricCharts = async (
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceMetricChart[]> => {
-  const response = await fetcher(`${metricScopePath(scope)}/metric-charts`, {
+  const response = await fetcher(`${telemetryScopePath(scope)}/metric-charts`, {
     headers: { Accept: "application/json" },
     signal,
   });
@@ -2194,7 +2369,7 @@ export const createMetricChart = async (
   input: Omit<ServiceMetricChart, "createdAt" | "id" | "updatedAt">,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceMetricChart> => {
-  const response = await fetcher(`${metricScopePath(scope)}/metric-charts`, {
+  const response = await fetcher(`${telemetryScopePath(scope)}/metric-charts`, {
     body: JSON.stringify(input),
     headers: {
       Accept: "application/json",
@@ -2225,7 +2400,7 @@ export const updateMetricChart = async (
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceMetricChart> => {
   const response = await fetcher(
-    `${metricScopePath(scope)}/metric-charts/${encodeURIComponent(chartID)}`,
+    `${telemetryScopePath(scope)}/metric-charts/${encodeURIComponent(chartID)}`,
     {
       body: JSON.stringify(input),
       headers: {
@@ -2263,7 +2438,7 @@ export const deleteMetricChart = async (
   fetcher: Fetcher = globalThis.fetch
 ): Promise<void> => {
   const response = await fetcher(
-    `${metricScopePath(scope)}/metric-charts/${encodeURIComponent(chartID)}`,
+    `${telemetryScopePath(scope)}/metric-charts/${encodeURIComponent(chartID)}`,
     { method: "DELETE" }
   );
   if (!response.ok) {
@@ -2674,7 +2849,9 @@ export const fetchResourceLogs = async (
     fieldFilters?: LogFieldFilter[];
     from?: number;
     limit?: number;
+    spanId?: string;
     to?: number;
+    traceId?: string;
   } = {},
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
@@ -2692,6 +2869,12 @@ export const fetchResourceLogs = async (
   if (options.deploymentId) {
     query.set("deploymentId", options.deploymentId);
   }
+  if (options.traceId) {
+    query.set("traceId", options.traceId);
+  }
+  if (options.spanId) {
+    query.set("spanId", options.spanId);
+  }
   if (options.from !== undefined) {
     query.set("from", String(options.from));
   }
@@ -2707,6 +2890,57 @@ export const fetchResourceLogs = async (
       response,
       `resource logs request failed with ${response.status}`
     );
+  }
+  return logWindowSchema.parse(await response.json());
+};
+
+export const fetchTelemetryLogs = async (
+  scope: Exclude<MetricScope, { kind: "service" }>,
+  options: {
+    contains?: string;
+    cursor?: string;
+    deploymentId?: string;
+    fieldFilters?: LogFieldFilter[];
+    from?: number;
+    limit?: number;
+    spanId?: string;
+    to?: number;
+    traceId?: string;
+  } = {},
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<LogWindow> => {
+  const query = new URLSearchParams({ limit: String(options.limit ?? 500) });
+  if (options.contains) {
+    query.set("contains", options.contains);
+  }
+  if (options.cursor) {
+    query.set("cursor", options.cursor);
+  }
+  if (options.fieldFilters?.length) {
+    query.set("fieldFilters", JSON.stringify(options.fieldFilters));
+  }
+  if (options.deploymentId) {
+    query.set("deploymentId", options.deploymentId);
+  }
+  if (options.traceId) {
+    query.set("traceId", options.traceId);
+  }
+  if (options.spanId) {
+    query.set("spanId", options.spanId);
+  }
+  if (options.from !== undefined) {
+    query.set("from", String(options.from));
+  }
+  if (options.to !== undefined) {
+    query.set("to", String(options.to));
+  }
+  const response = await fetcher(
+    `${telemetryScopePath(scope)}/logs?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "telemetry logs request failed");
   }
   return logWindowSchema.parse(await response.json());
 };

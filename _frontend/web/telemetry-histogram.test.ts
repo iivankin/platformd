@@ -28,4 +28,12 @@ describe("telemetry histogram", () => {
     expect(label).toContain("1:58:05");
     expect(label).toContain("1:58:37");
   });
+
+  test("keeps millisecond precision when trace buckets are sub-second", () => {
+    const from = Date.UTC(2026, 6, 14, 13, 58, 5, 125);
+    const label = formatTelemetryRange(from, from + 450, "en-US");
+
+    expect(label).toContain("1:58:05.125");
+    expect(label).toContain("1:58:05.575");
+  });
 });

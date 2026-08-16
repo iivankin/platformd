@@ -5,6 +5,7 @@ import { Link, Navigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
 import type { ProjectCanvas } from "@/api";
+import { cn } from "@/lib/utils";
 import { NetworkGatewayDetailPanel } from "@/network-gateway-detail-panel";
 import type { NetworkGatewayWorkspaceView } from "@/network-gateway-detail-panel";
 import { ObjectStoreDetailPanel } from "@/object-store-detail-panel";
@@ -95,6 +96,17 @@ const statusColor: Record<ResourceNodeData["status"], string> = {
   failed: "bg-destructive",
   pending: "bg-sky-500",
   running: "bg-emerald-500",
+};
+
+const internallyScrollableViews: Record<
+  ResourceNodeData["kind"],
+  readonly string[]
+> = {
+  network_gateway: [],
+  object_store: ["objects"],
+  postgres: ["database", "telemetry"],
+  redis: ["database", "telemetry"],
+  service: ["telemetry"],
 };
 
 const ResourceWorkspace = ({
@@ -290,6 +302,8 @@ export const ProjectResourcePage = () => {
     label: candidate.label,
     path: resourcePath(projectID, resourceID, kind, candidate.value),
   }));
+  const internallyScrollable =
+    internallyScrollableViews[node.data.kind].includes(view);
 
   return (
     <ResourceDrawer
@@ -324,7 +338,14 @@ export const ProjectResourcePage = () => {
         </div>
       </section>
       <PageTabs label={`${node.data.name} resource pages`} tabs={tabs} />
-      <div className="min-h-0 flex-1 overflow-auto">
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          internallyScrollable
+            ? "overflow-hidden [&>*]:h-full [&>*]:min-h-0"
+            : "overflow-auto"
+        )}
+      >
         <ResourceWorkspace
           key={`${kind}:${resourceID}`}
           node={node}

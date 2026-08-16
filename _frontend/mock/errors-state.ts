@@ -96,15 +96,34 @@ const event = ({
             frames: [
               {
                 colno: 11,
+                context_line:
+                  "throw new CheckoutInvariantError('Inventory reservation expired');",
                 filename: "webpack:///src/checkout/cart.ts",
                 function: "reserveInventory",
+                in_app: true,
                 lineno: 71,
+                module: "checkout/cart",
+                post_context: ["}", "", "export async function checkout() {"],
+                pre_context: [
+                  "if (!reservation.active) {",
+                  "  inventory.release(reservation.id);",
+                ],
               },
               {
                 colno: 17,
                 filename: "webpack:///src/checkout/submit.ts",
                 function: "finalizeOrder",
+                in_app: true,
                 lineno: 184,
+                module: "checkout/submit",
+              },
+              {
+                colno: 21,
+                filename: "https://shop.example.com/chunk-runtime.js",
+                function: "dispatch",
+                in_app: false,
+                lineno: 1,
+                module: "runtime",
               },
             ],
           },
@@ -119,6 +138,13 @@ const event = ({
       inventory_reservation: "res_7304",
     },
     level: "error",
+    measurements: {
+      cls: { unit: "none", value: 0.14 },
+      fcp: { unit: "millisecond", value: 820 },
+      inp: { unit: "millisecond", value: 168 },
+      lcp: { unit: "millisecond", value: 1842 },
+      ttfb: { unit: "millisecond", value: 112 },
+    },
     platform: "javascript",
     release: "storefront@2.8.1",
     ...(replay ? { replay_id: replayId } : {}),
@@ -543,9 +569,30 @@ const replayRecording: ReplayRecording = {
       timestamp: replayStartedAt + 33_500,
       type: 5,
     },
+    {
+      data: {
+        payload: {
+          data: {
+            memory: {
+              jsHeapSizeLimit: 4_294_967_296,
+              totalJSHeapSize: 71_303_168,
+              usedJSHeapSize: 48_234_496,
+            },
+          },
+          op: "memory",
+          startTimestamp: (replayStartedAt + 32_000) / 1000,
+        },
+        tag: "performanceSpan",
+      },
+      timestamp: replayStartedAt + 32_000,
+      type: 5,
+    },
   ],
+  finishedAt: replayStartedAt + 34_000,
   replayId,
   segmentCount: 2,
+  startedAt: replayStartedAt,
+  traceIds: ["4c79f60c11214eb38604f4ae0781bfb2"],
 };
 
 export const createErrorsMockState = (): ErrorsMockState => ({

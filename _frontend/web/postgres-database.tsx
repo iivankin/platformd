@@ -603,24 +603,6 @@ export const PostgresDatabase = ({
     setView("query");
   };
 
-  const renderView = () => {
-    if (view === "extensions") {
-      return (
-        <PostgresExtensions postgresID={postgresID} projectID={projectID} />
-      );
-    }
-    if (view === "query") {
-      return (
-        <PostgresQueryRunner
-          initialSQL={queryDraft}
-          postgresID={postgresID}
-          projectID={projectID}
-        />
-      );
-    }
-    return null;
-  };
-
   const views: { label: string; value: DatabaseView }[] = [
     { label: "Data", value: "data" },
     { label: "Query", value: "query" },
@@ -628,9 +610,9 @@ export const PostgresDatabase = ({
   ];
 
   return (
-    <div>
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <nav
-        className="flex min-h-10 border-b border-border px-4"
+        className="flex min-h-10 shrink-0 border-b border-border px-4"
         aria-label="PostgreSQL database pages"
       >
         {views.map((item) => (
@@ -647,14 +629,30 @@ export const PostgresDatabase = ({
           </button>
         ))}
       </nav>
-      <div hidden={view !== "data"}>
-        <PostgresDataBrowser
-          onOpenInQuery={openInQuery}
-          postgresID={postgresID}
-          projectID={projectID}
-        />
+      <div
+        className={cn(
+          "min-h-0 flex-1",
+          view === "extensions" ? "overflow-auto" : "overflow-hidden"
+        )}
+      >
+        <div className="h-full min-h-0" hidden={view !== "data"}>
+          <PostgresDataBrowser
+            onOpenInQuery={openInQuery}
+            postgresID={postgresID}
+            projectID={projectID}
+          />
+        </div>
+        {view === "query" ? (
+          <PostgresQueryRunner
+            initialSQL={queryDraft}
+            postgresID={postgresID}
+            projectID={projectID}
+          />
+        ) : null}
+        {view === "extensions" ? (
+          <PostgresExtensions postgresID={postgresID} projectID={projectID} />
+        ) : null}
       </div>
-      {renderView()}
     </div>
   );
 };

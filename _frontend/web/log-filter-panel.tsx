@@ -43,13 +43,21 @@ export const LogFilterChips = ({
   fieldFilters,
   onRemoveDeployment,
   onRemoveFieldFilter,
+  onRemoveSpan,
+  onRemoveTrace,
   severity,
+  spanID,
+  traceID,
 }: {
   deploymentID?: string;
   fieldFilters: LogFieldFilter[];
   onRemoveDeployment?: () => void;
   onRemoveFieldFilter: (index: number) => void;
+  onRemoveSpan?: () => void;
+  onRemoveTrace?: () => void;
   severity: LogSeverity;
+  spanID?: string;
+  traceID?: string;
 }) => (
   <div className="flex min-w-0 flex-wrap items-center gap-2">
     <span className="flex h-8 shrink-0 items-center border border-border bg-muted/25 px-2 text-[8px] tracking-[0.04em] text-foreground uppercase">
@@ -63,6 +71,36 @@ export const LogFilterChips = ({
             aria-label="Remove deployment filter"
             className="hover:text-foreground"
             onClick={onRemoveDeployment}
+            type="button"
+          >
+            <X className="size-2.5" />
+          </button>
+        ) : null}
+      </span>
+    ) : null}
+    {traceID ? (
+      <span className="flex h-8 max-w-64 shrink-0 items-center gap-1 border border-violet-500/35 bg-violet-500/5 px-2 font-mono text-[8px] text-violet-700 dark:text-violet-300">
+        <span className="truncate">Trace · {traceID}</span>
+        {onRemoveTrace ? (
+          <button
+            aria-label="Remove trace filter"
+            className="hover:text-foreground"
+            onClick={onRemoveTrace}
+            type="button"
+          >
+            <X className="size-2.5" />
+          </button>
+        ) : null}
+      </span>
+    ) : null}
+    {spanID ? (
+      <span className="flex h-8 max-w-52 shrink-0 items-center gap-1 border border-violet-500/35 bg-violet-500/5 px-2 font-mono text-[8px] text-violet-700 dark:text-violet-300">
+        <span className="truncate">Span · {spanID}</span>
+        {onRemoveSpan ? (
+          <button
+            aria-label="Remove span filter"
+            className="hover:text-foreground"
+            onClick={onRemoveSpan}
             type="button"
           >
             <X className="size-2.5" />

@@ -2,7 +2,9 @@
 python	python
 python	flask
 node	node
+node	node-profile
 node	express
+node	browser
 go	go
 go	net-http
 rust	rust

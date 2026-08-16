@@ -172,6 +172,10 @@ func (*repositoryStub) UpdateServiceTelemetryPublicAccess(_ context.Context, inp
 	return telemetry.ServiceConfiguration{ServiceID: input.ID, PublicHostname: input.PublicHostname, PublicDSN: "https://service@" + input.PublicHostname + "/1", UpdatedAt: input.UpdatedAtMillis}, nil
 }
 
+func (*repositoryStub) UpdateServiceTelemetryTunnel(_ context.Context, input state.UpdateServiceTelemetryTunnel) (telemetry.ServiceConfiguration, error) {
+	return telemetry.ServiceConfiguration{ServiceID: input.ID, BrowserTunnelPath: input.Path, UpdatedAt: input.UpdatedAtMillis}, nil
+}
+
 type mcpVolumeFilesystem struct{}
 
 func (mcpVolumeFilesystem) Ensure(context.Context, state.PersistentVolumeReference) error { return nil }

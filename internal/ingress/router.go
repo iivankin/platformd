@@ -17,6 +17,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/publichostname"
+	"github.com/iivankin/platformd/internal/sentry"
 	"github.com/iivankin/platformd/internal/trafficmetrics"
 )
 
@@ -34,6 +35,10 @@ type Route struct {
 	TargetPort int
 }
 
+type ServiceTelemetryRoute struct {
+	BrowserTunnelPath string
+}
+
 type Config struct {
 	AdminHostname           string
 	AdminHandler            http.Handler
@@ -46,7 +51,7 @@ type Config struct {
 type routeSnapshot struct {
 	services         map[string]Route
 	objectStores     map[string]struct{}
-	serviceTelemetry map[string]struct{}
+	serviceTelemetry map[string]ServiceTelemetryRoute
 }
 
 type Router struct {
@@ -93,7 +98,7 @@ func New(config Config) (*Router, error) {
 			ResponseHeaderTimeout: 30 * time.Second,
 		},
 	}
-	router.routes.Store(&routeSnapshot{services: map[string]Route{}, objectStores: map[string]struct{}{}, serviceTelemetry: map[string]struct{}{}})
+	router.routes.Store(&routeSnapshot{services: map[string]Route{}, objectStores: map[string]struct{}{}, serviceTelemetry: map[string]ServiceTelemetryRoute{}})
 	return router, nil
 }
 
@@ -108,7 +113,7 @@ func (router *Router) Reload(routes map[string]Route) {
 	}
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
-		services: cloned, objectStores: cloneSet(current.objectStores), serviceTelemetry: cloneSet(current.serviceTelemetry),
+		services: cloned, objectStores: cloneSet(current.objectStores), serviceTelemetry: cloneServiceTelemetryRoutes(current.serviceTelemetry),
 	})
 }
 
@@ -123,20 +128,16 @@ func (router *Router) ReloadObjectStores(hostnames []string) {
 	}
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
-		services: cloneMap(current.services), objectStores: cloned, serviceTelemetry: cloneSet(current.serviceTelemetry),
+		services: cloneMap(current.services), objectStores: cloned, serviceTelemetry: cloneServiceTelemetryRoutes(current.serviceTelemetry),
 	})
 }
 
-func (router *Router) ReloadServiceTelemetry(hostnames []string) {
+func (router *Router) ReloadServiceTelemetry(routes map[string]ServiceTelemetryRoute) {
 	router.reloadMu.Lock()
 	defer router.reloadMu.Unlock()
-	cloned := make(map[string]struct{}, len(hostnames))
-	for _, hostname := range hostnames {
-		cloned[hostname] = struct{}{}
-	}
 	current := router.routes.Load()
 	router.routes.Store(&routeSnapshot{
-		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores), serviceTelemetry: cloned,
+		services: cloneMap(current.services), objectStores: cloneSet(current.objectStores), serviceTelemetry: cloneServiceTelemetryRoutes(routes),
 	})
 }
 
@@ -169,13 +170,22 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.objectStoreHandler.ServeHTTP(response, request)
 		return
 	}
-	if _, exists := routes.serviceTelemetry[hostname]; exists {
-		if router.serviceTelemetryHandler == nil {
-			unavailable(response)
+	if telemetryRoute, exists := routes.serviceTelemetry[hostname]; exists {
+		if upstreamPath, telemetryPath := sentry.PublicDataPlanePath(request.Method, request.URL.Path, telemetryRoute.BrowserTunnelPath); telemetryPath {
+			if router.serviceTelemetryHandler == nil {
+				unavailable(response)
+				return
+			}
+			forwarded := request.Clone(request.Context())
+			forwarded.URL.Path = upstreamPath
+			forwarded.URL.RawPath = ""
+			router.serviceTelemetryHandler.ServeHTTP(response, forwarded)
 			return
 		}
-		router.serviceTelemetryHandler.ServeHTTP(response, request)
-		return
+		if _, sharedWithService := routes.services[hostname]; !sharedWithService {
+			http.NotFound(response, request)
+			return
+		}
 	}
 	serviceRoute, exists := routes.services[hostname]
 	if !exists {
@@ -228,6 +238,14 @@ func cloneSet(input map[string]struct{}) map[string]struct{} {
 	result := make(map[string]struct{}, len(input))
 	for key := range input {
 		result[key] = struct{}{}
+	}
+	return result
+}
+
+func cloneServiceTelemetryRoutes(input map[string]ServiceTelemetryRoute) map[string]ServiceTelemetryRoute {
+	result := make(map[string]ServiceTelemetryRoute, len(input))
+	for key, value := range input {
+		result[key] = value
 	}
 	return result
 }

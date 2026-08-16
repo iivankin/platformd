@@ -205,6 +205,31 @@ func (process *Process) Snapshot(ctx context.Context, destination string) error 
 	return nil
 }
 
+type diskUsageView struct {
+	RecordingBytes uint64 `json:"recordingBytes"`
+}
+
+func (process *Process) RecordingBytes(ctx context.Context) (uint64, error) {
+	if process == nil || process.target == nil || ctx == nil {
+		return 0, errors.New("telemetry disk usage input is incomplete")
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, process.target.String()+"/internal/disk-usage", nil)
+	if err != nil {
+		return 0, err
+	}
+	response, err := process.client.Do(request)
+	if err != nil {
+		return 0, fmt.Errorf("read telemetry disk usage: %w", err)
+	}
+	var usage diskUsageView
+	decodeErr := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&usage)
+	closeErr := response.Body.Close()
+	if response.StatusCode != http.StatusOK || decodeErr != nil || closeErr != nil {
+		return 0, errors.Join(decodeErr, closeErr, fmt.Errorf("telemetry disk usage returned HTTP %d", response.StatusCode))
+	}
+	return usage.RecordingBytes, nil
+}
+
 func (process *Process) deleteSnapshot(id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

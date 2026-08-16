@@ -11,10 +11,11 @@ import {
 import type { Meta } from "@/api";
 import { useAppData } from "@/app-data";
 import { Button } from "@/components/ui/button";
+import { GlobalTelemetryPage } from "@/global-telemetry-page";
 import { InfrastructurePage } from "@/infrastructure-page";
-import { ProjectCanvasPage } from "@/project-canvas-page";
 import { ProjectChangesProvider } from "@/project-changes";
 import { ProjectCreatePage } from "@/project-create-page";
+import { ProjectPage } from "@/project-page";
 import { ProjectsPage } from "@/projects-page";
 import { RecoveryPage } from "@/recovery-page";
 import { SettingsPage } from "@/settings-page";
@@ -24,8 +25,9 @@ import { useLastProject } from "@/use-last-project";
 import { useMediaQuery } from "@/use-media-query";
 
 const pageDescriptions: Record<string, string> = {
-  "/monitoring": "Server health, maintenance, and platform activity.",
   "/settings": "Installation access and secure hostnames.",
+  "/system": "Server health, maintenance, and platform activity.",
+  "/telemetry": "Metrics, logs, errors, and traces across this installation.",
 };
 
 const controlPlaneStatusLabel = (
@@ -177,6 +179,7 @@ export const App = () => {
   const projectCanvasVisible =
     location.pathname.startsWith("/projects/") &&
     location.pathname !== "/projects/new";
+  const telemetryWorkspaceVisible = location.pathname.endsWith("/telemetry");
   const controlPlaneReady = data.meta?.status === "ready";
   const controlPlaneStatus = controlPlaneStatusLabel(
     data.meta?.status,
@@ -222,7 +225,9 @@ export const App = () => {
             </header>
           )}
 
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div
+            className={`min-h-0 flex-1 ${telemetryWorkspaceVisible ? "overflow-hidden" : "overflow-auto"}`}
+          >
             {recovering ? (
               <Routes>
                 <Route element={<RecoveryPage />} path="/recovery" />
@@ -258,25 +263,20 @@ export const App = () => {
                 />
                 <Route
                   element={
-                    <ProjectCanvasPage
+                    <ProjectPage
                       isDemo={isDemo}
                       onProjectDeleted={data.handleProjectDeleted}
                       onProjectUpdated={data.handleProjectUpdated}
+                      projects={data.projects}
                     />
                   }
-                  path="/projects/:projectID/:resourceCollection/:resourceID/:view?"
+                  path="/projects/:projectID/*"
                 />
                 <Route
-                  element={
-                    <ProjectCanvasPage
-                      isDemo={isDemo}
-                      onProjectDeleted={data.handleProjectDeleted}
-                      onProjectUpdated={data.handleProjectUpdated}
-                    />
-                  }
-                  path="/projects/:projectID"
+                  element={<GlobalTelemetryPage projects={data.projects} />}
+                  path="/telemetry/*"
                 />
-                <Route element={<InfrastructurePage />} path="/monitoring/*" />
+                <Route element={<InfrastructurePage />} path="/system/*" />
                 <Route
                   element={
                     <SettingsPage
@@ -289,7 +289,9 @@ export const App = () => {
                 {globalNavigation
                   .filter(
                     (item) =>
-                      item.path !== "/monitoring" && item.path !== "/settings"
+                      item.path !== "/telemetry" &&
+                      item.path !== "/system" &&
+                      item.path !== "/settings"
                   )
                   .map((item) => (
                     <Route

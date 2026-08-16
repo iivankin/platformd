@@ -101,6 +101,8 @@ func writeDomainError(response http.ResponseWriter, err error) bool {
 		writeError(response, http.StatusNotFound, "service_not_found", "Service not found")
 	case errors.Is(err, state.ErrDomainNotFound):
 		writeError(response, http.StatusNotFound, "domain_not_found", "Domain not found on this service")
+	case errors.Is(err, state.ErrDomainTelemetryUse):
+		writeError(response, http.StatusConflict, "domain_used_by_telemetry", err.Error())
 	case errors.Is(err, state.ErrHostnameInUse):
 		writeError(response, http.StatusConflict, "hostname_in_use", err.Error())
 	case errors.Is(err, state.ErrCertificateCoverage):

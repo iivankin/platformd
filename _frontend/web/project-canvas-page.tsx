@@ -12,7 +12,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
-import type { Project, ProjectCanvas } from "@/api";
+import type { ProjectCanvas } from "@/api";
 import { Button } from "@/components/ui/button";
 import { NetworkGatewayDraftPage } from "@/network-gateway-draft-page";
 import {
@@ -37,7 +37,6 @@ import type {
 } from "@/project-flow";
 import { ProjectResourcePage } from "@/project-resource-page";
 import { resourcePath } from "@/project-resource-path";
-import { ProjectSettingsDialog } from "@/project-settings-dialog";
 import { ResourceConnectionEdge } from "@/resource-connection-edge";
 import { resourceCreateOptions } from "@/resource-create-panel";
 import { ResourceDraftPage } from "@/resource-draft-page";
@@ -46,7 +45,6 @@ import { ServiceDraftPage } from "@/service-draft-page";
 import { applyServiceSettings } from "@/service-settings-apply";
 import { serviceSettingsChangeDetails } from "@/service-settings-model";
 import type { PendingServiceSettings } from "@/service-settings-model";
-import { forgetLastProject } from "@/use-last-project";
 
 const nodeTypes = { resource: ResourceNode };
 const edgeTypes = { resourceConnection: ResourceConnectionEdge };
@@ -175,15 +173,7 @@ const ProjectRouteOverlay = ({
   return resourceID ? <ProjectResourcePage /> : null;
 };
 
-export const ProjectCanvasPage = ({
-  isDemo,
-  onProjectDeleted,
-  onProjectUpdated,
-}: {
-  isDemo: boolean;
-  onProjectDeleted: (projectID: string) => void;
-  onProjectUpdated: (project: Project) => void;
-}) => {
+export const ProjectCanvasPage = ({ isDemo }: { isDemo: boolean }) => {
   const navigate = useNavigate();
   const { projectID = "", resourceID = "", view = "" } = useParams();
   const [canvas, setCanvas] = useState<ProjectCanvas | null>(null);
@@ -420,39 +410,8 @@ export const ProjectCanvasPage = ({
     setApplyError(undefined);
   };
 
-  const handleProjectDeleted = (deletedProjectID: string) => {
-    discardPendingChanges();
-    forgetLastProject(deletedProjectID);
-    onProjectDeleted(deletedProjectID);
-    void navigate("/projects", { replace: true });
-  };
-
-  const handleProjectUpdated = (project: Project) => {
-    onProjectUpdated(project);
-    setCanvas((current) =>
-      current
-        ? { ...current, project: { ...current.project, ...project } }
-        : current
-    );
-  };
-
   return (
-    <div className="flex h-full min-h-0 animate-in flex-col duration-200 fade-in slide-in-from-bottom-1">
-      <section className="flex min-h-12 shrink-0 items-center gap-4 border-b border-border px-5 py-2.5">
-        <div className="flex min-w-0 items-center gap-2.5">
-          <p className="truncate text-xs font-medium">
-            {canvas?.project.name ?? "Project"}
-          </p>
-          {canvas ? (
-            <ProjectSettingsDialog
-              onDeleted={handleProjectDeleted}
-              onUpdated={handleProjectUpdated}
-              project={canvas.project}
-            />
-          ) : null}
-        </div>
-      </section>
-
+    <div className="flex h-full min-h-0 flex-col">
       {pageError ? (
         <section className="shrink-0 border-b border-destructive/30 bg-destructive/5 px-5 py-4 text-xs text-destructive">
           {pageError}

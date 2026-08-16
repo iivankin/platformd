@@ -23,6 +23,7 @@ export type WebhookEvent =
   | "issue_resolved";
 
 export interface App {
+  browserTunnelPath?: string;
   id: string;
   internalDsn: string;
   name: string;
@@ -95,9 +96,26 @@ export interface ListResponse<T> {
 }
 
 export interface IssueDetail {
+  activity: IssueActivityBin[];
+  distributions: IssueDistribution[];
   eventTotal: number;
   events: StoredDocument[];
+  firstEventId: string;
   issue: Issue;
+  latestEventId: string;
+  recommendedEventId: string;
+  userCount: number;
+}
+
+export interface IssueActivityBin {
+  bin: number;
+  count: number;
+}
+
+export interface IssueDistribution {
+  count: number;
+  key: string;
+  value: string;
 }
 
 export interface EventDetail {
@@ -108,8 +126,21 @@ export interface EventDetail {
 export interface ReplayRecording {
   errorEvents: StoredDocument[];
   events: RrwebEvent[];
+  finishedAt?: number | null;
   replayId: string;
   segmentCount: number;
+  startedAt?: number | null;
+  traceIds?: string[];
+  truncated?: boolean;
+  warnings?: string[];
+}
+
+export interface ReplayVideoSegment {
+  duration: number;
+  height?: number;
+  id: number;
+  timestamp: number;
+  width?: number;
 }
 
 export type DetailTarget =

@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strings"
@@ -222,12 +224,25 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryPublicAc
 			return telemetry.ServiceConfiguration{}, state.ErrCertificateCoverage
 		}
 	}
-	createdNew, err := repository.ensureDNS(ctx, input.PublicHostname)
+	domains, err := repository.store.ServiceDomains(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	applicationHostnames := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		applicationHostnames[domain.Hostname] = struct{}{}
+	}
+	_, nextUsesApplicationDNS := applicationHostnames[input.PublicHostname]
+	createdNew := false
+	if !nextUsesApplicationDNS {
+		createdNew, err = repository.ensureDNS(ctx, input.PublicHostname)
+	}
 	if err != nil {
 		return telemetry.ServiceConfiguration{}, err
 	}
 	deletedPrevious := false
-	if service.SentryPublicHostname != input.PublicHostname {
+	_, previousUsesApplicationDNS := applicationHostnames[service.SentryPublicHostname]
+	if service.SentryPublicHostname != input.PublicHostname && !previousUsesApplicationDNS {
 		deletedPrevious, err = repository.deleteDNS(ctx, service.SentryPublicHostname)
 		if err != nil {
 			if createdNew {
@@ -259,6 +274,33 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryPublicAc
 	return repository.manager.Configuration(updated)
 }
 
+func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryTunnel(
+	ctx context.Context,
+	input state.UpdateServiceTelemetryTunnel,
+) (telemetry.ServiceConfiguration, error) {
+	repository.publicMu.Lock()
+	defer repository.publicMu.Unlock()
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	if service.UpdatedAtMillis != input.ExpectedUpdatedMillis {
+		return telemetry.ServiceConfiguration{}, state.ErrServiceChanged
+	}
+	updated, err := repository.store.UpdateServiceTelemetryTunnel(ctx, input)
+	if err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	// The committed path must become visible even if the API client disconnects
+	// while ingress is rebuilding its immutable route snapshot.
+	reloadContext, cancelReload := context.WithTimeout(context.WithoutCancel(ctx), serviceTelemetryRouteReloadTimeout)
+	defer cancelReload()
+	if err := repository.reloadPublicRoutes(reloadContext); err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	return repository.manager.Configuration(updated)
+}
+
 func (repository *liveServiceTelemetryRepository) ServeServiceTelemetry(
 	response http.ResponseWriter,
 	request *http.Request,
@@ -270,7 +312,122 @@ func (repository *liveServiceTelemetryRepository) ServeServiceTelemetry(
 		http.NotFound(response, request)
 		return
 	}
+	if request.Method == http.MethodGet {
+		traceID, isTrace := strings.CutPrefix(request.URL.Path, "/traces/")
+		isTraceList := request.URL.Path == "/traces"
+		isTraceDetail := isTrace && traceID != "" && !strings.Contains(traceID, "/")
+		if isTraceList || isTraceDetail {
+			services, listErr := repository.store.Services(request.Context())
+			if listErr != nil {
+				http.Error(response, "Unable to load project telemetry scope", http.StatusInternalServerError)
+				return
+			}
+			serviceIDs := make([]string, 0, len(services))
+			for _, candidate := range services {
+				if candidate.ProjectID == projectID {
+					serviceIDs = append(serviceIDs, candidate.ID)
+				}
+			}
+			if isTraceList {
+				repository.manager.ServeTraceListScope(response, request, service.ID, serviceIDs)
+			} else {
+				repository.manager.ServeTraceScope(response, request, traceID, service.ID, serviceIDs)
+			}
+			return
+		}
+	}
 	repository.manager.ServeService(response, request, service.ID)
+}
+
+func (repository *liveServiceTelemetryRepository) ServeTelemetryScope(
+	response http.ResponseWriter,
+	request *http.Request,
+	scope state.MetricScope,
+) {
+	serviceIDs, err := repository.store.MetricScopeServiceIDs(request.Context(), scope)
+	if err != nil {
+		if errors.Is(err, state.ErrMetricScopeNotFound) {
+			http.NotFound(response, request)
+			return
+		}
+		http.Error(response, "Unable to load telemetry scope", http.StatusInternalServerError)
+		return
+	}
+	if request.Method != http.MethodGet {
+		http.NotFound(response, request)
+		return
+	}
+	traceID, isTrace := strings.CutPrefix(request.URL.Path, "/traces/")
+	switch {
+	case request.URL.Path == "/traces":
+		repository.manager.ServeTraceListScope(response, request, "", serviceIDs)
+	case isTrace && traceID != "" && !strings.Contains(traceID, "/"):
+		repository.manager.ServeTraceScope(response, request, traceID, "", serviceIDs)
+	case request.URL.Path == "/errors/issues":
+		repository.serveScopedIssues(response, request, serviceIDs)
+	default:
+		http.NotFound(response, request)
+	}
+}
+
+func (repository *liveServiceTelemetryRepository) serveScopedIssues(
+	response http.ResponseWriter,
+	request *http.Request,
+	serviceIDs []string,
+) {
+	recorder := httptest.NewRecorder()
+	repository.manager.ServeIssueListScope(recorder, request, serviceIDs)
+	upstream := recorder.Result()
+	body, err := io.ReadAll(upstream.Body)
+	_ = upstream.Body.Close()
+	if err != nil {
+		http.Error(response, "Unable to read scoped issues", http.StatusBadGateway)
+		return
+	}
+	if upstream.StatusCode == http.StatusOK {
+		services, listErr := repository.store.Services(request.Context())
+		if listErr != nil {
+			http.Error(response, "Unable to load project telemetry scope", http.StatusInternalServerError)
+			return
+		}
+		projectByService := make(map[string]string, len(services))
+		for _, service := range services {
+			projectByService[service.ID] = service.ProjectID
+		}
+		enriched, enrichErr := attachIssueProjectIDs(body, projectByService)
+		if enrichErr != nil {
+			http.Error(response, "Unable to annotate scoped issues", http.StatusBadGateway)
+			return
+		}
+		body = enriched
+	}
+	for key, values := range upstream.Header {
+		if strings.EqualFold(key, "Content-Length") {
+			continue
+		}
+		for _, value := range values {
+			response.Header().Add(key, value)
+		}
+	}
+	response.WriteHeader(upstream.StatusCode)
+	_, _ = response.Write(body)
+}
+
+func attachIssueProjectIDs(body []byte, projectByService map[string]string) ([]byte, error) {
+	var envelope struct {
+		Data  []map[string]any `json:"data"`
+		Total int64            `json:"total"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	for _, issue := range envelope.Data {
+		serviceID, _ := issue["serviceId"].(string)
+		if projectID := projectByService[serviceID]; projectID != "" {
+			issue["projectId"] = projectID
+		}
+	}
+	return json.Marshal(envelope)
 }
 
 func (repository *liveServiceTelemetryRepository) reloadPublicRoutes(ctx context.Context) error {
@@ -281,13 +438,15 @@ func (repository *liveServiceTelemetryRepository) reloadPublicRoutes(ctx context
 	if err != nil {
 		return err
 	}
-	hostnames := make([]string, 0, len(services))
+	routes := make(map[string]ingress.ServiceTelemetryRoute, len(services))
 	for _, service := range services {
 		if service.SentryPublicHostname != "" {
-			hostnames = append(hostnames, service.SentryPublicHostname)
+			routes[service.SentryPublicHostname] = ingress.ServiceTelemetryRoute{
+				BrowserTunnelPath: service.SentryTunnelPath,
+			}
 		}
 	}
-	repository.router.ReloadServiceTelemetry(hostnames)
+	repository.router.ReloadServiceTelemetry(routes)
 	return nil
 }
 

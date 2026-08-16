@@ -22,7 +22,17 @@ const Toast = ({ message }: { message: string }) =>
     </output>
   ) : null;
 
-export const ErrorsConsole = ({ app }: { app: App }) => {
+export const ErrorsConsole = ({
+  app,
+  initialDetail,
+  onInitialDetailClosed,
+  onOpenTrace,
+}: {
+  app: App;
+  initialDetail?: DetailTarget;
+  onInitialDetailClosed?: () => void;
+  onOpenTrace?: (traceId: string) => void;
+}) => {
   const [query, setQuery] = useState("");
   const [issues, setIssues] = useState<{
     appId: string;
@@ -31,7 +41,9 @@ export const ErrorsConsole = ({ app }: { app: App }) => {
   const [viewError, setViewError] = useState("");
   const [viewLoading, setViewLoading] = useState(false);
   const [revision, setRevision] = useState(0);
-  const [detailStack, setDetailStack] = useState<DetailTarget[]>([]);
+  const [detailStack, setDetailStack] = useState<DetailTarget[]>(() =>
+    initialDetail ? [initialDetail] : []
+  );
   const [toast, setToast] = useState("");
   const contentRef = useRef<HTMLElement>(null);
   const detail = detailStack.at(-1);
@@ -87,8 +99,13 @@ export const ErrorsConsole = ({ app }: { app: App }) => {
     setDetailStack((current) => [...current, target]);
   }, []);
   const closeDetail = useCallback(() => {
-    setDetailStack((current) => current.slice(0, -1));
-  }, []);
+    setDetailStack((current) => {
+      if (current.length <= 1 && initialDetail) {
+        onInitialDetailClosed?.();
+      }
+      return current.slice(0, -1);
+    });
+  }, [initialDetail, onInitialDetailClosed]);
   return (
     <div className="h-full min-h-0 bg-background">
       <main
@@ -101,6 +118,7 @@ export const ErrorsConsole = ({ app }: { app: App }) => {
             notify={notify}
             onBack={closeDetail}
             onIssueUpdated={refreshView}
+            onOpenTrace={onOpenTrace}
             openDetail={openDetail}
             target={detail}
           />

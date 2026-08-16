@@ -37,6 +37,7 @@ import {
   fetchServiceDomainDNSStatus,
   fetchServiceDomains,
   fetchServiceListeners,
+  fetchServiceTraces,
   fetchResourceTerminalShells,
   issueServerTerminalToken,
   fetchVolumes,
@@ -583,6 +584,8 @@ test("reads a validated bounded structured log window", async () => {
           { operator: "equals", path: "caller", value: "server.go:42" },
         ],
         limit: 25,
+        spanId: "0123456789abcdef",
+        traceId: "0123456789abcdef0123456789abcdef",
       },
       undefined,
       (input) => {
@@ -617,7 +620,7 @@ test("reads a validated bounded structured log window", async () => {
     ],
   });
   expect(requested).toBe(
-    "/api/v1/projects/project/services/service/logs?limit=25&contains=ready&cursor=next-page&fieldFilters=%5B%7B%22operator%22%3A%22equals%22%2C%22path%22%3A%22caller%22%2C%22value%22%3A%22server.go%3A42%22%7D%5D&deploymentId=deployment"
+    "/api/v1/projects/project/services/service/logs?limit=25&contains=ready&cursor=next-page&fieldFilters=%5B%7B%22operator%22%3A%22equals%22%2C%22path%22%3A%22caller%22%2C%22value%22%3A%22server.go%3A42%22%7D%5D&deploymentId=deployment&traceId=0123456789abcdef0123456789abcdef&spanId=0123456789abcdef"
   );
 });
 
@@ -653,6 +656,31 @@ test("reads logs from the selected managed resource route", async () => {
   });
   expect(requested).toBe(
     "/api/v1/projects/project/redis/cache/logs?limit=25&contains=ready&cursor=older-page"
+  );
+});
+
+test("sends distributed trace filters and ordering to telemetry", async () => {
+  let requested = "";
+  await expect(
+    fetchServiceTraces(
+      "project",
+      "service",
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(Response.json([]));
+      },
+      {
+        from: 1000,
+        query: "checkout status:error duration:>500ms",
+        sort: "slowest",
+        status: "error",
+        to: 2000,
+      }
+    )
+  ).resolves.toEqual([]);
+  expect(requested).toBe(
+    "/api/v1/projects/project/services/service/telemetry/traces?limit=200&from=1000&to=2000&query=checkout+status%3Aerror+duration%3A%3E500ms&status=error&sort=slowest"
   );
 });
 

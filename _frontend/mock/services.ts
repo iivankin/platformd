@@ -352,6 +352,8 @@ const serviceLogsResponse = (state: MockState, serviceID: string, url: URL) => {
   const window = state.logs[serviceID] ?? { records: [], truncated: false };
   const deploymentID = url.searchParams.get("deploymentId");
   const contains = url.searchParams.get("contains");
+  const spanID = url.searchParams.get("spanId");
+  const traceID = url.searchParams.get("traceId");
   const fieldFilters = mockFieldFilters(url.searchParams.get("fieldFilters"));
   const cursor = Math.max(
     0,
@@ -363,6 +365,8 @@ const serviceLogsResponse = (state: MockState, serviceID: string, url: URL) => {
   );
   const matching = window.records
     .filter((record) => !deploymentID || record.deploymentId === deploymentID)
+    .filter((record) => !traceID || record.traceId === traceID)
+    .filter((record) => !spanID || record.spanId === spanID)
     .filter(
       (record) =>
         !contains ||

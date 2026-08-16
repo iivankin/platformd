@@ -52,7 +52,7 @@ export const RedisKeyItems = ({
 
   return (
     <>
-      <div className="max-h-72 overflow-y-auto">
+      <div>
         {preview.items.length === 0 ? (
           <p className="px-4 py-5 text-[10px] text-muted-foreground">
             No preview items.

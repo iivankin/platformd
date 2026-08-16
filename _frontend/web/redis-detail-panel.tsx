@@ -315,19 +315,26 @@ export const RedisDetailPanel = ({
     }
   };
 
+  const internallyScrollable = view === "database" || view === "telemetry";
+
   return (
-    <div>
+    <div
+      className={cn(
+        internallyScrollable && "flex h-full min-h-0 flex-col overflow-hidden"
+      )}
+    >
       <WorkspaceView
         active={view}
+        internallyScrollable={internallyScrollable}
         views={{
           backups: (
             <ResourceBackupPanel resourceID={redisID} resourceKind="redis" />
           ),
           database: (
-            <>
+            <div className="flex h-full min-h-0 flex-col gap-3">
               <SectionCard
                 aria-label="Redis database pages"
-                className="flex min-h-10 px-4"
+                className="flex min-h-10 shrink-0 px-4"
               >
                 {(["data", "config"] as const).map((item) => (
                   <button
@@ -345,8 +352,8 @@ export const RedisDetailPanel = ({
                 ))}
               </SectionCard>
               {databaseView === "data" ? (
-                <>
-                  <SectionCard className="px-4 py-3">
+                <div className="flex min-h-0 flex-1 flex-col gap-3">
+                  <SectionCard className="shrink-0 px-4 py-3">
                     <form
                       className="flex gap-2"
                       onSubmit={(event) => {
@@ -383,21 +390,23 @@ export const RedisDetailPanel = ({
                   </SectionCard>
 
                   {newKeyOpen ? (
-                    <RedisNewKeyForm
-                      busy={busy}
-                      onCancel={() => setNewKeyOpen(false)}
-                      onMutate={mutate}
-                    />
+                    <div className="shrink-0">
+                      <RedisNewKeyForm
+                        busy={busy}
+                        onCancel={() => setNewKeyOpen(false)}
+                        onMutate={mutate}
+                      />
+                    </div>
                   ) : null}
 
-                  <SectionCard className="grid min-h-52 grid-cols-[minmax(13rem,0.8fr)_minmax(18rem,1.2fr)]">
-                    <div className="min-w-0 border-r border-border">
-                      <div className="grid grid-cols-[1fr_auto_auto] border-b border-border px-3 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                  <SectionCard className="grid min-h-0 flex-1 grid-cols-[minmax(13rem,0.8fr)_minmax(18rem,1.2fr)]">
+                    <div className="flex min-h-0 min-w-0 flex-col border-r border-border">
+                      <div className="grid shrink-0 grid-cols-[1fr_auto_auto] border-b border-border px-3 py-2 text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
                         <span>Key</span>
                         <span>TTL</span>
                         <span className="ml-3">Size</span>
                       </div>
-                      <div className="max-h-[30rem] overflow-y-auto">
+                      <div className="min-h-0 flex-1 overflow-y-auto">
                         {keys.map((key) => (
                           <button
                             className={`grid w-full grid-cols-[1fr_auto_auto] items-center border-b border-border px-3 py-2.5 text-left text-[10px] hover:bg-muted/40 ${
@@ -442,7 +451,7 @@ export const RedisDetailPanel = ({
                         ) : null}
                       </div>
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-h-0 min-w-0 overflow-y-auto">
                       {selectedKey && preview ? (
                         <RedisKeyEditor
                           busy={busy}
@@ -458,15 +467,17 @@ export const RedisDetailPanel = ({
                       )}
                     </div>
                   </SectionCard>
-                </>
+                </div>
               ) : null}
               {databaseView === "config" ? (
-                <RedisPersistenceStatus
-                  projectID={projectID}
-                  redisID={redisID}
-                />
+                <div className="min-h-0 flex-1 overflow-auto">
+                  <RedisPersistenceStatus
+                    projectID={projectID}
+                    redisID={redisID}
+                  />
+                </div>
               ) : null}
-            </>
+            </div>
           ),
           deployments: (
             <ManagedDeploymentHistory

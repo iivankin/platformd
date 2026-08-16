@@ -1,6 +1,5 @@
 import { Dialog } from "@base-ui/react/dialog";
 import {
-  Activity,
   Box,
   Check,
   Copy,
@@ -19,9 +18,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ProjectDeleteDialog } from "@/project-delete-dialog";
 import { ProjectWebhooksSettings } from "@/project-webhooks-settings";
-import { ProjectUsage } from "@/resource-usage";
 
-type ProjectSettingsSection = "audit" | "general" | "usage" | "webhooks";
+type ProjectSettingsSection = "audit" | "general" | "webhooks";
 
 const projectResourceCount = (project: Project) =>
   project.serviceCount +
@@ -32,7 +30,6 @@ const projectResourceCount = (project: Project) =>
 
 const projectSettingsSections = [
   { icon: FolderKanban, label: "General", value: "general" },
-  { icon: Activity, label: "Usage", value: "usage" },
   { icon: ScrollText, label: "Audit", value: "audit" },
   { icon: Webhook, label: "Webhooks", value: "webhooks" },
 ] as const;
@@ -257,9 +254,6 @@ export const ProjectSettingsDialog = ({
           project={project}
         />
       );
-    }
-    if (section === "usage") {
-      return <ProjectUsage projectID={project.id} />;
     }
     if (section === "audit") {
       return (

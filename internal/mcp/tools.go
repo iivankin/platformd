@@ -335,7 +335,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.callServiceTelemetry(request.Context(), call.Name, call.Arguments, identity)
-	case "get_service_telemetry", "set_service_telemetry_domain", "rotate_service_artifact_token",
+	case "get_service_telemetry", "set_service_telemetry_domain", "set_service_browser_tunnel", "rotate_service_artifact_token",
 		"create_service_telemetry_webhook", "delete_service_telemetry_webhook":
 		if handler.telemetry == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")

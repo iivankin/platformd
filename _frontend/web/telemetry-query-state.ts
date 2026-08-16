@@ -60,6 +60,8 @@ export const logQueryParsers = {
   logOrder: parseAsStringLiteral(["asc", "desc"] as const).withDefault("desc"),
   logQuery: parseAsString.withDefault(""),
   logSort: parseAsStringLiteral(logSortValues).withDefault("timestamp"),
+  logSpan: parseAsString,
+  logTrace: parseAsString,
   ...timeRangeQueryParsers,
 };
 
@@ -68,6 +70,7 @@ export const traceQueryParsers = {
   traceQuery: parseAsString
     .withDefault("")
     .withOptions({ limitUrlUpdates: debounce(250) }),
+  traceSegment: parseAsString,
   traceSort: parseAsStringLiteral([
     "latest",
     "slowest",
@@ -80,3 +83,12 @@ export const traceQueryParsers = {
   ] as const).withDefault("all"),
   ...timeRangeQueryParsers,
 };
+
+export const errorDetailQueryParsers = {
+  errorEvent: parseAsString,
+  errorIssue: parseAsString,
+};
+
+export const scopedErrorQueryParser = parseAsString
+  .withDefault("")
+  .withOptions({ limitUrlUpdates: debounce(250) });

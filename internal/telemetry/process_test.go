@@ -1,6 +1,10 @@
 package telemetry
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -25,5 +29,24 @@ func TestProcessEnvironmentUsesFixedPrivateListeners(t *testing.T) {
 		values["PLATFORMD_TELEMETRY_OTLP_HTTP_LISTEN"] != OTLPHTTPAddress ||
 		values["PLATFORMD_TELEMETRY_VOLUME"] != "/var/lib/platformd/telemetry" {
 		t.Fatalf("telemetry environment = %#v", values)
+	}
+}
+
+func TestRecordingBytesReadsInternalDiskUsage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/internal/disk-usage" {
+			t.Fatalf("path = %s", request.URL.Path)
+		}
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte(`{"recordingBytes":4096}`))
+	}))
+	t.Cleanup(server.Close)
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bytes, err := (&Process{client: server.Client(), target: target}).RecordingBytes(context.Background())
+	if err != nil || bytes != 4096 {
+		t.Fatalf("recording bytes = %d/%v", bytes, err)
 	}
 }

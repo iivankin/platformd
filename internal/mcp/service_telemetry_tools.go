@@ -27,6 +27,7 @@ type ServiceTelemetry interface {
 	DeleteMetricChart(context.Context, state.MetricScope, string) error
 	QueryMetricScope(context.Context, state.MetricScope, string, json.RawMessage) (telemetry.MetricScopeResponse, error)
 	UpdateServiceTelemetryPublicAccess(context.Context, state.UpdateServiceSentryPublicAccess) (telemetry.ServiceConfiguration, error)
+	UpdateServiceTelemetryTunnel(context.Context, state.UpdateServiceTelemetryTunnel) (telemetry.ServiceConfiguration, error)
 }
 
 func serviceTelemetryReadTools() []Tool {
@@ -86,12 +87,19 @@ func serviceTelemetryAdminTools() []Tool {
 			"status":  map[string]any{"type": "string", "enum": []string{"open", "resolved", "ignored"}},
 		}, []string{"projectId", "serviceId", "issueId", "status"}),
 	}, {
-		Name: "set_service_telemetry_domain", Description: "Set the public Sentry hostname for browser/external SDKs, or pass an empty hostname to remove it. Copy expectedUpdatedAt from the latest get_service_telemetry result. Requires an admin token.",
+		Name: "set_service_telemetry_domain", Description: "Set the public Sentry hostname for browser/external SDKs. The hostname may be a domain already attached to this service; platformd reserves only exact Sentry SDK and artifact-upload routes while leaving every other application path unchanged. Pass an empty hostname to remove public access. Copy expectedUpdatedAt from the latest get_service_telemetry result. Requires an admin token.",
 		InputSchema: objectSchema(map[string]any{
 			"projectId": map[string]any{"type": "string"}, "serviceId": map[string]any{"type": "string"},
-			"publicHostname":    map[string]any{"type": "string", "maxLength": 253, "description": "Hostname only, without scheme or path; empty removes public access"},
+			"publicHostname":    map[string]any{"type": "string", "maxLength": 253, "description": "Hostname only, without scheme or path; may be an existing domain of this service; empty removes public access"},
 			"expectedUpdatedAt": map[string]any{"type": "integer", "minimum": 1, "description": "Exact updatedAt from get_service_telemetry"},
 		}, []string{"projectId", "serviceId", "publicHostname", "expectedUpdatedAt"}),
+	}, {
+		Name: "set_service_browser_tunnel", Description: "Set an optional same-origin Browser SDK tunnel path. Platformd accepts the Sentry envelope directly at this exact POST path; no forwarding hop is added. Configure the returned path as the SDK tunnel option. Empty disables the alias. Copy expectedUpdatedAt from get_service_telemetry. Requires an admin token.",
+		InputSchema: objectSchema(map[string]any{
+			"projectId": map[string]any{"type": "string"}, "serviceId": map[string]any{"type": "string"},
+			"browserTunnelPath": map[string]any{"type": "string", "maxLength": 256, "description": "Path such as /sentry-tunnel on the selected public telemetry domain; empty disables the alias"},
+			"expectedUpdatedAt": map[string]any{"type": "integer", "minimum": 1, "description": "Exact updatedAt from get_service_telemetry"},
+		}, []string{"projectId", "serviceId", "browserTunnelPath", "expectedUpdatedAt"}),
 	}, {
 		Name: "rotate_service_artifact_token", Description: "Invalidate the previous public sentry-cli artifact credential and return the replacement plus ready-to-use environment once. Internal project-network uploads do not need this token. Requires an admin token.",
 		InputSchema: detailSchema(),
@@ -233,6 +241,7 @@ type serviceTelemetryControlArguments struct {
 	ProjectID         string   `json:"projectId"`
 	ServiceID         string   `json:"serviceId"`
 	PublicHostname    string   `json:"publicHostname"`
+	BrowserTunnelPath string   `json:"browserTunnelPath"`
 	ExpectedUpdatedAt int64    `json:"expectedUpdatedAt"`
 	URL               string   `json:"url"`
 	Events            []string `json:"events"`
@@ -267,6 +276,28 @@ func (handler *Handler) callServiceTelemetryControl(ctx context.Context, name st
 		}
 		_, err = handler.telemetry.UpdateServiceTelemetryPublicAccess(ctx, state.UpdateServiceSentryPublicAccess{
 			ID: input.ServiceID, ProjectID: input.ProjectID, PublicHostname: input.PublicHostname,
+			ExpectedUpdatedMillis: input.ExpectedUpdatedAt, AuditEventID: auditID,
+			ActorKind: "token", ActorID: identity.TokenID, RequestCorrelationID: requestID,
+			UpdatedAtMillis: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return handler.serviceTelemetryConfiguration(ctx, input.ProjectID, input.ServiceID)
+	case "set_service_browser_tunnel":
+		if input.ExpectedUpdatedAt <= 0 || len(input.BrowserTunnelPath) > 256 {
+			return nil, fmt.Errorf("%w: expectedUpdatedAt or browserTunnelPath is invalid", errInvalidArguments)
+		}
+		auditID, err := id.New()
+		if err != nil {
+			return nil, err
+		}
+		requestID, err := id.New()
+		if err != nil {
+			return nil, err
+		}
+		_, err = handler.telemetry.UpdateServiceTelemetryTunnel(ctx, state.UpdateServiceTelemetryTunnel{
+			ID: input.ServiceID, ProjectID: input.ProjectID, Path: input.BrowserTunnelPath,
 			ExpectedUpdatedMillis: input.ExpectedUpdatedAt, AuditEventID: auditID,
 			ActorKind: "token", ActorID: identity.TokenID, RequestCorrelationID: requestID,
 			UpdatedAtMillis: time.Now().UnixMilli(),
@@ -331,7 +362,8 @@ func (handler *Handler) serviceTelemetryConfiguration(ctx context.Context, proje
 		"serviceId": configuration.ServiceID, "internalHostname": configuration.InternalHostname,
 		"internalDsn": configuration.InternalDSN, "internalOtlpEndpoint": configuration.InternalOTLPEndpoint,
 		"publicHostname": configuration.PublicHostname, "publicDsn": configuration.PublicDSN,
-		"updatedAt": configuration.UpdatedAt, "webhooks": items,
+		"browserTunnelPath": configuration.BrowserTunnelPath,
+		"updatedAt":         configuration.UpdatedAt, "webhooks": items,
 		"artifactUploads": artifactUploadConfiguration(configuration),
 	}, nil
 }

@@ -333,9 +333,8 @@ jobs:
           PLATFORMD_TELEMETRY_TEST_API_TOKEN: conformance-read-token
           PLATFORMD_TELEMETRY_TEST_API_URL: http://127.0.0.1:18080/errors
           PLATFORMD_TELEMETRY_TEST_ARTIFACT_TOKEN: conformance-artifact-token
-          PLATFORMD_TELEMETRY_TEST_DSN: http://conformanceservice000001@host.docker.internal:18080/1
-          PLATFORMD_TELEMETRY_TEST_HOST_DSN: http://conformanceservice000001@127.0.0.1:18080/1
-          PLATFORMD_TELEMETRY_TEST_SERVICE_ID: conformanceservice000001
+          PLATFORMD_TELEMETRY_TEST_CONFIGURATION_URL: http://127.0.0.1:18080/configuration
+          PLATFORMD_TELEMETRY_TEST_SERVICE_ID: tz4a98xxat96iws9zmbrgj3a
         run: |
           telemetry_volume="$RUNNER_TEMP/telemetry-conformance"
           mkdir -p "$telemetry_volume"

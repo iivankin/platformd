@@ -6,9 +6,81 @@ import type { ReplayRecording } from "./types";
 
 const start = Date.parse("2026-08-09T10:44:30Z");
 
+const recording = (events: ReplayRecording["events"]): ReplayRecording => ({
+  errorEvents: [],
+  events,
+  replayId: "82818281828142818281828182818281",
+  segmentCount: 1,
+});
+
+describe("replay activity markers", () => {
+  test("labels mobile lifecycle and device breadcrumbs", () => {
+    const timestamp = 1_786_756_532_890;
+    const events = [
+      {
+        data: {
+          payload: {
+            category: "app.background",
+            timestamp: timestamp / 1000,
+          },
+          tag: "breadcrumb",
+        },
+        timestamp,
+        type: 5,
+      },
+      {
+        data: {
+          payload: {
+            category: "device.battery",
+            data: { charging: false, level: 47 },
+            timestamp: timestamp / 1000 + 1,
+          },
+          tag: "breadcrumb",
+        },
+        timestamp: timestamp + 1000,
+        type: 5,
+      },
+    ] satisfies ReplayRecording["events"];
+
+    expect(replayMarkers(recording(events))).toMatchObject([
+      { label: "App in background" },
+      {
+        detail: "Device was at 47% battery and not charging",
+        label: "Device battery",
+      },
+    ]);
+  });
+
+  test("deduplicates CLS bursts and omits deprecated FID", () => {
+    const timestamp = 1_786_756_532_890;
+    const span = (description: string, offset = 0) => ({
+      data: {
+        payload: {
+          description,
+          op: "web-vital",
+          startTimestamp: timestamp / 1000 + offset,
+        },
+        tag: "performanceSpan",
+      },
+      timestamp: timestamp + offset * 1000,
+      type: 5 as const,
+    });
+    const markers = replayMarkers(
+      recording([
+        span("cumulative-layout-shift"),
+        span("cumulative-layout-shift"),
+        span("first-input-delay", 1),
+      ])
+    );
+
+    expect(markers).toHaveLength(1);
+    expect(markers[0]?.label).toBe("Web vital · Cumulative Layout Shift");
+  });
+});
+
 describe("replay markers", () => {
   test("extracts Sentry frames, rrweb interactions, and linked errors", () => {
-    const recording = {
+    const value = {
       errorEvents: [
         {
           doc_kind: "event",
@@ -83,7 +155,7 @@ describe("replay markers", () => {
       segmentCount: 1,
     } satisfies ReplayRecording;
 
-    const markers = replayMarkers(recording);
+    const markers = replayMarkers(value);
     expect(markers.map((marker) => marker.kind)).toEqual([
       "navigation",
       "navigation",

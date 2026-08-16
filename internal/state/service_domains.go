@@ -11,6 +11,7 @@ import (
 
 var (
 	ErrDomainNotFound      = errors.New("service domain not found")
+	ErrDomainTelemetryUse  = errors.New("service domain is selected as the public telemetry endpoint")
 	ErrHostnameInUse       = errors.New("hostname is already used by another public role")
 	ErrCertificateCoverage = errors.New("no configured Origin certificate covers this hostname")
 )
@@ -116,6 +117,13 @@ func (store *Store) AttachServiceDomain(ctx context.Context, input AttachService
 			if !input.Move {
 				return &DomainConflict{Domain: existing}
 			}
+			inUse, err := serviceUsesDomainForTelemetry(ctx, transaction, existing.ServiceID, hostname)
+			if err != nil {
+				return err
+			}
+			if inUse {
+				return ErrDomainTelemetryUse
+			}
 			action = "service.domain.move"
 			metadata["sourceProjectId"] = existing.ProjectID
 			metadata["sourceServiceId"] = existing.ServiceID
@@ -178,6 +186,13 @@ func (store *Store) DetachServiceDomain(ctx context.Context, input DetachService
 		if _, err := loadDomainTarget(ctx, transaction, input.ProjectID, input.ServiceID); err != nil {
 			return err
 		}
+		inUse, err := serviceUsesDomainForTelemetry(ctx, transaction, input.ServiceID, hostname)
+		if err != nil {
+			return err
+		}
+		if inUse {
+			return ErrDomainTelemetryUse
+		}
 		result, err := transaction.ExecContext(ctx, `
 DELETE FROM service_domains WHERE hostname = ? AND service_id = ?`, hostname, input.ServiceID)
 		if err != nil {
@@ -197,6 +212,20 @@ DELETE FROM service_domains WHERE hostname = ? AND service_id = ?`, hostname, in
 			Metadata: map[string]string{"hostname": hostname},
 		})
 	})
+}
+
+func serviceUsesDomainForTelemetry(ctx context.Context, transaction *sql.Tx, serviceID, hostname string) (bool, error) {
+	var exists int
+	err := transaction.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM services s JOIN service_domains d ON d.service_id = s.id AND d.hostname = s.sentry_public_hostname
+  WHERE s.id = ? AND d.hostname = ?
+)`, serviceID, hostname).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check service telemetry domain: %w", err)
+	}
+	return exists == 1, nil
 }
 
 func loadDomainTarget(ctx context.Context, transaction *sql.Tx, projectID, serviceID string) (ServiceDomain, error) {

@@ -310,7 +310,15 @@ export const eventContextGroups = (payload: unknown): ContextGroup[] => {
     return [];
   }
   const groups: ContextGroup[] = [];
-  const specialized = new Set(["browser", "device", "geo", "os", "runtime"]);
+  const specialized = new Set([
+    "browser",
+    "device",
+    "geo",
+    "os",
+    "replay",
+    "runtime",
+    "trace",
+  ]);
   for (const [name, context] of Object.entries(
     asRecord(event.contexts) ?? {}
   )) {

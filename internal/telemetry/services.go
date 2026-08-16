@@ -48,6 +48,7 @@ type ServiceConfiguration struct {
 	InternalOTLPEndpoint string
 	PublicHostname       string
 	PublicDSN            string
+	BrowserTunnelPath    string
 	UpdatedAt            int64
 }
 
@@ -92,6 +93,62 @@ func (manager *ServiceManager) ServeService(response http.ResponseWriter, reques
 	forwarded.URL.Path = "/internal/services/" + url.PathEscape(serviceID) + request.URL.Path
 	forwarded.URL.RawPath = ""
 	manager.proxy.Serve(response, forwarded, serviceID)
+}
+
+func (manager *ServiceManager) ServeTraceScope(response http.ResponseWriter, request *http.Request, traceID string, anchorServiceID string, serviceIDs []string) {
+	var anchor *string
+	if anchorServiceID != "" {
+		anchor = &anchorServiceID
+	}
+	manager.serveJSONScope(response, request, "/internal/trace-scopes/"+url.PathEscape(traceID), struct {
+		AnchorServiceID *string  `json:"anchorServiceId"`
+		ServiceIDs      []string `json:"serviceIds"`
+	}{AnchorServiceID: anchor, ServiceIDs: serviceIDs})
+}
+
+func (manager *ServiceManager) ServeTraceListScope(response http.ResponseWriter, request *http.Request, anchorServiceID string, serviceIDs []string) {
+	var anchor *string
+	if anchorServiceID != "" {
+		anchor = &anchorServiceID
+	}
+	manager.serveJSONScope(response, request, "/internal/trace-scopes", struct {
+		AnchorServiceID *string  `json:"anchorServiceId"`
+		ServiceIDs      []string `json:"serviceIds"`
+	}{AnchorServiceID: anchor, ServiceIDs: serviceIDs})
+}
+
+func (manager *ServiceManager) ServeIssueListScope(response http.ResponseWriter, request *http.Request, serviceIDs []string) {
+	manager.serveJSONScope(response, request, "/internal/issue-scopes", struct {
+		ServiceIDs []string `json:"serviceIds"`
+	}{ServiceIDs: serviceIDs})
+}
+
+func (manager *ServiceManager) serveJSONScope(response http.ResponseWriter, request *http.Request, path string, scope any) {
+	encoded, err := json.Marshal(scope)
+	if err != nil {
+		http.Error(response, "Unable to encode telemetry scope", http.StatusInternalServerError)
+		return
+	}
+	forwarded, err := http.NewRequestWithContext(request.Context(), http.MethodPost,
+		manager.process.Target().String()+path, bytes.NewReader(encoded))
+	if err != nil {
+		http.Error(response, "Unable to create telemetry request", http.StatusInternalServerError)
+		return
+	}
+	forwarded.URL.RawQuery = request.URL.RawQuery
+	forwarded.Header.Set("Accept", "application/json")
+	forwarded.Header.Set("Content-Type", "application/json")
+	upstream, err := manager.process.client.Do(forwarded)
+	if err != nil {
+		http.Error(response, "Telemetry is unavailable", http.StatusBadGateway)
+		return
+	}
+	defer upstream.Body.Close()
+	if contentType := upstream.Header.Get("Content-Type"); contentType != "" {
+		response.Header().Set("Content-Type", contentType)
+	}
+	response.WriteHeader(upstream.StatusCode)
+	_, _ = io.Copy(response, upstream.Body)
 }
 
 func (manager *ServiceManager) QueryService(ctx context.Context, serviceID, method, path string, body any) (any, error) {
@@ -316,6 +373,7 @@ func (manager *ServiceManager) Configuration(service state.ServiceDesired) (Serv
 		InternalOTLPEndpoint: manager.InternalOTLPEndpoint(service),
 		PublicHostname:       service.SentryPublicHostname,
 		PublicDSN:            manager.PublicDSN(service),
+		BrowserTunnelPath:    service.SentryTunnelPath,
 		UpdatedAt:            service.UpdatedAtMillis,
 	}, nil
 }
@@ -336,7 +394,7 @@ func (manager *ServiceManager) PublicDSN(service state.ServiceDesired) string {
 	if service.SentryPublicHostname == "" {
 		return ""
 	}
-	return sentryDSN("https", service.SentryPublicHostname, service.ID)
+	return SentryDSN("https", service.SentryPublicHostname, service.ID)
 }
 
 func (manager *ServiceManager) Close() error {
@@ -360,7 +418,7 @@ func InternalOTLPHostname(service state.ServiceDesired) string {
 }
 
 func InternalDSN(service state.ServiceDesired) string {
-	return sentryDSN("http", InternalSentryHostname(service)+":"+strconv.Itoa(firewall.ServiceTelemetryPort), service.ID)
+	return SentryDSN("http", InternalSentryHostname(service)+":"+strconv.Itoa(firewall.ServiceTelemetryPort), service.ID)
 }
 
 func InternalOTLPEndpoint(service state.ServiceDesired) string {
@@ -374,6 +432,7 @@ func (manager *ServiceManager) unpublish(projectID string, hostnames serviceHost
 	)
 }
 
-func sentryDSN(scheme, hostname, serviceID string) string {
-	return scheme + "://" + serviceID + "@" + hostname + "/1"
+// SentryDSN derives the transport credential from SQLite's service identity.
+func SentryDSN(scheme, hostname, serviceID string) string {
+	return scheme + "://" + serviceID + "@" + hostname + "/" + sentry.ProtocolProjectID
 }

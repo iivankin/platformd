@@ -20,14 +20,19 @@ const (
 	scanSlowWarningAfter    = 30 * time.Second
 )
 
+type Measure func(context.Context) (uint64, error)
+
 type Path struct {
-	ID   string
-	Path string
+	ID      string
+	Path    string
+	Parent  string
+	Measure Measure
 }
 
 type Component struct {
-	ID    string
-	Bytes uint64
+	ID     string
+	Bytes  uint64
+	Parent string
 }
 
 type Snapshot struct {
@@ -65,10 +70,27 @@ func NewScanner(paths []Path, refreshInterval time.Duration) (*Scanner, error) {
 		if _, exists := checkedAt[item.ID]; exists {
 			return nil, errors.New("disk usage component IDs must be unique")
 		}
-		cloned[index] = Path{ID: item.ID, Path: filepath.Clean(item.Path)}
-		components[index] = Component{ID: item.ID}
+		cloned[index] = Path{
+			ID: item.ID, Path: filepath.Clean(item.Path), Parent: item.Parent, Measure: item.Measure,
+		}
+		components[index] = Component{ID: item.ID, Parent: item.Parent}
 		checkedAt[item.ID] = time.Time{}
 		dirty[item.ID] = true
+	}
+	ids := make(map[string]struct{}, len(cloned))
+	for _, item := range cloned {
+		ids[item.ID] = struct{}{}
+	}
+	for _, item := range cloned {
+		if item.Parent == "" {
+			continue
+		}
+		if item.Parent == item.ID {
+			return nil, errors.New("disk usage component cannot nest under itself")
+		}
+		if _, exists := ids[item.Parent]; !exists {
+			return nil, errors.New("disk usage nested component parent is unknown")
+		}
 	}
 	if refreshInterval <= 0 {
 		refreshInterval = DefaultRefreshInterval
@@ -110,6 +132,19 @@ func (scanner *Scanner) Invalidate(id string) {
 	}
 }
 
+func (scanner *Scanner) markDirty(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	scanner.mu.Lock()
+	defer scanner.mu.Unlock()
+	for _, id := range ids {
+		if _, known := scanner.componentCheckedAt[id]; known {
+			scanner.dirty[id] = true
+		}
+	}
+}
+
 // Run scans invalidated components sequentially and periodically rechecks all
 // components. The reverse order lets small platform paths publish before the
 // container image tree, which is normally the most expensive component.
@@ -131,9 +166,11 @@ func (scanner *Scanner) Run(ctx context.Context, onError func(error)) error {
 }
 
 func (scanner *Scanner) refreshDirty(ctx context.Context, onError func(error)) error {
+	var failed []string
 	for {
 		index, ok := scanner.takeDirty()
 		if !ok {
+			scanner.markDirty(failed)
 			return nil
 		}
 		item := scanner.paths[index]
@@ -146,7 +183,13 @@ func (scanner *Scanner) refreshDirty(ctx context.Context, onError func(error)) e
 			)
 		})
 		pacer := newScanPacer(scanner.entriesPerSecond, scanner.now)
-		bytes, err := pathBytes(ctx, item.Path, make(map[fileIdentity]struct{}), pacer)
+		var bytes uint64
+		var err error
+		if item.Measure != nil {
+			bytes, err = item.Measure(ctx)
+		} else {
+			bytes, err = pathBytes(ctx, item.Path, make(map[fileIdentity]struct{}), pacer)
+		}
 		slowTimer.Stop()
 		if err != nil {
 			if ctx.Err() != nil {
@@ -155,6 +198,7 @@ func (scanner *Scanner) refreshDirty(ctx context.Context, onError func(error)) e
 			if onError != nil {
 				onError(fmt.Errorf("scan disk usage component %s: %w", item.ID, err))
 			}
+			failed = append(failed, item.ID)
 			continue
 		}
 		if duration := time.Since(startedAt); duration >= scanSlowWarningAfter {

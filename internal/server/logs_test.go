@@ -12,6 +12,7 @@ import (
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/server"
+	"github.com/iivankin/platformd/internal/state"
 )
 
 type logRepository struct {
@@ -20,6 +21,16 @@ type logRepository struct {
 	resourceQuery containerlogs.ResourceQuery
 	downloadCalls int
 	downloadQuery containerlogs.DownloadQuery
+	scopeCalls    int
+	scopeQuery    containerlogs.Query
+}
+
+func (repository *logRepository) ScopeLogs(_ context.Context, _ state.MetricScope, query containerlogs.Query) (containerlogs.Window, error) {
+	repository.scopeCalls++
+	repository.scopeQuery = query
+	return containerlogs.Window{Records: []containerlogs.Record{{
+		ServiceID: "service", Timestamp: time.Unix(1, 0).UTC(), Stream: "stdout", Text: "ready",
+	}}}, nil
 }
 
 func (repository *logRepository) DownloadServiceLogs(_ context.Context, _ string, query containerlogs.DownloadQuery, destination io.Writer) (containerlogs.DownloadResult, error) {
@@ -78,9 +89,10 @@ func TestAdminServiceLogsRequireAccessAndReturnStructuredWindow(t *testing.T) {
 
 	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, direct)
 	response = httptest.NewRecorder()
-	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready&cursor=next-page&from=1000&to=2000&fieldFilters=%5B%7B%22path%22%3A%22caller%22%2C%22operator%22%3A%22equals%22%2C%22value%22%3A%22server.go%3A42%22%7D%5D", ""))
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/services/service/logs?limit=20&contains=ready&cursor=next-page&from=1000&to=2000&traceId=0123456789abcdef0123456789abcdef&spanId=0123456789abcdef&fieldFilters=%5B%7B%22path%22%3A%22caller%22%2C%22operator%22%3A%22equals%22%2C%22value%22%3A%22server.go%3A42%22%7D%5D", ""))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"stream":"stdout"`) || !strings.Contains(response.Body.String(), `"text":"ready"`) || repository.resourceCalls != 1 ||
 		repository.resourceKind != "service" || repository.resourceQuery.ResourceID != "service" || repository.resourceQuery.Contains != "ready" || repository.resourceQuery.Cursor != "next-page" || repository.resourceQuery.Limit != 20 ||
+		repository.resourceQuery.TraceID != "0123456789abcdef0123456789abcdef" || repository.resourceQuery.SpanID != "0123456789abcdef" ||
 		len(repository.resourceQuery.FieldFilters) != 1 || repository.resourceQuery.FieldFilters[0].Path != "caller" ||
 		repository.resourceQuery.From.UnixMilli() != 1000 || repository.resourceQuery.To.UnixMilli() != 2000 {
 		t.Fatalf("authenticated logs = %d/%s calls=%d", response.Code, response.Body, repository.resourceCalls)
@@ -110,5 +122,16 @@ func TestAdminManagedResourceLogsRequireAccessAndUseScopedKind(t *testing.T) {
 		repository.resourceQuery.ResourceID != "database" || repository.resourceQuery.Cursor != "older-page" ||
 		!strings.Contains(response.Body.String(), `"text":"ready"`) {
 		t.Fatalf("resource logs = %d/%s calls=%d kind=%q", response.Code, response.Body, repository.resourceCalls, repository.resourceKind)
+	}
+}
+
+func TestAdminProjectTelemetryLogsUseProjectScope(t *testing.T) {
+	repository := &logRepository{}
+	handler := access.ProtectAdmin("admin.example.com", projectVerifier{}, server.Handler(server.DefaultMeta("ready"), server.WithLogs(repository)))
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, projectRequest(http.MethodGet, "/api/v1/projects/project/telemetry/logs?limit=20&contains=ready", ""))
+	if response.Code != http.StatusOK || repository.scopeCalls != 1 || repository.scopeQuery.Contains != "ready" ||
+		repository.scopeQuery.Limit != 20 || !strings.Contains(response.Body.String(), `"serviceId":"service"`) {
+		t.Fatalf("project telemetry logs = %d/%s calls=%d query=%+v", response.Code, response.Body, repository.scopeCalls, repository.scopeQuery)
 	}
 }

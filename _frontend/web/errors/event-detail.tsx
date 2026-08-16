@@ -1,3 +1,18 @@
+import {
+  ArrowDownUp,
+  ChevronDown,
+  ChevronRight,
+  ExternalLink,
+  FileSearch,
+  Route,
+  Rows3,
+  TriangleAlert,
+} from "lucide-react";
+import { useMemo, useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
+
 import { Eyebrow, StatusBadge } from "./common-ui";
 import { DetailGrid, DownloadButton } from "./detail-common";
 import { asRecord } from "./event-context";
@@ -5,90 +20,22 @@ import {
   EventEnvironmentSection,
   EventRequestSection,
 } from "./event-context-sections";
+import { BreadcrumbsSection, ContextSection } from "./event-sections";
 import {
-  BreadcrumbsSection,
-  ContextSection,
-  EventMessageSection,
-} from "./event-sections";
+  eventStackGroups,
+  relevantStackFrames,
+  sourceContextLines,
+} from "./event-stack";
+import type { StackFrame } from "./event-stack";
 import { formatTime, shortId } from "./format";
 import { RelatedReplay } from "./related-replay";
+import { SyntaxSource } from "./syntax-source";
 import type { EventDetail } from "./types";
 
-interface StackFrame {
-  colno?: number;
-  contextLine?: string;
-  filename?: string;
-  functionName?: string;
-  lineno?: number;
-  postContext: string[];
-  preContext: string[];
-}
+const optionalString = (value: unknown) =>
+  typeof value === "string" && value !== "" ? value : undefined;
 
-const stringArray = (value: unknown): string[] =>
-  Array.isArray(value)
-    ? value.filter((line): line is string => typeof line === "string")
-    : [];
-
-export const framesFromStacktrace = (value: unknown): StackFrame[] => {
-  const frames = asRecord(value)?.frames;
-  if (!Array.isArray(frames)) {
-    return [];
-  }
-  return frames.flatMap((frame) => {
-    const record = asRecord(frame);
-    if (!record) {
-      return [];
-    }
-    return [
-      {
-        colno: typeof record.colno === "number" ? record.colno : undefined,
-        contextLine:
-          typeof record.context_line === "string"
-            ? record.context_line
-            : undefined,
-        filename:
-          typeof record.filename === "string" ? record.filename : undefined,
-        functionName:
-          typeof record.function === "string" ? record.function : undefined,
-        lineno: typeof record.lineno === "number" ? record.lineno : undefined,
-        postContext: stringArray(record.post_context),
-        preContext: stringArray(record.pre_context),
-      },
-    ];
-  });
-};
-
-interface SourceLine {
-  active: boolean;
-  number?: number;
-  text: string;
-}
-
-export const sourceContextLines = (frame: StackFrame): SourceLine[] => {
-  if (frame.contextLine === undefined) {
-    return [];
-  }
-  const firstLine = frame.lineno
-    ? Math.max(1, frame.lineno - frame.preContext.length)
-    : undefined;
-  return [
-    ...frame.preContext.map((text, index) => ({
-      active: false,
-      number: firstLine === undefined ? undefined : firstLine + index,
-      text,
-    })),
-    {
-      active: true,
-      number: frame.lineno,
-      text: frame.contextLine,
-    },
-    ...frame.postContext.map((text, index) => ({
-      active: false,
-      number: frame.lineno === undefined ? undefined : frame.lineno + index + 1,
-      text,
-    })),
-  ];
-};
+export { framesFromStacktrace, sourceContextLines } from "./event-stack";
 
 const SourceContext = ({ frame }: { frame: StackFrame }) => {
   const lines = sourceContextLines(frame);
@@ -98,68 +45,46 @@ const SourceContext = ({ frame }: { frame: StackFrame }) => {
   return (
     <div
       aria-label={`Source context for ${frame.filename ?? "stack frame"}`}
-      className="mt-3 overflow-x-auto border-y border-border bg-background"
+      className="border-t border-border"
     >
-      <pre className="w-max min-w-full py-1 text-[9px] leading-5">
-        {lines.map((line, index) => (
-          <span
-            className={`grid grid-cols-[4.5rem_minmax(max-content,1fr)] border-l-2 pr-4 ${
-              line.active
-                ? "border-l-destructive bg-destructive/10 text-foreground"
-                : "border-l-transparent text-muted-foreground"
-            }`}
-            key={`${line.number ?? "unknown"}:${index}`}
-          >
-            <span className="border-r border-border px-3 text-right text-foreground/40 select-none">
-              {line.number ?? "—"}
-            </span>
-            <code className="pl-4">{line.text || " "}</code>
-          </span>
-        ))}
-      </pre>
+      <SyntaxSource filename={frame.filename} lines={lines} />
     </div>
   );
 };
 
-interface StackGroup {
-  frames: StackFrame[];
-  label: string;
-}
-
-const eventStackGroups = (detail: EventDetail): StackGroup[] => {
-  const symbolicated = asRecord(detail.symbolication?.payload)?.stacktraces;
-  if (Array.isArray(symbolicated)) {
-    const groups = symbolicated.flatMap((stacktrace, index) => {
-      const frames = framesFromStacktrace(stacktrace);
-      return frames.length > 0
-        ? [{ frames, label: `Symbolicated stack ${index + 1}` }]
-        : [];
-    });
-    if (groups.length > 0) {
-      return groups;
-    }
+const selectedStackFrame = (
+  selected: null | string | undefined,
+  displayed: ReadonlySet<string>,
+  fallback?: string
+) => {
+  if (selected === null) {
+    return;
   }
-  const exceptions = asRecord(
-    asRecord(detail.event.payload)?.exception
-  )?.values;
-  if (!Array.isArray(exceptions)) {
-    return [];
-  }
-  return exceptions.flatMap((exception, index) => {
-    const value = asRecord(exception);
-    const frames = framesFromStacktrace(value?.stacktrace);
-    if (frames.length === 0) {
-      return [];
-    }
-    const label = [value?.type, value?.value]
-      .filter((entry): entry is string => typeof entry === "string")
-      .join(": ");
-    return [{ frames, label: label || `Exception ${index + 1}` }];
-  });
+  return selected && displayed.has(selected) ? selected : fallback;
 };
 
 const StackTrace = ({ detail }: { detail: EventDetail }) => {
-  const groups = eventStackGroups(detail);
+  const groups = useMemo(() => eventStackGroups(detail), [detail]);
+  const hasRelevantFrames = groups.some((group) =>
+    group.frames.some((frame) => frame.inApp === true)
+  );
+  const [showFullStack, setShowFullStack] = useState(false);
+  const [newestFirst, setNewestFirst] = useState(true);
+  const [selectedFrameKey, setSelectedFrameKey] = useState<
+    null | string | undefined
+  >();
+  const relevantOnly = hasRelevantFrames && !showFullStack;
+  const displayedGroups = useMemo(
+    () =>
+      groups.flatMap((group) => {
+        const relevant = relevantOnly
+          ? relevantStackFrames(group.frames)
+          : group.frames;
+        const frames = newestFirst ? relevant.toReversed() : relevant;
+        return frames.length > 0 ? [{ ...group, frames }] : [];
+      }),
+    [groups, newestFirst, relevantOnly]
+  );
   const frameCount = groups.reduce(
     (total, group) => total + group.frames.length,
     0
@@ -167,6 +92,22 @@ const StackTrace = ({ detail }: { detail: EventDetail }) => {
   if (frameCount === 0) {
     return null;
   }
+  const firstFrameKey = displayedGroups[0]?.frames[0]
+    ? `0:${displayedGroups[0].label}:${displayedGroups[0].frames[0].filename ?? "unknown"}:${displayedGroups[0].frames[0].lineno ?? 0}:0`
+    : undefined;
+  const displayedFrameKeys = new Set(
+    displayedGroups.flatMap((group, groupIndex) =>
+      group.frames.map(
+        (frame, index) =>
+          `${groupIndex}:${group.label}:${frame.filename ?? "unknown"}:${frame.lineno ?? 0}:${index}`
+      )
+    )
+  );
+  const activeFrameKey = selectedStackFrame(
+    selectedFrameKey,
+    displayedFrameKeys,
+    firstFrameKey
+  );
   return (
     <section className="border-b border-border py-6">
       <div className="mb-4 flex items-center justify-between gap-4">
@@ -177,45 +118,326 @@ const StackTrace = ({ detail }: { detail: EventDetail }) => {
             {groups.length > 1 ? ` across ${groups.length} exceptions` : ""}
           </p>
         </div>
-        <StatusBadge value={detail.symbolication ? "symbolicated" : "raw"} />
+        <div className="flex items-center gap-1">
+          {hasRelevantFrames ? (
+            <Button
+              aria-pressed={relevantOnly}
+              onClick={() => setShowFullStack((value) => !value)}
+              size="sm"
+              variant="ghost"
+            >
+              <Rows3 /> {relevantOnly ? "Relevant" : "Full stack"}
+            </Button>
+          ) : null}
+          <Button
+            aria-pressed={newestFirst}
+            onClick={() => setNewestFirst((value) => !value)}
+            size="sm"
+            variant="ghost"
+          >
+            <ArrowDownUp /> {newestFirst ? "Newest first" : "Oldest first"}
+          </Button>
+          <StatusBadge value={detail.symbolication ? "symbolicated" : "raw"} />
+        </div>
       </div>
       <div className="border-y border-border">
-        {groups.map((group) => (
+        {displayedGroups.map((group, groupIndex) => (
           <div
             className="border-b border-border last:border-b-0"
-            key={group.label}
+            key={`${groupIndex}:${group.label}`}
           >
-            <div className="bg-muted/25 px-3 py-2 text-[9px] font-medium [overflow-wrap:anywhere]">
-              {group.label}
+            <div className="flex flex-wrap items-center gap-2 bg-muted/25 px-3 py-2 text-[9px] [overflow-wrap:anywhere]">
+              <span className="font-medium">{group.label}</span>
+              {group.relationship ? (
+                <span className="text-muted-foreground">
+                  {group.relationship}
+                </span>
+              ) : null}
+              {group.mechanism?.type ? (
+                <span
+                  className="inline-flex items-center gap-1 border border-border px-1.5 py-0.5 text-muted-foreground"
+                  title={group.mechanism.description}
+                >
+                  mechanism · {group.mechanism.type}
+                  {group.mechanism.helpLink ? (
+                    <a
+                      aria-label="Open mechanism documentation"
+                      href={group.mechanism.helpLink}
+                      onClick={(event) => event.stopPropagation()}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      <ExternalLink className="size-2.5" />
+                    </a>
+                  ) : null}
+                </span>
+              ) : null}
+              {group.mechanism?.handled === undefined ? null : (
+                <span className="border border-border px-1.5 py-0.5 text-muted-foreground">
+                  handled · {String(group.mechanism.handled)}
+                </span>
+              )}
+              {group.mechanism?.source ? (
+                <span className="border border-border px-1.5 py-0.5 text-muted-foreground">
+                  source · {group.mechanism.source}
+                </span>
+              ) : null}
+              {group.mechanism?.data.map((item) => (
+                <span
+                  className="border border-border px-1.5 py-0.5 text-muted-foreground"
+                  key={item.name}
+                >
+                  {item.name} · {item.value}
+                </span>
+              ))}
             </div>
             <div className="divide-y divide-border">
-              {group.frames.map((frame, index) => (
-                <div
-                  className="py-3 text-[10px]"
-                  key={`${frame.filename ?? "unknown"}:${frame.lineno ?? 0}:${index}`}
-                >
-                  <div className="grid grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-3 px-3">
-                    <span className="grid size-7 place-items-center border border-border text-[9px] text-muted-foreground">
-                      {index + 1}
-                    </span>
-                    <div className="min-w-0">
-                      <p className="overflow-hidden font-medium text-ellipsis whitespace-nowrap">
-                        {frame.functionName ?? "<anonymous>"}
-                      </p>
-                      <code className="mt-1 block overflow-hidden text-[9px] text-ellipsis whitespace-nowrap text-muted-foreground">
-                        {frame.filename ?? "unknown source"}
-                      </code>
-                    </div>
-                    <code className="text-[9px] text-muted-foreground">
-                      {frame.lineno ?? "—"}:{frame.colno ?? "—"}
-                    </code>
+              {group.frames.map((frame, index) => {
+                const frameKey = `${groupIndex}:${group.label}:${frame.filename ?? "unknown"}:${frame.lineno ?? 0}:${index}`;
+                const expanded = frameKey === activeFrameKey;
+                return (
+                  <div className="text-[10px]" key={frameKey}>
+                    <button
+                      aria-expanded={expanded}
+                      className="grid w-full grid-cols-[20px_32px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-3 text-left hover:bg-muted/25"
+                      onClick={() =>
+                        setSelectedFrameKey(expanded ? null : frameKey)
+                      }
+                      type="button"
+                    >
+                      {expanded ? (
+                        <ChevronDown className="size-3 text-muted-foreground" />
+                      ) : (
+                        <ChevronRight className="size-3 text-muted-foreground" />
+                      )}
+                      <span className="grid size-7 place-items-center border border-border text-[9px] text-muted-foreground">
+                        {index + 1}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="overflow-hidden font-medium text-ellipsis whitespace-nowrap">
+                          {frame.functionName ?? "<anonymous>"}
+                        </p>
+                        <code className="mt-1 block overflow-hidden text-[9px] text-ellipsis whitespace-nowrap text-muted-foreground">
+                          {[frame.module, frame.filename]
+                            .filter(Boolean)
+                            .join(" · ") || "unknown source"}
+                        </code>
+                      </div>
+                      <span className="flex items-center gap-2">
+                        {frame.inApp ? <StatusBadge value="in app" /> : null}
+                        <code className="text-[9px] text-muted-foreground">
+                          {frame.lineno ?? "—"}:{frame.colno ?? "—"}
+                        </code>
+                      </span>
+                    </button>
+                    {expanded ? <SourceContext frame={frame} /> : null}
                   </div>
-                  <SourceContext frame={frame} />
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+};
+
+const SourceMapDiagnostics = ({ detail }: { detail: EventDetail }) => {
+  const platform = detail.event.platform?.toLowerCase() ?? "";
+  if (!(platform.includes("javascript") || platform.includes("node"))) {
+    return null;
+  }
+  const payload = asRecord(detail.symbolication?.payload);
+  const errors = Array.isArray(payload?.errors)
+    ? payload.errors.flatMap((entry) =>
+        asRecord(entry) ? [asRecord(entry)] : []
+      )
+    : [];
+  const frames = eventStackGroups(detail).flatMap((group) => group.frames);
+  const resolved = frames.filter((frame) => frame.symbolicated).length;
+  const { dist, release } = detail.event;
+  let summary = "No original frame mapping was available";
+  if (resolved > 0) {
+    summary = `${resolved.toLocaleString()} original frame${resolved === 1 ? "" : "s"} resolved`;
+  } else if (errors.length > 0) {
+    summary = "Some original sources could not be resolved";
+  }
+  return (
+    <section className="border-b border-border py-5">
+      <div className="flex items-start justify-between gap-6 max-sm:flex-col">
+        <div>
+          <Eyebrow>Source maps</Eyebrow>
+          <p className="mt-2 flex items-center gap-2 text-[10px]">
+            {errors.length > 0 ? (
+              <TriangleAlert className="size-3.5 text-amber-500" />
+            ) : (
+              <FileSearch className="size-3.5 text-emerald-500" />
+            )}
+            {summary}
+          </p>
+        </div>
+        <div className="text-right text-[9px] text-muted-foreground max-sm:text-left">
+          <p>{release ? `release ${release}` : "release not set"}</p>
+          <p className="mt-1">{dist ? `dist ${dist}` : "dist not set"}</p>
+        </div>
+      </div>
+      {errors.length > 0 ? (
+        <div className="mt-4 divide-y divide-border border-y border-border">
+          {errors.map((error, index) => (
+            <div
+              className="grid gap-1 py-2.5 text-[9px]"
+              key={`${error?.type}:${index}`}
+            >
+              <span className="font-medium">
+                {error?.type === "missing_source"
+                  ? "Source is missing from the uploaded bundle"
+                  : "Source map could not be processed"}
+              </span>
+              <code className="truncate text-muted-foreground">
+                {[error?.abs_path, error?.message]
+                  .filter((value): value is string => typeof value === "string")
+                  .join(" · ")}
+              </code>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+};
+
+interface TraceContext {
+  operation?: string;
+  spanId?: string;
+  status?: string;
+  traceId: string;
+}
+
+const traceContext = (payload: unknown): TraceContext | undefined => {
+  const trace = asRecord(asRecord(asRecord(payload)?.contexts)?.trace);
+  const traceId = optionalString(trace?.trace_id);
+  return traceId
+    ? {
+        operation: optionalString(trace?.op),
+        spanId: optionalString(trace?.span_id),
+        status: optionalString(trace?.status),
+        traceId,
+      }
+    : undefined;
+};
+
+const EventHighlights = ({
+  detail,
+  onOpenTrace,
+}: {
+  detail: EventDetail;
+  onOpenTrace?: (traceId: string) => void;
+}) => {
+  const payload = asRecord(detail.event.payload);
+  const user = asRecord(payload?.user);
+  const trace = traceContext(payload);
+  const values = [
+    [
+      "Transaction",
+      optionalString(payload?.transaction) ?? detail.event.transaction,
+    ],
+    ["Release", optionalString(payload?.release) ?? detail.event.release],
+    [
+      "Environment",
+      optionalString(payload?.environment) ?? detail.event.environment,
+    ],
+    [
+      "User",
+      optionalString(user?.email) ??
+        optionalString(user?.username) ??
+        optionalString(user?.id),
+    ],
+    [
+      "SDK",
+      [detail.event.sdk_name, detail.event.sdk_version]
+        .filter(Boolean)
+        .join(" "),
+    ],
+  ].filter((entry): entry is [string, string] => Boolean(entry[1]));
+  if (values.length === 0 && !trace) {
+    return null;
+  }
+  return (
+    <section className="border-b border-border py-5">
+      <Eyebrow>Highlights</Eyebrow>
+      <div className="mt-3 grid grid-cols-3 border-t border-l border-border max-lg:grid-cols-2 max-sm:grid-cols-1">
+        {values.map(([label, value]) => (
+          <div
+            className="min-w-0 border-r border-b border-border px-3 py-3"
+            key={label}
+          >
+            <p className="text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
+              {label}
+            </p>
+            <p className="mt-1.5 truncate text-[9px]" title={value}>
+              {value}
+            </p>
+          </div>
+        ))}
+        {trace ? (
+          <button
+            className={cn(
+              "min-w-0 border-r border-b border-border px-3 py-3 text-left",
+              onOpenTrace && "hover:bg-muted/30"
+            )}
+            disabled={!onOpenTrace}
+            onClick={() => onOpenTrace?.(trace.traceId)}
+            type="button"
+          >
+            <p className="flex items-center gap-1.5 text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
+              <Route className="size-3" /> Trace
+            </p>
+            <p
+              className="mt-1.5 truncate font-mono text-[9px]"
+              title={trace.traceId}
+            >
+              {trace.traceId}
+            </p>
+          </button>
+        ) : null}
+      </div>
+    </section>
+  );
+};
+
+const RelatedTrace = ({
+  onOpenTrace,
+  payload,
+}: {
+  onOpenTrace?: (traceId: string) => void;
+  payload: unknown;
+}) => {
+  const trace = traceContext(payload);
+  if (!trace) {
+    return null;
+  }
+  return (
+    <section className="border-b border-border py-6">
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0">
+          <Eyebrow>Trace</Eyebrow>
+          <p
+            className="mt-2 truncate font-mono text-[10px]"
+            title={trace.traceId}
+          >
+            {trace.traceId}
+          </p>
+          <p className="mt-1 text-[9px] text-muted-foreground">
+            {[trace.operation, trace.status, trace.spanId]
+              .filter(Boolean)
+              .join(" · ")}
+          </p>
+        </div>
+        {onOpenTrace ? (
+          <Button onClick={() => onOpenTrace(trace.traceId)} variant="outline">
+            <Route /> Open trace
+          </Button>
+        ) : null}
       </div>
     </section>
   );
@@ -226,11 +448,13 @@ export const EventEvidence = ({
   detail,
   label = "Event evidence",
   notify,
+  onOpenTrace,
 }: {
   appId: string;
   detail: EventDetail;
   label?: string;
   notify: (message: string) => void;
+  onOpenTrace?: (traceId: string) => void;
 }) => {
   const item = detail.event;
   return (
@@ -256,12 +480,18 @@ export const EventEvidence = ({
           ) : null}
         </div>
       </section>
+      <EventHighlights detail={detail} onOpenTrace={onOpenTrace} />
       <StackTrace detail={detail} />
+      <SourceMapDiagnostics detail={detail} />
       {item.replay_id ? (
-        <RelatedReplay appId={appId} replayId={item.replay_id} />
+        <RelatedReplay
+          appId={appId}
+          onOpenTrace={onOpenTrace}
+          replayId={item.replay_id}
+        />
       ) : null}
       <BreadcrumbsSection payload={item.payload} />
-      <EventMessageSection payload={item.payload} />
+      <RelatedTrace onOpenTrace={onOpenTrace} payload={item.payload} />
       <EventEnvironmentSection payload={item.payload} />
       <EventRequestSection payload={item.payload} />
       <ContextSection payload={item.payload} />
@@ -279,10 +509,12 @@ export const EventDetailView = ({
   appId,
   detail,
   notify,
+  onOpenTrace,
 }: {
   appId: string;
   detail: EventDetail;
   notify: (message: string) => void;
+  onOpenTrace?: (traceId: string) => void;
 }) => {
   const item = detail.event;
   return (
@@ -314,7 +546,12 @@ export const EventDetailView = ({
           </div>
         </div>
       </section>
-      <EventEvidence appId={appId} detail={detail} notify={notify} />
+      <EventEvidence
+        appId={appId}
+        detail={detail}
+        notify={notify}
+        onOpenTrace={onOpenTrace}
+      />
     </>
   );
 };

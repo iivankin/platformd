@@ -11,36 +11,55 @@ interface RuntimeGuide {
   label: string;
   note: string;
   scope: "browser" | "server";
-  source: (dsn: string) => string;
+  source: (dsn: string, tunnel?: string) => string;
 }
 
 const quoted = (value: string) => JSON.stringify(value);
+
+const publicTunnelURL = (app: App) => {
+  if (!(app.publicDsn && app.browserTunnelPath)) {
+    return;
+  }
+  return new URL(
+    app.browserTunnelPath,
+    new URL(app.publicDsn).origin
+  ).toString();
+};
 
 const runtimeGuides: RuntimeGuide[] = [
   {
     id: "browser",
     install: "npm install @sentry/browser",
     label: "Browser / React",
-    note: "Replay records DOM snapshots and interaction markers alongside browser errors.",
+    note: "Replay and browser profiling are sampled explicitly; neither is sent by the SDK by default.",
     scope: "browser",
-    source: (dsn) => `import * as Sentry from "@sentry/browser";
+    source: (dsn, tunnel) => `import * as Sentry from "@sentry/browser";
 
 Sentry.init({
   dsn: ${quoted(dsn)},
-  integrations: [Sentry.replayIntegration()],
+${tunnel ? `  tunnel: ${quoted(tunnel)},\n` : ""}  integrations: [
+    Sentry.replayIntegration(),
+    Sentry.browserProfilingIntegration(),
+  ],
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1.0,
+  profileSessionSampleRate: 0.1,
 });`,
   },
   {
     id: "node",
-    install: "npm install @sentry/node",
+    install: "npm install @sentry/node @sentry/profiling-node",
     label: "Node.js / Express",
-    note: "Import the instrumentation module before the rest of the application.",
+    note: "Import the instrumentation module before the rest of the application. Profiling requires an integration and a non-zero sample rate.",
     scope: "server",
     source: (dsn) => `import * as Sentry from "@sentry/node";
+import { nodeProfilingIntegration } from "@sentry/profiling-node";
 
-Sentry.init({ dsn: ${quoted(dsn)} });
+Sentry.init({
+  dsn: ${quoted(dsn)},
+  integrations: [nodeProfilingIntegration()],
+  profileSessionSampleRate: 0.1,
+});
 
 // Express: call after routes are registered.
 Sentry.setupExpressErrorHandler(app);`,
@@ -172,7 +191,12 @@ export const RuntimeSetupGuide = ({
   if (guide.scope === "browser" || effectiveServerEndpoint === "public") {
     dsn = app.publicDsn;
   }
-  const source = dsn ? guide.source(dsn) : "";
+  const source = dsn
+    ? guide.source(
+        dsn,
+        guide.scope === "browser" ? publicTunnelURL(app) : undefined
+      )
+    : "";
   const setup = `${guide.install}\n\n${source}`;
 
   return (

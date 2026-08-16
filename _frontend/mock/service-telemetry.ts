@@ -192,6 +192,29 @@ const handleWebhooks = async (
   return json(webhook, 201);
 };
 
+const updateBrowserTunnel = async (
+  request: Request,
+  configuration: ServiceTelemetry
+) => {
+  const input = await readObject(request);
+  if (numberField(input, "expectedUpdatedAt", -1) !== configuration.updatedAt) {
+    return mockError("service_telemetry_conflict", "Service changed", 409);
+  }
+  if (!configuration.publicHostname) {
+    return mockError(
+      "public_telemetry_required",
+      "Browser tunnel requires a public telemetry domain",
+      400
+    );
+  }
+  if (typeof input.browserTunnelPath !== "string") {
+    return mockError("invalid_browser_tunnel", "Tunnel path is invalid", 400);
+  }
+  configuration.browserTunnelPath = input.browserTunnelPath.trim() || undefined;
+  configuration.updatedAt = mockNow();
+  return json(configuration);
+};
+
 const handleTelemetryResource = async (
   request: Request,
   state: MockState,
@@ -216,9 +239,19 @@ const handleTelemetryResource = async (
     }
     configuration.publicHostname =
       stringField(input, "publicHostname") || undefined;
+    if (!configuration.publicHostname) {
+      configuration.browserTunnelPath = undefined;
+    }
     configuration.updatedAt = mockNow();
     refreshOrigin(state, serviceID);
     return json(configuration);
+  }
+  if (
+    action === "browser-tunnel" &&
+    tail.length === 0 &&
+    request.method === "PUT"
+  ) {
+    return updateBrowserTunnel(request, configuration);
   }
   if (
     action === "artifact-token" &&
@@ -237,6 +270,8 @@ const handleTelemetryResource = async (
 
 const mockTraceID = "4c79f60c11214eb38604f4ae0781bfb2";
 const mockAITraceID = "6d79f60c11214eb38604f4ae0781bfa9";
+const mockTraceSegmentID = "8f3a0f34b17c9d20";
+const mockAITraceSegmentID = "8f3a0f34b17c9aa0";
 const mockTraceStarted =
   BigInt(Date.parse("2026-08-09T10:45:03Z")) * 1_000_000n;
 const nonAISummary = {
@@ -270,6 +305,7 @@ const nonAISpan = {
   aiReasoningTokens: null,
   aiTokensPerSecond: null,
   aiTtftSeconds: null,
+  baselineDurationNano: null,
 } as const;
 const mockTraceSummaries = (): ServiceTraceSummary[] => [
   {
@@ -277,6 +313,8 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
     durationNano: "1380000000",
     errorSpanCount: 1,
     name: "POST /checkout/confirm",
+    segmentId: mockTraceSegmentID,
+    serviceId: "service-storefront",
     sources: ["otlp", "sentry"],
     spanCount: 3,
     startedAtUnixNano: mockTraceStarted.toString(),
@@ -301,6 +339,8 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
     errorSpanCount: 0,
     isAi: true,
     name: "POST /support/reply",
+    segmentId: mockAITraceSegmentID,
+    serviceId: "service-storefront",
     sources: ["otlp"],
     spanCount: 6,
     startedAtUnixNano: (mockTraceStarted - 12_500_000_000n).toString(),
@@ -309,12 +349,73 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
 ];
 
 const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
+  metrics: [
+    {
+      name: "http.server.duration",
+      spanId: "8f3a0f34b17c9d20",
+      timeUnixNano: (mockTraceStarted + 1_380_000_000n).toString(),
+      unit: "s",
+      value: 1.38,
+    },
+  ],
+  profiles: [
+    {
+      endedAtUnixNano: (mockTraceStarted + 1_200_000_000n).toString(),
+      platform: "node",
+      profileId: "b571a405ae724ed6bd4c8ca8114ba88a",
+      profilerId: "e55d702586e84da7a1c8741c748f18f5",
+      sampleCount: 92,
+      serviceId: "service-storefront",
+      stacks: [
+        {
+          durationNano: "620000000",
+          frames: [
+            { filename: "node:internal/http", function: "emit" },
+            {
+              filename: "src/checkout.ts",
+              function: "confirmCheckout",
+              lineno: 184,
+            },
+            {
+              filename: "src/inventory.ts",
+              function: "reserveInventory",
+              lineno: 71,
+            },
+          ],
+          sampleCount: 62,
+          spanId: "8f3a0f34b17c9d20",
+          threadId: "main",
+          threadName: "MainThread",
+        },
+        {
+          durationNano: "300000000",
+          frames: [
+            { filename: "node:internal/http", function: "emit" },
+            {
+              filename: "src/checkout.ts",
+              function: "confirmCheckout",
+              lineno: 184,
+            },
+            { filename: "node:internal/timers", function: "processTimers" },
+          ],
+          sampleCount: 30,
+          spanId: "8f3a0f34b17c9d20",
+          threadId: "main",
+          threadName: "MainThread",
+        },
+      ],
+      startedAtUnixNano: mockTraceStarted.toString(),
+    },
+  ],
+  relatedSegments: [],
+  segmentId: mockTraceSegmentID,
   spans: [
     {
       ...nonAISpan,
       durationNano: "1380000000",
       endTimeUnixNano: (mockTraceStarted + 1_380_000_000n).toString(),
       flags: 1,
+      isSegment: true,
       kind: 2,
       name: "POST /checkout/confirm",
       parentSpanId: "",
@@ -329,6 +430,8 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
         ],
       },
       scope: { attributes: [], name: "sentry", version: "1" },
+      segmentId: mockTraceSegmentID,
+      serviceId: "service-storefront",
       source: "sentry",
       span: transactionPayload ?? {
         attributes: [
@@ -348,12 +451,15 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
       durationNano: "740000000",
       endTimeUnixNano: (mockTraceStarted + 910_000_000n).toString(),
       flags: 1,
+      isSegment: false,
       kind: 3,
       name: "POST inventory/reserve",
       parentSpanId: "8f3a0f34b17c9d20",
       receivedAtUnixNano: (mockTraceStarted + 1_500_000_000n).toString(),
       resource: { attributes: [] },
       scope: { attributes: [], name: "@opentelemetry/instrumentation-fetch" },
+      segmentId: mockTraceSegmentID,
+      serviceId: "service-storefront",
       source: "otlp",
       span: {
         attributes: [
@@ -375,12 +481,15 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
       durationNano: "310000000",
       endTimeUnixNano: (mockTraceStarted + 1_280_000_000n).toString(),
       flags: 1,
+      isSegment: false,
       kind: 3,
       name: "SELECT cart_items",
       parentSpanId: "8f3a0f34b17c9d20",
       receivedAtUnixNano: (mockTraceStarted + 1_500_000_000n).toString(),
       resource: { attributes: [] },
       scope: { attributes: [], name: "@opentelemetry/instrumentation-pg" },
+      segmentId: mockTraceSegmentID,
+      serviceId: "service-storefront",
       source: "otlp",
       span: {
         attributes: [
@@ -411,12 +520,17 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
   };
   const scope = { name: "@ai-sdk/otel", version: "1.0.58" };
   return {
+    metrics: [],
+    profiles: [],
+    relatedSegments: [],
+    segmentId: mockAITraceSegmentID,
     spans: [
       {
         ...nonAISpan,
         durationNano: "4900000000",
         endTimeUnixNano: (started + 4_400_000_000n).toString(),
         flags: 1,
+        isSegment: true,
         kind: 2,
         name: "POST /support/reply",
         parentSpanId: "",
@@ -426,6 +540,8 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
           name: "@opentelemetry/instrumentation-http",
           version: "0.203.0",
         },
+        segmentId: mockAITraceSegmentID,
+        serviceId: "service-storefront",
         source: "otlp",
         span: {
           attributes: [
@@ -460,12 +576,15 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         durationNano: "4280000000",
         endTimeUnixNano: (started + 4_280_000_000n).toString(),
         flags: 1,
+        isSegment: false,
         kind: 1,
         name: "invoke_agent support-agent",
         parentSpanId: "8f3a0f34b17c9aa0",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
         resource,
         scope,
+        segmentId: mockAITraceSegmentID,
+        serviceId: "service-storefront",
         source: "otlp",
         span: {
           attributes: [
@@ -503,12 +622,15 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         durationNano: "3860000000",
         endTimeUnixNano: (started + 4_050_000_000n).toString(),
         flags: 1,
+        isSegment: false,
         kind: 1,
         name: "agent_step 1",
         parentSpanId: "8f3a0f34b17c9aa1",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
         resource,
         scope,
+        segmentId: mockAITraceSegmentID,
+        serviceId: "service-storefront",
         source: "otlp",
         span: {
           attributes: [
@@ -542,12 +664,15 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         durationNano: "1800000000",
         endTimeUnixNano: (started + 2_080_000_000n).toString(),
         flags: 1,
+        isSegment: false,
         kind: 3,
         name: "chat gpt-5-mini",
         parentSpanId: "8f3a0f34b17c9aa2",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
         resource,
         scope,
+        segmentId: mockAITraceSegmentID,
+        serviceId: "service-storefront",
         source: "otlp",
         span: {
           attributes: [
@@ -612,12 +737,15 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         durationNano: "410000000",
         endTimeUnixNano: (started + 2_610_000_000n).toString(),
         flags: 1,
+        isSegment: false,
         kind: 1,
         name: "execute_tool lookup_invoice",
         parentSpanId: "8f3a0f34b17c9aa2",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
         resource,
         scope,
+        segmentId: mockAITraceSegmentID,
+        serviceId: "service-storefront",
         source: "otlp",
         span: {
           attributes: [
@@ -662,12 +790,15 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         durationNano: "1210000000",
         endTimeUnixNano: (started + 3_980_000_000n).toString(),
         flags: 1,
+        isSegment: false,
         kind: 3,
         name: "chat gpt-5-mini",
         parentSpanId: "8f3a0f34b17c9aa2",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
         resource,
         scope,
+        segmentId: mockAITraceSegmentID,
+        serviceId: "service-storefront",
         source: "otlp",
         span: {
           attributes: [
@@ -702,6 +833,89 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
   };
 };
 
+const mockTraceDurationMatches = (durationNano: string, expression: string) => {
+  const match =
+    /^(?<operator>>=|<=|>|<)?(?<amount>\d+(?:\.\d+)?)(?<unit>ms|s)$/u.exec(
+      expression
+    );
+  if (!match?.groups) {
+    return false;
+  }
+  const actual = Number(BigInt(durationNano)) / 1_000_000;
+  const expected =
+    Number(match.groups.amount) * (match.groups.unit === "s" ? 1000 : 1);
+  if (match.groups.operator === ">") {
+    return actual > expected;
+  }
+  if (match.groups.operator === ">=") {
+    return actual >= expected;
+  }
+  if (match.groups.operator === "<") {
+    return actual < expected;
+  }
+  if (match.groups.operator === "<=") {
+    return actual <= expected;
+  }
+  return actual === expected;
+};
+
+const mockTraceList = (request: Request) => {
+  const parameters = new URL(request.url).searchParams;
+  const queryTokens = (parameters.get("query") ?? "")
+    .toLocaleLowerCase()
+    .split(/\s+/u)
+    .filter(Boolean);
+  const textTokens = queryTokens.filter(
+    (token) => !(token.startsWith("status:") || token.startsWith("duration:"))
+  );
+  const statusFilters = [
+    parameters.get("status") ?? "all",
+    ...queryTokens
+      .filter((token) => token.startsWith("status:"))
+      .map((token) => token.slice("status:".length)),
+  ];
+  const durations = queryTokens
+    .filter((token) => token.startsWith("duration:"))
+    .map((token) => token.slice("duration:".length));
+  const summaries = mockTraceSummaries().filter((summary) => {
+    const searchable = [
+      summary.name,
+      summary.aiAgent,
+      summary.aiModel,
+      summary.aiProvider,
+      summary.traceId,
+      summary.isAi ? "invoice pending bank lookup tool" : "checkout",
+    ]
+      .join(" ")
+      .toLocaleLowerCase();
+    return (
+      textTokens.every((token) => searchable.includes(token)) &&
+      statusFilters.every(
+        (status) =>
+          status === "all" ||
+          (status === "error"
+            ? summary.errorSpanCount > 0
+            : status === "ok" && summary.errorSpanCount === 0)
+      ) &&
+      durations.every((duration) =>
+        mockTraceDurationMatches(summary.durationNano, duration)
+      )
+    );
+  });
+  const sort = parameters.get("sort") ?? "latest";
+  return summaries.toSorted((left, right) => {
+    if (sort === "slowest") {
+      return Number(BigInt(right.durationNano) - BigInt(left.durationNano));
+    }
+    if (sort === "spans") {
+      return right.spanCount - left.spanCount;
+    }
+    return Number(
+      BigInt(right.startedAtUnixNano) - BigInt(left.startedAtUnixNano)
+    );
+  });
+};
+
 const handleTelemetryQuery = async (
   request: Request,
   action: string,
@@ -713,29 +927,7 @@ const handleTelemetryQuery = async (
       return mockError("method_not_allowed", "Method not allowed", 405);
     }
     if (tail.length === 0) {
-      const query = new URL(request.url).searchParams
-        .get("query")
-        ?.toLocaleLowerCase();
-      const summaries = mockTraceSummaries();
-      return json(
-        query
-          ? summaries.filter((summary) => {
-              const searchable = [
-                summary.name,
-                summary.aiAgent,
-                summary.aiModel,
-                summary.aiProvider,
-                summary.traceId,
-                summary.isAi ? "invoice pending bank lookup tool" : "checkout",
-              ]
-                .join(" ")
-                .toLocaleLowerCase();
-              return query
-                .split(/\s+/u)
-                .every((token) => searchable.includes(token));
-            })
-          : summaries
-      );
+      return json(mockTraceList(request));
     }
     if (tail[0] === mockTraceID) {
       return json(mockTraceDetail(transactionPayload));
@@ -813,8 +1005,64 @@ export const handleMetricScopeTelemetry = (
   rest: string[]
 ): Promise<Response | undefined> | Response | undefined => {
   const [action, ...tail] = rest;
-  if (action === "metrics") {
+  if (action === "metrics" || action === "traces") {
     return handleTelemetryQuery(request, action, tail);
+  }
+  const serviceIDs = Object.values(state.services)
+    .filter(
+      (service) =>
+        scopeKey === "installation" ||
+        service.projectId === scopeKey.slice("project:".length)
+    )
+    .map((service) => service.id);
+  for (const serviceID of serviceIDs) {
+    const service = state.services[serviceID];
+    if (service) {
+      ensureServiceTelemetryMock(state, service);
+    }
+  }
+  if (action === "logs" && request.method === "GET") {
+    const parameters = new URL(request.url).searchParams;
+    const contains = (parameters.get("contains") ?? "").toLocaleLowerCase();
+    const traceID = parameters.get("traceId") ?? "";
+    const spanID = parameters.get("spanId") ?? "";
+    const records = serviceIDs
+      .flatMap((serviceID) =>
+        (state.logs[serviceID]?.records ?? []).map((record) => ({
+          ...record,
+          serviceId: serviceID,
+        }))
+      )
+      .filter(
+        (record) =>
+          (!contains ||
+            JSON.stringify(record).toLocaleLowerCase().includes(contains)) &&
+          (!traceID || record.traceId === traceID) &&
+          (!spanID || record.spanId === spanID)
+      )
+      .toSorted(
+        (left, right) =>
+          Date.parse(right.timestamp) - Date.parse(left.timestamp)
+      );
+    return json({ records, truncated: false });
+  }
+  if (action === "errors" && tail[0] === "issues" && request.method === "GET") {
+    const query = (
+      new URL(request.url).searchParams.get("query") ?? ""
+    ).toLocaleLowerCase();
+    const data = serviceIDs.flatMap((serviceID) =>
+      (state.serviceErrors[serviceID]?.issues ?? [])
+        .filter(
+          (issue) =>
+            !query || JSON.stringify(issue).toLocaleLowerCase().includes(query)
+        )
+        .map((issue) => ({
+          ...issue,
+          projectId: state.services[serviceID]?.projectId,
+          serviceId: serviceID,
+        }))
+    );
+    return json({ data, total: data.length });
   }
   return action === "metric-charts"
     ? handleMetricCharts(request, state, scopeKey, tail)

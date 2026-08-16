@@ -5,8 +5,11 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 import { asRecord } from "./event-context";
+import { prepareReplayEvents, replayVideoSegments } from "./replay-events";
+import { ReplayInspector } from "./replay-inspector";
 import { replayMarkers } from "./replay-markers";
 import { ReplayTimeline } from "./replay-timeline";
+import { ReplayVideoPlayer } from "./replay-video-player";
 import type { ReplayRecording } from "./types";
 
 const formatPosition = (milliseconds: number) => {
@@ -23,7 +26,13 @@ const replayViewport = (events: ReplayRecording["events"]) => {
   };
 };
 
-export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
+export const ReplayPlayer = ({
+  onOpenTrace,
+  recording,
+}: {
+  onOpenTrace?: (traceID: string) => void;
+  recording: ReplayRecording;
+}) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<ReplayerInstance>(null);
@@ -35,7 +44,19 @@ export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
   const [ready, setReady] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [startTime, setStartTime] = useState(0);
-  const viewport = replayViewport(recording.events);
+  const prepared = useMemo(
+    () =>
+      prepareReplayEvents(recording.events, {
+        finishedAt: recording.finishedAt,
+        startedAt: recording.startedAt,
+      }),
+    [recording.events, recording.finishedAt, recording.startedAt]
+  );
+  const videoSegments = useMemo(
+    () => replayVideoSegments(recording.events),
+    [recording.events]
+  );
+  const viewport = replayViewport(prepared.events);
   const markers = useMemo(() => replayMarkers(recording), [recording]);
   const scale = availableWidth
     ? Math.min(1, availableWidth / viewport.width)
@@ -56,7 +77,7 @@ export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
   useEffect(() => {
     let active = true;
     const mount = mountRef.current;
-    if (!mount || recording.events.length === 0) {
+    if (!mount || prepared.events.length === 0 || videoSegments.length > 0) {
       return;
     }
     setPlayerError("");
@@ -68,7 +89,7 @@ export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
           return;
         }
         mount.replaceChildren();
-        const player = new Replayer(recording.events, {
+        const player = new Replayer(prepared.events, {
           UNSAFE_replayCanvas: false,
           mouseTail: false,
           root: mount,
@@ -107,7 +128,7 @@ export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
       playerRef.current = null;
       mount.replaceChildren();
     };
-  }, [recording.events]);
+  }, [prepared, videoSegments.length]);
 
   useEffect(() => {
     if (!playing) {
@@ -122,7 +143,17 @@ export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
     return () => window.clearInterval(interval);
   }, [playing]);
 
-  if (recording.events.length === 0) {
+  if (videoSegments.length > 0) {
+    return (
+      <ReplayVideoPlayer
+        onOpenTrace={onOpenTrace}
+        recording={recording}
+        segments={videoSegments}
+      />
+    );
+  }
+
+  if (prepared.events.length === 0) {
     return (
       <p className="border-y border-border py-8 text-center text-[10px] text-muted-foreground">
         This replay has no recorded browser events.
@@ -168,78 +199,90 @@ export const ReplayPlayer = ({ recording }: { recording: ReplayRecording }) => {
   };
 
   return (
-    <div className="border-y border-border bg-muted/15">
-      <div className="relative overflow-hidden bg-stone-950" ref={containerRef}>
-        {!ready && !playerError ? (
-          <div className="absolute inset-0 z-10 grid place-items-center text-[9px] tracking-[0.12em] text-stone-400 uppercase">
-            <span className="flex items-center gap-2">
-              <LoaderCircle className="size-3.5 animate-spin" /> Preparing
-              replay
-            </span>
-          </div>
-        ) : null}
-        {playerError ? (
-          <div className="absolute inset-0 z-10 grid place-items-center p-6 text-center text-[10px] text-red-300">
-            {playerError}
-          </div>
-        ) : null}
+    <div className="grid border-y border-border lg:grid-cols-[minmax(0,1fr)_minmax(22rem,0.38fr)]">
+      <div className="min-w-0 bg-muted/15">
         <div
-          className="relative mx-auto overflow-hidden"
-          style={{
-            height: viewport.height * scale,
-            width: viewport.width * scale,
-          }}
+          className="relative overflow-hidden bg-muted/35"
+          ref={containerRef}
         >
+          {!ready && !playerError ? (
+            <div className="absolute inset-0 z-10 grid place-items-center text-[9px] tracking-[0.12em] text-stone-400 uppercase">
+              <span className="flex items-center gap-2">
+                <LoaderCircle className="size-3.5 animate-spin" /> Preparing
+                replay
+              </span>
+            </div>
+          ) : null}
+          {playerError ? (
+            <div className="absolute inset-0 z-10 grid place-items-center p-6 text-center text-[10px] text-red-300">
+              {playerError}
+            </div>
+          ) : null}
           <div
-            className="absolute top-0 left-0 origin-top-left [&_.replayer-wrapper]:overflow-hidden [&_iframe]:border-0"
-            ref={mountRef}
+            className="relative mx-auto overflow-hidden border-x border-border/70 bg-background shadow-[0_0_32px_rgba(0,0,0,0.2)]"
             style={{
-              height: viewport.height,
-              transform: `scale(${scale})`,
-              width: viewport.width,
+              height: viewport.height * scale,
+              width: viewport.width * scale,
             }}
+          >
+            <div
+              className="absolute top-0 left-0 origin-top-left [&_.replayer-wrapper]:overflow-hidden [&_iframe]:border-0 [&_iframe]:bg-white"
+              ref={mountRef}
+              style={{
+                height: viewport.height,
+                transform: `scale(${scale})`,
+                width: viewport.width,
+              }}
+            />
+          </div>
+        </div>
+        <div className="flex items-center gap-3 border-t border-border bg-background px-3 py-2">
+          <Button
+            aria-label={playing ? "Pause replay" : "Play replay"}
+            disabled={!ready}
+            onClick={togglePlayback}
+            size="icon"
+            variant="outline"
+          >
+            {playing ? <Pause /> : <Play />}
+          </Button>
+          <Button
+            aria-label="Restart replay"
+            disabled={!ready}
+            onClick={() => seek(0)}
+            size="icon"
+            variant="ghost"
+          >
+            <RotateCcw />
+          </Button>
+          <span className="w-20 text-[9px] text-muted-foreground tabular-nums">
+            {formatPosition(currentTime)} / {formatPosition(duration)}
+          </span>
+          <ReplayTimeline
+            currentTime={currentTime}
+            disabled={!ready}
+            duration={duration}
+            markers={markers}
+            onSeek={seek}
+            startTime={startTime}
           />
+          <Button
+            disabled={!ready}
+            onClick={cycleSpeed}
+            size="sm"
+            variant="ghost"
+          >
+            {speed}×
+          </Button>
         </div>
       </div>
-      <div className="flex items-center gap-3 border-t border-border bg-background px-3 py-2">
-        <Button
-          aria-label={playing ? "Pause replay" : "Play replay"}
-          disabled={!ready}
-          onClick={togglePlayback}
-          size="icon"
-          variant="outline"
-        >
-          {playing ? <Pause /> : <Play />}
-        </Button>
-        <Button
-          aria-label="Restart replay"
-          disabled={!ready}
-          onClick={() => seek(0)}
-          size="icon"
-          variant="ghost"
-        >
-          <RotateCcw />
-        </Button>
-        <span className="w-20 text-[9px] text-muted-foreground tabular-nums">
-          {formatPosition(currentTime)} / {formatPosition(duration)}
-        </span>
-        <ReplayTimeline
-          currentTime={currentTime}
-          disabled={!ready}
-          duration={duration}
-          markers={markers}
-          onSeek={seek}
-          startTime={startTime}
-        />
-        <Button
-          disabled={!ready}
-          onClick={cycleSpeed}
-          size="sm"
-          variant="ghost"
-        >
-          {speed}×
-        </Button>
-      </div>
+      <ReplayInspector
+        currentTimestamp={startTime + currentTime}
+        onOpenTrace={onOpenTrace}
+        onSeek={(timestamp) => seek(Math.max(0, timestamp - startTime))}
+        recording={recording}
+        startTime={startTime || prepared.startTime}
+      />
     </div>
   );
 };

@@ -38,6 +38,7 @@ func readServiceLogs(application *automation.LogApplication) http.HandlerFunc {
 			DeploymentID: request.URL.Query().Get("deploymentId"),
 			Contains:     request.URL.Query().Get("contains"), Cursor: request.URL.Query().Get("cursor"),
 			FieldFilters: fieldFilters, Limit: limit,
+			TraceID: request.URL.Query().Get("traceId"), SpanID: request.URL.Query().Get("spanId"),
 		})
 		if writeLogReadError(response, err) {
 			return
