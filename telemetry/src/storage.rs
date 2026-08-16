@@ -970,7 +970,7 @@ impl Store {
             };
             let services = service_filter(&request.service_ids);
             let anchor_filter = request.anchor_service_id.as_deref().map_or_else(
-                || String::new(),
+                String::new,
                 |anchor| {
                     format!(
                         " AND (trace_id, segment_id) IN (SELECT trace_id, segment_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {} AND notEmpty(segment_id))",
