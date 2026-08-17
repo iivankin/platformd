@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 
 	"github.com/iivankin/platformd/internal/bootstrap"
 	"github.com/iivankin/platformd/internal/daemon"
@@ -25,6 +26,11 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	case "init":
 		return runInit(ctx, args[1:], stdout, stderr)
 	case "__daemon":
+		// Keep the main OS thread (m0) permanently owned by this goroutine so
+		// LockOSThread+setns/unshare workers (portproxy, podman netns.NewNS, CNI)
+		// never land on m0. Go will not kill m0; a leaked netns there permanently
+		// breaks /proc/net and host metrics.
+		runtime.LockOSThread()
 		if err := daemon.Run(ctx); err != nil {
 			_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
 			return 1

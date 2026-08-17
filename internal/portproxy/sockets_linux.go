@@ -33,36 +33,39 @@ func inNetworkNamespace[T any](pid int, operation func() (T, error)) (T, error) 
 	go func() {
 		defer func() { <-namespaceSocketWorkers }()
 		runtime.LockOSThread()
-		current, err := netns.Get()
+		// Always restore to pid 1 (host netns for this daemon). Capturing "current"
+		// is unsafe if this OS thread was already polluted, and restoring must not
+		// depend on /proc/self/ns/net (thread-group leader view).
+		host, err := netns.GetFromPid(1)
 		if err != nil {
 			runtime.UnlockOSThread()
-			results <- namespaceResult[T]{err: fmt.Errorf("open platformd network namespace: %w", err)}
+			results <- namespaceResult[T]{err: fmt.Errorf("open host network namespace: %w", err)}
 			return
 		}
 		target, err := netns.GetFromPid(pid)
 		if err != nil {
-			_ = current.Close()
+			_ = host.Close()
 			runtime.UnlockOSThread()
 			results <- namespaceResult[T]{err: fmt.Errorf("open process %d network namespace: %w", pid, err)}
 			return
 		}
 		if err := netns.Set(target); err != nil {
 			_ = target.Close()
-			_ = current.Close()
+			_ = host.Close()
 			runtime.UnlockOSThread()
 			results <- namespaceResult[T]{err: fmt.Errorf("enter process %d network namespace: %w", pid, err)}
 			return
 		}
 		value, operationErr := operation()
-		restoreErr := netns.Set(current)
+		restoreErr := netns.Set(host)
 		_ = target.Close()
-		_ = current.Close()
+		_ = host.Close()
 		if restoreErr == nil {
 			runtime.UnlockOSThread()
 		} // A thread that cannot be restored must die with this goroutine.
 		if err := errors.Join(operationErr, restoreErr); err != nil {
 			if restoreErr != nil {
-				err = fmt.Errorf("network namespace operation failed; restore platformd namespace: %w", err)
+				err = fmt.Errorf("network namespace operation failed; restore host namespace: %w", err)
 			}
 			results <- namespaceResult[T]{err: err}
 			return

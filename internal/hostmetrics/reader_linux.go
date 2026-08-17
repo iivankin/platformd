@@ -16,9 +16,13 @@ import (
 const (
 	procStat       = "/proc/stat"
 	procMemoryInfo = "/proc/meminfo"
-	procNetDev     = "/proc/net/dev"
-	procIPv4Routes = "/proc/net/route"
-	procIPv6Routes = "/proc/net/ipv6_route"
+	// Network counters and routes must come from the host network namespace.
+	// /proc/net/* follows the thread-group leader; after a leaked setns/unshare on
+	// the main OS thread that view can be an empty container ns (only lo) while
+	// worker threads remain on the host. pid 1 is the host namespace for this daemon.
+	procNetDev     = "/proc/1/net/dev"
+	procIPv4Routes = "/proc/1/net/route"
+	procIPv6Routes = "/proc/1/net/ipv6_route"
 )
 
 type productionReader struct {
