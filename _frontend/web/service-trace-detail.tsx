@@ -1255,7 +1255,7 @@ const RelatedTraceSegments = ({
     <section className="border-b border-border">
       <header className="flex items-center justify-between gap-3 px-4 py-2 lg:px-6">
         <p className="text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
-          Related transactions
+          Transactions in this trace
         </p>
         <span className="text-[8px] text-muted-foreground tabular-nums">
           {detail.relatedSegments.length.toLocaleString()}

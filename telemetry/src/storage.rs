@@ -181,6 +181,9 @@ pub(crate) struct LogPage {
 #[serde(rename_all(serialize = "camelCase"))]
 pub(crate) struct TraceSummary {
     pub trace_id: String,
+    // ClickHouse SELECT aliases collide with WHERE column names if both are
+    // `segment_id`; the query emits primary_segment_id instead.
+    #[serde(alias = "primary_segment_id")]
     pub segment_id: String,
     #[serde(alias = "root_service_id")]
     pub service_id: String,
@@ -969,11 +972,14 @@ impl Store {
                 format!(" HAVING {}", having_clauses.join(" AND "))
             };
             let services = service_filter(&request.service_ids);
+            // Product traces are OTEL-shaped: one list row per distributed trace_id.
+            // Sentry transactions stay as segment_id within that trace; primary segment
+            // is the earliest root for deep links / summary naming.
             let anchor_filter = request.anchor_service_id.as_deref().map_or_else(
                 String::new,
                 |anchor| {
                     format!(
-                        " AND (trace_id, segment_id) IN (SELECT trace_id, segment_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {} AND notEmpty(segment_id))",
+                        " AND trace_id IN (SELECT DISTINCT trace_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {} AND notEmpty(segment_id))",
                         chdb_string(anchor)
                     )
                 },
@@ -981,18 +987,19 @@ impl Store {
             let search_filter =
                 trace_search_filter(&request.service_ids, parsed_search.text.as_deref());
             let order = match request.order {
-                TraceSummaryOrder::Latest => {
-                    "started_at_unix_nano DESC, trace_id DESC, segment_id DESC"
-                }
+                TraceSummaryOrder::Latest => "started_at_unix_nano DESC, trace_id DESC",
                 TraceSummaryOrder::Slowest => {
-                    "duration_nano DESC, started_at_unix_nano DESC, trace_id DESC, segment_id DESC"
+                    "duration_nano DESC, started_at_unix_nano DESC, trace_id DESC"
                 }
                 TraceSummaryOrder::Spans => {
-                    "span_count DESC, started_at_unix_nano DESC, trace_id DESC, segment_id DESC"
+                    "span_count DESC, started_at_unix_nano DESC, trace_id DESC"
                 }
             };
             let query = format!(
-                "SELECT trace_id, segment_id, \
+                "SELECT trace_id, \
+                 if(empty(argMinIf(segment_id, start_time_unix_nano, is_segment)), \
+                    argMin(segment_id, start_time_unix_nano), \
+                    argMinIf(segment_id, start_time_unix_nano, is_segment)) AS primary_segment_id, \
                  if(empty(argMinIf(service_id, start_time_unix_nano, is_segment)), \
                     argMin(service_id, start_time_unix_nano), \
                     argMinIf(service_id, start_time_unix_nano, is_segment)) AS root_service_id, \
@@ -1034,7 +1041,7 @@ impl Store {
                  countIf(ai_kind = 'tool') AS ai_tool_call_count \
                  FROM {ANALYTICS_DATABASE}.spans FINAL \
                  WHERE {services} AND notEmpty(segment_id){anchor_filter}{search_filter} \
-                 GROUP BY trace_id, segment_id{having} ORDER BY {order} LIMIT {limit} OFFSET {offset}",
+                 GROUP BY trace_id{having} ORDER BY {order} LIMIT {limit} OFFSET {offset}",
                 limit = request.limit,
                 offset = request.offset,
             );
@@ -1082,7 +1089,7 @@ impl Store {
                 let segment_query = format!(
                     "SELECT segment_id FROM {ANALYTICS_DATABASE}.spans FINAL \
                      WHERE {anchor} AND trace_id = {} AND notEmpty(segment_id) \
-                     ORDER BY is_segment DESC, start_time_unix_nano DESC LIMIT 1",
+                     ORDER BY is_segment DESC, start_time_unix_nano ASC, span_id ASC LIMIT 1",
                     chdb_string(&trace_id)
                 );
                 store.with_analytics(|analytics| {
@@ -1107,6 +1114,8 @@ impl Store {
                         .ok_or(Error::NotFound)
                 })?
             };
+            // OTEL-first detail: every Sentry/OTLP segment that shares this
+            // distributed trace_id is loaded so parent_span_id forms one waterfall.
             let query = format!(
                 "SELECT service_id, trace_id, segment_id, is_segment, span_id, parent_span_id, trace_state, name, kind, \
                  start_time_unix_nano, end_time_unix_nano, duration_nano, status_code, \
@@ -1115,10 +1124,9 @@ impl Store {
                  ai_output_tokens, ai_cache_read_tokens, ai_cache_write_tokens, ai_reasoning_tokens, \
                  ai_cost_usd, ai_ttft_seconds, ai_tokens_per_second \
                  FROM {ANALYTICS_DATABASE}.spans FINAL \
-                 WHERE {services} AND trace_id = {} AND segment_id = {} AND notEmpty(segment_id) \
+                 WHERE {services} AND trace_id = {} AND notEmpty(segment_id) \
                  ORDER BY start_time_unix_nano, span_id",
-                chdb_string(&trace_id),
-                chdb_string(&segment_id)
+                chdb_string(&trace_id)
             );
             store.with_analytics(|analytics| {
                 let output = analytics
@@ -4077,17 +4085,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn trace_list_and_detail_are_scoped_to_transaction_segments() {
+    async fn sentry_transactions_sharing_a_trace_id_merge_like_otlp() {
         let volume = TempDir::new().unwrap();
         let store = Store::open(volume.path().to_owned()).await.unwrap();
         let started = now_unix_nanos();
         let trace_id = "0123456789abcdef0123456789abcdef";
-        let span = |segment_id: &str, offset: u64| {
+        let span = |segment_id: &str, parent: &str, name: &str, offset: u64| {
             json!({
                 "service_id": "service-1", "trace_id": trace_id,
-                "span_id": segment_id, "parent_span_id": "remoteparent0000",
+                "span_id": segment_id, "parent_span_id": parent,
                 "segment_id": segment_id, "is_segment": true, "trace_state": "",
-                "name": "GET /checkout", "kind": 2,
+                "name": name, "kind": 2,
                 "start_time_unix_nano": started + offset,
                 "end_time_unix_nano": started + offset + 1_000_000_000,
                 "duration_nano": 1_000_000_000, "status_code": 1,
@@ -4100,8 +4108,13 @@ mod tests {
             .ingest_signal_rows(
                 SignalTable::Spans,
                 vec![
-                    span("1111111111111111", 0),
-                    span("2222222222222222", 86_400_000_000_000),
+                    span("1111111111111111", "", "GET /checkout", 0),
+                    span(
+                        "2222222222222222",
+                        "1111111111111111",
+                        "POST /api/pay",
+                        500_000_000,
+                    ),
                 ],
             )
             .await
@@ -4121,12 +4134,12 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(summaries.len(), 2);
-        assert!(
-            summaries
-                .iter()
-                .all(|summary| summary.duration_nano == 1_000_000_000)
-        );
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].trace_id, trace_id);
+        assert_eq!(summaries[0].segment_id, "1111111111111111");
+        assert_eq!(summaries[0].name, "GET /checkout");
+        assert_eq!(summaries[0].span_count, 2);
+        assert_eq!(summaries[0].duration_nano, 1_500_000_000);
 
         let detail = store
             .trace(
@@ -4138,9 +4151,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(detail.segment_id, "1111111111111111");
-        assert_eq!(detail.spans.len(), 1);
+        assert_eq!(detail.spans.len(), 2);
         assert_eq!(detail.related_segments.len(), 1);
         assert_eq!(detail.related_segments[0].segment_id, "2222222222222222");
+        assert_eq!(detail.related_segments[0].name, "POST /api/pay");
     }
 
     #[tokio::test]

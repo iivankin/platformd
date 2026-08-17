@@ -118,13 +118,11 @@ export const TelemetryTraces = ({
     timeRange,
     timeTo,
     trace: selectedTrace,
-    traceSegment: selectedSegment,
     traceQuery: query,
     traceSort: sort,
     traceStatus: status,
   } = traceState;
   const traceID = selectedTrace ?? "";
-  const segmentID = selectedSegment ?? "";
   const deferredQuery = useDeferredValue(query);
   const [traces, setTraces] = useState<ServiceTraceSummary[]>([]);
   const [detail, setDetail] = useState<ServiceTraceDetail>();
@@ -196,13 +194,13 @@ export const TelemetryTraces = ({
       setDetailLoading(true);
       setDetailError(undefined);
       try {
+        // OTEL-first: detail always returns every segment for this trace_id.
         setDetail(
           await fetchTelemetryTrace(
             scope,
             traceID,
             controller.signal,
-            globalThis.fetch,
-            segmentID || undefined
+            globalThis.fetch
           )
         );
         setDetailError(undefined);
@@ -228,7 +226,7 @@ export const TelemetryTraces = ({
     };
     void load();
     return () => controller.abort();
-  }, [scope, segmentID, traceID]);
+  }, [scope, traceID]);
 
   const closeTrace = () => {
     void setTraceState(
@@ -245,7 +243,7 @@ export const TelemetryTraces = ({
     () =>
       traces.map((trace) => ({
         error: trace.errorSpanCount > 0,
-        id: `${trace.traceId}:${trace.segmentId}`,
+        id: trace.traceId,
         timestamp: Number(integer(trace.startedAtUnixNano) / 1_000_000n),
       })),
     [traces]
@@ -264,18 +262,14 @@ export const TelemetryTraces = ({
   };
 
   if (traceID) {
-    const currentDetail =
-      detail?.traceId === traceID &&
-      (!segmentID || detail.segmentId === segmentID)
-        ? detail
-        : undefined;
+    const currentDetail = detail?.traceId === traceID ? detail : undefined;
     const currentDetailError =
       detailError?.traceID === traceID ? detailError.message : "";
     if (currentDetail) {
       return (
         <ServiceTraceDetailView
           detail={currentDetail}
-          key={`${currentDetail.traceId}:${currentDetail.segmentId}`}
+          key={currentDetail.traceId}
           onBack={closeTrace}
           onOpenError={onOpenError}
           onOpenLogs={onOpenLogs}
@@ -449,10 +443,10 @@ export const TelemetryTraces = ({
             </thead>
             <tbody>
               {traces.map((trace) => {
-                const identity = `${trace.traceId}:${trace.segmentId}`;
+                const identity = trace.traceId;
                 const open = () =>
                   void setTraceState(
-                    { trace: trace.traceId, traceSegment: trace.segmentId },
+                    { trace: trace.traceId, traceSegment: null },
                     { history: "push" }
                   );
                 return (
