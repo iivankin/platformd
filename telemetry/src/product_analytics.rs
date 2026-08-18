@@ -213,10 +213,10 @@ impl Store {
         tracker_id: &str,
         query: ProductAnalyticsQuery,
     ) -> Result<Value> {
-        if let (Some(from), Some(to)) = (query.from, query.to) {
-            if to <= from {
-                return Err(Error::InvalidRequest("analytics range is inverted".into()));
-            }
+        if let (Some(from), Some(to)) = (query.from, query.to)
+            && to <= from
+        {
+            return Err(Error::InvalidRequest("analytics range is inverted".into()));
         }
         match query.report.as_str() {
             "overview" => self.overview(tracker_id, &query),
@@ -640,10 +640,9 @@ fn event_where(
         .event_type
         .as_deref()
         .filter(|value| !value.is_empty())
+        && query.report != "heatmap"
     {
-        if query.report != "heatmap" {
-            clauses.push(format!("event_name = {}", chdb_string(event_type)));
-        }
+        clauses.push(format!("event_name = {}", chdb_string(event_type)));
     }
     clauses.extend(event_filters(tracker_id, query)?);
     Ok(clauses.join(" AND "))
