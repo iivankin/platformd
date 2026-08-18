@@ -41,6 +41,7 @@ type handlerConfig struct {
 	projectWebhooks         *projectwebhook.Application
 	services                ServiceRepository
 	serviceTelemetry        ServiceTelemetryRepository
+	analytics               AnalyticsRepository
 	serviceEnvironment      ServiceEnvironmentResolver
 	volumes                 *volume.Application
 	domains                 DomainRepository
@@ -320,6 +321,8 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.serviceTelemetry != nil {
 		registerServiceTelemetryRoutes(mux, config)
+	} else if config.analytics != nil {
+		registerAnalyticsRoutes(mux, config.analytics)
 	}
 	if config.volumes != nil {
 		registerVolumeRoutes(mux, config.volumes)

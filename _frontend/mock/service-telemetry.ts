@@ -64,6 +64,19 @@ export const ensureServiceTelemetryMock = (
     internalHostname,
     internalOtlpEndpoint,
     serviceId: service.id,
+    trackedBy: (state.analyticsTrackers[service.projectId] ?? [])
+      .filter((tracker) =>
+        (state.domains[service.id] ?? []).some(
+          (domain) =>
+            domain.hostname === tracker.rootDomain ||
+            domain.hostname.endsWith(`.${tracker.rootDomain}`)
+        )
+      )
+      .map((tracker) => ({
+        id: tracker.id,
+        name: tracker.name,
+        rootDomain: tracker.rootDomain,
+      })),
     updatedAt: service.updatedAt,
     webhooks: structuredClone(errors.service.webhooks),
   };
@@ -596,6 +609,30 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
               key: "gen_ai.agent.name",
               value: { stringValue: "support-agent" },
             },
+            {
+              key: "gen_ai.system_instructions",
+              value: {
+                stringValue: JSON.stringify([
+                  {
+                    content:
+                      "You are the storefront support agent. Look up invoices before answering payment questions.",
+                    type: "text",
+                  },
+                ]),
+              },
+            },
+            {
+              key: "gen_ai.request.temperature",
+              value: { doubleValue: 0.2 },
+            },
+            {
+              key: "gen_ai.request.max_tokens",
+              value: { intValue: 800 },
+            },
+            {
+              key: "ai.prompt.toolChoice",
+              value: { stringValue: '{"type":"auto"}' },
+            },
           ],
         },
         spanId: "8f3a0f34b17c9aa1",
@@ -692,6 +729,48 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
                   },
                 ]),
               },
+            },
+            {
+              key: "gen_ai.system_instructions",
+              value: {
+                stringValue: JSON.stringify([
+                  {
+                    content:
+                      "You are the storefront support agent. Look up invoices before answering payment questions.",
+                    type: "text",
+                  },
+                ]),
+              },
+            },
+            {
+              key: "gen_ai.tool.definitions",
+              value: {
+                stringValue: JSON.stringify([
+                  {
+                    description: "Look up an invoice by ID",
+                    name: "lookup_invoice",
+                    parameters: {
+                      properties: {
+                        invoiceId: {
+                          description: "Invoice identifier",
+                          type: "string",
+                        },
+                      },
+                      required: ["invoiceId"],
+                      type: "object",
+                    },
+                    type: "function",
+                  },
+                ]),
+              },
+            },
+            {
+              key: "gen_ai.request.temperature",
+              value: { doubleValue: 0.2 },
+            },
+            {
+              key: "gen_ai.request.max_tokens",
+              value: { intValue: 800 },
             },
             {
               key: "gen_ai.output.messages",

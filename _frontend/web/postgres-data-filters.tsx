@@ -2,6 +2,7 @@ import { ListFilter, Plus, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { FieldSelect } from "@/field-select";
 import { postgresFilterOperators } from "@/postgres-data-browser-model";
 import type {
   PostgresFilterConnector,
@@ -11,6 +12,19 @@ import type {
 
 const operatorNeedsValue = (operator: PostgresFilterOperator) =>
   operator !== "is null" && operator !== "is not null";
+
+const filterColumnItems = (columns: string[], selected: string) => {
+  let values = columns;
+  if (columns.length === 0) {
+    values = [selected || "__none__"];
+  } else if (selected !== "" && !columns.includes(selected)) {
+    values = [selected, ...columns];
+  }
+  return values.map((column) => ({
+    label: column === "__none__" ? "No columns" : column,
+    value: column,
+  }));
+};
 
 export const PostgresDataFilters = ({
   columns,
@@ -40,52 +54,47 @@ export const PostgresDataFilters = ({
               where
             </span>
           ) : (
-            <select
+            <FieldSelect
               aria-label="Filter connector"
-              className="h-7 w-14 border border-border bg-background px-1.5 text-[9px] outline-none focus:border-ring"
-              onChange={(event) =>
+              className="h-7 w-14 text-[9px]"
+              items={[
+                { label: "and", value: "and" },
+                { label: "or", value: "or" },
+              ]}
+              onValueChange={(next) =>
                 onChange({
                   ...filter,
-                  connector: event.target.value as PostgresFilterConnector,
+                  connector: next as PostgresFilterConnector,
                 })
               }
+              size="sm"
               value={filter.connector}
-            >
-              <option value="and">and</option>
-              <option value="or">or</option>
-            </select>
+            />
           )}
-          <select
+          <FieldSelect
             aria-label="Filter column"
-            className="h-7 w-40 border border-border bg-background px-1.5 text-[9px] outline-none focus:border-ring"
-            onChange={(event) =>
-              onChange({ ...filter, column: event.target.value })
-            }
-            value={filter.column}
-          >
-            {columns.map((column) => (
-              <option key={column} value={column}>
-                {column}
-              </option>
-            ))}
-          </select>
-          <select
+            className="h-7 w-40 text-[9px]"
+            items={filterColumnItems(columns, filter.column)}
+            onValueChange={(next) => onChange({ ...filter, column: next })}
+            size="sm"
+            value={filter.column || (columns[0] ?? "__none__")}
+          />
+          <FieldSelect
             aria-label="Filter operator"
-            className="h-7 w-32 border border-border bg-background px-1.5 text-[9px] outline-none focus:border-ring"
-            onChange={(event) =>
+            className="h-7 w-32 text-[9px]"
+            items={postgresFilterOperators.map((operator) => ({
+              label: operator.label,
+              value: operator.value,
+            }))}
+            onValueChange={(next) =>
               onChange({
                 ...filter,
-                operator: event.target.value as PostgresFilterOperator,
+                operator: next as PostgresFilterOperator,
               })
             }
+            size="sm"
             value={filter.operator}
-          >
-            {postgresFilterOperators.map((operator) => (
-              <option key={operator.value} value={operator.value}>
-                {operator.label}
-              </option>
-            ))}
-          </select>
+          />
           {operatorNeedsValue(filter.operator) ? (
             <Input
               aria-label="Filter value"

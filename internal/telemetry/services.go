@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/iivankin/platformd/internal/analytics"
 	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/sentry"
 	"github.com/iivankin/platformd/internal/state"
@@ -26,13 +27,20 @@ type ServiceRuntime interface {
 }
 
 type ServiceManager struct {
-	process     *Process
-	runtime     ServiceRuntime
-	proxy       *sentry.Proxy
-	credentials *Credentials
-	mu          sync.Mutex
-	hosts       map[string]serviceHostnames
-	gateways    map[string]*serviceGateway
+	process        *Process
+	runtime        ServiceRuntime
+	proxy          *sentry.Proxy
+	credentials    *Credentials
+	analytics      http.Handler
+	mu             sync.Mutex
+	hosts          map[string]serviceHostnames
+	analyticsHosts map[string]analyticsHostname
+	gateways       map[string]*serviceGateway
+}
+
+type analyticsHostname struct {
+	projectID string
+	hostname  string
 }
 
 type serviceHostnames struct {
@@ -80,8 +88,20 @@ func NewServiceManager(
 	}
 	return &ServiceManager{
 		process: process, runtime: runtime, proxy: proxy, credentials: credentials,
-		hosts: make(map[string]serviceHostnames), gateways: make(map[string]*serviceGateway),
+		hosts: make(map[string]serviceHostnames), analyticsHosts: make(map[string]analyticsHostname),
+		gateways: make(map[string]*serviceGateway),
 	}, nil
+}
+
+func (manager *ServiceManager) SetAnalyticsHandler(handler http.Handler) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	manager.analytics = handler
+	for _, gateway := range manager.gateways {
+		gateway.mu.Lock()
+		gateway.analytics = handler
+		gateway.mu.Unlock()
+	}
 }
 
 func (manager *ServiceManager) RotateArtifactToken(ctx context.Context, serviceID string) (string, error) {
@@ -306,7 +326,7 @@ func (manager *ServiceManager) Ensure(ctx context.Context, service state.Service
 			_ = manager.unpublish(service.ProjectID, hostnames)
 			return err
 		}
-		created, err := startServiceGateway(address, manager.proxy)
+		created, err := startServiceGateway(address, manager.proxy, manager.analytics)
 		if err != nil {
 			manager.mu.Unlock()
 			_ = manager.unpublish(service.ProjectID, hostnames)
@@ -349,17 +369,20 @@ func (manager *ServiceManager) Forget(service state.ServiceDesired) error {
 			break
 		}
 	}
-	if !projectHasServices {
-		delete(manager.gateways, hostnames.projectID)
-	}
 	if gateway != nil {
 		gateway.DeleteSentry(hostnames.sentry)
 		gateway.DeleteOTLP(hostnames.otlp)
 	}
+	projectHasAnalytics := false
+	for _, current := range manager.analyticsHosts {
+		if current.projectID == hostnames.projectID {
+			projectHasAnalytics = true
+			break
+		}
+	}
 	var closeErr error
-	if gateway != nil && !projectHasServices {
-		// Keep Ensure blocked until both listeners release their ports. Otherwise a
-		// concurrent create in the same project can race the last-service cleanup.
+	if gateway != nil && !projectHasServices && !projectHasAnalytics {
+		delete(manager.gateways, hostnames.projectID)
 		closeErr = gateway.Close()
 	}
 	manager.mu.Unlock()
@@ -415,6 +438,90 @@ func InternalSentryHostname(service state.ServiceDesired) string {
 
 func InternalOTLPHostname(service state.ServiceDesired) string {
 	return "otel-" + service.Name + "." + service.ProjectName + ".internal"
+}
+
+func InternalAnalyticsHostname(projectName, slug string) string {
+	return analytics.InternalAnalyticsHostname(projectName, slug)
+}
+
+func (manager *ServiceManager) EnsureAnalytics(projectID, projectName, slug, trackerID string) error {
+	if projectID == "" || projectName == "" || slug == "" || trackerID == "" {
+		return errors.New("analytics telemetry identity is incomplete")
+	}
+	hostname := InternalAnalyticsHostname(projectName, slug)
+	if err := manager.runtime.PublishServiceTelemetry(projectID, hostname); err != nil {
+		return err
+	}
+	manager.mu.Lock()
+	gateway := manager.gateways[projectID]
+	if gateway == nil {
+		address, err := manager.runtime.ServiceTelemetryGateway(projectID)
+		if err != nil {
+			manager.mu.Unlock()
+			_ = manager.runtime.UnpublishServiceTelemetry(projectID, hostname)
+			return err
+		}
+		created, err := startServiceGateway(address, manager.proxy, manager.analytics)
+		if err != nil {
+			manager.mu.Unlock()
+			_ = manager.runtime.UnpublishServiceTelemetry(projectID, hostname)
+			return fmt.Errorf("start service Sentry gateway: %w", err)
+		}
+		manager.gateways[projectID] = created
+		gateway = created
+	}
+	var previous analyticsHostname
+	if current, exists := manager.analyticsHosts[trackerID]; exists && current.hostname != hostname {
+		previous = current
+		gateway.DeleteAnalytics(current.hostname)
+	}
+	gateway.SetAnalytics(hostname, trackerID)
+	manager.analyticsHosts[trackerID] = analyticsHostname{projectID: projectID, hostname: hostname}
+	manager.mu.Unlock()
+	if previous.hostname != "" {
+		_ = manager.runtime.UnpublishServiceTelemetry(previous.projectID, previous.hostname)
+	}
+	return nil
+}
+
+func (manager *ServiceManager) ForgetAnalytics(projectID, trackerID string) error {
+	manager.mu.Lock()
+	current, exists := manager.analyticsHosts[trackerID]
+	if exists {
+		delete(manager.analyticsHosts, trackerID)
+	}
+	if current.projectID == "" {
+		current.projectID = projectID
+	}
+	gateway := manager.gateways[current.projectID]
+	if gateway != nil && current.hostname != "" {
+		gateway.DeleteAnalytics(current.hostname)
+	}
+	projectHasServices := false
+	for _, hostnames := range manager.hosts {
+		if hostnames.projectID == current.projectID {
+			projectHasServices = true
+			break
+		}
+	}
+	projectHasAnalytics := false
+	for _, hostnames := range manager.analyticsHosts {
+		if hostnames.projectID == current.projectID {
+			projectHasAnalytics = true
+			break
+		}
+	}
+	var closeErr error
+	if gateway != nil && !projectHasServices && !projectHasAnalytics {
+		delete(manager.gateways, current.projectID)
+		closeErr = gateway.Close()
+	}
+	manager.mu.Unlock()
+	var unpublish error
+	if current.hostname != "" {
+		unpublish = manager.runtime.UnpublishServiceTelemetry(current.projectID, current.hostname)
+	}
+	return errors.Join(unpublish, closeErr)
 }
 
 func InternalDSN(service state.ServiceDesired) string {

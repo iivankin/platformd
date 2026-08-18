@@ -362,6 +362,15 @@ const serviceTelemetrySchema = z.object({
   publicDsn: z.string().url().optional(),
   publicHostname: z.string().min(1).optional(),
   serviceId: z.string().min(1),
+  trackedBy: z
+    .array(
+      z.object({
+        id: z.string().min(1),
+        name: z.string().min(1),
+        rootDomain: z.string().min(1),
+      })
+    )
+    .optional(),
   updatedAt: z.number().int().positive(),
   webhooks: z.array(
     z.object({
@@ -4911,4 +4920,590 @@ export const reconnectCloudflareMesh = async (
     throw await apiError(response, "Cloudflare Mesh connection failed");
   }
   return cloudflareMeshSettingsSchema.parse(await response.json());
+};
+
+const analyticsTrackerSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  internalHostname: z.string().min(1),
+  internalOfrepUrl: z.string().min(1),
+  matchingHostnames: z.array(z.string()),
+  mode: z.enum(["cookieless", "opt-out", "opt-in"]),
+  name: z.string().min(1),
+  projectId: z.string().min(1),
+  rootDomain: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+});
+
+export type AnalyticsTracker = z.infer<typeof analyticsTrackerSchema>;
+export type AnalyticsMode = AnalyticsTracker["mode"];
+
+const analyticsGoalSchema = z.object({
+  actionType: z.enum(["path", "event"]),
+  actionValue: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  hostname: z.string().optional(),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  trackerId: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+});
+
+export type AnalyticsGoal = z.infer<typeof analyticsGoalSchema>;
+
+const analyticsFunnelStepSchema = z.object({
+  hostname: z.string().optional(),
+  type: z.enum(["path", "event"]),
+  value: z.string().min(1),
+});
+
+const analyticsFunnelSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  steps: z.array(analyticsFunnelStepSchema),
+  trackerId: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+  windowUnit: z.enum(["minute", "hour", "day"]),
+  windowValue: z.number().int().positive(),
+});
+
+export type AnalyticsFunnel = z.infer<typeof analyticsFunnelSchema>;
+export type AnalyticsFunnelStep = z.infer<typeof analyticsFunnelStepSchema>;
+
+const analyticsFlagSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  description: z.string().optional(),
+  enabled: z.boolean(),
+  id: z.string().min(1),
+  key: z.string().min(1),
+  payload: z.unknown(),
+  targeting: z.unknown(),
+  trackerId: z.string().min(1),
+  type: z.enum(["boolean", "multivariate"]),
+  updatedAt: z.number().int().positive(),
+  variants: z.array(
+    z.object({
+      key: z.string().min(1),
+      percentage: z.number(),
+    })
+  ),
+});
+
+export type AnalyticsFlag = z.infer<typeof analyticsFlagSchema>;
+
+const analyticsExperimentSchema = z.object({
+  controlVariant: z.string().min(1),
+  createdAt: z.number().int().nonnegative(),
+  endedAt: z.number().int().nonnegative().optional(),
+  flagId: z.string().min(1),
+  id: z.string().min(1),
+  metric: z.object({
+    eventName: z.string().optional(),
+    goalId: z.string().optional(),
+  }),
+  startedAt: z.number().int().nonnegative(),
+  trackerId: z.string().min(1),
+  updatedAt: z.number().int().positive(),
+  windowUnit: z.enum(["minute", "hour", "day"]),
+  windowValue: z.number().int().positive(),
+});
+
+export type AnalyticsExperiment = z.infer<typeof analyticsExperimentSchema>;
+
+const analyticsChartSchema = z.object({
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  legend: z.string(),
+  sql: z.string(),
+  title: z.string(),
+  trackerId: z.string().min(1),
+  unit: z.string().optional(),
+  updatedAt: z.number().int().positive(),
+  visualization: z.enum(["line", "area", "bar", "value", "table"]),
+});
+
+export type AnalyticsChart = z.infer<typeof analyticsChartSchema>;
+
+export interface AnalyticsFilter {
+  dimension: string;
+  operator: "is" | "is_not" | "contains" | "does_not_contain";
+  value: string | string[];
+}
+
+export interface AnalyticsQuery {
+  dimension?: string;
+  eventType?: string;
+  experimentId?: string;
+  filters?: AnalyticsFilter[];
+  from?: number;
+  funnelId?: string;
+  pathname?: string;
+  report: string;
+  sql?: string;
+  steps?: AnalyticsFunnelStep[];
+  to?: number;
+  viewport?: number;
+  windowSeconds?: number;
+}
+
+const analyticsBase = (projectID: string, trackerID?: string) =>
+  `/api/v1/projects/${encodeURIComponent(projectID)}/telemetry/analytics/trackers${
+    trackerID ? `/${encodeURIComponent(trackerID)}` : ""
+  }`;
+
+const readAnalyticsJSON = async <T>(
+  response: Response,
+  schema: z.ZodType<T>,
+  fallback: string
+): Promise<T> => {
+  if (!response.ok) {
+    throw await apiError(response, fallback);
+  }
+  return schema.parse(await response.json());
+};
+
+export const fetchAnalyticsTrackers = async (
+  projectID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsTracker[]> => {
+  const response = await fetcher(analyticsBase(projectID), {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  return readAnalyticsJSON(
+    response,
+    z.array(analyticsTrackerSchema),
+    "analytics trackers request failed"
+  );
+};
+
+export const createAnalyticsTracker = async (
+  projectID: string,
+  input: { mode?: AnalyticsMode; name: string; rootDomain: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsTracker> => {
+  const response = await fetcher(analyticsBase(projectID), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  return readAnalyticsJSON(
+    response,
+    analyticsTrackerSchema,
+    "create analytics tracker failed"
+  );
+};
+
+export const updateAnalyticsTracker = async (
+  projectID: string,
+  trackerID: string,
+  input: {
+    expectedUpdatedAt: number;
+    mode: AnalyticsMode;
+    name: string;
+    rootDomain: string;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsTracker> => {
+  const response = await fetcher(analyticsBase(projectID, trackerID), {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  return readAnalyticsJSON(
+    response,
+    analyticsTrackerSchema,
+    "update analytics tracker failed"
+  );
+};
+
+export const deleteAnalyticsTracker = async (
+  projectID: string,
+  trackerID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(analyticsBase(projectID, trackerID), {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "delete analytics tracker failed");
+  }
+};
+
+export const queryAnalytics = async (
+  projectID: string,
+  trackerID: string,
+  query: AnalyticsQuery,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<unknown> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/query`,
+    {
+      body: JSON.stringify(query),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+      signal,
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "analytics query failed");
+  }
+  return response.json();
+};
+
+export const fetchAnalyticsGoals = async (
+  projectID: string,
+  trackerID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsGoal[]> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/goals`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    z.array(analyticsGoalSchema),
+    "analytics goals request failed"
+  );
+};
+
+export const createAnalyticsGoal = async (
+  projectID: string,
+  trackerID: string,
+  input: Omit<AnalyticsGoal, "createdAt" | "id" | "trackerId" | "updatedAt">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsGoal> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/goals`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsGoalSchema,
+    "create analytics goal failed"
+  );
+};
+
+export const deleteAnalyticsGoal = async (
+  projectID: string,
+  trackerID: string,
+  goalID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/goals/${encodeURIComponent(goalID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "delete analytics goal failed");
+  }
+};
+
+export const fetchAnalyticsFunnels = async (
+  projectID: string,
+  trackerID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsFunnel[]> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/funnels`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  return readAnalyticsJSON(
+    response,
+    z.array(analyticsFunnelSchema),
+    "analytics funnels request failed"
+  );
+};
+
+export const createAnalyticsFunnel = async (
+  projectID: string,
+  trackerID: string,
+  input: Omit<AnalyticsFunnel, "createdAt" | "id" | "trackerId" | "updatedAt">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsFunnel> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/funnels`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsFunnelSchema,
+    "create analytics funnel failed"
+  );
+};
+
+export const deleteAnalyticsFunnel = async (
+  projectID: string,
+  trackerID: string,
+  funnelID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/funnels/${encodeURIComponent(funnelID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "delete analytics funnel failed");
+  }
+};
+
+export const fetchAnalyticsFlags = async (
+  projectID: string,
+  trackerID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsFlag[]> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/flags`,
+    {
+      headers: { Accept: "application/json" },
+      signal,
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    z.array(analyticsFlagSchema),
+    "analytics flags request failed"
+  );
+};
+
+export const createAnalyticsFlag = async (
+  projectID: string,
+  trackerID: string,
+  input: Omit<AnalyticsFlag, "createdAt" | "id" | "trackerId" | "updatedAt">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsFlag> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/flags`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsFlagSchema,
+    "create analytics flag failed"
+  );
+};
+
+export const updateAnalyticsFlag = async (
+  projectID: string,
+  trackerID: string,
+  flagID: string,
+  input: Omit<AnalyticsFlag, "createdAt" | "id" | "trackerId" | "updatedAt"> & {
+    expectedUpdatedAt: number;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsFlag> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/flags/${encodeURIComponent(flagID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsFlagSchema,
+    "update analytics flag failed"
+  );
+};
+
+export const deleteAnalyticsFlag = async (
+  projectID: string,
+  trackerID: string,
+  flagID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/flags/${encodeURIComponent(flagID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "delete analytics flag failed");
+  }
+};
+
+export const fetchAnalyticsExperiments = async (
+  projectID: string,
+  trackerID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsExperiment[]> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/experiments`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  return readAnalyticsJSON(
+    response,
+    z.array(analyticsExperimentSchema),
+    "analytics experiments request failed"
+  );
+};
+
+export const createAnalyticsExperiment = async (
+  projectID: string,
+  trackerID: string,
+  input: Omit<
+    AnalyticsExperiment,
+    "createdAt" | "endedAt" | "id" | "startedAt" | "trackerId" | "updatedAt"
+  >,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsExperiment> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/experiments`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsExperimentSchema,
+    "create analytics experiment failed"
+  );
+};
+
+export const stopAnalyticsExperiment = async (
+  projectID: string,
+  trackerID: string,
+  experimentID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsExperiment> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/experiments/${encodeURIComponent(experimentID)}/stop`,
+    {
+      body: JSON.stringify({ expectedUpdatedAt }),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsExperimentSchema,
+    "stop analytics experiment failed"
+  );
+};
+
+export const shipAnalyticsExperiment = async (
+  projectID: string,
+  trackerID: string,
+  experimentID: string,
+  input: { expectedUpdatedAt: number; variant: string },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsExperiment> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/experiments/${encodeURIComponent(experimentID)}/ship`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsExperimentSchema,
+    "ship analytics experiment failed"
+  );
+};
+
+export const fetchAnalyticsCharts = async (
+  projectID: string,
+  trackerID: string,
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsChart[]> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/charts`,
+    { headers: { Accept: "application/json" }, signal }
+  );
+  return readAnalyticsJSON(
+    response,
+    z.array(analyticsChartSchema),
+    "analytics charts request failed"
+  );
+};
+
+export const createAnalyticsChart = async (
+  projectID: string,
+  trackerID: string,
+  input: Omit<AnalyticsChart, "createdAt" | "id" | "trackerId" | "updatedAt">,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AnalyticsChart> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/charts`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    }
+  );
+  return readAnalyticsJSON(
+    response,
+    analyticsChartSchema,
+    "create analytics chart failed"
+  );
+};
+
+export const deleteAnalyticsChart = async (
+  projectID: string,
+  trackerID: string,
+  chartID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${analyticsBase(projectID, trackerID)}/charts/${encodeURIComponent(chartID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "delete analytics chart failed");
+  }
 };

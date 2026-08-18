@@ -1,4 +1,10 @@
 import type {
+  AnalyticsChart,
+  AnalyticsExperiment,
+  AnalyticsFlag,
+  AnalyticsFunnel,
+  AnalyticsGoal,
+  AnalyticsTracker,
   APIToken,
   AuditEvent,
   BackupGeneration,
@@ -80,6 +86,12 @@ export interface MockState {
   settings: InstallationSettings;
   tokens: APIToken[];
   volumes: Record<string, Volume[]>;
+  analyticsTrackers: Record<string, AnalyticsTracker[]>;
+  analyticsGoals: Record<string, AnalyticsGoal[]>;
+  analyticsFunnels: Record<string, AnalyticsFunnel[]>;
+  analyticsFlags: Record<string, AnalyticsFlag[]>;
+  analyticsExperiments: Record<string, AnalyticsExperiment[]>;
+  analyticsCharts: Record<string, AnalyticsChart[]>;
 }
 
 const now = Date.UTC(2026, 6, 14, 12, 0, 0);
@@ -276,6 +288,12 @@ const generation = (id: string): BackupGeneration => ({
 });
 
 const makeEmptyState = (scenario: MockScenario): MockState => ({
+  analyticsCharts: {},
+  analyticsExperiments: {},
+  analyticsFlags: {},
+  analyticsFunnels: {},
+  analyticsGoals: {},
+  analyticsTrackers: {},
   auditEvents: [],
   backupControlTargetId: "",
   backupGenerations: {},
@@ -578,6 +596,104 @@ export const createMockState = (scenario: MockScenario): MockState => {
       targetPort: 8080,
     },
   ];
+  state.analyticsTrackers[project.id] = [
+    {
+      createdAt: now - 10 * 86_400_000,
+      id: "tracker-shop",
+      internalHostname: "analytics-shop--mock--local.storefront.internal",
+      internalOfrepUrl:
+        "http://analytics-shop--mock--local.storefront.internal:9001",
+      matchingHostnames: ["shop.mock.local"],
+      mode: "opt-out",
+      name: "shop.mock.local",
+      projectId: project.id,
+      rootDomain: "shop.mock.local",
+      updatedAt: now - 10 * 86_400_000,
+    },
+  ];
+  state.analyticsGoals["tracker-shop"] = [
+    {
+      actionType: "path",
+      actionValue: "/checkout",
+      createdAt: now - 8 * 86_400_000,
+      id: "goal-checkout",
+      name: "Checkout",
+      trackerId: "tracker-shop",
+      updatedAt: now - 8 * 86_400_000,
+    },
+    {
+      actionType: "event",
+      actionValue: "signup_completed",
+      createdAt: now - 8 * 86_400_000,
+      id: "goal-signup",
+      name: "Signup",
+      trackerId: "tracker-shop",
+      updatedAt: now - 8 * 86_400_000,
+    },
+  ];
+  state.analyticsFunnels["tracker-shop"] = [
+    {
+      createdAt: now - 7 * 86_400_000,
+      id: "funnel-signup",
+      name: "Signup",
+      steps: [
+        { type: "path", value: "/" },
+        { type: "path", value: "/pricing" },
+        { type: "event", value: "signup_completed" },
+      ],
+      trackerId: "tracker-shop",
+      updatedAt: now - 7 * 86_400_000,
+      windowUnit: "day",
+      windowValue: 7,
+    },
+  ];
+  state.analyticsFlags["tracker-shop"] = [
+    {
+      createdAt: now - 6 * 86_400_000,
+      description: "Pricing page experiment",
+      enabled: true,
+      id: "flag-pricing",
+      key: "pricing-v2",
+      payload: null,
+      targeting: {
+        groups: [
+          {
+            properties: [],
+            rollout_percentage: 50,
+            rollout_steps: [
+              { at: now - 6 * 86_400_000, percentage: 1 },
+              { at: now - 5 * 86_400_000, percentage: 10 },
+              { at: now - 3 * 86_400_000, percentage: 50 },
+              { at: now + 2 * 86_400_000, percentage: 100 },
+            ],
+            variant: null,
+          },
+        ],
+      },
+      trackerId: "tracker-shop",
+      type: "boolean",
+      updatedAt: now - 6 * 86_400_000,
+      variants: [
+        { key: "false", percentage: 0 },
+        { key: "true", percentage: 100 },
+      ],
+    },
+  ];
+  state.analyticsExperiments["tracker-shop"] = [
+    {
+      controlVariant: "false",
+      createdAt: now - 5 * 86_400_000,
+      flagId: "flag-pricing",
+      id: "experiment-pricing",
+      metric: { goalId: "goal-signup" },
+      startedAt: now - 5 * 86_400_000,
+      trackerId: "tracker-shop",
+      updatedAt: now - 5 * 86_400_000,
+      windowUnit: "day",
+      windowValue: 14,
+    },
+  ];
+  state.analyticsCharts["tracker-shop"] = [];
   state.listeners[service.id] = [
     {
       createdAt: now - 10 * 86_400_000,

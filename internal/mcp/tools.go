@@ -230,6 +230,9 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		if handler.telemetry != nil {
 			tools = append(tools, serviceTelemetryAdminTools()...)
 		}
+		if handler.analytics != nil {
+			tools = append(tools, analyticsAdminTools()...)
+		}
 	}
 	annotateTools(tools)
 	writeRPCResult(response, message.ID, map[string]any{"tools": tools})
@@ -249,7 +252,9 @@ func destructiveTool(name string) bool {
 	switch name {
 	case "create_project", "create_service", "create_service_telemetry_webhook", "create_metric_chart",
 		"attach_service_domain", "create_object_store", "create_network_gateway", "run_backup",
-		"create_managed_redis", "create_managed_postgres", "create_service_volume", "create_port_forward":
+		"create_managed_redis", "create_managed_postgres", "create_service_volume", "create_port_forward",
+		"create_analytics_tracker", "create_analytics_goal", "create_analytics_funnel",
+		"create_analytics_flag", "create_analytics_experiment", "create_analytics_chart":
 		return false
 	default:
 		return true
@@ -571,6 +576,18 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.startDatabaseVersionChange(request.Context(), call.Arguments, identity)
+	case "list_analytics_trackers", "get_analytics_tracker", "query_analytics",
+		"create_analytics_tracker", "update_analytics_tracker", "delete_analytics_tracker",
+		"create_analytics_goal", "update_analytics_goal", "delete_analytics_goal",
+		"create_analytics_funnel", "update_analytics_funnel", "delete_analytics_funnel",
+		"create_analytics_flag", "update_analytics_flag", "delete_analytics_flag",
+		"create_analytics_experiment", "stop_analytics_experiment", "ship_analytics_experiment",
+		"create_analytics_chart", "update_analytics_chart", "delete_analytics_chart":
+		if handler.analytics == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.callAnalyticsTool(request.Context(), call.Name, call.Arguments, identity)
 	default:
 		writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
 		return

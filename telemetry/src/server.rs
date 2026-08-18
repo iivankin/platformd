@@ -361,6 +361,14 @@ impl TelemetryServer {
             )
             .route("/internal/metric-scopes/query", post(internal_metric_sql))
             .route(
+                "/internal/analytics/ingest",
+                post(internal_analytics_ingest),
+            )
+            .route(
+                "/internal/analytics/{tracker_id}/query",
+                post(internal_analytics_query),
+            )
+            .route(
                 "/internal/backups/{backup_id}",
                 get(download_internal_backup).delete(delete_internal_backup),
             )
@@ -640,6 +648,38 @@ async fn internal_metric_sql(
     state
         .store
         .metric_sql(request.service_ids, metric_sql_query(request.query)?)
+        .await
+        .map(Json)
+}
+
+async fn internal_analytics_ingest(
+    State(state): State<Arc<ServerState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Json(event): Json<crate::product_analytics::ProductAnalyticsEvent>,
+) -> Result<StatusCode> {
+    require_loopback(peer)?;
+    if event.tracker_id.is_empty() || event.event_name.is_empty() {
+        return Err(Error::InvalidRequest(
+            "analytics event is incomplete".into(),
+        ));
+    }
+    state.store.ingest_product_analytics(event).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn internal_analytics_query(
+    State(state): State<Arc<ServerState>>,
+    Path(tracker_id): Path<String>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Json(query): Json<crate::product_analytics::ProductAnalyticsQuery>,
+) -> Result<Json<Value>> {
+    require_loopback(peer)?;
+    if tracker_id.is_empty() {
+        return Err(Error::InvalidRequest("tracker id is required".into()));
+    }
+    state
+        .store
+        .query_product_analytics(tracker_id, query)
         .await
         .map(Json)
 }

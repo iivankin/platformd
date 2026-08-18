@@ -1,7 +1,7 @@
 import { LoaderCircle } from "lucide-react";
 import { useQueryState, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Navigate, useLocation, useNavigate, useParams } from "react-router";
 
 import { fetchProjectCanvas } from "@/api";
 import type { MetricScope, ProjectCanvas, ScopedIssue } from "@/api";
@@ -14,6 +14,7 @@ import { TelemetryWorkspace } from "@/telemetry-workspace";
 
 export const ProjectTelemetryPage = () => {
   const { projectID = "" } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
   const [canvas, setCanvas] = useState<ProjectCanvas>();
   const [error, setError] = useState("");
@@ -79,6 +80,18 @@ export const ProjectTelemetryPage = () => {
       `/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(issue.serviceId)}/telemetry?${query.toString()}`
     );
   };
+
+  if (new URLSearchParams(location.search).get("telemetry") === "analytics") {
+    const params = new URLSearchParams(location.search);
+    params.delete("telemetry");
+    const suffix = params.toString();
+    return (
+      <Navigate
+        replace
+        to={`/projects/${encodeURIComponent(projectID)}/analytics${suffix ? `?${suffix}` : ""}`}
+      />
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col">

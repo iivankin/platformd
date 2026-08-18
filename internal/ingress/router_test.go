@@ -495,6 +495,70 @@ func TestRouterRejectsExcessiveHeaderCount(t *testing.T) {
 	}
 }
 
+func TestRouterDispatchesReservedAnalyticsPathsBeforeProxy(t *testing.T) {
+	analyticsHits := make(chan string, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("application proxy should not see reserved analytics paths")
+	}))
+	t.Cleanup(backend.Close)
+	host, portText, err := net.SplitHostPort(backend.Listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		AnalyticsHandler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+			analyticsHits <- request.URL.Path
+			response.WriteHeader(http.StatusNoContent)
+		}),
+		Backends: backendStub{backend: deployment.Backend{Address: host, Port: port}, present: true},
+		Traffic:  trafficmetrics.NewRegistry(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: port}})
+
+	script := tlsRequest("app.example.com", "app.example.com")
+	script.URL.Path = "/analytics.js"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, script)
+	if response.Code != http.StatusNoContent || <-analyticsHits != "/analytics.js" {
+		t.Fatalf("analytics.js status = %d", response.Code)
+	}
+
+	event := tlsRequest("app.example.com", "app.example.com")
+	event.Method = http.MethodPost
+	event.URL.Path = "/analytics/e"
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, event)
+	if response.Code != http.StatusNoContent || <-analyticsHits != "/analytics/e" {
+		t.Fatalf("analytics/e status = %d", response.Code)
+	}
+}
+
+func TestRouterReturns404ForReservedAnalyticsWithoutHandler(t *testing.T) {
+	router, err := New(Config{
+		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
+		Backends: backendStub{present: true}, Traffic: trafficmetrics.NewRegistry(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
+	request := tlsRequest("app.example.com", "app.example.com")
+	request.URL.Path = "/analytics.js"
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, request)
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", response.Code)
+	}
+}
+
 func tlsRequest(host, sni string) *http.Request {
 	request := httptest.NewRequest(http.MethodGet, "https://"+host+"/path", nil)
 	request.Host = host

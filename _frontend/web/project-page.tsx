@@ -1,6 +1,7 @@
 import { Route, Routes, useNavigate, useParams } from "react-router";
 
 import type { Project } from "@/api";
+import { ProjectAnalyticsPage } from "@/project-analytics-page";
 import { ProjectCanvasPage } from "@/project-canvas-page";
 import { useProjectChanges } from "@/project-changes";
 import { ProjectPageTabs } from "@/project-page-tabs";
@@ -56,6 +57,7 @@ export const ProjectPage = ({
       </header>
       <div className="min-h-0 flex-1">
         <Routes>
+          <Route element={<ProjectAnalyticsPage />} path="analytics" />
           <Route element={<ProjectTelemetryPage />} path="telemetry" />
           <Route
             element={<ProjectCanvasPage isDemo={isDemo} />}

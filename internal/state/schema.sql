@@ -523,4 +523,90 @@ CREATE TABLE audit_events (
 CREATE INDEX audit_events_created_idx ON audit_events(created_at DESC);
 CREATE INDEX audit_events_project_created_idx ON audit_events(project_id, created_at DESC);
 
-PRAGMA user_version = 16;
+CREATE TABLE analytics_trackers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  root_domain TEXT NOT NULL CHECK (length(root_domain) BETWEEN 1 AND 253),
+  mode TEXT NOT NULL DEFAULT 'opt-out' CHECK (mode IN ('cookieless', 'opt-out', 'opt-in')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (project_id, root_domain),
+  UNIQUE (project_id, name)
+) STRICT;
+
+CREATE INDEX analytics_trackers_project_idx ON analytics_trackers(project_id, created_at, id);
+
+CREATE TABLE analytics_goals (
+  id TEXT PRIMARY KEY,
+  tracker_id TEXT NOT NULL REFERENCES analytics_trackers(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  action_type TEXT NOT NULL CHECK (action_type IN ('path', 'event')),
+  action_value TEXT NOT NULL CHECK (length(action_value) BETWEEN 1 AND 512),
+  hostname TEXT CHECK (hostname IS NULL OR length(hostname) BETWEEN 1 AND 253),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX analytics_goals_tracker_idx ON analytics_goals(tracker_id, created_at, id);
+
+CREATE TABLE analytics_funnels (
+  id TEXT PRIMARY KEY,
+  tracker_id TEXT NOT NULL REFERENCES analytics_trackers(id) ON DELETE CASCADE,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  window_value INTEGER NOT NULL CHECK (window_value BETWEEN 1 AND 10000),
+  window_unit TEXT NOT NULL CHECK (window_unit IN ('minute', 'hour', 'day')),
+  steps_json TEXT NOT NULL CHECK (json_valid(steps_json)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX analytics_funnels_tracker_idx ON analytics_funnels(tracker_id, created_at, id);
+
+CREATE TABLE analytics_charts (
+  id TEXT PRIMARY KEY,
+  tracker_id TEXT NOT NULL REFERENCES analytics_trackers(id) ON DELETE CASCADE,
+  title TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 80),
+  sql TEXT NOT NULL CHECK (length(sql) BETWEEN 1 AND 16384),
+  visualization TEXT NOT NULL DEFAULT 'area' CHECK (visualization IN ('line', 'area', 'bar', 'value', 'table')),
+  legend TEXT NOT NULL DEFAULT '' CHECK (length(legend) <= 80),
+  unit TEXT CHECK (unit IS NULL OR length(unit) <= 32),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX analytics_charts_tracker_idx ON analytics_charts(tracker_id, created_at, id);
+
+CREATE TABLE analytics_flags (
+  id TEXT PRIMARY KEY,
+  tracker_id TEXT NOT NULL REFERENCES analytics_trackers(id) ON DELETE CASCADE,
+  key TEXT NOT NULL CHECK (length(key) BETWEEN 1 AND 80),
+  description TEXT NOT NULL DEFAULT '' CHECK (length(description) <= 500),
+  flag_type TEXT NOT NULL CHECK (flag_type IN ('boolean', 'multivariate')),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  variants_json TEXT NOT NULL CHECK (json_valid(variants_json)),
+  payload_json TEXT NOT NULL DEFAULT 'null' CHECK (json_valid(payload_json)),
+  targeting_json TEXT NOT NULL CHECK (json_valid(targeting_json)),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE (tracker_id, key)
+) STRICT;
+
+CREATE INDEX analytics_flags_tracker_idx ON analytics_flags(tracker_id, created_at, id);
+
+CREATE TABLE analytics_experiments (
+  id TEXT PRIMARY KEY,
+  flag_id TEXT NOT NULL REFERENCES analytics_flags(id) ON DELETE CASCADE,
+  control_variant TEXT NOT NULL CHECK (length(control_variant) BETWEEN 1 AND 80),
+  metric_json TEXT NOT NULL CHECK (json_valid(metric_json)),
+  window_value INTEGER NOT NULL CHECK (window_value BETWEEN 1 AND 10000),
+  window_unit TEXT NOT NULL CHECK (window_unit IN ('minute', 'hour', 'day')),
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX analytics_experiments_flag_idx ON analytics_experiments(flag_id, started_at, id);
+
+PRAGMA user_version = 17;

@@ -89,6 +89,19 @@ jobs:
           npm --prefix actions/port-forward run check
           ! grep -R --include='*.js' -nE '\brequire\s*\(' actions/port-forward/dist
 
+      - name: Restore Playwright browsers
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: |
+            ~/.cache/ms-playwright
+            ~/.cache/ms-playwright-go
+          key: playwright-${{ runner.os }}-${{ hashFiles('go.sum') }}
+
+      - name: Install Playwright Chromium
+        run: |
+          version=$(go list -m -f '{{.Version}}' github.com/mxschmitt/playwright-go)
+          go run "github.com/mxschmitt/playwright-go/cmd/playwright@$version" install --with-deps chromium
+
       - name: Verify Go code
         run: |
           go test -race -tags "$GO_TAGS" ./...

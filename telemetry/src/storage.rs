@@ -1759,6 +1759,56 @@ impl Store {
             .map_err(|_| Error::Storage("chDB session lock is poisoned".into()))?;
         operation(&analytics)
     }
+
+    pub(crate) fn insert_json_rows(&self, table: &str, rows: Vec<Value>) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let _maintenance = self
+            .inner
+            .maintenance
+            .read()
+            .map_err(|_| Error::Storage("telemetry maintenance lock is poisoned".into()))?;
+        let mut body = String::new();
+        for row in rows {
+            serde_json::to_writer(StringWriter(&mut body), &row)
+                .map_err(|error| Error::Storage(format!("encode analytics row: {error}")))?;
+            body.push('\n');
+        }
+        let query = format!(
+            "INSERT INTO {ANALYTICS_DATABASE}.{table} SETTINGS \
+             date_time_input_format='best_effort', input_format_parallel_parsing=0 \
+             FORMAT JSONEachRow\n{body}"
+        );
+        self.with_analytics(|analytics| {
+            analytics.execute(&query, None).map_err(|error| {
+                Error::Storage(format!("insert {table} into embedded chDB: {error}"))
+            })?;
+            Ok(())
+        })
+    }
+
+    pub(crate) fn query_json_rows(&self, query: &str) -> Result<Vec<Value>> {
+        let _maintenance = self
+            .inner
+            .maintenance
+            .read()
+            .map_err(|_| Error::Storage("telemetry maintenance lock is poisoned".into()))?;
+        self.with_analytics(|analytics| {
+            let output = analytics
+                .execute(query, Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]))
+                .map_err(|error| Error::Storage(format!("query embedded chDB: {error}")))?;
+            output
+                .data_utf8_lossy()
+                .lines()
+                .filter(|line| !line.is_empty())
+                .map(|line| {
+                    serde_json::from_str(line)
+                        .map_err(|error| Error::Storage(format!("decode chDB row: {error}")))
+                })
+                .collect()
+        })
+    }
 }
 
 fn trace_profile_ids(spans: &[TraceSpan]) -> HashSet<String> {
@@ -2090,6 +2140,38 @@ fn initialize_analytics(session: &Session) -> Result<()> {
              ) ENGINE=MergeTree ORDER BY (service_id, name, time_unix_nano, id) \
              TTL toDateTime(time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
         ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.analytics_events (\n\
+             event_id String, tracker_id String, service_id String, distinct_id String, session_id String,\n\
+             event_name LowCardinality(String), timestamp DateTime64(3, 'UTC'),\n\
+             hostname String, pathname String, page_title String,\n\
+             referrer String, referrer_domain String, referrer_source String, channel LowCardinality(String),\n\
+             utm_source String, utm_medium String, utm_campaign String, utm_content String, utm_term String,\n\
+             gclid String, fbclid String, msclkid String, ttclid String, li_fat_id String, twclid String,\n\
+             browser LowCardinality(String), browser_version String, os LowCardinality(String), os_version String,\n\
+             device LowCardinality(String), screen String, language String, country LowCardinality(String),\n\
+             region String, city String, interactive UInt8, props_keys Array(String), props_values Array(String),\n\
+             revenue Nullable(Float64), currency LowCardinality(String),\n\
+             bot_kind LowCardinality(String), bot_name String,\n\
+             lcp Nullable(Float64), inp Nullable(Float64), cls Nullable(Float64), fcp Nullable(Float64), ttfb Nullable(Float64)\n\
+             ) ENGINE=MergeTree PARTITION BY toYYYYMM(timestamp)\n\
+             ORDER BY (tracker_id, toDate(timestamp), event_name, distinct_id, timestamp)\n\
+             TTL timestamp + INTERVAL 400 DAY DELETE"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.analytics_heatmaps (\n\
+             tracker_id String, distinct_id String, timestamp DateTime64(3, 'UTC'), pathname String, hostname String,\n\
+             x Int16, y Int16, scale_factor Float32, viewport_w UInt16, viewport_h UInt16,\n\
+             page_h UInt16, scroll_pct UInt8, event_type LowCardinality(String)\n\
+             ) ENGINE=MergeTree PARTITION BY toYYYYMM(timestamp)\n\
+             ORDER BY (tracker_id, pathname, timestamp)\n\
+             TTL timestamp + INTERVAL 90 DAY DELETE"
+        ),
+        format!(
+            "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.analytics_aliases (\n\
+             tracker_id String, anonymous_id String, distinct_id String, created_at DateTime64(3, 'UTC')\n\
+             ) ENGINE=ReplacingMergeTree(created_at) ORDER BY (tracker_id, anonymous_id)"
+        ),
     ] {
         session
             .execute(&statement, None)
@@ -2182,6 +2264,9 @@ fn initialize_analytics(session: &Session) -> Result<()> {
         ),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.metrics ADD COLUMN IF NOT EXISTS zero_count UInt64 AFTER negative_counts"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.analytics_heatmaps ADD COLUMN IF NOT EXISTS hostname String AFTER pathname"
         ),
     ] {
         session.execute(&statement, None).map_err(|error| {
@@ -2368,7 +2453,7 @@ fn analytics_order(sort_by: &str) -> Result<&'static str> {
     }
 }
 
-fn chdb_string(value: &str) -> String {
+pub(crate) fn chdb_string(value: &str) -> String {
     format!("'{}'", value.replace('\\', "\\\\").replace('\'', "\\'"))
 }
 

@@ -1,6 +1,7 @@
 import { RefreshCw, Search, Table2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { FieldSelect } from "@/field-select";
 import { cn } from "@/lib/utils";
 import type { PostgresBrowserTable } from "@/postgres-data-browser-model";
 
@@ -45,19 +46,27 @@ export const PostgresDataBrowserSidebar = ({
       >
         Schema
       </label>
-      <select
-        className="h-8 w-full border border-border bg-background px-2 text-[10px] outline-none focus:border-ring"
+      <FieldSelect
+        className="text-[10px]"
         disabled={loading || schemas.length === 0}
         id="postgres-schema"
-        onChange={(event) => onSchemaChange(event.target.value)}
-        value={selectedSchema}
-      >
-        {schemas.map((schema) => (
-          <option key={schema} value={schema}>
-            {schema}
-          </option>
-        ))}
-      </select>
+        items={
+          schemas.length === 0
+            ? [
+                {
+                  label: selectedSchema || "No schemas",
+                  value: selectedSchema || "__none__",
+                },
+              ]
+            : schemas.map((schema) => ({ label: schema, value: schema }))
+        }
+        onValueChange={onSchemaChange}
+        value={
+          selectedSchema === "" && schemas.length === 0
+            ? "__none__"
+            : selectedSchema
+        }
+      />
     </div>
     <div className="flex gap-1 border-b border-border p-2">
       <label className="relative min-w-0 flex-1">

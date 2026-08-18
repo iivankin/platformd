@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -99,7 +100,7 @@ func newTestHandler(t *testing.T, repository *repositoryStub) *Handler {
 	handler, err := New(Config{
 		Hostname: "admin.example.com", Version: "1.2.3", Repository: repository,
 		Services: services, Logs: logs, Usage: usage, Images: repository, Volumes: volumes,
-		Telemetry: repository, Admission: admission.New(),
+		Telemetry: repository, Analytics: &analyticsStub{}, Admission: admission.New(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -356,7 +357,7 @@ func TestMCPAdvertisesStandaloneAgentGuidanceAndSafetyHints(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &initialized); err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"list_projects", "expectedUpdatedAt", "list_service_issues", "get_metric_catalog", "Internal artifact uploads need no token"} {
+	for _, expected := range []string{"list_projects", "expectedUpdatedAt", "list_service_issues", "get_metric_catalog", "list_analytics_trackers", "Internal artifact uploads need no token"} {
 		if !strings.Contains(initialized.Result.Instructions, expected) {
 			t.Fatalf("initialize instructions omit %q: %q", expected, initialized.Result.Instructions)
 		}
@@ -388,6 +389,13 @@ func TestMCPAdvertisesStandaloneAgentGuidanceAndSafetyHints(t *testing.T) {
 	step, _ := properties["step"].(map[string]any)
 	if step["minimum"] != float64(1_000) || !strings.Contains(metric.Description, "virtual metrics table") {
 		t.Fatalf("metric agent contract = %#v / %q", step, metric.Description)
+	}
+	analytics := byName["query_analytics"]
+	analyticsProperties, _ := analytics.InputSchema["properties"].(map[string]any)
+	report, _ := analyticsProperties["report"].(map[string]any)
+	from, _ := analyticsProperties["from"].(map[string]any)
+	if analyticsProperties["query"] != nil || !strings.Contains(fmt.Sprint(report["enum"]), "overview") || !strings.Contains(fmt.Sprint(from["description"]), "Unix milliseconds") || !strings.Contains(analytics.Description, "not metrics or traces") {
+		t.Fatalf("analytics agent contract = %#v / %q", analytics.InputSchema, analytics.Description)
 	}
 }
 

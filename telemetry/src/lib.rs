@@ -7,6 +7,8 @@ mod geoip;
 mod ingest;
 mod metric_sql;
 mod model;
+mod product_analytics;
+mod product_analytics_sql;
 mod profile;
 mod replay_video;
 mod server;

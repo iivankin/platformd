@@ -16,6 +16,7 @@ import (
 
 	"github.com/iivankin/platformd/internal/access"
 	"github.com/iivankin/platformd/internal/admission"
+	"github.com/iivankin/platformd/internal/analytics"
 	"github.com/iivankin/platformd/internal/apitoken"
 	"github.com/iivankin/platformd/internal/automation"
 	"github.com/iivankin/platformd/internal/automationapi"
@@ -395,6 +396,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure service telemetry: %w", err)
 	}
 	defer func() { returnErr = errors.Join(returnErr, serviceTelemetry.Close()) }()
+	publicAnalytics := analytics.NewHandler(store, telemetryProcess, telemetryProcess.Target())
+	internalAnalytics := analytics.InternalHandler(store, telemetryProcess, telemetryProcess.Target())
+	serviceTelemetry.SetAnalyticsHandler(internalAnalytics)
+	analyticsRepository := &liveAnalyticsRepository{
+		store: store, manager: serviceTelemetry, query: publicAnalytics,
+	}
 	services, err := store.Services(ctx)
 	if err != nil {
 		return fmt.Errorf("load services for telemetry: %w", err)
@@ -402,6 +409,21 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	for _, service := range services {
 		if err := serviceTelemetry.Ensure(ctx, service); err != nil {
 			return fmt.Errorf("configure telemetry for service %s: %w", service.ID, err)
+		}
+	}
+	trackers, err := store.AllAnalyticsTrackers(ctx)
+	if err != nil {
+		return fmt.Errorf("load analytics trackers: %w", err)
+	}
+	for _, tracker := range trackers {
+		project, err := store.Project(ctx, tracker.ProjectID)
+		if err != nil {
+			return fmt.Errorf("load project for analytics tracker %s: %w", tracker.ID, err)
+		}
+		if err := serviceTelemetry.EnsureAnalytics(
+			tracker.ProjectID, project.Name, state.TrackerSlug(tracker.RootDomain), tracker.ID,
+		); err != nil {
+			return fmt.Errorf("configure analytics tracker %s: %w", tracker.ID, err)
 		}
 	}
 	if err := runtime.ConfigureDeployments(ctx, store, key, imageCredentials, cloudflareDNS, projectWebhooks, containerLogs); err != nil {
@@ -893,6 +915,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		NetworkGateways: networkGatewayAutomation, Backups: backupAutomation, Versions: databaseVersions,
 		ServerExec: serverExecAutomation, Volumes: volumeAutomation, PortForwards: portForwards,
 		Admission: mutationAdmission, Telemetry: serviceTelemetryRepository,
+		Analytics: analyticsRepository,
 	}, authenticator, portForwards, imageUploads.Handler(), !installation.RecoveryMode)
 	if err != nil {
 		return err
@@ -929,6 +952,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			telemetry:    serviceTelemetry, telemetryRoutes: serviceTelemetryRepository,
 		}),
 		server.WithServiceTelemetry(serviceTelemetryRepository),
+		server.WithAnalytics(analyticsRepository),
 		server.WithServiceEnvironment(resourceVariableResolver{store: store, master: key}),
 		server.WithVolumes(volumeApplication),
 		server.WithServiceImageCredentials(imageCredentials),
@@ -976,6 +1000,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		AdminHostname: installation.AdminHostname, AdminHandler: adminHandler,
 		ObjectStoreHandler:      publicObjectStoreHandler,
 		ServiceTelemetryHandler: publicServiceTelemetryHandler,
+		AnalyticsHandler:        publicAnalytics,
 		Backends:                runtime,
 		Traffic:                 publicTraffic,
 	})

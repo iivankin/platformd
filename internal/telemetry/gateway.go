@@ -12,27 +12,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/iivankin/platformd/internal/analytics"
 	"github.com/iivankin/platformd/internal/firewall"
 	"github.com/iivankin/platformd/internal/sentry"
 )
 
 type serviceGateway struct {
-	sentryServer *http.Server
-	otlpServer   *http.Server
-	sentryDone   chan error
-	otlpDone     chan error
-	sentryProxy  *sentry.Proxy
-	otlpProxy    *httputil.ReverseProxy
-	mu           sync.RWMutex
-	sentryRoutes map[string]string
-	otlpRoutes   map[string]serviceRoute
+	sentryServer    *http.Server
+	otlpServer      *http.Server
+	sentryDone      chan error
+	otlpDone        chan error
+	sentryProxy     *sentry.Proxy
+	otlpProxy       *httputil.ReverseProxy
+	analytics       http.Handler
+	mu              sync.RWMutex
+	sentryRoutes    map[string]string
+	otlpRoutes      map[string]serviceRoute
+	analyticsRoutes map[string]string
 }
 
 type serviceRoute struct {
 	serviceID string
 }
 
-func startServiceGateway(address netip.Addr, proxy *sentry.Proxy) (*serviceGateway, error) {
+func startServiceGateway(address netip.Addr, proxy *sentry.Proxy, analytics http.Handler) (*serviceGateway, error) {
 	if !address.IsValid() || proxy == nil {
 		return nil, errors.New("service Sentry gateway configuration is incomplete")
 	}
@@ -41,9 +44,10 @@ func startServiceGateway(address netip.Addr, proxy *sentry.Proxy) (*serviceGatew
 		return nil, err
 	}
 	gateway := &serviceGateway{
-		sentryProxy: proxy, otlpProxy: httputil.NewSingleHostReverseProxy(target),
+		sentryProxy: proxy, otlpProxy: httputil.NewSingleHostReverseProxy(target), analytics: analytics,
 		sentryRoutes: make(map[string]string), otlpRoutes: make(map[string]serviceRoute),
-		sentryDone: make(chan error, 1), otlpDone: make(chan error, 1),
+		analyticsRoutes: make(map[string]string),
+		sentryDone:      make(chan error, 1), otlpDone: make(chan error, 1),
 	}
 	// The receiver is process-local. Never let environment proxy settings turn
 	// this trusted hop into an external request.
@@ -75,7 +79,25 @@ func (gateway *serviceGateway) ServeHTTP(response http.ResponseWriter, request *
 	if host, _, err := net.SplitHostPort(hostname); err == nil {
 		hostname = host
 	}
-	if hostname == "" || !sentry.DataPlanePathAllowed(request.URL.Path) {
+	if hostname == "" {
+		http.NotFound(response, request)
+		return
+	}
+	gateway.mu.RLock()
+	trackerID, analyticsRoute := gateway.analyticsRoutes[hostname]
+	analyticsHandler := gateway.analytics
+	gateway.mu.RUnlock()
+	if analyticsRoute {
+		if analyticsHandler == nil || !analytics.Reserved(request.Method, request.URL.Path) {
+			http.NotFound(response, request)
+			return
+		}
+		request.Header.Del("X-Platformd-Tracker-Id")
+		request.Header.Set("X-Platformd-Tracker-Id", trackerID)
+		analyticsHandler.ServeHTTP(response, request)
+		return
+	}
+	if !sentry.DataPlanePathAllowed(request.URL.Path) {
 		http.NotFound(response, request)
 		return
 	}
@@ -133,6 +155,18 @@ func (gateway *serviceGateway) DeleteSentry(hostname string) {
 func (gateway *serviceGateway) DeleteOTLP(hostname string) {
 	gateway.mu.Lock()
 	delete(gateway.otlpRoutes, hostname)
+	gateway.mu.Unlock()
+}
+
+func (gateway *serviceGateway) SetAnalytics(hostname, trackerID string) {
+	gateway.mu.Lock()
+	gateway.analyticsRoutes[hostname] = trackerID
+	gateway.mu.Unlock()
+}
+
+func (gateway *serviceGateway) DeleteAnalytics(hostname string) {
+	gateway.mu.Lock()
+	delete(gateway.analyticsRoutes, hostname)
 	gateway.mu.Unlock()
 }
 

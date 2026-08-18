@@ -1,13 +1,13 @@
 import { Check, Clock3 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Popover,
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { DateTimePicker } from "@/date-time-picker";
 import { cn } from "@/lib/utils";
 import type { TelemetryTimeRange } from "@/telemetry-query-state";
 
@@ -23,11 +23,19 @@ const presets: {
   value: Exclude<TelemetryTimeRange, "custom">;
 }[] = [
   { label: "All loaded", value: "all" },
+  { label: "Today", value: "today" },
   { label: "Last 15 minutes", milliseconds: 15 * 60_000, value: "15m" },
   { label: "Last hour", milliseconds: 60 * 60_000, value: "1h" },
   { label: "Last 6 hours", milliseconds: 6 * 60 * 60_000, value: "6h" },
   { label: "Last 24 hours", milliseconds: 24 * 60 * 60_000, value: "24h" },
   { label: "Last 7 days", milliseconds: 7 * 24 * 60 * 60_000, value: "7d" },
+  { label: "Last 28 days", milliseconds: 28 * 24 * 60 * 60_000, value: "28d" },
+  { label: "Last 91 days", milliseconds: 91 * 24 * 60 * 60_000, value: "91d" },
+  {
+    label: "Last 12 months",
+    milliseconds: 365 * 24 * 60 * 60_000,
+    value: "12m",
+  },
 ];
 
 const presetMilliseconds = Object.fromEntries(
@@ -50,19 +58,13 @@ export const telemetryTimeBounds = (
   ) {
     return { from: state.from, to: state.to };
   }
+  if (state.range === "today") {
+    const start = new Date(now);
+    start.setHours(0, 0, 0, 0);
+    return { from: start.getTime(), to: now };
+  }
   const duration = presetMilliseconds[state.range];
   return duration === undefined ? {} : { from: now - duration, to: now };
-};
-
-const localDateTime = (value: number) => {
-  const date = new Date(value);
-  const offset = date.getTimezoneOffset() * 60_000;
-  return new Date(value - offset).toISOString().slice(0, 19);
-};
-
-const parseLocalDateTime = (value: FormDataEntryValue | null) => {
-  const timestamp = new Date(String(value ?? "")).getTime();
-  return Number.isFinite(timestamp) ? timestamp : undefined;
 };
 
 export const formatTelemetryRange = (
@@ -103,9 +105,9 @@ export const TelemetryTimeRangePicker = ({
 }) => {
   const [error, setError] = useState("");
   const [open, setOpen] = useState(false);
-  const [draftAnchor, setDraftAnchor] = useState(value.to ?? value.from ?? 0);
-  const defaultTo = value.to ?? draftAnchor;
-  const defaultFrom = value.from ?? defaultTo - 60 * 60_000;
+  const nestedOpen = useRef(false);
+  const [draftFrom, setDraftFrom] = useState(value.from ?? 0);
+  const [draftTo, setDraftTo] = useState(value.to ?? 0);
 
   const choosePreset = (range: Exclude<TelemetryTimeRange, "custom">) => {
     onChange({ from: null, range, to: null });
@@ -116,9 +118,14 @@ export const TelemetryTimeRangePicker = ({
   return (
     <Popover
       onOpenChange={(nextOpen) => {
+        if (!nextOpen && nestedOpen.current) {
+          return;
+        }
         setOpen(nextOpen);
         if (nextOpen) {
-          setDraftAnchor(value.to ?? Date.now());
+          const nextTo = value.to ?? Date.now();
+          setDraftTo(nextTo);
+          setDraftFrom(value.from ?? nextTo - 60 * 60_000);
         }
         if (!nextOpen) {
           setError("");
@@ -132,6 +139,7 @@ export const TelemetryTimeRangePicker = ({
             aria-label="Telemetry time range"
             className="max-w-56 justify-start font-normal"
             size="sm"
+            type="button"
             variant="outline"
           >
             <Clock3 />
@@ -160,17 +168,13 @@ export const TelemetryTimeRangePicker = ({
         </div>
         <form
           className="p-3"
-          key={`${value.from ?? ""}:${value.to ?? ""}:${open.toString()}`}
           onSubmit={(event) => {
             event.preventDefault();
-            const form = new FormData(event.currentTarget);
-            const from = parseLocalDateTime(form.get("from"));
-            const to = parseLocalDateTime(form.get("to"));
-            if (from === undefined || to === undefined || to <= from) {
+            if (draftTo <= draftFrom) {
               setError("End time must be later than start time.");
               return;
             }
-            onChange({ from, range: "custom", to });
+            onChange({ from: draftFrom, range: "custom", to: draftTo });
             setError("");
             setOpen(false);
           }}
@@ -178,35 +182,29 @@ export const TelemetryTimeRangePicker = ({
           <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
             Exact range
           </p>
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            <label
-              className="text-[8px] text-muted-foreground"
-              htmlFor="telemetry-time-from"
-            >
-              From
-              <Input
-                className="mt-1 px-2 text-[9px]"
-                defaultValue={localDateTime(defaultFrom)}
-                id="telemetry-time-from"
-                name="from"
-                step={1}
-                type="datetime-local"
+          <div className="mt-2 grid gap-2">
+            <div className="grid gap-1">
+              <p className="text-[8px] text-muted-foreground">From</p>
+              <DateTimePicker
+                onChange={setDraftFrom}
+                onOpenChange={(nextOpen) => {
+                  nestedOpen.current = nextOpen;
+                }}
+                precision="second"
+                value={draftFrom}
               />
-            </label>
-            <label
-              className="text-[8px] text-muted-foreground"
-              htmlFor="telemetry-time-to"
-            >
-              To
-              <Input
-                className="mt-1 px-2 text-[9px]"
-                defaultValue={localDateTime(defaultTo)}
-                id="telemetry-time-to"
-                name="to"
-                step={1}
-                type="datetime-local"
+            </div>
+            <div className="grid gap-1">
+              <p className="text-[8px] text-muted-foreground">To</p>
+              <DateTimePicker
+                onChange={setDraftTo}
+                onOpenChange={(nextOpen) => {
+                  nestedOpen.current = nextOpen;
+                }}
+                precision="second"
+                value={draftTo}
               />
-            </label>
+            </div>
           </div>
           {error ? (
             <p aria-live="polite" className="mt-2 text-[9px] text-destructive">

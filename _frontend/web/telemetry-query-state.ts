@@ -6,6 +6,7 @@ import {
   parseAsStringLiteral,
 } from "nuqs";
 
+import { analyticsFiltersSchema } from "@/analytics-model";
 import { logFieldFiltersSchema } from "@/log-field-filter";
 import { logSeverityValues } from "@/log-severity";
 
@@ -34,11 +35,15 @@ export type LogSort = (typeof logSortValues)[number];
 
 export const telemetryTimeRangeValues = [
   "all",
+  "today",
   "15m",
   "1h",
   "6h",
   "24h",
   "7d",
+  "28d",
+  "91d",
+  "12m",
   "custom",
 ] as const;
 
@@ -82,6 +87,32 @@ export const traceQueryParsers = {
     "ok",
   ] as const).withDefault("all"),
   ...timeRangeQueryParsers,
+};
+
+export const analyticsPageValues = [
+  "dashboard",
+  "visitors",
+  "heatmaps",
+  "retention",
+  "ai",
+  "flags",
+  "charts",
+  "settings",
+] as const;
+
+export type AnalyticsPage = (typeof analyticsPageValues)[number];
+
+export const analyticsQueryParsers = {
+  analyticsFilters: parseAsJson((value) => {
+    const parsed = analyticsFiltersSchema.safeParse(value);
+    return parsed.success ? parsed.data : null;
+  }).withDefault([]),
+  analyticsPage:
+    parseAsStringLiteral(analyticsPageValues).withDefault("dashboard"),
+  timeFrom: parseAsInteger,
+  timeRange: parseAsStringLiteral(telemetryTimeRangeValues).withDefault("28d"),
+  timeTo: parseAsInteger,
+  tracker: parseAsString,
 };
 
 export const errorDetailQueryParsers = {

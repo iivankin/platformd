@@ -41,6 +41,13 @@ type serviceTelemetryResponse struct {
 	BrowserTunnelPath    string                            `json:"browserTunnelPath,omitempty"`
 	UpdatedAt            int64                             `json:"updatedAt"`
 	Webhooks             []serviceTelemetryWebhookResponse `json:"webhooks"`
+	TrackedBy            []analyticsTrackerMatch           `json:"trackedBy,omitempty"`
+}
+
+type analyticsTrackerMatch struct {
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+	RootDomain string `json:"rootDomain"`
 }
 
 type serviceTelemetryWebhookResponse struct {
@@ -54,7 +61,7 @@ type serviceTelemetryWebhookResponse struct {
 
 func registerServiceTelemetryRoutes(mux *http.ServeMux, config handlerConfig) {
 	pattern := "/api/v1/projects/{projectID}/services/{serviceID}/telemetry"
-	mux.HandleFunc("GET "+pattern, getServiceTelemetry(config.serviceTelemetry))
+	mux.HandleFunc("GET "+pattern, getServiceTelemetry(config))
 	mux.HandleFunc("PUT "+pattern+"/public-access", updateServiceTelemetryPublicAccess(config))
 	mux.HandleFunc("PUT "+pattern+"/browser-tunnel", updateServiceTelemetryTunnel(config))
 	mux.HandleFunc("POST "+pattern+"/artifact-token", rotateServiceArtifactToken(config.serviceTelemetry))
@@ -63,6 +70,9 @@ func registerServiceTelemetryRoutes(mux *http.ServeMux, config handlerConfig) {
 	registerMetricScopeRoutes(mux, config.serviceTelemetry, pattern, serviceMetricScope)
 	registerMetricScopeRoutes(mux, config.serviceTelemetry, "/api/v1/projects/{projectID}/telemetry", projectMetricScope)
 	registerMetricScopeRoutes(mux, config.serviceTelemetry, "/api/v1/telemetry", installationMetricScope)
+	if config.analytics != nil {
+		registerAnalyticsRoutes(mux, config.analytics)
+	}
 	mux.Handle("/api/v1/projects/{projectID}/telemetry/{path...}", telemetryScopeConsole(config.serviceTelemetry, projectMetricScope))
 	mux.Handle("/api/v1/telemetry/{path...}", telemetryScopeConsole(config.serviceTelemetry, installationMetricScope))
 	mux.Handle(pattern+"/{path...}", serviceTelemetryConsole(config.serviceTelemetry))
@@ -131,24 +141,37 @@ func updateServiceTelemetryTunnel(config handlerConfig) http.HandlerFunc {
 	}
 }
 
-func getServiceTelemetry(repository ServiceTelemetryRepository) http.HandlerFunc {
+func getServiceTelemetry(config handlerConfig) http.HandlerFunc {
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := requireAccessIdentity(response, request); !ok {
 			return
 		}
-		configuration, err := repository.ServiceTelemetry(
-			request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"),
-		)
+		projectID := request.PathValue("projectID")
+		serviceID := request.PathValue("serviceID")
+		configuration, err := config.serviceTelemetry.ServiceTelemetry(request.Context(), projectID, serviceID)
 		if err != nil {
 			writeServiceTelemetryError(response, err)
 			return
 		}
-		webhooks, err := repository.ServiceTelemetryWebhooks(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+		webhooks, err := config.serviceTelemetry.ServiceTelemetryWebhooks(request.Context(), projectID, serviceID)
 		if err != nil {
 			writeServiceTelemetryError(response, err)
 			return
 		}
-		writeJSON(response, http.StatusOK, publicServiceTelemetry(configuration, webhooks))
+		payload := publicServiceTelemetry(configuration, webhooks)
+		if config.analytics != nil {
+			trackers, err := config.analytics.TrackersMatchingService(request.Context(), projectID, serviceID)
+			if err != nil {
+				writeAnalyticsError(response, err)
+				return
+			}
+			for _, tracker := range trackers {
+				payload.TrackedBy = append(payload.TrackedBy, analyticsTrackerMatch{
+					ID: tracker.ID, Name: tracker.Name, RootDomain: tracker.RootDomain,
+				})
+			}
+		}
+		writeJSON(response, http.StatusOK, payload)
 	}
 }
 

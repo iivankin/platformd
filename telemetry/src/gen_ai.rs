@@ -209,6 +209,8 @@ fn is_searchable(key: &str) -> bool {
             | "ai.telemetry.functionId"
             | "ai.prompt"
             | "ai.prompt.messages"
+            | "ai.prompt.tools"
+            | "ai.prompt.toolChoice"
             | "ai.response.text"
             | "ai.response.reasoning"
             | "ai.response.toolCalls"

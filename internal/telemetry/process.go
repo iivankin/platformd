@@ -149,6 +149,13 @@ func (process *Process) Target() *url.URL {
 	return &copy
 }
 
+func (process *Process) Do(request *http.Request) (*http.Response, error) {
+	if process == nil || process.client == nil {
+		return nil, errors.New("telemetry process is not running")
+	}
+	return process.client.Do(request)
+}
+
 func (process *Process) Snapshot(ctx context.Context, destination string) error {
 	if process == nil || process.target == nil || ctx == nil || !filepath.IsAbs(destination) || filepath.Clean(destination) != destination {
 		return errors.New("telemetry snapshot input is incomplete")

@@ -8,6 +8,11 @@ export const ProjectPageTabs = ({ projectID }: { projectID: string }) => (
       { end: true, label: "Canvas", path: `/projects/${projectID}` },
       {
         end: false,
+        label: "Web analytics",
+        path: `/projects/${projectID}/analytics`,
+      },
+      {
+        end: false,
         label: "Telemetry",
         path: `/projects/${projectID}/telemetry`,
       },

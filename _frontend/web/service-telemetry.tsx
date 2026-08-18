@@ -35,6 +35,7 @@ import {
   adminOrigin,
   projectNameFromInternalHostname,
 } from "@/github-action-example-dialog";
+import { ServiceAnalyticsSnippet } from "@/project-analytics";
 import { ResourceLogs } from "@/resource-logs";
 import { SentryCloudflareGeoIpHint } from "@/sentry-cloudflare-geoip-hint";
 import { ServiceMetrics } from "@/service-metrics";
@@ -559,6 +560,10 @@ export const ServiceTelemetryWorkspace = ({
               refresh={refresh}
               settingsHeader={
                 <>
+                  <ServiceAnalyticsSnippet
+                    projectID={projectID}
+                    trackedBy={configuration.trackedBy}
+                  />
                   <PublicSentryEndpoint
                     configuration={configuration}
                     domains={domains}

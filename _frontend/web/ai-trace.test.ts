@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import { calculateAiPrice } from "@/ai-price";
-import { aiMessages, aiRuns, aiTool } from "@/ai-trace";
+import {
+  aiMessages,
+  aiRequestSettings,
+  aiRuns,
+  aiTool,
+  aiToolDefinitions,
+} from "@/ai-trace";
 import type { ServiceTraceSpan } from "@/api";
 
 const span = (attributes: unknown[]): ServiceTraceSpan => ({
@@ -82,6 +88,136 @@ describe("AI trace normalization", () => {
       type: "text",
     });
     expect(messages[1]?.parts[0]).toMatchObject({
+      input: { invoiceId: "42" },
+      name: "lookup_invoice",
+      toolCallID: "call-1",
+      type: "tool-call",
+    });
+  });
+
+  test("surfaces system instructions, available tools, and request settings", () => {
+    const value = span([
+      attribute(
+        "gen_ai.system_instructions",
+        JSON.stringify([
+          { content: "You are the invoice assistant.", type: "text" },
+        ])
+      ),
+      attribute(
+        "gen_ai.input.messages",
+        JSON.stringify([
+          {
+            parts: [{ content: "Find invoice 42", type: "text" }],
+            role: "user",
+          },
+        ])
+      ),
+      attribute(
+        "gen_ai.output.messages",
+        JSON.stringify([
+          {
+            parts: [
+              {
+                id: "call-1",
+                name: "lookup_invoice",
+                response: { status: "pending" },
+                type: "tool_call_response",
+              },
+            ],
+            role: "tool",
+          },
+        ])
+      ),
+      attribute(
+        "gen_ai.tool.definitions",
+        JSON.stringify([
+          {
+            description: "Look up an invoice by ID",
+            name: "lookup_invoice",
+            parameters: {
+              properties: { invoiceId: { type: "string" } },
+              required: ["invoiceId"],
+              type: "object",
+            },
+            type: "function",
+          },
+        ])
+      ),
+      attribute("gen_ai.request.temperature", "0"),
+      attribute("gen_ai.request.max_tokens", "800"),
+      attribute("ai.prompt.toolChoice", '{"type":"auto"}'),
+    ]);
+
+    const messages = aiMessages(value);
+    expect(messages[0]).toMatchObject({
+      parts: [{ content: "You are the invoice assistant.", type: "text" }],
+      role: "system",
+    });
+    expect(messages.at(-1)?.parts[0]).toMatchObject({
+      output: { status: "pending" },
+      toolCallID: "call-1",
+      type: "tool-result",
+    });
+    expect(aiToolDefinitions(value)).toEqual([
+      {
+        description: "Look up an invoice by ID",
+        name: "lookup_invoice",
+        parameters: {
+          properties: { invoiceId: { type: "string" } },
+          required: ["invoiceId"],
+          type: "object",
+        },
+        type: "function",
+      },
+    ]);
+    expect(aiRequestSettings(value)).toEqual(
+      expect.arrayContaining([
+        { label: "Temperature", value: 0 },
+        { label: "Max tokens", value: 800 },
+        { label: "Tool choice", value: { type: "auto" } },
+      ])
+    );
+  });
+
+  test("reads AI SDK tool definitions and nested function call arguments", () => {
+    const value = span([
+      attribute(
+        "ai.prompt.tools",
+        JSON.stringify([
+          JSON.stringify({
+            description: "Look up an invoice by ID",
+            inputSchema: {
+              properties: { invoiceId: { type: "string" } },
+              type: "object",
+            },
+            name: "lookup_invoice",
+            type: "function",
+          }),
+        ])
+      ),
+      attribute(
+        "ai.response.toolCalls",
+        JSON.stringify([
+          {
+            function: {
+              arguments: '{"invoiceId":"42"}',
+              name: "lookup_invoice",
+            },
+            id: "call-1",
+            type: "function",
+          },
+        ])
+      ),
+    ]);
+
+    expect(aiToolDefinitions(value)[0]).toMatchObject({
+      name: "lookup_invoice",
+      parameters: {
+        properties: { invoiceId: { type: "string" } },
+        type: "object",
+      },
+    });
+    expect(aiMessages(value).at(-1)?.parts[0]).toMatchObject({
       input: { invoiceId: "42" },
       name: "lookup_invoice",
       toolCallID: "call-1",

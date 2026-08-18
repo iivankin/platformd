@@ -15,6 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/iivankin/platformd/internal/analytics"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/publichostname"
 	"github.com/iivankin/platformd/internal/sentry"
@@ -44,6 +45,7 @@ type Config struct {
 	AdminHandler            http.Handler
 	ObjectStoreHandler      http.Handler
 	ServiceTelemetryHandler http.Handler
+	AnalyticsHandler        http.Handler
 	Backends                BackendResolver
 	Traffic                 *trafficmetrics.Registry
 }
@@ -59,6 +61,7 @@ type Router struct {
 	adminHandler            http.Handler
 	objectStoreHandler      http.Handler
 	serviceTelemetryHandler http.Handler
+	analyticsHandler        http.Handler
 	backends                BackendResolver
 	reloadMu                sync.Mutex
 	routes                  atomic.Pointer[routeSnapshot]
@@ -85,6 +88,7 @@ func New(config Config) (*Router, error) {
 		adminHandler:            config.AdminHandler,
 		objectStoreHandler:      config.ObjectStoreHandler,
 		serviceTelemetryHandler: config.ServiceTelemetryHandler,
+		analyticsHandler:        config.AnalyticsHandler,
 		backends:                config.Backends,
 		bufferPool:              newProxyBufferPool(),
 		traffic:                 config.Traffic,
@@ -170,6 +174,14 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.objectStoreHandler.ServeHTTP(response, request)
 		return
 	}
+	if analytics.Reserved(request.Method, request.URL.Path) {
+		if router.analyticsHandler == nil {
+			http.NotFound(response, request)
+			return
+		}
+		router.analyticsHandler.ServeHTTP(response, request)
+		return
+	}
 	if telemetryRoute, exists := routes.serviceTelemetry[hostname]; exists {
 		if upstreamPath, telemetryPath := sentry.PublicDataPlanePath(request.Method, request.URL.Path, telemetryRoute.BrowserTunnelPath); telemetryPath {
 			if router.serviceTelemetryHandler == nil {
@@ -219,6 +231,11 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	if err != nil || !available {
 		unavailable(response)
 		return
+	}
+	if recorder, ok := router.analyticsHandler.(interface {
+		ObserveDocument(*http.Request, string)
+	}); ok {
+		recorder.ObserveDocument(request, serviceRoute.ServiceID)
 	}
 	router.proxy(backend, hostname, serviceRoute.ServiceID, func(statusCode int) {
 		streaming = true

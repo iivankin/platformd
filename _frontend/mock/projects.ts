@@ -3,6 +3,7 @@ import type {
   ProjectWebhook,
   ProjectWebhookEventType,
 } from "../web/api";
+import { handleAnalyticsAPI } from "./analytics";
 import {
   apiSegments,
   json,
@@ -96,6 +97,9 @@ const handleScopedTelemetry = (
   }
   if (!state.projects.some((project) => project.id === projectID)) {
     return mockError("project_not_found", "Project not found", 404);
+  }
+  if (rest[0] === "analytics") {
+    return handleAnalyticsAPI(request, state, projectID, rest.slice(1));
   }
   return handleMetricScopeTelemetry(
     request,
