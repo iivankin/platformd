@@ -1,6 +1,7 @@
 import { handleAccessSettingsAPI } from "./access-settings";
 import { handleBackupsAPI } from "./backups";
 import { apiSegments } from "./http";
+import { handleMailAPI } from "./mail";
 import type { MockState } from "./state";
 import { handleSystemAPI } from "./system";
 
@@ -12,6 +13,7 @@ export const handleCoreAPI = async (
 ): Promise<Response | undefined> => {
   const segments = apiSegments(pathname);
   return (
+    (await handleMailAPI(request, state, segments)) ??
     (await handleBackupsAPI(request, state, segments)) ??
     (await handleAccessSettingsAPI(request, state, segments)) ??
     handleSystemAPI(request, state, segments, url)

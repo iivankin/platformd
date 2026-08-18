@@ -20,6 +20,7 @@ import type {
   InfrastructureLogWindow,
   InstallationSettings,
   LogWindow,
+  MailSettings,
   ManagedPostgres,
   ManagedRedis,
   Meta,
@@ -65,6 +66,7 @@ export interface MockState {
   infrastructureLogs: InfrastructureLogWindow;
   listeners: Record<string, ServiceListener[]>;
   logs: Record<string, LogWindow>;
+  mail: Omit<MailSettings, "services">;
   meta: Meta;
   networkGateways: Record<string, NetworkGateway>;
   objectMetadata: Record<string, ObjectMetadata[]>;
@@ -347,6 +349,11 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
   infrastructureLogs: { records: [] },
   listeners: {},
   logs: {},
+  mail: {
+    errorAlerts: [],
+    metricAlerts: [],
+    smtp: { configured: false, passwordSet: false },
+  },
   meta: {
     architecture: "arm64",
     os: "darwin",
@@ -409,6 +416,49 @@ export const createMockState = (scenario: MockScenario): MockState => {
   state.canvases[project.id] = canvas;
   state.services[service.id] = service;
   state.previews[service.id] = [];
+  state.mail = {
+    errorAlerts: [
+      {
+        createdAt: now - 86_400_000,
+        enabled: true,
+        eventTypes: ["issue_created", "issue_regressed"],
+        id: "mail-error-demo",
+        name: "Production errors",
+        recipients: ["ops@mock.local"],
+        serviceIds: [service.id],
+        updatedAt: now - 86_400_000,
+      },
+    ],
+    metricAlerts: [
+      {
+        createdAt: now - 3_600_000,
+        enabled: true,
+        firing: false,
+        id: "mail-metric-demo",
+        name: "API latency",
+        operator: "gt",
+        projectId: project.id,
+        recipients: ["ops@mock.local"],
+        scope: "service",
+        serviceId: service.id,
+        sql: "SELECT bucket AS time, avg(value) AS value FROM metrics WHERE name = 'http.server.duration' GROUP BY bucket",
+        threshold: 500,
+        updatedAt: now - 3_600_000,
+        windowSeconds: 300,
+      },
+    ],
+    smtp: {
+      configured: true,
+      encryption: "starttls",
+      fromAddress: "alerts@mock.local",
+      fromName: "platformd",
+      host: "smtp.mock.local",
+      passwordSet: true,
+      port: 587,
+      updatedAt: now - 3_600_000,
+      username: "alerts",
+    },
+  };
   state.postgres[postgres.id] = postgres;
   state.postgresExtensions[postgres.id] = [
     {

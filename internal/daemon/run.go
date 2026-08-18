@@ -43,6 +43,7 @@ import (
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/managedstats"
+	"github.com/iivankin/platformd/internal/mailer"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -389,8 +390,20 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure service telemetry webhooks: %w", err)
 	}
 	defer telemetryWebhooks.Close()
+	outgoingMail, err := mailer.New(mailer.Config{
+		Store: store, Master: key, InstallationID: installation.ID,
+		OnError: func(mailErr error) { log.Printf("mailer: %v", mailErr) },
+	})
+	if err != nil {
+		return fmt.Errorf("configure mailer: %w", err)
+	}
+	defer outgoingMail.Close()
+	enqueueTelemetry := func(serviceID string, payload []byte) {
+		telemetryWebhooks.Enqueue(serviceID, payload)
+		outgoingMail.EnqueueServiceError(serviceID, payload)
+	}
 	serviceTelemetry, err := telemetry.NewServiceManager(
-		telemetryProcess, runtime, telemetryCredentials, telemetryWebhooks.Enqueue,
+		telemetryProcess, runtime, telemetryCredentials, enqueueTelemetry,
 	)
 	if err != nil {
 		return fmt.Errorf("configure service telemetry: %w", err)
@@ -545,6 +558,10 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		store: store, manager: serviceTelemetry, certificates: certificates,
 		cloudflare: cloudflareDNS, publicMu: publicMutationMu,
 		adminHostname: installation.AdminHostname, master: key,
+	}
+	outgoingMail.SetMetricQuerier(mailMetricQuery{repository: serviceTelemetryRepository})
+	if !installation.RecoveryMode {
+		go outgoingMail.Run(ctx)
 	}
 	var disasterRecoveryProgress *recoveryProgress
 	if installation.RecoveryMode {
@@ -968,6 +985,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		server.WithManagedStats(managedStats),
 		server.WithObjectStores(objectStoreApplication),
 		server.WithInstallationSettings(installationSettings, cancelDaemon),
+		server.WithMailer(outgoingMail),
 		server.WithCloudflareDNS(cloudflareDNS),
 		server.WithCloudflareMesh(cloudflareMesh),
 		server.WithBackupTargets(backupTargets),

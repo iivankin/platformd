@@ -5,10 +5,14 @@ import {
   createMetricChart,
   createAPIToken,
   createBackupTarget,
+  createMailErrorAlert,
+  createMailMetricAlert,
   configureCloudflareMesh,
   createNetworkGateway,
   createProject,
   deleteNetworkGateway,
+  deleteMailErrorAlert,
+  deleteMailMetricAlert,
   deleteProject,
   deleteService,
   fetchAPITokens,
@@ -36,6 +40,7 @@ import {
   fetchManagedRedis,
   fetchManagedRedisStats,
   fetchManagedRedisStatsHistory,
+  fetchMailSettings,
   fetchHostNetworkAddresses,
   fetchMeta,
   fetchNetworkGateway,
@@ -73,6 +78,8 @@ import {
   updateServiceTelemetryBrowserTunnel,
   updateServiceTelemetryPublicAccess,
   queryManagedPostgres,
+  saveSMTPSettings,
+  sendTestMail,
 } from "../web/api";
 import {
   postgresDeleteRowsSQL,
@@ -172,6 +179,80 @@ describe("mock API", () => {
     await expect(
       fetchCloudflareMeshCredential(undefined, mockFetch)
     ).resolves.toEqual({ accountId, apiToken });
+  });
+
+  test("configures installation mail sending without returning the SMTP password", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+    const settings = await fetchMailSettings(undefined, mockFetch);
+    expect(settings.smtp).toMatchObject({
+      configured: true,
+      host: "smtp.mock.local",
+      passwordSet: true,
+    });
+    expect(settings.smtp).not.toHaveProperty("password");
+    expect(settings.errorAlerts).toHaveLength(1);
+    expect(settings.metricAlerts[0]?.serviceId).toBe("service-api");
+    expect(settings.services).toEqual([
+      {
+        id: "service-api",
+        name: "api",
+        projectId: "project-demo",
+        projectName: "storefront",
+      },
+    ]);
+
+    const smtp = await saveSMTPSettings(
+      {
+        encryption: "tls",
+        fromAddress: "alerts@mock.local",
+        fromName: "platformd",
+        host: "localhost",
+        password: "replacement-secret",
+        port: 465,
+        username: "alerts",
+      },
+      mockFetch
+    );
+    expect(smtp).toMatchObject({
+      configured: true,
+      encryption: "tls",
+      host: "localhost",
+      passwordSet: true,
+      port: 465,
+    });
+    expect(smtp).not.toHaveProperty("password");
+    await sendTestMail("ops@mock.local", mockFetch);
+
+    const errorAlert = await createMailErrorAlert(
+      {
+        enabled: true,
+        eventTypes: ["issue_resolved"],
+        name: "Resolved issues",
+        recipients: ["oncall@mock.local"],
+        serviceIds: [],
+      },
+      mockFetch
+    );
+    expect(errorAlert.serviceIds).toEqual([]);
+    const metricAlert = await createMailMetricAlert(
+      {
+        enabled: true,
+        name: "Error rate",
+        operator: "gte",
+        recipients: ["oncall@mock.local"],
+        scope: "installation",
+        sql: "SELECT bucket AS time, sum(value) AS value FROM metrics GROUP BY bucket",
+        threshold: 10,
+        windowSeconds: 60,
+      },
+      mockFetch
+    );
+    expect(metricAlert.firing).toBe(false);
+    await deleteMailErrorAlert(errorAlert.id, mockFetch);
+    await deleteMailMetricAlert(metricAlert.id, mockFetch);
+    const after = await fetchMailSettings(undefined, mockFetch);
+    expect(after.errorAlerts).toHaveLength(1);
+    expect(after.metricAlerts).toHaveLength(1);
   });
 
   test("returns detected listening ports for live resources", async () => {

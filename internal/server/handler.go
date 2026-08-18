@@ -19,6 +19,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerports"
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/installationsettings"
+	"github.com/iivankin/platformd/internal/mailer"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedstats"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -58,6 +59,7 @@ type handlerConfig struct {
 	objectStores            *objectstore.Application
 	installationSettings    *installationsettings.Application
 	afterInstallationChange func()
+	mailer                  *mailer.Application
 	cloudflareDNS           *cloudflaredns.Application
 	cloudflareMesh          *cloudflaremesh.Application
 	backupTargets           *backup.TargetApplication
@@ -196,6 +198,12 @@ func WithInstallationSettings(application *installationsettings.Application, aft
 	return func(config *handlerConfig) {
 		config.installationSettings = application
 		config.afterInstallationChange = afterInstallationChange
+	}
+}
+
+func WithMailer(application *mailer.Application) Option {
+	return func(config *handlerConfig) {
+		config.mailer = application
 	}
 }
 
@@ -359,6 +367,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.installationSettings != nil {
 		registerInstallationSettingsRoutes(mux, config)
+	}
+	if config.mailer != nil {
+		registerMailRoutes(mux, config)
 	}
 	if config.cloudflareDNS != nil {
 		registerCloudflareDNSRoutes(mux, config)

@@ -222,3 +222,32 @@ PRAGMA user_version = 15;`); err != nil {
 		t.Fatalf("schema version/tunnel column = %d/%d", version, columnCount)
 	}
 }
+
+func TestMigrateSchemaVersionSeventeenAddsMailTables(t *testing.T) {
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE projects (id TEXT PRIMARY KEY) STRICT;
+CREATE TABLE services (id TEXT PRIMARY KEY) STRICT;
+PRAGMA user_version = 17;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionSeventeen(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version, tables int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`
+SELECT count(*) FROM sqlite_schema
+WHERE type = 'table' AND name IN ('smtp_settings', 'mail_error_alerts', 'mail_metric_alerts')`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if version != 18 || tables != 3 {
+		t.Fatalf("schema version/tables = %d/%d", version, tables)
+	}
+}

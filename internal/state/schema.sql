@@ -609,4 +609,69 @@ CREATE TABLE analytics_experiments (
 
 CREATE INDEX analytics_experiments_flag_idx ON analytics_experiments(flag_id, started_at, id);
 
-PRAGMA user_version = 17;
+CREATE TABLE smtp_settings (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  host TEXT NOT NULL CHECK (length(host) BETWEEN 1 AND 253),
+  port INTEGER NOT NULL CHECK (port BETWEEN 1 AND 65535),
+  username TEXT NOT NULL CHECK (length(username) <= 320),
+  password_encrypted BLOB NOT NULL,
+  from_address TEXT NOT NULL CHECK (length(from_address) BETWEEN 3 AND 320),
+  from_name TEXT NOT NULL DEFAULT '' CHECK (length(from_name) <= 80),
+  encryption TEXT NOT NULL CHECK (encryption IN ('none', 'starttls', 'tls')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE mail_error_alerts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  recipients_json TEXT NOT NULL CHECK (
+    json_valid(recipients_json) AND json_type(recipients_json) = 'array'
+    AND json_array_length(recipients_json) BETWEEN 1 AND 20
+  ),
+  event_types_json TEXT NOT NULL CHECK (
+    json_valid(event_types_json) AND json_type(event_types_json) = 'array'
+    AND json_array_length(event_types_json) BETWEEN 1 AND 3
+  ),
+  service_ids_json TEXT NOT NULL CHECK (
+    json_valid(service_ids_json) AND json_type(service_ids_json) = 'array'
+    AND json_array_length(service_ids_json) <= 50
+  ),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX mail_error_alerts_created_idx ON mail_error_alerts(created_at, id);
+
+CREATE TABLE mail_metric_alerts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
+  enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+  recipients_json TEXT NOT NULL CHECK (
+    json_valid(recipients_json) AND json_type(recipients_json) = 'array'
+    AND json_array_length(recipients_json) BETWEEN 1 AND 20
+  ),
+  scope_kind TEXT NOT NULL CHECK (scope_kind IN ('installation', 'project', 'service')),
+  project_id TEXT REFERENCES projects(id) ON DELETE CASCADE,
+  service_id TEXT REFERENCES services(id) ON DELETE CASCADE,
+  sql TEXT NOT NULL CHECK (length(sql) BETWEEN 1 AND 16384),
+  operator TEXT NOT NULL CHECK (operator IN ('gt', 'gte', 'lt', 'lte')),
+  threshold REAL NOT NULL,
+  window_seconds INTEGER NOT NULL CHECK (window_seconds BETWEEN 60 AND 86400),
+  firing INTEGER NOT NULL DEFAULT 0 CHECK (firing IN (0, 1)),
+  last_value REAL,
+  last_evaluated_at INTEGER,
+  last_sent_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  CHECK (
+    (scope_kind = 'installation' AND project_id IS NULL AND service_id IS NULL) OR
+    (scope_kind = 'project' AND project_id IS NOT NULL AND service_id IS NULL) OR
+    (scope_kind = 'service' AND project_id IS NOT NULL AND service_id IS NOT NULL)
+  )
+) STRICT;
+
+CREATE INDEX mail_metric_alerts_scope_idx ON mail_metric_alerts(scope_kind, project_id, service_id, created_at, id);
+
+PRAGMA user_version = 18;

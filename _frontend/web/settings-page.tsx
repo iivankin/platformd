@@ -5,12 +5,14 @@ import { BackupsPage } from "@/backups-page";
 import { PageTabs } from "@/page-tabs";
 import { SettingsCloudflarePage } from "@/settings-cloudflare-page";
 import { SettingsGeneralPage } from "@/settings-general-page";
+import { SettingsMailPage } from "@/settings-mail-page";
 import { SettingsMCPPage } from "@/settings-mcp-page";
 import type { UpdateStatusState } from "@/use-update-status";
 
 const tabs = [
   { label: "General", path: "/settings/general" },
   { label: "Cloudflare", path: "/settings/cloudflare" },
+  { label: "Mail sending", path: "/settings/mail" },
   { label: "Backups", path: "/settings/backups" },
   { label: "MCP & API", path: "/settings/mcp" },
 ];
@@ -28,6 +30,7 @@ export const SettingsPage = ({
       <Route element={<Navigate replace to="general" />} index />
       <Route element={<SettingsGeneralPage update={update} />} path="general" />
       <Route element={<SettingsCloudflarePage />} path="cloudflare" />
+      <Route element={<SettingsMailPage projects={projects} />} path="mail" />
       <Route element={<BackupsPage />} path="backups/*" />
       <Route element={<SettingsMCPPage projects={projects} />} path="mcp" />
       <Route element={<Navigate replace to="general" />} path="*" />

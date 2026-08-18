@@ -4800,6 +4800,254 @@ export const deleteOriginCertificate = async (
   return installationSettingsSchema.parse(await response.json());
 };
 
+const smtpSettingsSchema = z.object({
+  configured: z.boolean(),
+  encryption: z.enum(["none", "starttls", "tls"]).optional(),
+  fromAddress: z.string().optional(),
+  fromName: z.string().optional(),
+  host: z.string().optional(),
+  passwordSet: z.boolean(),
+  port: z.number().int().min(1).max(65_535).optional(),
+  updatedAt: z.number().int().nonnegative().optional(),
+  username: z.string().optional(),
+});
+
+const mailErrorEventSchema = z.enum([
+  "issue_created",
+  "issue_regressed",
+  "issue_resolved",
+]);
+
+const mailErrorAlertSchema = z.object({
+  createdAt: z.number().int().positive(),
+  enabled: z.boolean(),
+  eventTypes: z.array(mailErrorEventSchema).min(1),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  recipients: z.array(z.email()).min(1),
+  serviceIds: z.array(z.string().min(1)),
+  updatedAt: z.number().int().positive(),
+});
+
+const mailMetricOperatorSchema = z.enum(["gt", "gte", "lt", "lte"]);
+
+const mailMetricAlertSchema = z.object({
+  createdAt: z.number().int().positive(),
+  enabled: z.boolean(),
+  firing: z.boolean(),
+  id: z.string().min(1),
+  lastEvaluatedAt: z.number().int().positive().optional(),
+  lastValue: z.number().optional(),
+  name: z.string().min(1),
+  operator: mailMetricOperatorSchema,
+  projectId: z.string().min(1).optional(),
+  recipients: z.array(z.email()).min(1),
+  scope: z.enum(["installation", "project", "service"]),
+  serviceId: z.string().min(1).optional(),
+  sql: z.string().min(1),
+  threshold: z.number(),
+  updatedAt: z.number().int().positive(),
+  windowSeconds: z.number().int().min(60).max(86_400),
+});
+
+const mailAlertServiceSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  projectId: z.string().min(1),
+  projectName: z.string().min(1),
+});
+
+const mailSettingsSchema = z.object({
+  errorAlerts: z.array(mailErrorAlertSchema),
+  metricAlerts: z.array(mailMetricAlertSchema),
+  services: z.array(mailAlertServiceSchema),
+  smtp: smtpSettingsSchema,
+});
+
+export type SMTPSettings = z.infer<typeof smtpSettingsSchema>;
+export type MailErrorEvent = z.infer<typeof mailErrorEventSchema>;
+export type MailErrorAlert = z.infer<typeof mailErrorAlertSchema>;
+export type MailMetricOperator = z.infer<typeof mailMetricOperatorSchema>;
+export type MailMetricAlert = z.infer<typeof mailMetricAlertSchema>;
+export type MailAlertService = z.infer<typeof mailAlertServiceSchema>;
+export type MailSettings = z.infer<typeof mailSettingsSchema>;
+
+export interface SMTPInput {
+  encryption: "none" | "starttls" | "tls";
+  fromAddress: string;
+  fromName: string;
+  host: string;
+  password: string;
+  port: number;
+  username: string;
+}
+
+export interface MailErrorAlertInput {
+  enabled: boolean;
+  eventTypes: MailErrorEvent[];
+  name: string;
+  recipients: string[];
+  serviceIds: string[];
+}
+
+export interface MailMetricAlertInput {
+  enabled: boolean;
+  name: string;
+  operator: MailMetricOperator;
+  projectId?: string;
+  recipients: string[];
+  scope: "installation" | "project" | "service";
+  serviceId?: string;
+  sql: string;
+  threshold: number;
+  windowSeconds: number;
+}
+
+const mailPath = `${settingsPath}/mail`;
+
+export const fetchMailSettings = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<MailSettings> => {
+  const response = await fetcher(mailPath, {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Mail settings request failed");
+  }
+  return mailSettingsSchema.parse(await response.json());
+};
+
+export const saveSMTPSettings = async (
+  input: SMTPInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<SMTPSettings> => {
+  const response = await fetcher(`${mailPath}/smtp`, {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "PUT",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "SMTP configuration failed");
+  }
+  return smtpSettingsSchema.parse(await response.json());
+};
+
+export const sendTestMail = async (
+  to: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(`${mailPath}/test`, {
+    body: JSON.stringify({ to }),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Test email failed");
+  }
+};
+
+export const createMailErrorAlert = async (
+  input: MailErrorAlertInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<MailErrorAlert> => {
+  const response = await fetcher(`${mailPath}/error-alerts`, {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Error alert creation failed");
+  }
+  return mailErrorAlertSchema.parse(await response.json());
+};
+
+export const updateMailErrorAlert = async (
+  alertID: string,
+  input: MailErrorAlertInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<MailErrorAlert> => {
+  const response = await fetcher(
+    `${mailPath}/error-alerts/${encodeURIComponent(alertID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "Error alert update failed");
+  }
+  return mailErrorAlertSchema.parse(await response.json());
+};
+
+export const deleteMailErrorAlert = async (
+  alertID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${mailPath}/error-alerts/${encodeURIComponent(alertID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "Error alert deletion failed");
+  }
+};
+
+export const createMailMetricAlert = async (
+  input: MailMetricAlertInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<MailMetricAlert> => {
+  const response = await fetcher(`${mailPath}/metric-alerts`, {
+    body: JSON.stringify(input),
+    headers: { Accept: "application/json", "Content-Type": "application/json" },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(response, "Metric alert creation failed");
+  }
+  return mailMetricAlertSchema.parse(await response.json());
+};
+
+export const updateMailMetricAlert = async (
+  alertID: string,
+  input: MailMetricAlertInput,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<MailMetricAlert> => {
+  const response = await fetcher(
+    `${mailPath}/metric-alerts/${encodeURIComponent(alertID)}`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "Metric alert update failed");
+  }
+  return mailMetricAlertSchema.parse(await response.json());
+};
+
+export const deleteMailMetricAlert = async (
+  alertID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `${mailPath}/metric-alerts/${encodeURIComponent(alertID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "Metric alert deletion failed");
+  }
+};
+
 const cloudflareDNSSettingsSchema = z.object({
   configured: z.boolean(),
   updatedAt: z.number().int().nonnegative(),
