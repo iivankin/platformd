@@ -43,6 +43,9 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 			t.Fatalf("script missing %q", fragment)
 		}
 	}
+	if strings.Contains(source, "function identify") || strings.Contains(source, "identify:identify") {
+		t.Fatal("script must not expose identify")
+	}
 
 	pageview := postBrowser(handler, `{
 		"n":"$pageview","u":"https://shop.example/pricing?utm_source=google","t":"Pricing",
@@ -82,18 +85,6 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 		t.Fatalf("event ids must be hashed and distinct: %q %q", first.EventID, second.EventID)
 	}
 
-	identify := postBrowser(handler, `{
-		"n":"$identify","u":"https://shop.example/account","t":"Account","r":"","w":"1440x900","l":"en-US",
-		"p":{"user_id":"user-42"},"i":false,"s":"sid-1"
-	}`, nil)
-	if identify.Code != http.StatusNoContent {
-		t.Fatalf("identify status = %d", identify.Code)
-	}
-	third := captured.snapshot()[2]
-	if third.EventName != "$identify" || third.AliasUser != "user-42" {
-		t.Fatalf("identify event = %+v", third)
-	}
-
 	flag := postBrowser(handler, `{
 		"n":"$flag_called","u":"https://shop.example/","t":"Home","r":"","w":"1440x900","l":"en-US",
 		"p":{"flag":"pricing-v2","variant":"true"},"i":false,"s":"sid-1"
@@ -101,11 +92,11 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 	if flag.Code != http.StatusNoContent {
 		t.Fatalf("flag status = %d", flag.Code)
 	}
-	if captured.snapshot()[3].EventName != "$flag_called" {
-		t.Fatalf("flag event = %+v", captured.snapshot()[3])
+	if captured.snapshot()[2].EventName != "$flag_called" {
+		t.Fatalf("flag event = %+v", captured.snapshot()[2])
 	}
-	if propValue(captured.snapshot()[3], "experiment_id") != "exp-1" {
-		t.Fatalf("flag experiment_id = %q", propValue(captured.snapshot()[3], "experiment_id"))
+	if propValue(captured.snapshot()[2], "experiment_id") != "exp-1" {
+		t.Fatalf("flag experiment_id = %q", propValue(captured.snapshot()[2], "experiment_id"))
 	}
 
 	spoof := postBrowser(handler, `{
@@ -115,8 +106,8 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 	if spoof.Code != http.StatusNoContent {
 		t.Fatalf("spoofed flag status = %d", spoof.Code)
 	}
-	if propValue(captured.snapshot()[4], "experiment_id") != "exp-1" {
-		t.Fatalf("client experiment_id must be replaced: %q", propValue(captured.snapshot()[4], "experiment_id"))
+	if propValue(captured.snapshot()[3], "experiment_id") != "exp-1" {
+		t.Fatalf("client experiment_id must be replaced: %q", propValue(captured.snapshot()[3], "experiment_id"))
 	}
 
 	beforeGPC := captured.len()

@@ -24,7 +24,10 @@ func TestClassifyBotKinds(t *testing.T) {
 		{"Mozilla/5.0 GPTBot", "training", "GPTBot"},
 		{"ClaudeBot/1.0", "training", "ClaudeBot"},
 		{"OAI-SearchBot", "search", "OAI-SearchBot"},
+		{"Bytespider", "search", "Bytespider"},
 		{"ChatGPT-User", "fetch", "ChatGPT-User"},
+		{"Google-Extended", "", ""},
+		{"Applebot-Extended", "", ""},
 		{"Mozilla/5.0 Chrome/120", "", ""},
 	}
 	for _, test := range cases {

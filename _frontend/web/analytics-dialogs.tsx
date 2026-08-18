@@ -748,7 +748,7 @@ export const FlagDialog = ({
   return (
     <Modal
       className="max-w-2xl"
-      description="OpenFeature flags evaluate with targetingKey = platformd.anonymousId(). Identify aliases are not used."
+      description="OpenFeature flags evaluate with targetingKey = platformd.anonymousId()."
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) {
@@ -945,9 +945,8 @@ export const FlagDialog = ({
             </p>
             <p className="text-[10px] leading-4 text-muted-foreground">
               OR groups, first match wins. Properties come from OpenFeature
-              context the app sets, not identify. Rollout is the share that
-              leave the default; scheduled steps replace that share when their
-              time arrives.
+              context the app sets. Rollout is the share that leave the default;
+              scheduled steps replace that share when their time arrives.
             </p>
             {targeting.groups.map((group, groupIndex) => (
               <div
@@ -1488,17 +1487,10 @@ export const AnalyticsFilterPopover = ({
   const [value, setValue] = useState("");
   const [lookup, setLookup] = useState<string[]>([]);
   const lookupDimension = useMemo(() => {
-    if (
-      dimension === "page" ||
-      dimension === "entry_page" ||
-      dimension === "exit_page"
-    ) {
-      return "pathname";
+    if (dimension === "entry_page" || dimension === "exit_page") {
+      return "page";
     }
-    if (dimension === "event" || dimension === "hostname") {
-      return dimension;
-    }
-    return "";
+    return dimension;
   }, [dimension]);
 
   useEffect(() => {

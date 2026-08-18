@@ -8,6 +8,7 @@ use crate::storage::{Store, chdb_string};
 
 const SETTINGS: &str = "SETTINGS max_execution_time=5, max_memory_usage=268435456, max_threads=2";
 const EVENTS: &str = ANALYTICS_EVENTS;
+const PAGE_LABEL: &str = "if(hostname = '', pathname, concat(hostname, pathname))";
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -138,8 +139,6 @@ pub struct ProductAnalyticsEvent {
     pub cls: Option<f64>,
     pub fcp: Option<f64>,
     pub ttfb: Option<f64>,
-    #[serde(default, skip_serializing)]
-    pub alias_user: Option<String>,
 }
 
 impl Store {
@@ -151,17 +150,6 @@ impl Store {
     }
 
     fn ingest_product_analytics_blocking(&self, event: ProductAnalyticsEvent) -> Result<()> {
-        if !event.alias_user.as_deref().unwrap_or("").is_empty() {
-            self.insert_json_rows(
-                "analytics_aliases",
-                vec![json!({
-                    "tracker_id": event.tracker_id,
-                    "anonymous_id": event.distinct_id,
-                    "distinct_id": event.alias_user,
-                    "created_at": event.timestamp,
-                })],
-            )?;
-        }
         if event.event_name == "$heatmap" {
             let x = prop_i64(&event, "x").unwrap_or(0).clamp(0, 100) as i16;
             let y = prop_i64(&event, "y").unwrap_or(0).clamp(0, 100) as i16;
@@ -187,12 +175,7 @@ impl Store {
         }
         let row = serde_json::to_value(&event)
             .map_err(|error| Error::Storage(format!("encode product analytics event: {error}")))?;
-        let mut row = row
-            .as_object()
-            .cloned()
-            .ok_or_else(|| Error::Storage("product analytics event is not an object".into()))?;
-        row.remove("alias_user");
-        self.insert_json_rows("analytics_events", vec![Value::Object(row)])
+        self.insert_json_rows("analytics_events", vec![row])
     }
 
     pub async fn query_product_analytics(
@@ -287,58 +270,40 @@ impl Store {
     }
 
     fn breakdown(&self, tracker_id: &str, query: &ProductAnalyticsQuery) -> Result<Value> {
-        let dimension = match query.dimension.as_deref().unwrap_or("referrer_source") {
-            "source" | "referrer_source" => "if(referrer_source = '', 'Direct', referrer_source)",
-            "channel" => "channel",
-            "utm_medium" => "utm_medium",
-            "utm_source" => "utm_source",
-            "utm_campaign" => "utm_campaign",
-            "utm_content" => "utm_content",
-            "utm_term" => "utm_term",
-            "page" | "pathname" => "pathname",
-            "hostname" => "hostname",
-            "entry" | "entry_page" => "entry_page",
-            "exit" | "exit_page" => "exit_page",
-            "country" => "country",
-            "region" => "region",
-            "city" => "city",
-            "device" => "device",
-            "browser" => "browser",
-            "os" => "os",
-            "event" => "event_name",
-            "bot_kind" => "bot_kind",
-            "bot_name" => "bot_name",
-            other => {
-                return Err(Error::InvalidRequest(format!(
-                    "unknown analytics dimension {other}"
-                )));
-            }
-        };
+        let requested = query.dimension.as_deref().unwrap_or("referrer_source");
+        let visit_label = visit_breakdown_label(requested);
         let where_sql = event_where(
             tracker_id,
             query,
-            !matches!(
-                query.dimension.as_deref(),
-                Some("bot_kind") | Some("bot_name")
-            ),
+            !matches!(requested, "bot_kind" | "bot_name"),
         )?;
-        let sql = if matches!(
-            query.dimension.as_deref(),
-            Some("entry") | Some("entry_page") | Some("exit") | Some("exit_page")
-        ) {
-            let agg = if matches!(query.dimension.as_deref(), Some("exit") | Some("exit_page")) {
-                "argMax(pathname, timestamp)"
-            } else {
-                "argMin(pathname, timestamp)"
-            };
+        let sql = if let Some(label) = visit_label {
             format!(
                 "SELECT label, uniqExact(distinct_id) AS visitors, count() AS events FROM (\n\
-                   SELECT {agg} AS label, distinct_id\n\
+                   SELECT {label} AS label, distinct_id\n\
                    {EVENTS} WHERE {where_sql} AND event_name = '$pageview'\n\
                    GROUP BY if(session_id = '', distinct_id, session_id), distinct_id\n\
                  ) GROUP BY label ORDER BY visitors DESC LIMIT 9 {SETTINGS}"
             )
         } else {
+            let dimension = match requested {
+                "page" | "pathname" => PAGE_LABEL,
+                "hostname" => "hostname",
+                "country" => "country",
+                "region" => "region",
+                "city" => "city",
+                "device" => "device",
+                "browser" => "browser",
+                "os" => "os",
+                "event" => "event_name",
+                "bot_kind" => "bot_kind",
+                "bot_name" => "bot_name",
+                other => {
+                    return Err(Error::InvalidRequest(format!(
+                        "unknown analytics dimension {other}"
+                    )));
+                }
+            };
             format!(
                 "SELECT {dimension} AS label, uniqExact(distinct_id) AS visitors, count() AS events\n\
                  {EVENTS} WHERE {where_sql} AND {VISIT_EVENTS}\n\
@@ -411,8 +376,8 @@ impl Store {
         let where_sql = event_where(tracker_id, query, true)?;
         let sql = format!(
             "SELECT from_path, to_path, uniqExact(distinct_id) AS visitors FROM (\n\
-               SELECT pathname AS from_path,\n\
-                 leadInFrame(pathname) OVER (\n\
+               SELECT {PAGE_LABEL} AS from_path,\n\
+                 leadInFrame({PAGE_LABEL}) OVER (\n\
                    PARTITION BY distinct_id, if(session_id = '', distinct_id, session_id) ORDER BY timestamp\n\
                    ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING\n\
                  ) AS to_path,\n\
@@ -452,7 +417,7 @@ impl Store {
             let mut scoped = query.clone();
             scoped.filters = remaining;
             clauses.push(format!(
-                "distinct_id IN (SELECT original_id {EVENTS} WHERE {})",
+                "distinct_id IN (SELECT distinct_id {EVENTS} WHERE {})",
                 event_where(tracker_id, &scoped, true)?
             ));
         }
@@ -592,33 +557,38 @@ impl Store {
 
     fn lookup(&self, tracker_id: &str, query: &ProductAnalyticsQuery) -> Result<Value> {
         let dimension = query.dimension.as_deref().unwrap_or("pathname");
-        let column = match dimension {
-            "pathname" | "page" => "pathname",
-            "event" => "event_name",
-            "hostname" => "hostname",
-            "source" | "referrer_source" => "referrer_source",
-            "channel" => "channel",
-            "country" => "country",
-            "region" => "region",
-            "city" => "city",
-            "browser" => "browser",
-            "os" => "os",
-            "device" => "device",
-            "utm_source" => "utm_source",
-            "utm_medium" => "utm_medium",
-            "utm_campaign" => "utm_campaign",
-            "utm_content" => "utm_content",
-            "utm_term" => "utm_term",
-            other => {
-                return Err(Error::InvalidRequest(format!("unknown lookup {other}")));
-            }
-        };
         let where_sql = event_where(tracker_id, query, true)?;
-        let sql = format!(
-            "SELECT {column} AS label, count() AS events {EVENTS}\n\
-             WHERE {where_sql} AND {VISIT_EVENTS} AND {column} != ''\n\
-             GROUP BY label ORDER BY events DESC LIMIT 50 {SETTINGS}"
-        );
+        let sql = if let Some(column) = acquisition_entry_expr(dimension) {
+            format!(
+                "SELECT label, count() AS events FROM (\n\
+                   SELECT argMin({column}, timestamp) AS label\n\
+                   {EVENTS} WHERE {where_sql} AND event_name = '$pageview'\n\
+                   GROUP BY if(session_id = '', distinct_id, session_id)\n\
+                 ) WHERE label != ''\n\
+                 GROUP BY label ORDER BY events DESC LIMIT 50 {SETTINGS}"
+            )
+        } else {
+            let column = match dimension {
+                "page" => PAGE_LABEL,
+                "pathname" => "pathname",
+                "event" => "event_name",
+                "hostname" => "hostname",
+                "country" => "country",
+                "region" => "region",
+                "city" => "city",
+                "browser" => "browser",
+                "os" => "os",
+                "device" => "device",
+                other => {
+                    return Err(Error::InvalidRequest(format!("unknown lookup {other}")));
+                }
+            };
+            format!(
+                "SELECT {column} AS label, count() AS events {EVENTS}\n\
+                 WHERE {where_sql} AND {VISIT_EVENTS} AND {column} != ''\n\
+                 GROUP BY label ORDER BY events DESC LIMIT 50 {SETTINGS}"
+            )
+        };
         Ok(Value::Array(self.query_json_rows(&sql)?))
     }
 }
@@ -726,72 +696,34 @@ fn filter_clause(
         filter.dimension.as_str(),
         "entry_page" | "entry" | "exit_page" | "exit"
     ) {
-        let agg = if filter.dimension.starts_with("exit") {
-            "argMax(pathname, timestamp)"
+        let label = if filter.dimension.starts_with("exit") {
+            format!("argMax({PAGE_LABEL}, timestamp)")
         } else {
-            "argMin(pathname, timestamp)"
+            format!("argMin({PAGE_LABEL}, timestamp)")
         };
-        let compare = match filter.operator.as_str() {
-            "is" => format!(
-                "label IN ({})",
-                values
-                    .iter()
-                    .map(|value| chdb_string(value))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            "is_not" => format!(
-                "label NOT IN ({})",
-                values
-                    .iter()
-                    .map(|value| chdb_string(value))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ),
-            "contains" => format!(
-                "positionCaseInsensitiveUTF8(label, {}) > 0",
-                chdb_string(values[0])
-            ),
-            "does_not_contain" => format!(
-                "positionCaseInsensitiveUTF8(label, {}) = 0",
-                chdb_string(values[0])
-            ),
-            other => {
-                return Err(Error::InvalidRequest(format!(
-                    "unknown analytics filter operator {other}"
-                )));
-            }
-        };
-        let mut inner = vec![
-            format!("tracker_id = {}", chdb_string(tracker_id)),
-            "event_name = '$pageview'".into(),
-            "bot_kind = ''".into(),
-        ];
-        let time = time_clause(query);
-        if !time.is_empty() {
-            inner.push(time);
-        }
-        return Ok(Some(format!(
-            "if(session_id = '', distinct_id, session_id) IN (\n\
-               SELECT visit_id FROM (\n\
-                 SELECT if(session_id = '', distinct_id, session_id) AS visit_id, {agg} AS label\n\
-                 {EVENTS} WHERE {} GROUP BY visit_id\n\
-               ) WHERE {compare}\n\
-             )",
-            inner.join(" AND ")
-        )));
+        return visit_entry_filter(
+            tracker_id,
+            query,
+            &label,
+            filter.operator.as_str(),
+            &values,
+        );
+    }
+    if let Some(column) = acquisition_entry_expr(filter.dimension.as_str()) {
+        return visit_entry_filter(
+            tracker_id,
+            query,
+            &format!("argMin({column}, timestamp)"),
+            filter.operator.as_str(),
+            &values,
+        );
+    }
+    if matches!(filter.dimension.as_str(), "page") {
+        return page_filter_clause(filter.operator.as_str(), &values);
     }
     let column = match filter.dimension.as_str() {
-        "page" | "pathname" => "pathname",
+        "pathname" => "pathname",
         "hostname" => "hostname",
-        "source" | "referrer_source" => "referrer_source",
-        "channel" => "channel",
-        "referrer" => "referrer_domain",
-        "utm_medium" => "utm_medium",
-        "utm_source" => "utm_source",
-        "utm_campaign" => "utm_campaign",
-        "utm_content" => "utm_content",
-        "utm_term" => "utm_term",
         "country" => "country",
         "region" => "region",
         "city" => "city",
@@ -836,6 +768,146 @@ fn filter_clause(
             )));
         }
     }))
+}
+
+fn visit_breakdown_label(dimension: &str) -> Option<String> {
+    if matches!(dimension, "entry" | "entry_page") {
+        return Some(format!("argMin({PAGE_LABEL}, timestamp)"));
+    }
+    if matches!(dimension, "exit" | "exit_page") {
+        return Some(format!("argMax({PAGE_LABEL}, timestamp)"));
+    }
+    acquisition_entry_expr(dimension).map(|column| format!("argMin({column}, timestamp)"))
+}
+
+fn acquisition_entry_expr(dimension: &str) -> Option<&'static str> {
+    Some(match dimension {
+        "source" | "referrer_source" => "if(referrer_source = '', 'Direct', referrer_source)",
+        "channel" => "if(channel = '', 'Direct', channel)",
+        "referrer" => "referrer_domain",
+        "utm_medium" => "utm_medium",
+        "utm_source" => "utm_source",
+        "utm_campaign" => "utm_campaign",
+        "utm_content" => "utm_content",
+        "utm_term" => "utm_term",
+        _ => return None,
+    })
+}
+
+fn visit_entry_filter(
+    tracker_id: &str,
+    query: &ProductAnalyticsQuery,
+    label_expr: &str,
+    operator: &str,
+    values: &[&str],
+) -> Result<Option<String>> {
+    let compare = match operator {
+        "is" => format!(
+            "label IN ({})",
+            values
+                .iter()
+                .map(|value| chdb_string(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        "is_not" => format!(
+            "label NOT IN ({})",
+            values
+                .iter()
+                .map(|value| chdb_string(value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        "contains" => format!(
+            "positionCaseInsensitiveUTF8(label, {}) > 0",
+            chdb_string(values[0])
+        ),
+        "does_not_contain" => format!(
+            "positionCaseInsensitiveUTF8(label, {}) = 0",
+            chdb_string(values[0])
+        ),
+        other => {
+            return Err(Error::InvalidRequest(format!(
+                "unknown analytics filter operator {other}"
+            )));
+        }
+    };
+    let mut inner = vec![
+        format!("tracker_id = {}", chdb_string(tracker_id)),
+        "event_name = '$pageview'".into(),
+        "bot_kind = ''".into(),
+    ];
+    let time = time_clause(query);
+    if !time.is_empty() {
+        inner.push(time);
+    }
+    Ok(Some(format!(
+        "if(session_id = '', distinct_id, session_id) IN (\n\
+           SELECT visit_id FROM (\n\
+             SELECT if(session_id = '', distinct_id, session_id) AS visit_id, {label_expr} AS label\n\
+             {EVENTS} WHERE {} GROUP BY visit_id\n\
+           ) WHERE {compare}\n\
+         )",
+        inner.join(" AND ")
+    )))
+}
+
+fn page_filter_clause(operator: &str, values: &[&str]) -> Result<Option<String>> {
+    if matches!(operator, "contains" | "does_not_contain") {
+        let needle = chdb_string(values[0]);
+        return Ok(Some(if operator == "contains" {
+            format!("positionCaseInsensitiveUTF8({PAGE_LABEL}, {needle}) > 0")
+        } else {
+            format!("positionCaseInsensitiveUTF8({PAGE_LABEL}, {needle}) = 0")
+        }));
+    }
+    let mut hosted = Vec::new();
+    let mut paths = Vec::new();
+    for value in values {
+        if value.starts_with('/') {
+            paths.push(*value);
+        } else {
+            hosted.push(*value);
+        }
+    }
+    let negate = match operator {
+        "is" => false,
+        "is_not" => true,
+        other => {
+            return Err(Error::InvalidRequest(format!(
+                "unknown analytics filter operator {other}"
+            )));
+        }
+    };
+    let mut parts = Vec::new();
+    if !hosted.is_empty() {
+        parts.push(in_list(PAGE_LABEL, &hosted, negate));
+    }
+    if !paths.is_empty() {
+        parts.push(in_list("pathname", &paths, negate));
+    }
+    if parts.is_empty() {
+        return Ok(None);
+    }
+    let joiner = if negate { " AND " } else { " OR " };
+    if parts.len() == 1 {
+        Ok(Some(parts.remove(0)))
+    } else {
+        Ok(Some(format!("({})", parts.join(joiner))))
+    }
+}
+
+fn in_list(column: &str, values: &[&str], negate: bool) -> String {
+    let list = values
+        .iter()
+        .map(|value| chdb_string(value))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if negate {
+        format!("{column} NOT IN ({list})")
+    } else {
+        format!("{column} IN ({list})")
+    }
 }
 
 fn step_condition(step: &FunnelStep) -> String {
@@ -926,6 +998,10 @@ mod tests {
             ))
             .await
             .unwrap();
+        let mut dash = event("$pageview", "aid-2", "/", "2026-08-01T12:00:10.000Z");
+        dash.session_id = "sid-2".into();
+        dash.hostname = "dash.example".into();
+        store.ingest_product_analytics(dash).await.unwrap();
         let mut heatmap = event("$heatmap", "aid-1", "/", "2026-08-01T12:02:00.000Z");
         heatmap.props_keys = vec![
             "x".into(),
@@ -935,9 +1011,6 @@ mod tests {
         ];
         heatmap.props_values = vec!["48".into(), "32".into(), "click".into(), "1500".into()];
         store.ingest_product_analytics(heatmap).await.unwrap();
-        let mut identify = event("$identify", "aid-1", "/", "2026-08-01T12:03:00.000Z");
-        identify.alias_user = Some("user-42".into());
-        store.ingest_product_analytics(identify).await.unwrap();
         store
             .ingest_product_analytics(event(
                 "$pageleave",
@@ -956,8 +1029,8 @@ mod tests {
             .unwrap();
         let current = overview["current"][0]["visitors"].as_u64().unwrap_or(0);
         assert_eq!(
-            current, 1,
-            "heatmap and identify must not inflate visitors: {overview}"
+            current, 2,
+            "heatmap must not inflate visitors: {overview}"
         );
 
         let mut events_lookup = query("lookup", from, to);
@@ -969,7 +1042,7 @@ mod tests {
         assert_eq!(
             event_labels[0]["label"],
             "$pageview",
-            "lookup must hide $identify: {event_labels}"
+            "lookup must hide $heatmap: {event_labels}"
         );
         assert_eq!(event_labels.as_array().map(Vec::len).unwrap_or(0), 1);
 
@@ -979,14 +1052,78 @@ mod tests {
             .query_product_analytics("tracker".into(), entry)
             .await
             .unwrap();
-        assert_eq!(entry_rows[0]["label"], "/", "entry = {entry_rows}");
+        let entry_labels: Vec<&str> = entry_rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["label"].as_str())
+            .collect();
+        assert!(
+            entry_labels.contains(&"shop.example/") && entry_labels.contains(&"dash.example/"),
+            "entry = {entry_rows}"
+        );
+
+        let mut pages = query("breakdown", from, to);
+        pages.dimension = Some("page".into());
+        let page_rows = store
+            .query_product_analytics("tracker".into(), pages)
+            .await
+            .unwrap();
+        let page_labels: Vec<&str> = page_rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|row| row["label"].as_str())
+            .collect();
+        assert!(
+            page_labels.contains(&"shop.example/")
+                && page_labels.contains(&"dash.example/")
+                && page_labels.contains(&"shop.example/pricing"),
+            "pages = {page_rows}"
+        );
+
+        let mut hosted = query("overview", from, to);
+        hosted.filters = vec![AnalyticsFilter {
+            dimension: "page".into(),
+            operator: "is".into(),
+            value: FilterValue::One("dash.example/".into()),
+        }];
+        let hosted_overview = store
+            .query_product_analytics("tracker".into(), hosted)
+            .await
+            .unwrap();
+        assert_eq!(
+            hosted_overview["current"][0]["visitors"]
+                .as_u64()
+                .unwrap_or(0),
+            1,
+            "host page filter = {hosted_overview}"
+        );
+
+        let mut path_only = query("overview", from, to);
+        path_only.filters = vec![AnalyticsFilter {
+            dimension: "page".into(),
+            operator: "is".into(),
+            value: FilterValue::One("/pricing".into()),
+        }];
+        let path_overview = store
+            .query_product_analytics("tracker".into(), path_only)
+            .await
+            .unwrap();
+        assert_eq!(
+            path_overview["current"][0]["visitors"]
+                .as_u64()
+                .unwrap_or(0),
+            1,
+            "path-only page filter = {path_overview}"
+        );
 
         let paths = store
             .query_product_analytics("tracker".into(), query("paths", from, to))
             .await
             .unwrap();
-        assert_eq!(paths[0]["from_path"], "/");
-        assert_eq!(paths[0]["to_path"], "/pricing");
+        assert_eq!(paths[0]["from_path"], "shop.example/");
+        assert_eq!(paths[0]["to_path"], "shop.example/pricing");
 
         let mut heat = query("heatmap", from, to);
         heat.pathname = Some("/".into());
@@ -1072,6 +1209,93 @@ mod tests {
             renamed_rows[0]["exposed"].as_u64().unwrap_or(0),
             1,
             "experiment_id must find exposures after a flag key rename: {renamed_rows}"
+        );
+    }
+
+    #[tokio::test]
+    async fn acquisition_filters_use_visit_entry() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let mut landing = event("$pageview", "aid-utm", "/", "2026-08-01T13:00:00.000Z");
+        landing.session_id = "sid-utm".into();
+        landing.utm_source = "google".into();
+        store.ingest_product_analytics(landing).await.unwrap();
+        let mut later = event(
+            "$pageview",
+            "aid-utm",
+            "/pricing",
+            "2026-08-01T13:01:00.000Z",
+        );
+        later.session_id = "sid-utm".into();
+        store.ingest_product_analytics(later).await.unwrap();
+        let mut organic = event("$pageview", "aid-org", "/", "2026-08-01T13:00:00.000Z");
+        organic.session_id = "sid-org".into();
+        store.ingest_product_analytics(organic).await.unwrap();
+        let mut organic_later = event(
+            "$pageview",
+            "aid-org",
+            "/pricing",
+            "2026-08-01T13:01:00.000Z",
+        );
+        organic_later.session_id = "sid-org".into();
+        store.ingest_product_analytics(organic_later).await.unwrap();
+
+        let from = 1_785_542_400_000;
+        let to = 1_785_715_200_000;
+        let utm = AnalyticsFilter {
+            dimension: "utm_source".into(),
+            operator: "is".into(),
+            value: FilterValue::One("google".into()),
+        };
+        let mut overview = query("overview", from, to);
+        overview.filters = vec![utm.clone()];
+        let overview_rows = store
+            .query_product_analytics("tracker".into(), overview)
+            .await
+            .unwrap();
+        assert_eq!(
+            overview_rows["current"][0]["visitors"]
+                .as_u64()
+                .unwrap_or(0),
+            1,
+            "overview visitors = {overview_rows}"
+        );
+        assert_eq!(
+            overview_rows["current"][0]["pageviews"]
+                .as_u64()
+                .unwrap_or(0),
+            2,
+            "later pageviews without utm must stay in the visit: {overview_rows}"
+        );
+
+        let mut funnel = query("funnel", from, to);
+        funnel.filters = vec![utm];
+        funnel.steps = Some(vec![
+            FunnelStep {
+                kind: "path".into(),
+                value: "/".into(),
+                hostname: None,
+            },
+            FunnelStep {
+                kind: "path".into(),
+                value: "/pricing".into(),
+                hostname: None,
+            },
+        ]);
+        let funnel_rows = store
+            .query_product_analytics("tracker".into(), funnel)
+            .await
+            .unwrap();
+        let reached = funnel_rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["level"].as_u64() == Some(2))
+            .map(|row| row["visitors"].as_u64().unwrap_or(0))
+            .unwrap_or(0);
+        assert_eq!(
+            reached, 1,
+            "utm funnel must count the later untagged step: {funnel_rows}"
         );
     }
 }

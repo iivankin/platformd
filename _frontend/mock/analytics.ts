@@ -100,12 +100,7 @@ const mockRows = (
   }));
 
 const mockBreakdown = (dimension: string) => {
-  if (
-    dimension === "page" ||
-    dimension === "pathname" ||
-    dimension === "entry" ||
-    dimension === "entry_page"
-  ) {
+  if (dimension === "pathname") {
     return mockRows([
       { label: "/", visitors: 2100 },
       { label: "/pricing", visitors: 840 },
@@ -113,11 +108,23 @@ const mockBreakdown = (dimension: string) => {
       { events: 420, label: "/checkout", visitors: 180 },
     ]);
   }
+  if (
+    dimension === "page" ||
+    dimension === "entry" ||
+    dimension === "entry_page"
+  ) {
+    return mockRows([
+      { label: "shop.example/", visitors: 2100 },
+      { label: "dash.example/", visitors: 840 },
+      { label: "shop.example/pricing", visitors: 310 },
+      { events: 420, label: "shop.example/checkout", visitors: 180 },
+    ]);
+  }
   if (dimension === "exit" || dimension === "exit_page") {
     return mockRows([
-      { label: "/pricing", visitors: 620 },
-      { label: "/signup", visitors: 410 },
-      { label: "/", visitors: 180 },
+      { label: "shop.example/pricing", visitors: 620 },
+      { label: "dash.example/", visitors: 410 },
+      { label: "shop.example/", visitors: 180 },
     ]);
   }
   if (dimension === "browser") {
@@ -255,8 +262,12 @@ const mockQuery = (report: string, dimension = ""): unknown => {
   }
   if (report === "paths") {
     return [
-      { from_path: "/", to_path: "/pricing", visitors: 420 },
-      { from_path: "/pricing", to_path: "/signup", visitors: 180 },
+      { from_path: "shop.example/", to_path: "dash.example/", visitors: 420 },
+      {
+        from_path: "shop.example/pricing",
+        to_path: "shop.example/signup",
+        visitors: 180,
+      },
     ];
   }
   if (report === "heatmap") {

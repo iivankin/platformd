@@ -14,6 +14,7 @@ import {
   TrackerDialog,
 } from "@/analytics-dialogs";
 import {
+  analyticsBotPurpose,
   analyticsFlagSummary,
   asNumber,
   asString,
@@ -1279,7 +1280,9 @@ const BehavioursPanel = ({
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="text-[10px]">
-                      {step.type} · {step.value}
+                      {step.hostname
+                        ? `${step.type} · ${step.hostname}${step.value}`
+                        : `${step.type} · ${step.value}`}
                     </p>
                     <div className="mt-1 h-1.5 bg-muted">
                       <div
@@ -1797,8 +1800,9 @@ const AIPage = ({
       <section>
         <h2 className="text-sm font-medium">Crawlers</h2>
         <p className="mt-1 text-[10px] text-muted-foreground">
-          Training, search, and fetch user-agents seen on HTML, not the JS
-          snippet.
+          HTML user-agents, not the JS snippet. Search crawl: so the page can
+          appear in ChatGPT, Claude, or Perplexity search answers. Asked in
+          ChatGPT: live fetch when someone asks the assistant about the page.
         </p>
         <div className="mt-4">
           {hits.map((row) => (
@@ -1806,7 +1810,12 @@ const AIPage = ({
               className="grid grid-cols-4 border-b border-border py-2 text-[10px]"
               key={`${asString(row.bot_name)}:${asString(row.pathname)}`}
             >
-              <span>{asString(row.bot_kind)}</span>
+              <span>
+                {analyticsBotPurpose(
+                  asString(row.bot_name),
+                  asString(row.bot_kind)
+                )}
+              </span>
               <span>{asString(row.bot_name)}</span>
               <span>{asString(row.pathname)}</span>
               <span>{formatCount(asNumber(row.hits))}</span>

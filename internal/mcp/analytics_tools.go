@@ -82,7 +82,7 @@ func analyticsFilterSchema() map[string]any {
 	return objectSchema(map[string]any{
 		"dimension": map[string]any{
 			"type":        "string",
-			"description": "One of page, entry_page, exit_page, hostname, source, channel, referrer, utm_medium, utm_source, utm_campaign, utm_content, utm_term, country, region, city, browser, os, device, event.",
+			"description": "One of page, entry_page, exit_page, hostname, source, channel, referrer, utm_medium, utm_source, utm_campaign, utm_content, utm_term, country, region, city, browser, os, device, event. Page values are hostname+pathname such as shop.example/pricing; a value that starts with / still matches that path on every host. Acquisition dimensions (source, channel, referrer, utm_*) match the visit's first pageview in the range, so later pages without those params still count.",
 		},
 		"operator": map[string]any{
 			"type": "string", "enum": []string{"is", "is_not", "contains", "does_not_contain"},
@@ -116,7 +116,7 @@ func analyticsTargetingSchema() map[string]any {
 			"items": objectSchema(map[string]any{
 				"properties": map[string]any{
 					"type":        "array",
-					"description": "AND conditions against OpenFeature evaluation context. targetingKey is platformd.anonymousId(), not an identify alias.",
+					"description": "AND conditions against OpenFeature evaluation context. targetingKey is platformd.anonymousId().",
 					"items": objectSchema(map[string]any{
 						"key":      map[string]any{"type": "string", "description": "Context attribute, for example country or path"},
 						"operator": map[string]any{"type": "string", "enum": []string{"exact", "icontains", "is_not", "is_set", "gt", "lt"}},
@@ -167,8 +167,8 @@ func analyticsReadTools() []Tool {
 	}
 	query["from"] = analyticsUnixMillis("Inclusive start as Unix milliseconds. Required except for report=realtime.")
 	query["to"] = analyticsUnixMillis("Inclusive end as Unix milliseconds. Required except for report=realtime.")
-	query["filters"] = map[string]any{"type": "array", "maxItems": 8, "items": analyticsFilterSchema(), "description": "Optional AND filters applied to every report except realtime."}
-	query["dimension"] = map[string]any{"type": "string", "description": "Required for breakdown and lookup. Breakdown accepts page, hostname, source, channel, entry, exit, utm_*, country, region, city, browser, os, device, event, bot_kind, bot_name. Lookup is the same except it uses pathname instead of entry/exit and has no bot_kind/bot_name or referrer."}
+	query["filters"] = map[string]any{"type": "array", "maxItems": 8, "items": analyticsFilterSchema(), "description": "Optional AND filters. Applied to every report except realtime. Acquisition filters (source, channel, referrer, utm_*) select visits by the first pageview in the range, then include every later event in those visits."}
+	query["dimension"] = map[string]any{"type": "string", "description": "Required for breakdown and lookup. Breakdown accepts page, hostname, source, channel, entry, exit, utm_*, country, region, city, browser, os, device, event, bot_kind, bot_name. Page, entry, and exit labels are hostname+pathname such as shop.example/pricing. Lookup page uses the same labels; lookup pathname is the bare path for heatmaps."}
 	query["pathname"] = map[string]any{"type": "string", "description": "Required for heatmap. Exact page path such as /pricing."}
 	query["viewport"] = map[string]any{"type": "integer", "minimum": 1, "description": "Optional heatmap viewport width in CSS pixels."}
 	query["eventType"] = map[string]any{"type": "string", "description": "Optional event name restriction for event-oriented reports."}
@@ -246,7 +246,7 @@ func analyticsAdminTools() []Tool {
 			"projectId": analyticsProjectID(), "trackerId": analyticsTrackerID(),
 			"funnelId": map[string]any{"type": "string"},
 		}, []string{"projectId", "trackerId", "funnelId"})},
-		{Name: "create_analytics_flag", Description: "Create an OpenFeature flag on a tracker. Evaluation uses targetingKey = platformd.anonymousId() and OF evaluation context, not identify aliases. Boolean flags ignore variant weights: in-bucket is true, else false. Omit targeting for a full rollout. Set enabled true to serve. Requires an admin token.", InputSchema: objectSchema(flagFields, []string{"projectId", "trackerId", "key", "type", "variants"})},
+		{Name: "create_analytics_flag", Description: "Create an OpenFeature flag on a tracker. Evaluation uses targetingKey = platformd.anonymousId() and OF evaluation context. Boolean flags ignore variant weights: in-bucket is true, else false. Omit targeting for a full rollout. Set enabled true to serve. Requires an admin token.", InputSchema: objectSchema(flagFields, []string{"projectId", "trackerId", "key", "type", "variants"})},
 		{Name: "update_analytics_flag", Description: "Replace a flag key, variants, payload, or targeting. Copy enabled and targeting from the latest flag. Do not change variant weights while an experiment is running; ship or stop the experiment first. Copy expectedUpdatedAt from get_analytics_tracker.flags[].updatedAt. Requires an admin token.", InputSchema: objectSchema(updateFlag, []string{"projectId", "trackerId", "flagId", "key", "type", "enabled", "variants", "targeting", "expectedUpdatedAt"})},
 		{Name: "delete_analytics_flag", Description: "Delete a tracker flag by the ID from get_analytics_tracker.flags. Stop or ship a running experiment on the flag first. Requires an admin token.", InputSchema: objectSchema(map[string]any{
 			"projectId": analyticsProjectID(), "trackerId": analyticsTrackerID(),

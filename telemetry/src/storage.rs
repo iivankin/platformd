@@ -2167,17 +2167,13 @@ fn initialize_analytics(session: &Session) -> Result<()> {
              ORDER BY (tracker_id, pathname, timestamp)\n\
              TTL timestamp + INTERVAL 90 DAY DELETE"
         ),
-        format!(
-            "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.analytics_aliases (\n\
-             tracker_id String, anonymous_id String, distinct_id String, created_at DateTime64(3, 'UTC')\n\
-             ) ENGINE=ReplacingMergeTree(created_at) ORDER BY (tracker_id, anonymous_id)"
-        ),
     ] {
         session
             .execute(&statement, None)
             .map_err(|error| Error::Storage(format!("initialize embedded chDB schema: {error}")))?;
     }
     for statement in [
+        format!("DROP TABLE IF EXISTS {ANALYTICS_DATABASE}.analytics_aliases"),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS segment_id String AFTER parent_span_id"
         ),

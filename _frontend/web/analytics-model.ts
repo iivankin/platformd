@@ -77,6 +77,33 @@ export const analyticsOperatorLabel = (
   return operator;
 };
 
+const analyticsBotPurposes: Record<string, string> = {
+  "Applebot-Extended": "Apple foundation models",
+  Bytespider: "Toutiao search",
+  CCBot: "Common Crawl",
+  "ChatGPT-User": "Asked in ChatGPT",
+  "Claude-SearchBot": "Claude search crawl",
+  "Claude-User": "Asked in Claude",
+  ClaudeBot: "Claude model training",
+  GPTBot: "OpenAI model training",
+  "Google-Extended": "Gemini training and grounding",
+  "OAI-SearchBot": "ChatGPT search crawl",
+  "Perplexity-User": "Asked in Perplexity",
+  PerplexityBot: "Perplexity search crawl",
+  "anthropic-ai": "Anthropic (retired)",
+};
+
+export const analyticsBotPurpose = (name: string, kind: string) => {
+  const known = analyticsBotPurposes[name];
+  if (known) {
+    return known;
+  }
+  if (!kind) {
+    return name;
+  }
+  return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
+};
+
 export const analyticsFilterChip = (filter: AnalyticsFilter) => {
   const value = Array.isArray(filter.value)
     ? filter.value.join(", ")

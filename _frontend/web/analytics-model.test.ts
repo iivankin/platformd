@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
 import {
+  analyticsBotPurpose,
   analyticsCookieDomain,
   analyticsEffectiveRollout,
   analyticsFlagSummary,
@@ -94,4 +95,20 @@ test("funnelReached treats rows as exact max-level counts", () => {
       3
     ).map((row) => row.reached)
   ).toEqual([1200, 640, 210]);
+});
+
+test("bot purpose names the crawler job, not the bucket", () => {
+  expect(analyticsBotPurpose("OAI-SearchBot", "search")).toBe(
+    "ChatGPT search crawl"
+  );
+  expect(analyticsBotPurpose("GPTBot", "training")).toBe(
+    "OpenAI model training"
+  );
+  expect(analyticsBotPurpose("ChatGPT-User", "fetch")).toBe("Asked in ChatGPT");
+  expect(analyticsBotPurpose("Bytespider", "search")).toBe("Toutiao search");
+  expect(analyticsBotPurpose("CCBot", "training")).toBe("Common Crawl");
+  expect(analyticsBotPurpose("Google-Extended", "training")).toBe(
+    "Gemini training and grounding"
+  );
+  expect(analyticsBotPurpose("UnknownBot", "search")).toBe("Search");
 });

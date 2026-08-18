@@ -20,7 +20,7 @@ import (
 func TestAnalyticsJSBrowserConformance(t *testing.T) {
 	browser := launchPlaywrightChromium(t)
 
-	t.Run("opt-out script cookies heatmap identify spa", func(t *testing.T) {
+	t.Run("opt-out script cookies heatmap spa", func(t *testing.T) {
 		origin, captured := startShopTLS(t, state.AnalyticsModeOptOut)
 		page := newShopPage(t, browser, false)
 		if _, err := page.Goto(origin + "/pricing?utm_source=google"); err != nil {
@@ -48,12 +48,6 @@ func TestAnalyticsJSBrowserConformance(t *testing.T) {
 		heatmap := namedEvents(captured.waitNamed(t, "$heatmap", 1), "$heatmap")[0]
 		if propValue(heatmap, "event_type") != "click" || propValue(heatmap, "x") == "" {
 			t.Fatalf("heatmap = %+v keys=%v values=%v", heatmap, heatmap.PropsKeys, heatmap.PropsValues)
-		}
-
-		evalString(t, page, "platformd.identify('user-42'), 'ok'")
-		identify := namedEvents(captured.waitNamed(t, "$identify", 1), "$identify")[0]
-		if identify.AliasUser != "user-42" {
-			t.Fatalf("identify = %+v", identify)
 		}
 
 		evalString(t, page, "platformd.openFeatureHook().after({flagKey:'pricing-v2'}, {variant:'true'}), 'ok'")

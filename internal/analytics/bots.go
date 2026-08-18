@@ -11,11 +11,10 @@ type BotClass struct {
 }
 
 var trainingBots = []string{
-	"GPTBot", "ClaudeBot", "Google-Extended", "Bytespider", "CCBot",
-	"anthropic-ai", "Applebot-Extended",
+	"GPTBot", "ClaudeBot", "CCBot", "anthropic-ai",
 }
 var searchBots = []string{
-	"OAI-SearchBot", "Claude-SearchBot", "PerplexityBot",
+	"OAI-SearchBot", "Claude-SearchBot", "PerplexityBot", "Bytespider",
 }
 var fetchBots = []string{
 	"ChatGPT-User", "Claude-User", "Perplexity-User",

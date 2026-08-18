@@ -50,7 +50,6 @@ function anonymousId(){if(MODE==='cookieless'||denied())return null;if(MODE==='o
 function sessionId(){if(MODE==='cookieless'||!allowed())return null;var id=cookie(SID);if(id){setCookie(SID,id,1800,AID_DOMAIN);return id}id=uuid();setCookie(SID,id,1800,AID_DOMAIN);return id}
 function send(name,props){if(!allowed())return;var body={n:name,u:location.href,t:document.title,r:document.referrer,w:screen.width+'x'+screen.height,l:navigator.language,p:props||{},i:!!props&&props.interactive===true,s:sessionId()};var aid=anonymousId();if(MODE!=='cookieless'&&!aid)return;var blob=new Blob([JSON.stringify(body)],{type:'application/json'});if(navigator.sendBeacon&&navigator.sendBeacon('/analytics/e',blob))return;fetch('/analytics/e',{method:'POST',body:blob,keepalive:true,credentials:'same-origin'}).catch(function(){})}
 function track(name,props){send(name,props||{})}
-function identify(user,props){track('$identify',Object.assign({},props||{},{user_id:user}))}
 function consent(value){if(value!=='granted'&&value!=='denied')return;setCookie(CONSENT,value,31536000,CONSENT_DOMAIN);if(value==='denied'){setCookie(AID,'',0,AID_DOMAIN);setCookie(SID,'',0,AID_DOMAIN)}window.dispatchEvent(new Event('platformd:consent'));if(value==='granted')pageview()}
 function openFeatureHook(){return{after:function(ctx,details){if(!details||details.errorCode)return;if(details.reason&&details.reason!=='TARGETING_MATCH')return;track('$flag_called',{flag:ctx&&ctx.flagKey,variant:details.variant})}}}
 function heatmapClick(e){var root=document.documentElement;var w=Math.max(root.scrollWidth,1);var h=Math.max(root.scrollHeight,1);track('$heatmap',{x:Math.max(0,Math.min(100,Math.round(e.pageX/w*100))),y:Math.max(0,Math.min(100,Math.round(e.pageY/h*100))),viewport_w:window.innerWidth,viewport_h:window.innerHeight,page_h:h,event_type:'click'})}
@@ -66,5 +65,5 @@ window.addEventListener('popstate',function(){if(last!==location.pathname+locati
 window.addEventListener('pagehide',pageleave);
 document.addEventListener('click',heatmapClick,true);
 window.addEventListener('scroll',heatmapScroll,{passive:true});
-window.platformd={track:track,identify:identify,anonymousId:anonymousId,consent:consent,openFeatureHook:openFeatureHook};
+window.platformd={track:track,anonymousId:anonymousId,consent:consent,openFeatureHook:openFeatureHook};
 })();`

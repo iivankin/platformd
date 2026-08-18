@@ -9,14 +9,10 @@ use crate::error::{Error, Result};
 use crate::metric_sql::MAX_METRIC_QUERY_ROWS;
 use crate::storage::chdb_string;
 
-pub(crate) const ANALYTICS_EVENTS: &str = "FROM (SELECT e.* REPLACE (if(a.distinct_id = '', e.distinct_id, a.distinct_id) AS distinct_id), \
-    e.distinct_id AS original_id \
-    FROM telemetry.analytics_events AS e LEFT JOIN telemetry.analytics_aliases AS a FINAL \
-    ON a.tracker_id = e.tracker_id AND a.anonymous_id = e.distinct_id)";
-pub(crate) const INTERNAL_EVENTS: &str =
-    "event_name NOT IN ('$flag_called', '$identify')";
+pub(crate) const ANALYTICS_EVENTS: &str = "FROM telemetry.analytics_events";
+pub(crate) const INTERNAL_EVENTS: &str = "event_name != '$flag_called'";
 pub(crate) const VISIT_EVENTS: &str =
-    "event_name NOT IN ('$flag_called', '$identify', '$pageleave')";
+    "event_name NOT IN ('$flag_called', '$pageleave')";
 
 pub fn compile(
     sql: &str,

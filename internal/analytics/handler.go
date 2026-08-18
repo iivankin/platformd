@@ -65,7 +65,6 @@ type Event struct {
 	CLS            *float64 `json:"cls"`
 	FCP            *float64 `json:"fcp"`
 	TTFB           *float64 `json:"ttfb"`
-	AliasUser      string   `json:"alias_user,omitempty"`
 }
 
 type Catalog interface {
@@ -479,10 +478,6 @@ func applyProps(event *Event, props map[string]any) {
 			if value == true {
 				event.Interactive = 1
 			}
-		case "user_id":
-			event.AliasUser = stringify(value)
-			event.PropsKeys = append(event.PropsKeys, key)
-			event.PropsValues = append(event.PropsValues, stringify(value))
 		case "revenue":
 			n := toFloat(value)
 			event.Revenue = &n
