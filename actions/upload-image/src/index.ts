@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, createReadStream, readFileSync, statSync } from "node:fs";
 import type { Readable } from "node:stream";
 import { Transform } from "node:stream";
+import { collapsePreview, formatError } from "./errors.js";
 
 const terminalStatuses = new Set(["failed", "succeeded", "superseded"]);
 
@@ -149,7 +150,7 @@ async function oidcToken(audience: string): Promise<string> {
   }
   const url = new URL(requestURL);
   url.searchParams.set("audience", audience);
-  const response = await fetch(url, {
+  const response = await fetchOrThrow("GitHub OIDC token request", url, {
     headers: { Authorization: `Bearer ${requestToken}` },
   });
   if (!response.ok) {
@@ -303,6 +304,39 @@ async function mapPool<T>(
   await Promise.all(runners);
 }
 
+async function fetchOrThrow(
+  label: string,
+  input: string | URL,
+  init?: RequestInit,
+): Promise<Response> {
+  try {
+    return await fetch(input, init);
+  } catch (error) {
+    throw new Error(`${label} failed`, { cause: error });
+  }
+}
+
+function uploadRequestLabel(method: string, headers: Record<string, string>): string {
+  const id = headers["Upload-ID"];
+  if (method === "GET") {
+    return id ? `status upload=${id}` : "status";
+  }
+  const offset = headers["Upload-Offset"] ?? "?";
+  const length = headers["Content-Length"] ?? "?";
+  return id
+    ? `part upload=${id} offset=${offset} length=${length}`
+    : `part offset=${offset} length=${length}`;
+}
+
+function responseDiagnostics(response: Response): string {
+  const extras = [`status=${response.status}`];
+  const ray = response.headers.get("cf-ray");
+  if (ray) {
+    extras.push(`cf-ray=${ray}`);
+  }
+  return extras.join(" ");
+}
+
 async function responseBody(response: Response): Promise<unknown> {
   const text = await response.text();
   if (!text) {
@@ -311,7 +345,9 @@ async function responseBody(response: Response): Promise<unknown> {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new Error(`platformd returned invalid JSON with ${response.status}`);
+    throw new Error(
+      `invalid JSON ${responseDiagnostics(response)} body=${collapsePreview(text)}`,
+    );
   }
 }
 
@@ -323,7 +359,8 @@ async function request(
   body: Readable | undefined,
 ): Promise<UploadStatus> {
   const token = await oidcToken(audience);
-  const response = await fetch(endpoint, {
+  const label = `platformd ${method} ${uploadRequestLabel(method, headers)}`;
+  const response = await fetchOrThrow(label, endpoint, {
     body,
     duplex: body ? "half" : undefined,
     headers: {
@@ -333,14 +370,24 @@ async function request(
     },
     method,
   } as RequestInit);
-  const payload = await responseBody(response);
+  let payload: unknown;
+  try {
+    payload = await responseBody(response);
+  } catch (error) {
+    throw new Error(`${label} failed`, { cause: error });
+  }
   if (!response.ok) {
     const error =
       payload && typeof payload === "object"
-        ? (payload as { error?: { message?: unknown } }).error
+        ? (payload as { error?: { code?: unknown; message?: unknown } }).error
         : undefined;
-    const detail = typeof error?.message === "string" ? error.message : `HTTP ${response.status}`;
-    throw new Error(`platformd image upload failed: ${detail}`);
+    const code = typeof error?.code === "string" ? error.code : "";
+    const detail =
+      typeof error?.message === "string" && error.message
+        ? error.message
+        : response.statusText || `HTTP ${response.status}`;
+    const summary = [code, detail].filter(Boolean).join(": ");
+    throw new Error(`${label} failed: ${summary} (${responseDiagnostics(response)})`);
   }
   return payload as UploadStatus;
 }
@@ -371,7 +418,7 @@ async function githubAPI(
   path: string,
   body?: JSONObject,
 ): Promise<unknown> {
-  const response = await fetch(`https://api.github.com${path}`, {
+  const response = await fetchOrThrow(`GitHub API ${method} ${path}`, `https://api.github.com${path}`, {
     method,
     headers: {
       Accept: "application/vnd.github+json",
@@ -901,7 +948,8 @@ async function run(): Promise<void> {
 }
 
 run().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = formatError(error);
+  console.error(`image upload failed: ${message}`);
   console.error(`::error::${message.replaceAll(/[%\r\n]/gu, " ")}`);
   process.exitCode = 1;
 });
