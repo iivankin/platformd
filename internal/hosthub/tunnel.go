@@ -53,7 +53,7 @@ func (hub *Hub) TunnelHandler() http.Handler {
 		if err != nil {
 			return
 		}
-		peer := hosttunnel.NewPeer(hosttunnel.WrapWebsocket(connection), hub.dialLocal)
+		peer := hosttunnel.NewServerPeer(hosttunnel.WrapWebsocket(connection), hub.dialLocal)
 		hub.mu.Lock()
 		if hub.sessions[hostID] != current {
 			hub.mu.Unlock()

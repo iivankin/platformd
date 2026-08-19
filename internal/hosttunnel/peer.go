@@ -67,12 +67,22 @@ type stream struct {
 }
 
 func NewPeer(conn MessageConn, dial DialLocal) *Peer {
+	return newPeer(conn, dial, 1)
+}
+
+// NewServerPeer is the accepting side of a tunnel. Locally initiated streams
+// use even IDs so they cannot collide with the client's odd IDs.
+func NewServerPeer(conn MessageConn, dial DialLocal) *Peer {
+	return newPeer(conn, dial, 2)
+}
+
+func newPeer(conn MessageConn, dial DialLocal, firstID uint32) *Peer {
 	if dial == nil {
 		dial = func(context.Context, string, uint16) (net.Conn, error) {
 			return nil, errors.New("local .internal dialer is not configured")
 		}
 	}
-	return &Peer{conn: conn, dial: dial, streams: map[uint32]*stream{}}
+	return &Peer{conn: conn, dial: dial, nextID: firstID, streams: map[uint32]*stream{}}
 }
 
 func (peer *Peer) Close() error {
@@ -260,15 +270,25 @@ func (peer *Peer) allocate(id uint32, pipe net.Conn) (*stream, error) {
 		return nil, errors.New("internal tunnel has too many connections")
 	}
 	if id == 0 {
-		for {
-			peer.nextID++
-			if peer.nextID == 0 {
-				continue
-			}
-			if _, exists := peer.streams[peer.nextID]; !exists {
-				id = peer.nextID
+		candidate := peer.nextID
+		if candidate == 0 {
+			return nil, errors.New("internal tunnel has too many connections")
+		}
+		found := false
+		for n := 0; n < maxStreams+1; n++ {
+			if _, exists := peer.streams[candidate]; !exists {
+				id = candidate
+				peer.nextID = candidate + 2
+				found = true
 				break
 			}
+			candidate += 2
+			if candidate == 0 {
+				break
+			}
+		}
+		if !found {
+			return nil, errors.New("internal tunnel has too many connections")
 		}
 	} else if _, exists := peer.streams[id]; exists {
 		return nil, fmt.Errorf("internal tunnel id %d is already used", id)

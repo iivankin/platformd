@@ -354,7 +354,7 @@ func startBridgeTunnelPair(t *testing.T, dial hosttunnel.DialLocal) (*hosttunnel
 	done := make(chan struct{})
 	t.Cleanup(func() { close(done) })
 	client := hosttunnel.NewPeer(testFrameConn{incoming: right, outgoing: left, done: done}, nil)
-	server := hosttunnel.NewPeer(testFrameConn{incoming: left, outgoing: right, done: done}, dial)
+	server := hosttunnel.NewServerPeer(testFrameConn{incoming: left, outgoing: right, done: done}, dial)
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = client.Serve(ctx) }()

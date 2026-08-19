@@ -36,7 +36,7 @@ func TestWebsocketPeerPipesBytes(t *testing.T) {
 		if acceptErr != nil {
 			return
 		}
-		peer := NewPeer(WrapWebsocket(connection), func(_ context.Context, hostname string, got uint16) (net.Conn, error) {
+		peer := NewServerPeer(WrapWebsocket(connection), func(_ context.Context, hostname string, got uint16) (net.Conn, error) {
 			if hostname != "db.shop.internal" || got != port {
 				t.Fatalf("dialed %s:%d", hostname, got)
 			}
