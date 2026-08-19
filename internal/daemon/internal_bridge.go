@@ -224,9 +224,9 @@ func (bridge *internalBridge) isRemoteVIP(address netip.Addr) bool {
 }
 
 func (bridge *internalBridge) Listen(ctx context.Context) error {
-	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", firewall.InternalTunnelPort))
+	listener, err := listenInternalTunnel(ctx)
 	if err != nil {
-		return fmt.Errorf("listen for .internal tunnel: %w", err)
+		return err
 	}
 	bridge.mu.Lock()
 	bridge.listener = listener
@@ -262,17 +262,15 @@ func (bridge *internalBridge) Close() error {
 
 func (bridge *internalBridge) handleAccepted(ctx context.Context, conn net.Conn) {
 	defer conn.Close()
-	tcp, ok := conn.(*net.TCPConn)
-	if !ok {
-		return
-	}
-	destination, err := hosttunnel.OriginalDestination(tcp)
+	destination, err := netip.ParseAddrPort(conn.LocalAddr().String())
 	if err != nil {
-		log.Printf("internal tunnel original destination: %v", err)
+		log.Printf("internal tunnel local destination: %v", err)
 		return
 	}
+	destination = netip.AddrPortFrom(destination.Addr().Unmap(), destination.Port())
 	hostname := bridge.hostnameForVIP(destination.Addr())
 	if hostname == "" {
+		log.Printf("internal tunnel unknown VIP %s", destination)
 		return
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -312,4 +310,13 @@ func spliceConnections(left, right net.Conn) {
 
 func canonicalInternalHostname(value string) string {
 	return strings.ToLower(strings.TrimSuffix(strings.TrimSpace(value), "."))
+}
+
+func listenInternalTunnel(ctx context.Context) (net.Listener, error) {
+	config := net.ListenConfig{Control: configureInternalTunnelSocket}
+	listener, err := config.Listen(ctx, "tcp4", fmt.Sprintf(":%d", firewall.InternalTunnelPort))
+	if err != nil {
+		return nil, fmt.Errorf("listen for .internal tunnel: %w", err)
+	}
+	return listener, nil
 }

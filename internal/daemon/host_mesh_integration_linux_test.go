@@ -44,14 +44,15 @@ import (
 )
 
 const (
-	hostMeshProjectID   = "hostmesh"
-	hostMeshProjectName = "shop"
-	hostMeshParentIP    = "192.0.2.1"
-	hostMeshChildIP     = "192.0.2.2"
-	hostMeshHubAddr     = "192.0.2.1:9443"
-	hostMeshParentPort  = 18080
-	hostMeshChildPort   = 18081
-	hostMeshProbeHost   = 10
+	hostMeshProjectID       = "hostmesh"
+	hostMeshProjectName     = "shop"
+	hostMeshParentIP        = "192.0.2.1"
+	hostMeshChildIP         = "192.0.2.2"
+	hostMeshHubAddr         = "192.0.2.1:9443"
+	hostMeshParentPort      = 18080
+	hostMeshChildPort       = 18081
+	hostMeshParentProbeHost = 10
+	hostMeshChildProbeHost  = 13
 )
 
 func TestHostInternalMeshTwoInstances(t *testing.T) {
@@ -101,7 +102,8 @@ func runHostMeshParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	bridgeNS := waitHostMeshLinkNamespace(t, runtime.firewallProjects[hostMeshProjectID].Bridge)
+	project := runtime.firewallProjects[hostMeshProjectID]
+	bridgeNS := ensureHostMeshProjectBridge(t, hostNS, project)
 	runtime.AttachInternalMesh(mesh)
 	if err := mesh.Listen(ctx); err != nil {
 		t.Fatal(err)
@@ -157,8 +159,7 @@ func runHostMeshParent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	project := runtime.firewallProjects[hostMeshProjectID]
-	probe := attachHostMeshProbe(t, bridgeNS, "pdhmp0", "pdhmp1", project)
+	probe := attachHostMeshProbe(t, bridgeNS, "pdhmp0", "pdhmp1", project, hostMeshParentProbeHost)
 	assertHostMeshName(t, probe, project, "db.shop.internal", parentAddr, false)
 	assertHostMeshHTTP(t, probe, "db.shop.internal", hostMeshParentPort, "parent-db")
 	assertHostMeshName(t, probe, project, "api.shop.internal", netip.Addr{}, true)
@@ -181,6 +182,7 @@ func runHostMeshChild(t *testing.T) {
 	if ipc == "" || token == "" || cgroupRoot == "" {
 		t.Fatal("child host mesh environment is incomplete")
 	}
+	hostNS := captureHostMeshNamespace(t)
 	paths := hostMeshLayout("child")
 	resetHostMeshLayout(t, paths)
 
@@ -215,7 +217,8 @@ func runHostMeshChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	bridgeNS := waitHostMeshLinkNamespace(t, runtime.firewallProjects[hostMeshProjectID].Bridge)
+	project := runtime.firewallProjects[hostMeshProjectID]
+	bridgeNS := ensureHostMeshProjectBridge(t, hostNS, project)
 	mesh := newInternalBridge(welcome.HostID, func(lookupCtx context.Context, hostname string) (state.InternalName, error) {
 		return hostagent.LookupInternal(lookupCtx, conn, hostname)
 	})
@@ -246,8 +249,7 @@ func runHostMeshChild(t *testing.T) {
 	}
 	waitHostMeshFile(t, ctx, filepath.Join(ipc, "catalog"))
 
-	project := runtime.firewallProjects[hostMeshProjectID]
-	probe := attachHostMeshProbe(t, bridgeNS, "pdhmc0", "pdhmc1", project)
+	probe := attachHostMeshProbe(t, bridgeNS, "pdhmc0", "pdhmc1", project, hostMeshChildProbeHost)
 	assertHostMeshName(t, probe, project, "api.shop.internal", childAddr, false)
 	assertHostMeshHTTP(t, probe, "api.shop.internal", hostMeshChildPort, "child-api")
 	assertHostMeshName(t, probe, project, "db.shop.internal", netip.Addr{}, true)
@@ -463,10 +465,7 @@ func hostMeshLayout(role string) layout.Paths {
 func resetHostMeshLayout(t *testing.T, paths layout.Paths) {
 	t.Helper()
 	for _, root := range []string{paths.DataRoot, paths.ConfigRoot, paths.RuntimeRoot} {
-		if err := os.RemoveAll(root); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		resetHostMeshRoot(t, root)
 	}
 	if err := os.MkdirAll(paths.ReleasesRoot, 0o700); err != nil {
 		t.Fatal(err)
@@ -474,6 +473,31 @@ func resetHostMeshLayout(t *testing.T, paths layout.Paths) {
 	if err := os.Symlink("/var/lib/platformd/releases/current", paths.Current); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func resetHostMeshRoot(t *testing.T, root string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if err := os.RemoveAll(filepath.Join(root, entry.Name())); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			return
+		}
+		for _, entry := range entries {
+			_ = os.RemoveAll(filepath.Join(root, entry.Name()))
+		}
+	})
 }
 
 func hostMeshIPCDir() string {
@@ -531,15 +555,15 @@ type hostMeshProbe struct {
 	gateway   netip.Addr
 }
 
-func attachHostMeshProbe(t *testing.T, bridgeNS netns.NsHandle, hostName, peerName string, project firewall.Project) hostMeshProbe {
+func attachHostMeshProbe(t *testing.T, bridgeNS netns.NsHandle, hostName, peerName string, project firewall.Project, host int) hostMeshProbe {
 	t.Helper()
-	address, err := projectnetwork.HostAddress(project.Subnet, hostMeshProbeHost)
+	address, err := projectnetwork.HostAddress(project.Subnet, host)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var probe hostMeshProbe
+	var peerNS netns.NsHandle
 	inHostMeshHostNamespace(t, bridgeNS, func() {
-		peerNS := createHostMeshPeerNamespace(t, bridgeNS)
+		peerNS = createHostMeshPeerNamespace(t, bridgeNS)
 		link := &netlink.Veth{
 			LinkAttrs: netlink.LinkAttrs{Name: hostName},
 			PeerName:  peerName,
@@ -562,11 +586,19 @@ func attachHostMeshProbe(t *testing.T, bridgeNS netns.NsHandle, hostName, peerNa
 		if err := netlink.LinkSetUp(hostLink); err != nil {
 			t.Fatalf("up %s: %v", hostName, err)
 		}
+		if err := os.WriteFile("/proc/sys/net/ipv4/conf/"+hostName+"/rp_filter", []byte("2\n"), 0o644); err != nil {
+			t.Fatalf("sysctl rp_filter %s: %v", hostName, err)
+		}
+		configureHostMeshBridge(t, project.Bridge)
 		peerHandle, err := netlink.NewHandleAt(peerNS)
 		if err != nil {
 			t.Fatalf("probe netlink: %v", err)
 		}
 		defer peerHandle.Close()
+		loopback := waitHostMeshLink(t, peerHandle, "lo")
+		if err := peerHandle.LinkSetUp(loopback); err != nil {
+			t.Fatalf("up probe lo: %v", err)
+		}
 		peer = waitHostMeshLink(t, peerHandle, peerName)
 		if err := addHostMeshAddress(peerHandle, peer, address.String()+"/24"); err != nil {
 			t.Fatalf("address %s: %v", peerName, err)
@@ -580,9 +612,8 @@ func attachHostMeshProbe(t *testing.T, bridgeNS netns.NsHandle, hostName, peerNa
 		}); err != nil {
 			t.Fatalf("default route via %s: %v", project.Gateway, err)
 		}
-		probe = hostMeshProbe{namespace: peerNS, gateway: project.Gateway}
 	})
-	return probe
+	return hostMeshProbe{namespace: peerNS, gateway: project.Gateway}
 }
 
 func captureHostMeshNamespace(t *testing.T) netns.NsHandle {
@@ -598,98 +629,55 @@ func captureHostMeshNamespace(t *testing.T) netns.NsHandle {
 	return namespace
 }
 
-func waitHostMeshLinkNamespace(t *testing.T, name string) netns.NsHandle {
+func ensureHostMeshProjectBridge(t *testing.T, namespace netns.NsHandle, project firewall.Project) netns.NsHandle {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
-	var last string
-	for {
-		namespace, err := findHostMeshLinkNamespace(name)
-		if err == nil {
-			t.Cleanup(func() { _ = namespace.Close() })
-			return namespace
+	// NetworkCreate only writes the project network config. Netavark creates
+	// the host bridge when the first container attaches; this test has no
+	// containers, so it creates that bridge and gateway itself.
+	inHostMeshHostNamespace(t, namespace, func() {
+		if _, err := netlink.LinkByName(project.Bridge); err != nil {
+			bridge := &netlink.Bridge{LinkAttrs: netlink.LinkAttrs{Name: project.Bridge}}
+			if err := netlink.LinkAdd(bridge); err != nil {
+				t.Fatalf("add project bridge %s: %v", project.Bridge, err)
+			}
 		}
-		last = err.Error()
-		if time.Now().After(deadline) {
-			t.Fatal(last)
+		link := waitHostMeshLink(t, nil, project.Bridge)
+		parsed, err := netlink.ParseAddr(fmt.Sprintf("%s/%d", project.Gateway, project.Subnet.Bits()))
+		if err != nil {
+			t.Fatalf("parse project gateway %s: %v", project.Gateway, err)
 		}
-		time.Sleep(5 * time.Millisecond)
+		if err := netlink.AddrReplace(link, parsed); err != nil {
+			t.Fatalf("address project bridge %s: %v", project.Bridge, err)
+		}
+		if err := netlink.LinkSetUp(link); err != nil {
+			t.Fatalf("up project bridge %s: %v", project.Bridge, err)
+		}
+		configureHostMeshBridge(t, project.Bridge)
+	})
+	t.Cleanup(func() {
+		deleteHostMeshLink(namespace, project.Bridge)
+	})
+	return namespace
+}
+
+func configureHostMeshBridge(t *testing.T, name string) {
+	t.Helper()
+	link := waitHostMeshLink(t, nil, name)
+	if err := netlink.LinkSetHardwareAddr(link, hostMeshBridgeMAC()); err != nil {
+		t.Fatalf("mac project bridge %s: %v", name, err)
+	}
+	for _, item := range []struct{ key, value string }{
+		{"net/ipv4/conf/" + name + "/rp_filter", "2"},
+		{"net/ipv4/conf/" + name + "/forwarding", "1"},
+	} {
+		if err := os.WriteFile("/proc/sys/"+item.key, []byte(item.value+"\n"), 0o644); err != nil {
+			t.Fatalf("sysctl %s: %v", item.key, err)
+		}
 	}
 }
 
-func findHostMeshLinkNamespace(name string) (netns.NsHandle, error) {
-	pid := os.Getpid()
-	paths := []string{fmt.Sprintf("/proc/%d/ns/net", pid)}
-	tasks, err := os.ReadDir(fmt.Sprintf("/proc/%d/task", pid))
-	if err != nil {
-		return -1, err
-	}
-	for _, task := range tasks {
-		paths = append(paths, fmt.Sprintf("/proc/%d/task/%s/ns/net", pid, task.Name()))
-	}
-	for _, dir := range []string{"/run/netns", "/var/run/netns"} {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			continue
-		}
-		for _, entry := range entries {
-			paths = append(paths, filepath.Join(dir, entry.Name()))
-		}
-	}
-	seen := map[string]struct{}{}
-	var last error
-	runtime.LockOSThread()
-	current, err := netlink.LinkList()
-	if err == nil {
-		for _, link := range current {
-			if link.Attrs().Name == name {
-				ns, err := netns.Get()
-				runtime.UnlockOSThread()
-				if err != nil {
-					return -1, err
-				}
-				return ns, nil
-			}
-		}
-	} else {
-		last = err
-	}
-	runtime.UnlockOSThread()
-	for _, path := range paths {
-		ident, err := os.Readlink(path)
-		if err != nil {
-			ident = path
-		}
-		if _, found := seen[ident]; found {
-			continue
-		}
-		seen[ident] = struct{}{}
-		namespace, err := netns.GetFromPath(path)
-		if err != nil {
-			last = err
-			continue
-		}
-		handle, err := netlink.NewHandleAt(namespace)
-		if err != nil {
-			_ = namespace.Close()
-			last = err
-			continue
-		}
-		_, err = handle.LinkByName(name)
-		handle.Close()
-		if err == nil {
-			return namespace, nil
-		}
-		last = err
-		_ = namespace.Close()
-	}
-	names := make([]string, 0, len(current))
-	for _, link := range current {
-		names = append(names, link.Attrs().Name)
-	}
-	if last == nil {
-		last = fmt.Errorf("link %s not found", name)
-	}
-	return -1, fmt.Errorf("link %s not found in process netns (current links %s): %w", name, strings.Join(names, ","), last)
+func hostMeshBridgeMAC() net.HardwareAddr {
+	return net.HardwareAddr{0x02, 0x42, 0x68, 0x6d, 0x00, 0x01}
 }
 
 func inHostMeshHostNamespace(t *testing.T, hostNS netns.NsHandle, action func()) {
@@ -820,24 +808,32 @@ func addHostMeshAddress(handle *netlink.Handle, link netlink.Link, cidr string) 
 	return handle.AddrAdd(link, parsed)
 }
 
+func lookupHostMeshIPv4(ctx context.Context, probe hostMeshProbe, name string) (netip.Addr, error) {
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "udp4", net.JoinHostPort(probe.gateway.String(), "53"))
+		},
+	}
+	addresses, err := resolver.LookupNetIP(ctx, "ip4", name)
+	if err != nil || len(addresses) != 1 {
+		return netip.Addr{}, fmt.Errorf("lookup %s: %v %v", name, addresses, err)
+	}
+	return addresses[0], nil
+}
+
 func assertHostMeshName(t *testing.T, probe hostMeshProbe, project firewall.Project, name string, local netip.Addr, remote bool) {
 	t.Helper()
 	var resolved netip.Addr
 	inHostMeshNamespace(t, probe.namespace, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resolver := &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "udp4", net.JoinHostPort(probe.gateway.String(), "53"))
-			},
+		address, err := lookupHostMeshIPv4(ctx, probe, name)
+		if err != nil {
+			return err
 		}
-		addresses, err := resolver.LookupNetIP(ctx, "ip4", name)
-		if err != nil || len(addresses) != 1 {
-			return fmt.Errorf("lookup %s: %v %v", name, addresses, err)
-		}
-		resolved = addresses[0]
+		resolved = address
 		return nil
 	})
 	if remote {
@@ -857,18 +853,11 @@ func assertHostMeshHTTP(t *testing.T, probe hostMeshProbe, name string, port int
 	inHostMeshNamespace(t, probe.namespace, func() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		resolver := &net.Resolver{
-			PreferGo: true,
-			Dial: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "udp4", net.JoinHostPort(probe.gateway.String(), "53"))
-			},
+		address, err := lookupHostMeshIPv4(ctx, probe, name)
+		if err != nil {
+			return err
 		}
-		addresses, err := resolver.LookupNetIP(ctx, "ip4", name)
-		if err != nil || len(addresses) != 1 {
-			return fmt.Errorf("lookup %s: %v %v", name, addresses, err)
-		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/", addresses[0], port), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/", address, port), nil)
 		if err != nil {
 			return err
 		}

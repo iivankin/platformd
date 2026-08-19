@@ -3,7 +3,6 @@
 package firewall
 
 import (
-	"bytes"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -27,11 +26,11 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	if compiled.chains[1].Hooknum != nftables.ChainHookForward || compiled.chains[1].Priority != nftables.ChainPriorityMangle {
 		t.Fatalf("unexpected forward chain: %+v", compiled.chains[1])
 	}
-	if compiled.chains[2].Hooknum != nftables.ChainHookPrerouting || compiled.chains[2].Type != nftables.ChainTypeNAT {
-		t.Fatalf("unexpected prerouting chain: %+v", compiled.chains[2])
+	if compiled.chains[2].Hooknum != nftables.ChainHookPostrouting || compiled.chains[2].Type != nftables.ChainTypeNAT {
+		t.Fatalf("unexpected postrouting chain: %+v", compiled.chains[2])
 	}
-	if compiled.chains[3].Hooknum != nftables.ChainHookPostrouting || compiled.chains[3].Type != nftables.ChainTypeNAT {
-		t.Fatalf("unexpected postrouting chain: %+v", compiled.chains[3])
+	if compiled.chains[3].Hooknum != nftables.ChainHookPrerouting || compiled.chains[3].Type != nftables.ChainTypeFilter {
+		t.Fatalf("unexpected filter prerouting chain: %+v", compiled.chains[3])
 	}
 
 	var accepts, drops, masquerades int
@@ -55,16 +54,13 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	}
 	project.ObjectStoreEnabled = true
 	withObjectStore := compileRuleset(TableName, []Project{project})
-	if len(withObjectStore.rules) != len(compiled.rules)+2 {
-		t.Fatalf("object store must add project and host TCP listener rules: without=%d with=%d", len(compiled.rules), len(withObjectStore.rules))
+	if len(withObjectStore.rules) != len(compiled.rules)+1 {
+		t.Fatalf("object store must add a gateway TCP listener: without=%d with=%d", len(compiled.rules), len(withObjectStore.rules))
 	}
 	project.ServiceTelemetryEnabled = true
 	withTelemetry := compileRuleset(TableName, []Project{project})
-	if len(withTelemetry.rules) != len(withObjectStore.rules)+3 {
-		t.Fatalf("service telemetry must add project Sentry/OTLP and host Sentry listeners: without=%d with=%d", len(withObjectStore.rules), len(withTelemetry.rules))
-	}
-	if countInputAcceptsForInterface(withTelemetry, loopbackInterface) != 2 {
-		t.Fatal("gateway-backed port-forward targets are not reachable from the host namespace")
+	if len(withTelemetry.rules) != len(withObjectStore.rules)+2 {
+		t.Fatalf("service telemetry must add gateway Sentry and OTLP listeners: without=%d with=%d", len(withObjectStore.rules), len(withTelemetry.rules))
 	}
 	project.BlockedDatabaseEndpoints = []DatabaseEndpoint{{Address: netip.MustParseAddr("10.80.1.4"), Port: 5432}}
 	withMaintenance := compileRuleset(TableName, []Project{project})
@@ -80,39 +76,9 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	}
 	project.RemoteVIP = netip.MustParsePrefix("10.80.1.160/27")
 	withRemoteVIP := compileRuleset(TableName, []Project{project})
-	if len(withRemoteVIP.rules) != len(withGateway.rules)+2 {
-		t.Fatalf("remote VIP must add tunnel accept and prerouting redirect: without=%d with=%d", len(withGateway.rules), len(withRemoteVIP.rules))
+	if len(withRemoteVIP.rules) != len(withGateway.rules)+1 {
+		t.Fatalf("remote VIP must add a tproxy divert: without=%d with=%d", len(withGateway.rules), len(withRemoteVIP.rules))
 	}
-}
-
-func countInputAcceptsForInterface(compiled compiledRuleset, interfaceName string) int {
-	expectedName := make([]byte, 16)
-	copy(expectedName, interfaceName)
-	count := 0
-	for _, currentRule := range compiled.rules {
-		if currentRule.Chain != compiled.chains[0] || !hasAcceptVerdict(currentRule) {
-			continue
-		}
-		for index := 0; index+1 < len(currentRule.Exprs); index++ {
-			metadata, metadataOK := currentRule.Exprs[index].(*expr.Meta)
-			comparison, comparisonOK := currentRule.Exprs[index+1].(*expr.Cmp)
-			if metadataOK && comparisonOK && metadata.Key == expr.MetaKeyIIFNAME &&
-				comparison.Op == expr.CmpOpEq && bytes.Equal(comparison.Data, expectedName) {
-				count++
-				break
-			}
-		}
-	}
-	return count
-}
-
-func hasAcceptVerdict(rule *nftables.Rule) bool {
-	for _, expression := range rule.Exprs {
-		if value, ok := expression.(*expr.Verdict); ok && value.Kind == expr.VerdictAccept {
-			return true
-		}
-	}
-	return false
 }
 
 func TestCompileRulesetAddsPerServicePublicTrafficCounters(t *testing.T) {

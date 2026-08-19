@@ -12,8 +12,9 @@ import (
 )
 
 const (
-	ipv4AddressLength = 4
-	loopbackInterface = "lo"
+	ipv4AddressLength     = 4
+	ipv4SourceOffset      = 12
+	ipv4DestinationOffset = 16
 )
 
 type compiledRuleset struct {
@@ -29,40 +30,44 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 	policy := nftables.ChainPolicyAccept
 	input := &nftables.Chain{Name: "input", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookInput, Priority: priority, Policy: &policy}
 	forward := &nftables.Chain{Name: "forward", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookForward, Priority: priority, Policy: &policy}
-	prerouting := &nftables.Chain{Name: "prerouting", Table: table, Type: nftables.ChainTypeNAT, Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest, Policy: &policy}
 	postrouting := &nftables.Chain{Name: "postrouting", Table: table, Type: nftables.ChainTypeNAT, Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityNATSource, Policy: &policy}
+	// Locally delivered bridge VIPs skip nat prerouting (nf_nat does not
+	// invoke that chain for RTN_LOCAL). Filter prerouting still runs, so
+	// TPROXY steals those TCP flows onto the internal tunnel listener.
+	filterPre := &nftables.Chain{Name: "filterpre", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityMangle, Policy: &policy}
 
-	compiled := compiledRuleset{table: table, chains: []*nftables.Chain{input, forward, prerouting, postrouting}}
+	compiled := compiledRuleset{table: table, chains: []*nftables.Chain{input, forward, postrouting, filterPre}}
 	compiled.rules = append(compiled.rules, rule(table, input, establishedRelated()...))
 	for _, project := range projects {
+		// Bridged local delivery shows iif as the veth, not the bridge, so
+		// match the gateway address instead of the input interface.
 		compiled.rules = append(compiled.rules,
-			rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, DNSPort), verdict(expr.VerdictAccept))...),
-			rule(table, input, append(matchProjectListener(project, unix.IPPROTO_UDP, DNSPort), verdict(expr.VerdictAccept))...),
+			rule(table, input, matchDestinationPortAccept(project.Gateway, unix.IPPROTO_TCP, DNSPort)...),
+			rule(table, input, matchDestinationPortAccept(project.Gateway, unix.IPPROTO_UDP, DNSPort)...),
 		)
 		if project.RemoteVIP.IsValid() {
 			compiled.rules = append(compiled.rules,
-				rule(table, input, append(matchTunnelListener(project), verdict(expr.VerdictAccept))...),
-				rule(table, prerouting, matchRemoteVIPRedirect(project)...),
+				rule(table, filterPre, concatExprs(matchIPv4DestinationPrefix(project.RemoteVIP), matchRemoteVIPTProxy())...),
 			)
 		}
 		if project.ObjectStoreEnabled {
 			compiled.rules = append(compiled.rules,
-				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
-				rule(table, input, append(matchHostProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
+				rule(table, input, matchDestinationPortAccept(project.Gateway, unix.IPPROTO_TCP, ObjectStorePort)...),
 			)
 		}
 		if project.ServiceTelemetryEnabled {
 			compiled.rules = append(compiled.rules,
-				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ServiceTelemetryPort), verdict(expr.VerdictAccept))...),
-				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, OTLPHTTPPort), verdict(expr.VerdictAccept))...),
-				// Port forwards originate in the host namespace and reach a project
-				// gateway through loopback rather than through its bridge.
-				rule(table, input, append(matchHostProjectListener(project, unix.IPPROTO_TCP, ServiceTelemetryPort), verdict(expr.VerdictAccept))...),
+				rule(table, input, matchDestinationPortAccept(project.Gateway, unix.IPPROTO_TCP, ServiceTelemetryPort)...),
+				rule(table, input, matchDestinationPortAccept(project.Gateway, unix.IPPROTO_TCP, OTLPHTTPPort)...),
 			)
 		}
 		for _, listener := range project.GatewayListeners {
+			protocol := byte(unix.IPPROTO_TCP)
+			if listener.Protocol == "udp" {
+				protocol = unix.IPPROTO_UDP
+			}
 			compiled.rules = append(compiled.rules,
-				rule(table, input, append(matchGatewayListener(project, listener), verdict(expr.VerdictAccept))...),
+				rule(table, input, matchDestinationPortAccept(listener.Address, protocol, listener.Port)...),
 			)
 		}
 		compiled.rules = append(compiled.rules, rule(table, input, append(matchInputInterface(project.Bridge), verdict(expr.VerdictDrop))...))
@@ -123,28 +128,8 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 	return compiled
 }
 
-func matchGatewayListener(project Project, listener GatewayListener) []expr.Any {
-	protocol := byte(unix.IPPROTO_TCP)
-	if listener.Protocol == "udp" {
-		protocol = unix.IPPROTO_UDP
-	}
-	expressions := append(matchInputInterface(project.Bridge), matchIPv4Destination(listener.Address)...)
-	return append(expressions,
-		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{protocol}},
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(listener.Port)},
-	)
-}
-
 func matchDatabaseEndpoint(project Project, endpoint DatabaseEndpoint) []expr.Any {
-	expressions := append(matchInputInterface(project.Bridge), matchIPv4Destination(endpoint.Address)...)
-	return append(expressions,
-		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(endpoint.Port)},
-	)
+	return concatExprs(matchInputInterface(project.Bridge), matchIPv4Destination(endpoint.Address), matchTransport(unix.IPPROTO_TCP, endpoint.Port))
 }
 
 func (compiled compiledRuleset) queue(connection *nftables.Conn) {
@@ -186,22 +171,17 @@ func counterReference(name string) expr.Any {
 	return &expr.Objref{Type: int(nftables.ObjTypeCounter), Name: name}
 }
 
-func matchProjectListener(project Project, protocol byte, port uint16) []expr.Any {
-	return matchListener(project.Bridge, project.Gateway, protocol, port)
+func matchDestinationPortAccept(address netip.Addr, protocol byte, port uint16) []expr.Any {
+	return concatExprs(matchIPv4Destination(address), matchPortAccept(protocol, port))
 }
 
-func matchHostProjectListener(project Project, protocol byte, port uint16) []expr.Any {
-	return matchListener(loopbackInterface, project.Gateway, protocol, port)
-}
-
-func matchListener(inputInterface string, address netip.Addr, protocol byte, port uint16) []expr.Any {
-	expressions := append(matchInputInterface(inputInterface), matchIPv4Destination(address)...)
-	return append(expressions,
+func matchTransport(protocol byte, port uint16) []expr.Any {
+	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{protocol}},
 		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
-	)
+	}
 }
 
 func matchInputInterface(name string) []expr.Any {
@@ -225,30 +205,40 @@ func matchInterface(key expr.MetaKey, operation expr.CmpOp, name string) []expr.
 	}
 }
 
-func matchTunnelListener(project Project) []expr.Any {
-	return append(matchInputInterface(project.Bridge),
-		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
-		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(InternalTunnelPort)},
-	)
+func concatExprs(parts ...[]expr.Any) []expr.Any {
+	n := 0
+	for _, part := range parts {
+		n += len(part)
+	}
+	out := make([]expr.Any, 0, n)
+	for _, part := range parts {
+		out = append(out, part...)
+	}
+	return out
 }
 
-func matchRemoteVIPRedirect(project Project) []expr.Any {
-	expressions := append(matchInputInterface(project.Bridge), matchIPv4DestinationPrefix(project.RemoteVIP)...)
-	return append(expressions,
+func matchPortAccept(protocol byte, port uint16) []expr.Any {
+	return concatExprs(matchTransport(protocol, port), []expr.Any{verdict(expr.VerdictAccept)})
+}
+
+func matchRemoteVIPTProxy() []expr.Any {
+	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
 		&expr.Immediate{Register: 1, Data: binaryutil.BigEndian.PutUint16(InternalTunnelPort)},
-		&expr.Redir{RegisterProtoMin: 1},
-	)
+		&expr.TProxy{
+			Family:  byte(unix.NFPROTO_IPV4),
+			RegPort: 1,
+		},
+		verdict(expr.VerdictAccept),
+	}
 }
 
 func matchIPv4DestinationPrefix(prefix netip.Prefix) []expr.Any {
 	address := prefix.Masked().Addr().As4()
 	mask := netipPrefixMask(prefix)
 	return append(matchIPv4Family(),
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: ipv4AddressLength},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: ipv4DestinationOffset, Len: ipv4AddressLength},
 		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: ipv4AddressLength, Mask: mask[:], Xor: []byte{0, 0, 0, 0}},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: address[:]},
 	)
@@ -257,7 +247,7 @@ func matchIPv4DestinationPrefix(prefix netip.Prefix) []expr.Any {
 func matchIPv4Destination(address netip.Addr) []expr.Any {
 	bytes := address.As4()
 	return append(matchIPv4Family(),
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: ipv4AddressLength},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: ipv4DestinationOffset, Len: ipv4AddressLength},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: bytes[:]},
 	)
 }
@@ -265,7 +255,7 @@ func matchIPv4Destination(address netip.Addr) []expr.Any {
 func matchIPv4Source(address netip.Addr) []expr.Any {
 	bytes := address.As4()
 	return append(matchIPv4Family(),
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: ipv4AddressLength},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: ipv4SourceOffset, Len: ipv4AddressLength},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: bytes[:]},
 	)
 }
@@ -274,7 +264,7 @@ func matchIPv4SourcePrefix(prefix netip.Prefix) []expr.Any {
 	address := prefix.Masked().Addr().As4()
 	mask := netipPrefixMask(prefix)
 	return append(matchIPv4Family(),
-		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 12, Len: ipv4AddressLength},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: ipv4SourceOffset, Len: ipv4AddressLength},
 		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: ipv4AddressLength, Mask: mask[:], Xor: []byte{0, 0, 0, 0}},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: address[:]},
 	)
