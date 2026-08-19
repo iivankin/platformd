@@ -58,6 +58,7 @@ type serviceResponse struct {
 	CPUMillicores      int64                              `json:"cpuMillicores,omitempty"`
 	MemoryMaxBytes     int64                              `json:"memoryMaxBytes,omitempty"`
 	Enabled            bool                               `json:"enabled"`
+	HostID             string                             `json:"hostId,omitempty"`
 	ActiveDeploymentID string                             `json:"activeDeploymentId,omitempty"`
 	ActiveImageDigest  string                             `json:"activeImageDigest,omitempty"`
 	ActiveConfigHash   string                             `json:"activeConfigHash,omitempty"`
@@ -136,6 +137,7 @@ func createService(config handlerConfig) http.HandlerFunc {
 		serviceConfigRequest
 		Name               string                            `json:"name"`
 		Enabled            *bool                             `json:"enabled"`
+		HostID             string                            `json:"hostId"`
 		RegistryCredential *serviceRegistryCredentialRequest `json:"registryCredential"`
 		Domains            []initialServiceDomainRequest     `json:"domains"`
 		Listeners          []initialServiceListenerRequest   `json:"listeners"`
@@ -218,6 +220,7 @@ func createService(config handlerConfig) http.HandlerFunc {
 		created, err := config.services.CreateService(request.Context(), state.CreateService{
 			ID: serviceID, ProjectID: request.PathValue("projectID"), Name: body.Name,
 			Enabled: enabled && setup.empty(), Snapshot: initialSnapshot, ImageCredential: credential,
+			HostID:       body.HostID,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, CreatedAtMillis: timestamp.UnixMilli(),
 		})
@@ -282,7 +285,7 @@ func publicService(ctx context.Context, config handlerConfig, service state.Serv
 		HealthCheck:    service.Snapshot.HealthCheck,
 		CPUMillicores:  service.Snapshot.CPUMillicores,
 		MemoryMaxBytes: service.Snapshot.MemoryMaxBytes,
-		Enabled:        service.Enabled, ActiveDeploymentID: service.ActiveDeploymentID,
+		Enabled:        service.Enabled, HostID: service.HostID, ActiveDeploymentID: service.ActiveDeploymentID,
 		ActiveImageDigest: service.ActiveImageDigest, ActiveConfigHash: service.ActiveConfigHash,
 		SecretReferences: service.Snapshot.SecretReferences,
 		VolumeMounts:     service.Snapshot.VolumeMounts,

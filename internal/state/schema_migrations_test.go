@@ -251,3 +251,73 @@ WHERE type = 'table' AND name IN ('smtp_settings', 'mail_error_alerts', 'mail_me
 		t.Fatalf("schema version/tables = %d/%d", version, tables)
 	}
 }
+
+func TestMigrateSchemaVersionEighteenAddsHostCatalog(t *testing.T) {
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE services (id TEXT PRIMARY KEY) STRICT;
+PRAGMA user_version = 18;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionEighteen(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version, tables, hostColumn int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`
+SELECT count(*) FROM sqlite_schema
+WHERE type = 'table' AND name IN ('hosts', 'host_join_tokens')`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT count(*) FROM pragma_table_info('services') WHERE name = 'host_id'`).Scan(&hostColumn); err != nil {
+		t.Fatal(err)
+	}
+	if version != 19 || tables != 2 || hostColumn != 1 {
+		t.Fatalf("schema version/tables/host_id = %d/%d/%d", version, tables, hostColumn)
+	}
+}
+
+func TestMigrateSchemaVersionNineteenScopesListenersPerService(t *testing.T) {
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE services (id TEXT PRIMARY KEY) STRICT;
+CREATE TABLE service_listeners (
+  protocol TEXT NOT NULL,
+  public_port INTEGER NOT NULL,
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  target_port INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (protocol, public_port)
+) WITHOUT ROWID, STRICT;
+INSERT INTO services(id) VALUES ('api');
+INSERT INTO service_listeners(protocol, public_port, service_id, target_port, created_at)
+VALUES ('tcp', 2222, 'api', 22, 1);
+PRAGMA user_version = 19;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionNineteen(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version, pk int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`
+SELECT count(*) FROM pragma_table_info('service_listeners')
+WHERE name IN ('service_id', 'protocol', 'public_port') AND pk > 0`).Scan(&pk); err != nil {
+		t.Fatal(err)
+	}
+	if version != 20 || pk != 3 {
+		t.Fatalf("schema version/pk columns = %d/%d", version, pk)
+	}
+}

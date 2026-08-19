@@ -31,6 +31,7 @@ type ServiceDesired struct {
 	ActiveSourceRevision string
 	SentryPublicHostname string
 	SentryTunnelPath     string
+	HostID               string
 	CreatedAtMillis      int64
 	UpdatedAtMillis      int64
 	Snapshot             serviceconfig.Snapshot
@@ -44,6 +45,7 @@ type CreateService struct {
 	Enabled              bool
 	Snapshot             serviceconfig.Snapshot
 	ImageCredential      *ServiceImageCredential
+	HostID               string
 	AuditEventID         string
 	ActorKind            string
 	ActorID              string
@@ -126,6 +128,15 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 		} else if exists {
 			return ErrResourceNameConflict
 		}
+		if input.HostID != "" {
+			var exists int
+			if err := transaction.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = ?)", input.HostID).Scan(&exists); err != nil {
+				return fmt.Errorf("check service host: %w", err)
+			}
+			if exists != 1 {
+				return ErrUnknownServiceHost
+			}
+		}
 		if len(snapshot.VolumeMounts) != 0 {
 			return errors.New("volumes must be created after their service")
 		}
@@ -163,11 +174,11 @@ func (store *Store) CreateService(ctx context.Context, input CreateService) (Ser
 INSERT INTO services(
 	  id, project_id, name, source_json,
 	  command_json, args_json, environment_json, before_deploy_json, port_forward_json, health_port, health_path,
-	  health_timeout_seconds, cpu_millis, memory_bytes, enabled, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	  health_timeout_seconds, cpu_millis, memory_bytes, enabled, host_id, created_at, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			input.ID, input.ProjectID, input.Name, string(sourceJSON),
 			commandJSON, argsJSON, string(environmentJSON), beforeDeployJSON, portForwardJSON, healthPort, healthPath,
-			healthTimeout, cpuMillis, memoryBytes, enabled,
+			healthTimeout, cpuMillis, memoryBytes, enabled, nullableString(input.HostID),
 			input.CreatedAtMillis, input.CreatedAtMillis,
 		); err != nil {
 			return fmt.Errorf("create service: %w", err)
@@ -217,6 +228,7 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var activeSourceRevision sql.NullString
 	var sentryPublicHostname sql.NullString
 	var sentryTunnelPath sql.NullString
+	var hostID sql.NullString
 	var sourceJSON string
 	var commandJSON sql.NullString
 	var argsJSON sql.NullString
@@ -233,7 +245,7 @@ SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
 	   d.image_digest, d.service_config_hash, d.source_revision,
 	       s.source_json, s.command_json, s.args_json,
 	       s.environment_json, s.before_deploy_json, s.port_forward_json, s.health_port, s.health_path, s.health_timeout_seconds,
-	       s.cpu_millis, s.memory_bytes, s.sentry_public_hostname, s.sentry_tunnel_path, s.created_at, s.updated_at
+	       s.cpu_millis, s.memory_bytes, s.sentry_public_hostname, s.sentry_tunnel_path, s.host_id, s.created_at, s.updated_at
 FROM services s
 JOIN projects p ON p.id = s.project_id
 LEFT JOIN deployments d ON d.id = s.active_deployment_id
@@ -242,7 +254,7 @@ WHERE s.id = ?`, serviceID).Scan(
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash, &activeSourceRevision,
 		&sourceJSON, &commandJSON, &argsJSON,
 		&environmentJSON, &beforeDeployJSON, &portForwardJSON, &healthPort, &healthPath, &healthTimeout,
-		&cpuMillis, &memoryBytes, &sentryPublicHostname, &sentryTunnelPath, &service.CreatedAtMillis, &service.UpdatedAtMillis,
+		&cpuMillis, &memoryBytes, &sentryPublicHostname, &sentryTunnelPath, &hostID, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDesired{}, sql.ErrNoRows
@@ -257,6 +269,7 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveSourceRevision = activeSourceRevision.String
 	service.SentryPublicHostname = sentryPublicHostname.String
 	service.SentryTunnelPath = sentryTunnelPath.String
+	service.HostID = hostID.String
 	if err := json.Unmarshal([]byte(sourceJSON), &service.Snapshot.Source); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service source: %w", err)
 	}

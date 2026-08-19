@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package daemon
 
 import (
@@ -16,6 +18,7 @@ func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
 		marker("image"),
 		marker("forward"),
 		marker("create-forward"),
+		marker("hosts"),
 		marker("protected"),
 	)
 
@@ -33,6 +36,10 @@ func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
 			path:   "/public/api/v1/projects/shop/resources/api/port-forwards",
 			want:   "create-forward",
 		},
+		{method: http.MethodPost, path: "/public/api/v1/hosts/join", want: "hosts"},
+		{method: http.MethodGet, path: "/public/api/v1/hosts/connect", want: "hosts"},
+		{method: http.MethodGet, path: "/public/api/v1/hosts/tunnel", want: "hosts"},
+		{method: http.MethodGet, path: "/public/api/v1/hosts/images/revision", want: "hosts"},
 		{method: http.MethodPost, path: "/public/api/v1/projects", want: "protected"},
 	} {
 		request := httptest.NewRequest(test.method, test.path, nil)

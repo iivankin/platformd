@@ -254,6 +254,8 @@ const canvasResourceSchema = z.object({
   gatewayTargetPort: z.number().int().min(1).max(65_535).optional(),
   gatewayTargetServiceId: z.string().optional(),
   gatewayTransport: z.enum(["vpc", "mesh"]).optional(),
+  hostId: z.string().min(1).optional(),
+  hostName: z.string().min(1).optional(),
   id: z.string().min(1),
   imageDigest: z.string().min(1).optional(),
   imageReference: z.string().min(1).optional(),
@@ -333,6 +335,7 @@ const serviceSchema = z.object({
   enabled: z.boolean(),
   environment: z.record(z.string(), z.string()),
   healthCheck: healthCheckSchema.optional(),
+  hostId: z.string().min(1).optional(),
   id: z.string().min(1),
   memoryMaxBytes: z.number().int().nonnegative().optional(),
   name: z.string().min(1),
@@ -580,6 +583,7 @@ export interface CreateServiceInput {
   domains?: Pick<ServiceDomain, "hostname" | "targetPort">[];
   environment: Record<string, string>;
   healthCheck?: z.infer<typeof healthCheckSchema>;
+  hostId?: string;
   listeners?: Pick<ServiceListener, "protocol" | "publicPort" | "targetPort">[];
   name: string;
   portForward?: PortForwardAccess;
@@ -597,6 +601,7 @@ export interface UpdateServiceInput {
   environment: Record<string, string>;
   expectedUpdatedAt: number;
   healthCheck?: z.infer<typeof healthCheckSchema>;
+  hostId?: string;
   memoryMaxBytes?: number;
   portForward?: PortForwardAccess;
   registryCredential?: Pick<ServiceRegistryCredential, "password" | "username">;
@@ -4628,6 +4633,125 @@ export const fetchAPITokens = async (
     );
   }
   return apiTokensSchema.parse(await response.json()).tokens;
+};
+
+const hostSchema = z.object({
+  connected: z.boolean(),
+  createdAt: z.number().int().nonnegative(),
+  id: z.string().min(1),
+  joinedAt: z.number().int().nonnegative(),
+  lastSeenAt: z.number().int().positive().optional(),
+  name: z.string().min(1),
+  publicIpv4: z.string().min(1).optional(),
+  updatedAt: z.number().int().nonnegative(),
+});
+
+const hostJoinTokenSchema = z.object({
+  command: z.string().min(1).optional(),
+  createdAt: z.number().int().nonnegative(),
+  expiresAt: z.number().int().positive(),
+  id: z.string().min(1),
+  name: z.string().min(1),
+  token: z.string().min(1).optional(),
+});
+
+export type Host = z.infer<typeof hostSchema>;
+export type HostJoinToken = z.infer<typeof hostJoinTokenSchema>;
+
+export const fetchHosts = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<Host[]> => {
+  const response = await fetcher("/api/v1/hosts", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `hosts request failed with ${response.status}`
+    );
+  }
+  return z.object({ hosts: z.array(hostSchema) }).parse(await response.json())
+    .hosts;
+};
+
+export const fetchHostJoinTokens = async (
+  signal?: AbortSignal,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<HostJoinToken[]> => {
+  const response = await fetcher("/api/v1/hosts/join-tokens", {
+    headers: { Accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `host join tokens request failed with ${response.status}`
+    );
+  }
+  return z
+    .object({ tokens: z.array(hostJoinTokenSchema) })
+    .parse(await response.json()).tokens;
+};
+
+export const createHostJoinToken = async (
+  name: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<HostJoinToken> => {
+  const response = await fetcher("/api/v1/hosts/join-tokens", {
+    body: JSON.stringify({ name }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `host join token creation failed with ${response.status}`
+    );
+  }
+  const token = hostJoinTokenSchema.parse(await response.json());
+  if (!token.token || !token.command) {
+    throw new Error(
+      "Join token creation response omitted the one-time command"
+    );
+  }
+  return token;
+};
+
+export const deleteHost = async (
+  hostID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `/api/v1/hosts/${encodeURIComponent(hostID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `child server deletion failed with ${response.status}`
+    );
+  }
+};
+
+export const deleteHostJoinToken = async (
+  tokenID: string,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> => {
+  const response = await fetcher(
+    `/api/v1/hosts/join-tokens/${encodeURIComponent(tokenID)}`,
+    { method: "DELETE" }
+  );
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `join token deletion failed with ${response.status}`
+    );
+  }
 };
 
 export const createAPIToken = async (

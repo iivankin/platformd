@@ -25,7 +25,7 @@ import { useLastProject } from "@/use-last-project";
 import { useMediaQuery } from "@/use-media-query";
 
 const pageDescriptions: Record<string, string> = {
-  "/settings": "Installation access and secure hostnames.",
+  "/settings": "Installation access, child servers, and secure hostnames.",
   "/system": "Server health, maintenance, and platform activity.",
   "/telemetry": "Metrics, logs, errors, and traces across this installation.",
 };

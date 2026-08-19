@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package daemon
 
 import (
@@ -33,17 +35,18 @@ import (
 	"github.com/iivankin/platformd/internal/databaseversion"
 	"github.com/iivankin/platformd/internal/diskpressure"
 	"github.com/iivankin/platformd/internal/diskusage"
+	"github.com/iivankin/platformd/internal/hosthub"
 	"github.com/iivankin/platformd/internal/hostmetrics"
 	"github.com/iivankin/platformd/internal/imageupload"
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/installationsettings"
 	"github.com/iivankin/platformd/internal/journallogs"
 	"github.com/iivankin/platformd/internal/layout"
+	"github.com/iivankin/platformd/internal/mailer"
 	"github.com/iivankin/platformd/internal/managedimages"
 	"github.com/iivankin/platformd/internal/managedpostgres"
 	"github.com/iivankin/platformd/internal/managedredis"
 	"github.com/iivankin/platformd/internal/managedstats"
-	"github.com/iivankin/platformd/internal/mailer"
 	"github.com/iivankin/platformd/internal/masterkey"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/objectstore"
@@ -68,8 +71,6 @@ import (
 	"golang.org/x/net/netutil"
 )
 
-const shutdownTimeout = 120 * time.Second
-const maximumHTTPSConnections = 4096
 const managedImageCatalogTimeout = 10 * time.Second
 const containerImagesDiskComponent = "container_images"
 
@@ -230,6 +231,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		}
 		returnErr = errors.Join(returnErr, runtime.Close())
 	}()
+	internalMesh := newInternalBridge("", store.LookupInternalName)
+	runtime.AttachInternalMesh(internalMesh)
+	if err := internalMesh.Listen(ctx); err != nil {
+		return err
+	}
+	defer func() { returnErr = errors.Join(returnErr, internalMesh.Close()) }()
 	diskUsageContext, cancelDiskUsage := context.WithCancel(ctx)
 	diskUsageDone := make(chan struct{})
 	resourceDiskUsageDone := make(chan struct{})
@@ -799,7 +806,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		runtime.startCloudflareMeshSupervisor(ctx, cloudflareMesh, liveNetworkGateways)
 		networkGateways = liveNetworkGateways
 	}
-	automationRepository := liveAutomationRepository{
+	automationRepository := &liveAutomationRepository{
 		store: store, runtime: runtime, domains: domains, listeners: liveServiceListeners,
 		volumeFilesystem: volumeFilesystem, traffic: publicTraffic, certificates: certificates,
 		telemetry: serviceTelemetry, telemetryRoutes: serviceTelemetryRepository,
@@ -912,6 +919,34 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return fmt.Errorf("configure managed stats automation: %w", err)
 	}
+	hostHub, err := hosthub.New(hosthub.Config{
+		Store: store, Master: key, AdminHostname: installation.AdminHostname,
+		Credentials: imageCredentials,
+		Environment: resourceVariableResolver{store: store, master: key},
+		Cloudflare:  cloudflareDNS,
+		OTLPBaseURL: "http://" + telemetry.OTLPHTTPAddress,
+		DialLocal:   internalMesh.DialLocal,
+		OnAddress: func(string) {
+			go func() {
+				dnsCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := domains.reconcileDNS(dnsCtx); err != nil {
+					log.Printf("child server DNS reconcile: %v", err)
+				}
+			}()
+		},
+	})
+	if err != nil {
+		return fmt.Errorf("configure child server hub: %w", err)
+	}
+	defer hostHub.Close()
+	automationRepository.hosts = hostHub
+	internalMesh.SetHub(hostHub)
+	runtime.SetHostPlacement(store, hostHub)
+	if liveServiceListeners != nil {
+		liveServiceListeners.SetRemote(hostHub)
+	}
+	domains.SetRemote(hostHub)
 	publicFactory, err := newPublicHandlerFactory(automationapi.Config{
 		Repository: automationRepository, Projects: projectAutomation, Services: serviceAutomation,
 		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
@@ -932,8 +967,8 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		NetworkGateways: networkGatewayAutomation, Backups: backupAutomation, Versions: databaseVersions,
 		ServerExec: serverExecAutomation, Volumes: volumeAutomation, PortForwards: portForwards,
 		Admission: mutationAdmission, Telemetry: serviceTelemetryRepository,
-		Analytics: analyticsRepository,
-	}, authenticator, portForwards, imageUploads.Handler(), !installation.RecoveryMode)
+		Analytics: analyticsRepository, Hosts: hostHub,
+	}, authenticator, portForwards, imageUploads.Handler(), hostHub.Handler(), !installation.RecoveryMode)
 	if err != nil {
 		return err
 	}
@@ -947,6 +982,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	if err != nil {
 		return err
 	}
+	installationSettings.SetOnCertificatesChanged(func() {
+		if err := hostHub.PushCertificates(context.Background()); err != nil {
+			log.Printf("push origin certificates to child servers: %v", err)
+		}
+	})
 	tlsConfig := certificates.TLSConfig()
 	var recoveryRepository server.RecoveryRepository
 	if disasterRecoveryProgress != nil {
@@ -954,11 +994,13 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	adminApplicationHandler := server.Handler(
 		server.DefaultMeta(status(installation.RecoveryMode)),
+		server.WithHosts(hostHub),
 		server.WithProjects(liveProjectRepository{
 			store: store, runtime: runtime, backups: backupResources, domains: domains,
 			objectStores: objectStoreRepository, objectStoreData: objectStoreApplication,
 			serviceTelemetry: serviceTelemetry, telemetryRoutes: serviceTelemetryRepository,
 			listeners: liveServiceListeners, gateways: liveNetworkGateways, traffic: publicTraffic,
+			hosts:          hostHub,
 			onCleanupError: func(cleanupErr error) { log.Printf("project cleanup: %v", cleanupErr) },
 		}),
 		server.WithProjectWebhooks(projectWebhooks),
@@ -1130,33 +1172,4 @@ func serve(ctx context.Context, httpServer *http.Server) error {
 		return err
 	}
 	return serveListener(ctx, httpServer, listener, nil)
-}
-
-func serveListener(ctx context.Context, httpServer *http.Server, listener net.Listener, started func() error) error {
-	errChannel := make(chan error, 1)
-	go func() {
-		errChannel <- httpServer.Serve(listener)
-	}()
-	if started != nil {
-		if err := started(); err != nil {
-			_ = listener.Close()
-			<-errChannel
-			return err
-		}
-	}
-
-	select {
-	case err := <-errChannel:
-		if errors.Is(err, http.ErrServerClosed) {
-			return nil
-		}
-		return fmt.Errorf("serve %s: %w", httpServer.Addr, err)
-	case <-ctx.Done():
-		shutdownContext, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := httpServer.Shutdown(shutdownContext); err != nil {
-			return fmt.Errorf("shutdown: %w", err)
-		}
-		return nil
-	}
 }

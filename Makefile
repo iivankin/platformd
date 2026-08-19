@@ -28,4 +28,5 @@ test: frontend
 build: frontend runtime
 	mkdir -p dist
 	CGO_ENABLED=1 go build -trimpath -tags "$(GO_TAGS)" -ldflags "$(LDFLAGS)" -o dist/platformd .
+	CGO_ENABLED=1 go build -trimpath -tags "$(GO_TAGS) platformd_worker" -ldflags "$(LDFLAGS)" -o dist/platformd-worker ./cmd/platformd-worker
 	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o dist/platformd-forward ./cmd/platformd-forward

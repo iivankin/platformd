@@ -223,6 +223,24 @@ func (repository liveServiceRepository) UpdateService(ctx context.Context, input
 			repository.reportCleanupError(fmt.Errorf("configure service telemetry: %w", err))
 		}
 	}
+	if previous.HostID != updated.HostID {
+		if err := repository.runtime.DeleteService(ctx, previous); err != nil {
+			return state.ServiceDesired{}, err
+		}
+		if repository.listeners != nil {
+			if err := repository.listeners.SyncServiceHost(ctx, updated.ProjectID, updated.ID); err != nil {
+				repository.reportCleanupError(fmt.Errorf("sync public listeners after host change: %w", err))
+			}
+		}
+		if repository.domains != nil {
+			if err := repository.domains.reload(ctx); err != nil {
+				repository.reportCleanupError(fmt.Errorf("reload ingress after host change: %w", err))
+			}
+			if err := repository.domains.reconcileDNS(ctx); err != nil {
+				repository.reportCleanupError(fmt.Errorf("rewrite Cloudflare DNS after host change: %w", err))
+			}
+		}
+	}
 	previousRoot := servicesource.ImageUploadPreviewDomain(previous.Snapshot.Source)
 	updatedRoot := servicesource.ImageUploadPreviewDomain(updated.Snapshot.Source)
 	if !updated.Enabled || !servicesource.ImageUploadPreviewsEnabled(updated.Snapshot.Source) {

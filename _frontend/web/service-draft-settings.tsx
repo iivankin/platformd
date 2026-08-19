@@ -6,6 +6,7 @@ import type { PendingResourceCreation } from "@/pending-resource-creation";
 import { ServiceBeforeDeploy } from "@/service-before-deploy";
 import { ServiceConfiguration } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
+import { ServiceHostPicker } from "@/service-host-picker";
 import { ServiceListeners } from "@/service-listeners";
 import { ServiceVolumes } from "@/service-volumes";
 
@@ -70,6 +71,24 @@ export const ServiceDraftSettings = ({
               required
               spellCheck={false}
               value={draft.input.name}
+            />
+          </label>
+          <label
+            className="mt-4 grid gap-1.5 text-[9px] text-muted-foreground"
+            htmlFor="service-draft-host"
+          >
+            Server
+            <ServiceHostPicker
+              disabled={draft.settings.volumes.length > 0}
+              id="service-draft-host"
+              onChange={(hostId) =>
+                onChange({
+                  ...draft,
+                  input: { ...draft.input, hostId: hostId || undefined },
+                  settings: { ...draft.settings, hostId },
+                })
+              }
+              value={draft.settings.hostId}
             />
           </label>
         </div>

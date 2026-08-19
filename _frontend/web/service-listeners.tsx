@@ -88,7 +88,8 @@ export const ServiceListeners = ({
         <div>
           <h3 className="text-[10px] font-medium">TCP / UDP listeners</h3>
           <p className="mt-1 text-[9px] text-muted-foreground">
-            Bind a VPS port and forward it directly to a container port.
+            Opens on the server that runs this service and forwards to a
+            container port.
           </p>
         </div>
         <Network className="size-4 shrink-0 text-muted-foreground" />

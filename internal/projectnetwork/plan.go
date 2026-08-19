@@ -16,9 +16,12 @@ var ErrPoolExhausted = errors.New("project network pool is exhausted")
 
 const (
 	ContainerLeaseFirstHost = 2
-	ContainerLeaseLastHost  = 191
+	ContainerLeaseLastHost  = 159
+	RemoteVIPFirstHost      = 160
+	RemoteVIPLastHost       = 191
 	GatewayFirstHost        = 192
 	GatewayLastHost         = 254
+	remoteVIPPrefixBits     = 27
 )
 
 type Project struct {
@@ -134,6 +137,25 @@ func HostAddress(subnet netip.Prefix, host int) (netip.Addr, error) {
 	bytes := subnet.Masked().Addr().As4()
 	bytes[3] = byte(host)
 	return netip.AddrFrom4(bytes), nil
+}
+
+func RemoteVIPPrefix(subnet netip.Prefix) (netip.Prefix, error) {
+	address, err := HostAddress(subnet, RemoteVIPFirstHost)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	prefix := netip.PrefixFrom(address, remoteVIPPrefixBits)
+	if !prefix.IsValid() || !prefix.Contains(address) {
+		return netip.Prefix{}, fmt.Errorf("remote VIP prefix is invalid for subnet %s", subnet)
+	}
+	last, err := HostAddress(subnet, RemoteVIPLastHost)
+	if err != nil {
+		return netip.Prefix{}, err
+	}
+	if !prefix.Contains(last) {
+		return netip.Prefix{}, fmt.Errorf("remote VIP range %d-%d is outside %s", RemoteVIPFirstHost, RemoteVIPLastHost, prefix)
+	}
+	return prefix.Masked(), nil
 }
 
 func overlapsAny(candidate netip.Prefix, blocked []netip.Prefix) bool {

@@ -77,3 +77,17 @@ test("builds valid connected resources for every complex demo preset", () => {
     ).toBe(true);
   }
 });
+
+test("places worker services on the child host", () => {
+  const result = projectCanvasForDemoPreset(canvas, "web-app");
+  expect(
+    result.resources.find((resource) => resource.id === "demo-worker")
+  ).toMatchObject({
+    hostId: "host-edge-1",
+    hostName: "edge-1",
+    name: "worker",
+  });
+  expect(
+    result.resources.find((resource) => resource.id === "demo-api")?.hostName
+  ).toBeUndefined();
+});

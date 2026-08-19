@@ -3,6 +3,7 @@ package releasebundle
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 )
 
@@ -26,20 +27,43 @@ var runtimeProfile = []struct {
 	{path: "runtime/storage.conf", mode: 0o644},
 }
 
+var workerRuntimeProfile = []struct {
+	path string
+	mode uint32
+}{
+	{path: "runtime/catatonit", mode: 0o755},
+	{path: "runtime/conmon", mode: 0o755},
+	{path: "runtime/containers.conf", mode: 0o644},
+	{path: "runtime/crun", mode: 0o755},
+	{path: "runtime/mounts.conf", mode: 0o644},
+	{path: "runtime/netavark", mode: 0o755},
+	{path: "runtime/policy.json", mode: 0o644},
+	{path: "runtime/registries.conf", mode: 0o644},
+	{path: "runtime/seccomp.json", mode: 0o644},
+	{path: "runtime/storage.conf", mode: 0o644},
+}
+
 func validateRuntimeProfile(files []ManifestFile) error {
-	if len(files) != len(runtimeProfile) {
-		return fmt.Errorf("runtime bundle v2 profile requires %d files", len(runtimeProfile))
+	if matchesRuntimeProfile(files, runtimeProfile) || matchesRuntimeProfile(files, workerRuntimeProfile) {
+		return nil
 	}
-	for index, expected := range runtimeProfile {
+	return fmt.Errorf("runtime bundle v2 profile requires the control-plane or worker file set")
+}
+
+func matchesRuntimeProfile(files []ManifestFile, profile []struct {
+	path string
+	mode uint32
+}) bool {
+	if len(files) != len(profile) {
+		return false
+	}
+	for index, expected := range profile {
 		actual := files[index]
-		if actual.Path != expected.path {
-			return fmt.Errorf("runtime bundle v2 profile entry %d is %q, expected %q", index, actual.Path, expected.path)
-		}
-		if actual.Mode != expected.mode {
-			return fmt.Errorf("runtime bundle v2 profile file %q has mode %04o, expected %04o", actual.Path, actual.Mode, expected.mode)
+		if actual.Path != expected.path || actual.Mode != expected.mode {
+			return false
 		}
 	}
-	return nil
+	return true
 }
 
 func RuntimeHelperPaths(root string) ([]string, error) {
@@ -48,9 +72,17 @@ func RuntimeHelperPaths(root string) ([]string, error) {
 	}
 	paths := make([]string, 0, len(runtimeProfile))
 	for _, entry := range runtimeProfile {
-		if entry.mode == 0o755 {
-			paths = append(paths, filepath.Join(root, filepath.FromSlash(entry.path)))
+		if entry.mode != 0o755 {
+			continue
 		}
+		path := filepath.Join(root, filepath.FromSlash(entry.path))
+		if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		return nil, errors.New("runtime helpers are missing")
 	}
 	return paths, nil
 }

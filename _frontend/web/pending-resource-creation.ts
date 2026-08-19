@@ -43,6 +43,7 @@ export const emptyPendingServiceCreationSettings = (
   beforeDeploy: emptyBeforeDeployDraft(),
   configuration: serviceConfigurationDraftFromCreateInput(input),
   domains: [],
+  hostId: input.hostId ?? "",
   listeners: [],
   portForward: emptyPortForwardDraft(),
   volumeMounts: [],
@@ -211,6 +212,7 @@ export const applyPendingResource = (
         ),
         domains: draft.settings.domains,
         healthCheck: configuration.healthCheck,
+        hostId: draft.settings.hostId || undefined,
         listeners: draft.settings.listeners,
         name: draft.input.name.trim(),
         registryCredential: configuration.registryCredential,
@@ -289,6 +291,7 @@ export const pendingCanvasResource = (
       );
       return {
         ...common,
+        hostId: draft.settings.hostId || undefined,
         kind: "service",
         source: draft.settings.configuration.source,
         volumes: draft.settings.volumes.map((volume) => ({

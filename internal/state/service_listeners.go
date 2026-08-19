@@ -117,7 +117,7 @@ func (store *Store) AttachServiceListener(ctx context.Context, input AttachServi
 		if err != nil {
 			return err
 		}
-		existing, exists, err := loadServiceListener(ctx, transaction, protocol, input.PublicPort)
+		existing, exists, err := loadServiceListener(ctx, transaction, input.ServiceID, protocol, input.PublicPort)
 		if err != nil {
 			return err
 		}
@@ -131,10 +131,15 @@ func (store *Store) AttachServiceListener(ctx context.Context, input AttachServi
 			action = "service.listener.update"
 			if _, err := transaction.ExecContext(ctx, `
 UPDATE service_listeners SET target_port = ?
-WHERE protocol = ? AND public_port = ?`, input.TargetPort, protocol, input.PublicPort); err != nil {
+WHERE service_id = ? AND protocol = ? AND public_port = ?`, input.TargetPort, input.ServiceID, protocol, input.PublicPort); err != nil {
 				return fmt.Errorf("update service listener: %w", err)
 			}
 		default:
+			if occupant, occupied, err := loadHostListener(ctx, transaction, input.ServiceID, protocol, input.PublicPort); err != nil {
+				return err
+			} else if occupied {
+				return &ListenerConflict{Listener: occupant}
+			}
 			if _, err := transaction.ExecContext(ctx, `
 INSERT INTO service_listeners(protocol, public_port, service_id, target_port, created_at)
 VALUES (?, ?, ?, ?, ?)`, protocol, input.PublicPort, input.ServiceID, input.TargetPort, input.CreatedAtMillis); err != nil {
@@ -228,18 +233,14 @@ WHERE s.id = ? AND s.project_id = ?`, serviceID, projectID).Scan(
 	return target, nil
 }
 
-func loadServiceListener(ctx context.Context, transaction *sql.Tx, protocol string, publicPort int) (ServiceListener, bool, error) {
-	var listener ServiceListener
-	err := transaction.QueryRowContext(ctx, `
+func loadServiceListener(ctx context.Context, transaction *sql.Tx, serviceID, protocol string, publicPort int) (ServiceListener, bool, error) {
+	listener, err := scanOneServiceListener(transaction.QueryRowContext(ctx, `
 SELECT l.protocol, l.public_port, l.target_port, l.service_id,
        s.name, s.project_id, p.name, l.created_at
 FROM service_listeners l
 JOIN services s ON s.id = l.service_id
 JOIN projects p ON p.id = s.project_id
-WHERE l.protocol = ? AND l.public_port = ?`, protocol, publicPort).Scan(
-		&listener.Protocol, &listener.PublicPort, &listener.TargetPort, &listener.ServiceID,
-		&listener.ServiceName, &listener.ProjectID, &listener.ProjectName, &listener.CreatedAt,
-	)
+WHERE l.service_id = ? AND l.protocol = ? AND l.public_port = ?`, serviceID, protocol, publicPort))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceListener{}, false, nil
 	}
@@ -247,6 +248,38 @@ WHERE l.protocol = ? AND l.public_port = ?`, protocol, publicPort).Scan(
 		return ServiceListener{}, false, fmt.Errorf("load service listener: %w", err)
 	}
 	return listener, true, nil
+}
+
+func loadHostListener(ctx context.Context, transaction *sql.Tx, serviceID, protocol string, publicPort int) (ServiceListener, bool, error) {
+	var hostID sql.NullString
+	if err := transaction.QueryRowContext(ctx, `SELECT host_id FROM services WHERE id = ?`, serviceID).Scan(&hostID); err != nil {
+		return ServiceListener{}, false, fmt.Errorf("load listener host: %w", err)
+	}
+	listener, err := scanOneServiceListener(transaction.QueryRowContext(ctx, `
+SELECT l.protocol, l.public_port, l.target_port, l.service_id,
+       s.name, s.project_id, p.name, l.created_at
+FROM service_listeners l
+JOIN services s ON s.id = l.service_id
+JOIN projects p ON p.id = s.project_id
+WHERE l.protocol = ? AND l.public_port = ?
+  AND IFNULL(s.host_id, '') = ?
+  AND l.service_id != ?`, protocol, publicPort, hostID.String, serviceID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ServiceListener{}, false, nil
+	}
+	if err != nil {
+		return ServiceListener{}, false, fmt.Errorf("load host listener: %w", err)
+	}
+	return listener, true, nil
+}
+
+func scanOneServiceListener(row *sql.Row) (ServiceListener, error) {
+	var listener ServiceListener
+	err := row.Scan(
+		&listener.Protocol, &listener.PublicPort, &listener.TargetPort, &listener.ServiceID,
+		&listener.ServiceName, &listener.ProjectID, &listener.ProjectName, &listener.CreatedAt,
+	)
+	return listener, err
 }
 
 func scanServiceListeners(rows *sql.Rows) ([]ServiceListener, error) {

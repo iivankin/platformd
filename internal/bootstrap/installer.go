@@ -63,6 +63,11 @@ func (installer Installer) Init(ctx context.Context) error {
 	if err := installer.validateConfiguration(); err != nil {
 		return err
 	}
+	if _, err := os.Lstat(installer.Paths.WorkerConfig); err == nil {
+		return errors.New("this machine is already a child server; do not run platformd init here")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect worker config: %w", err)
+	}
 	installation, complete, err := installer.existingInstallation(ctx)
 	if err != nil {
 		return err

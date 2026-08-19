@@ -528,6 +528,33 @@ jobs:
             --setenv=PATH=/nonexistent \
             --setenv=PLATFORMD_RUNTIME_INTEGRATION=1 \
             --setenv=PLATFORMD_CGROUP_INTEGRATION=1
+          sudo rm -rf \
+            /var/lib/platformd-hostmesh-parent \
+            /var/lib/platformd-hostmesh-child \
+            /etc/platformd-hostmesh-parent \
+            /etc/platformd-hostmesh-child \
+            /run/platformd-hostmesh-parent \
+            /run/platformd-hostmesh-child \
+            /run/platformd-hostmesh-ipc
+          sudo systemd-run \
+            --quiet \
+            --wait \
+            --collect \
+            --pipe \
+            --service-type=exec \
+            --unit=platformd-daemon-host-mesh-integration \
+            --property=Delegate=yes \
+            --property=DelegateSubgroup=control \
+            --property=TasksMax=infinity \
+            --setenv=HOME=/root \
+            --setenv=PATH=/nonexistent \
+            --setenv=PLATFORMD_HOST_MESH_INTEGRATION=1 \
+            --setenv=PLATFORMD_RUNTIME_INTEGRATION=1 \
+            --setenv=PLATFORMD_CGROUP_INTEGRATION=1 \
+            "$PWD/dist/daemon-integration.test" \
+              -test.run='^TestHostInternalMeshTwoInstances$' \
+              -test.timeout=5m \
+              -test.v
           run_delegated \
             platformd-rootexec-integration \
             dist/rootexec-integration.test \
@@ -609,6 +636,27 @@ jobs:
           go run ./tools/bundle --executable dist/platformd-linux-amd64 --runtime dist/runtime
           python3 -m zipfile -t dist/platformd-linux-amd64
 
+          CGO_ENABLED=1 go build \
+            -trimpath \
+            -tags "$GO_TAGS platformd_worker" \
+            -ldflags "-X github.com/iivankin/platformd/internal/version.Version=$VERSION -X github.com/iivankin/platformd/internal/version.Commit=$GITHUB_SHA" \
+            -o dist/platformd-worker-linux-amd64 \
+            ./cmd/platformd-worker
+          mkdir -p dist/runtime-worker
+          for helper in catatonit conmon crun netavark containers.conf mounts.conf policy.json registries.conf seccomp.json storage.conf; do
+            cp -a "dist/runtime/$helper" "dist/runtime-worker/$helper"
+          done
+          test ! -e dist/runtime-worker/platformd-telemetry
+          test ! -e dist/runtime-worker/platformd-objectstore
+          build/verify-elf.sh \
+            dist/platformd-worker-linux-amd64 \
+            dist/runtime-worker/crun \
+            dist/runtime-worker/conmon \
+            dist/runtime-worker/netavark \
+            dist/runtime-worker/catatonit
+          go run ./tools/bundle --executable dist/platformd-worker-linux-amd64 --runtime dist/runtime-worker
+          python3 -m zipfile -t dist/platformd-worker-linux-amd64
+
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             os="${target%/*}"
             arch="${target#*/}"
@@ -653,6 +701,37 @@ jobs:
               test "$status" -eq 2
               grep -Fq "usage: platformd init" /tmp/platformd-output
             '
+          rm -rf dist/debian-13-worker-smoke
+          mkdir -p dist/debian-13-worker-smoke
+          python3 -m zipfile -e dist/platformd-worker-linux-amd64 dist/debian-13-worker-smoke
+          test ! -e dist/debian-13-worker-smoke/runtime/platformd-telemetry
+          test ! -e dist/debian-13-worker-smoke/runtime/platformd-objectstore
+          chmod 0755 \
+            dist/debian-13-worker-smoke/runtime/catatonit \
+            dist/debian-13-worker-smoke/runtime/conmon \
+            dist/debian-13-worker-smoke/runtime/crun \
+            dist/debian-13-worker-smoke/runtime/netavark
+          docker run --rm --platform linux/amd64 \
+            --volume "$PWD/dist:/release:ro" \
+            debian:13-slim@sha256:a617c1cdde36a7e0194b2f07dff669e1753c03c3205356b94f9f350b0f9a57d1 \
+            sh -ceu '
+              apt-get update
+              apt-get install --yes --no-install-recommends \
+                libcap2 \
+                libgcc-s1 \
+                libglib2.0-0t64 \
+                libjson-c5 \
+                libseccomp2 \
+                libstdc++6
+              for helper in catatonit conmon crun netavark; do
+                env -i LC_ALL=C LANG=C "/release/debian-13-worker-smoke/runtime/$helper" --version >/dev/null
+              done
+              status=0
+              /release/platformd-worker-linux-amd64 >/tmp/platformd-output 2>&1 || status=$?
+              test "$status" -eq 2
+              grep -Fq "usage: platformd join" /tmp/platformd-output
+              ! grep -Fq "usage: platformd init" /tmp/platformd-output
+            '
 
       - name: Sign release manifest
         env:
@@ -676,12 +755,28 @@ jobs:
             done
           fi
           go run ./tools/release-manifest "${arguments[@]}"
+          worker_arguments=(
+            --binary dist/platformd-worker-linux-amd64
+            --binary-url "https://github.com/$GITHUB_REPOSITORY/releases/download/v$VERSION/platformd-worker-linux-amd64"
+            --version "$VERSION"
+            --private-key "$key_path"
+            --output dist/platformd-worker-linux-amd64.manifest.json
+          )
+          if [[ -n "$SUPPORTED_FROM" ]]; then
+            IFS=',' read -ra source_versions <<< "$SUPPORTED_FROM"
+            for source_version in "${source_versions[@]}"; do
+              worker_arguments+=(--supported-from "$source_version")
+            done
+          fi
+          go run ./tools/release-manifest "${worker_arguments[@]}"
           rm -f "$key_path"
           (
             cd dist
             sha256sum \
               platformd-linux-amd64 \
               platformd-linux-amd64.manifest.json \
+              platformd-worker-linux-amd64 \
+              platformd-worker-linux-amd64.manifest.json \
               platformd-forward-linux-amd64 \
               platformd-forward-linux-arm64 \
               platformd-forward-darwin-amd64 \
@@ -701,6 +796,8 @@ jobs:
             --generate-notes \
             dist/platformd-linux-amd64 \
             dist/platformd-linux-amd64.manifest.json \
+            dist/platformd-worker-linux-amd64 \
+            dist/platformd-worker-linux-amd64.manifest.json \
             dist/platformd-forward-linux-amd64 \
             dist/platformd-forward-linux-arm64 \
             dist/platformd-forward-darwin-amd64 \

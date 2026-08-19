@@ -50,6 +50,7 @@ type Handler struct {
 	portForwards       *portforward.Application
 	telemetry          ServiceTelemetry
 	analytics          Analytics
+	hosts              HostHub
 	tools              []Tool
 	admission          *admission.Gate
 }
@@ -81,6 +82,7 @@ type Config struct {
 	PortForwards       *portforward.Application
 	Telemetry          ServiceTelemetry
 	Analytics          Analytics
+	Hosts              HostHub
 	Admission          *admission.Gate
 }
 
@@ -135,7 +137,7 @@ func New(config Config) (*Handler, error) {
 		managed: config.Managed, managedDeployments: config.ManagedDeployments, managedStats: config.ManagedStats,
 		networkGateways: config.NetworkGateways, backups: config.Backups, versions: config.Versions,
 		serverExec: config.ServerExec, volumes: config.Volumes, portForwards: config.PortForwards,
-		telemetry: config.Telemetry, analytics: config.Analytics, tools: tools, admission: config.Admission,
+		telemetry: config.Telemetry, analytics: config.Analytics, hosts: config.Hosts, tools: tools, admission: config.Admission,
 	}, nil
 }
 

@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package command
 
 import (

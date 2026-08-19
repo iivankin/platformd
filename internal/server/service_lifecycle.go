@@ -162,6 +162,7 @@ func updateService(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
 		serviceConfigRequest
 		Enabled            *bool                             `json:"enabled"`
+		HostID             *string                           `json:"hostId"`
 		ExpectedUpdatedAt  int64                             `json:"expectedUpdatedAt"`
 		RegistryCredential *serviceRegistryCredentialRequest `json:"registryCredential"`
 	}
@@ -197,9 +198,17 @@ func updateService(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusBadRequest, "invalid_registry_auth", credentialErr.Error())
 			return
 		}
+		hostID := body.HostID
+		if hostID == nil {
+			current, loadErr := config.services.Service(request.Context(), request.PathValue("projectID"), request.PathValue("serviceID"))
+			if writeServiceMutationError(response, loadErr) {
+				return
+			}
+			hostID = &current.HostID
+		}
 		updated, err := config.services.UpdateService(request.Context(), state.UpdateServiceInput{
 			ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
-			Enabled: *body.Enabled, Snapshot: snapshot, ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
+			Enabled: *body.Enabled, Snapshot: snapshot, HostID: *hostID, ExpectedUpdatedMillis: body.ExpectedUpdatedAt,
 			ImageCredential: credential, RemoveImageCredential: snapshot.Source.Type != servicesource.PrivateImage,
 			AuditEventID: auditID, ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 			RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
@@ -445,6 +454,12 @@ func writeServiceMutationError(response http.ResponseWriter, err error) bool {
 		writeAPIError(response, http.StatusConflict, "service_disabled", "Disabled service cannot be redeployed")
 	case errors.Is(err, state.ErrImageCredentialHostMismatch):
 		writeAPIError(response, http.StatusBadRequest, "image_credential_registry_mismatch", err.Error())
+	case errors.Is(err, state.ErrUnknownServiceHost):
+		writeAPIError(response, http.StatusNotFound, "service_host_not_found", err.Error())
+	case errors.Is(err, state.ErrServiceHostHasVolumes):
+		writeAPIError(response, http.StatusConflict, "service_host_has_volumes", err.Error())
+	case errors.Is(err, state.ErrPublicPortUnavailable):
+		writeAPIError(response, http.StatusConflict, "public_port_unavailable", err.Error())
 	case errors.Is(err, state.ErrServiceReconcileFailed):
 		writeAPIError(response, http.StatusBadGateway, "service_reconcile_failed", err.Error(), err)
 	default:

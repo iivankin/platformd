@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package daemon
 
 import (
@@ -20,6 +22,7 @@ type liveAutomationRepository struct {
 	certificates     *origin.Selector
 	telemetry        *telemetry.ServiceManager
 	telemetryRoutes  *liveServiceTelemetryRepository
+	hosts            hostServiceStatus
 	onCleanupError   func(error)
 }
 
@@ -42,7 +45,9 @@ func (repository liveAutomationRepository) CreateProjectByToken(ctx context.Cont
 	if err != nil {
 		return state.ProjectSummary{}, err
 	}
-	_ = repository.runtime.AddProject(state.RuntimeProject{ID: created.ID, Name: created.Name})
+	project := state.RuntimeProject{ID: created.ID, Name: created.Name}
+	_ = repository.runtime.AddProject(project)
+	publishHostProjects(repository.hosts, project)
 	return created, nil
 }
 
@@ -51,7 +56,9 @@ func (repository liveAutomationRepository) Project(ctx context.Context, projectI
 }
 
 func (repository liveAutomationRepository) ProjectCanvas(ctx context.Context, projectID string) (state.ProjectCanvas, error) {
-	return (liveProjectRepository{store: repository.store, runtime: repository.runtime}).ProjectCanvas(ctx, projectID)
+	return (liveProjectRepository{
+		store: repository.store, runtime: repository.runtime, hosts: repository.hosts,
+	}).ProjectCanvas(ctx, projectID)
 }
 
 func (repository liveAutomationRepository) Service(ctx context.Context, projectID, serviceID string) (state.ServiceDesired, error) {

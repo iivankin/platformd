@@ -74,6 +74,18 @@ func (zone *Zone) lookup(name string) ([4]byte, bool) {
 	return address, found
 }
 
+func (zone *Zone) Lookup(name string) (netip.Addr, bool) {
+	fqdn, err := canonicalInternalName(name)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	raw, found := zone.lookup(fqdn)
+	if !found {
+		return netip.Addr{}, false
+	}
+	return netip.AddrFrom4(raw), true
+}
+
 func canonicalInternalName(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	if !strings.HasSuffix(value, ".") {

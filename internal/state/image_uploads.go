@@ -434,6 +434,24 @@ WHERE id = ? AND status IN ('uploading', 'importing', 'deploying')`, code, messa
 	})
 }
 
+func (store *Store) ImageRevisionAssignedToHost(ctx context.Context, hostID, revisionID string) (ImageRevision, error) {
+	if hostID == "" || revisionID == "" {
+		return ImageRevision{}, ErrImageRevisionNotFound
+	}
+	revision, err := store.ImageRevision(ctx, revisionID)
+	if err != nil {
+		return ImageRevision{}, err
+	}
+	desired, err := store.DesiredService(ctx, revision.ServiceID)
+	if err != nil {
+		return ImageRevision{}, err
+	}
+	if desired.HostID != hostID {
+		return ImageRevision{}, ErrImageRevisionNotFound
+	}
+	return revision, nil
+}
+
 func (store *Store) ImageRevision(ctx context.Context, revisionID string) (ImageRevision, error) {
 	revision, err := scanImageRevision(store.database.QueryRowContext(ctx, imageRevisionSelect+` WHERE id = ?`, revisionID))
 	if errors.Is(err, sql.ErrNoRows) {

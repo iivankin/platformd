@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	PublicKeyBase64URL = "WCUFfw1s7MCGOyxsbUvA66E0Hs-KhkI-uQchI8z_ZTE"
-	LatestManifestURL  = "https://github.com/iivankin/platformd/releases/latest/download/platformd-linux-amd64.manifest.json"
-	versionManifestURL = "https://github.com/iivankin/platformd/releases/download/v%s/platformd-linux-amd64.manifest.json"
+	PublicKeyBase64URL       = "WCUFfw1s7MCGOyxsbUvA66E0Hs-KhkI-uQchI8z_ZTE"
+	LatestManifestURL        = "https://github.com/iivankin/platformd/releases/latest/download/platformd-linux-amd64.manifest.json"
+	versionManifestURL       = "https://github.com/iivankin/platformd/releases/download/v%s/platformd-linux-amd64.manifest.json"
+	workerVersionManifestURL = "https://github.com/iivankin/platformd/releases/download/v%s/platformd-worker-linux-amd64.manifest.json"
 )
 
 func PublicKey() (ed25519.PublicKey, error) {
@@ -23,4 +24,8 @@ func PublicKey() (ed25519.PublicKey, error) {
 
 func VersionManifestURL(version string) string {
 	return fmt.Sprintf(versionManifestURL, version)
+}
+
+func WorkerVersionManifestURL(version string) string {
+	return fmt.Sprintf(workerVersionManifestURL, version)
 }

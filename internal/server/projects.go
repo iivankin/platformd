@@ -70,6 +70,8 @@ type projectCanvasResource struct {
 	GatewayRemotePort      int                   `json:"gatewayRemotePort,omitempty"`
 	GatewayTargetServiceID string                `json:"gatewayTargetServiceId,omitempty"`
 	GatewayTargetPort      int                   `json:"gatewayTargetPort,omitempty"`
+	HostID                 string                `json:"hostId,omitempty"`
+	HostName               string                `json:"hostName,omitempty"`
 }
 
 type projectCanvasVolume struct {
@@ -179,6 +181,7 @@ func getProjectCanvas(repository ProjectRepository) http.HandlerFunc {
 				GatewayListenPort: resource.GatewayListenPort,
 				GatewayRemoteHost: resource.GatewayRemoteHost, GatewayRemotePort: resource.GatewayRemotePort,
 				GatewayTargetServiceID: resource.GatewayTargetServiceID, GatewayTargetPort: resource.GatewayTargetPort,
+				HostID: resource.HostID, HostName: resource.HostName,
 			})
 		}
 		connections := make([]projectCanvasConnection, 0, len(canvas.Connections))

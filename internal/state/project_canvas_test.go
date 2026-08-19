@@ -58,6 +58,38 @@ VALUES ('api', 'api-data', '/data')`); err != nil {
 	}
 }
 
+func TestProjectCanvasIncludesChildHostName(t *testing.T) {
+	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.database.Exec(`
+INSERT INTO projects(id, name, created_at, updated_at) VALUES ('project', 'shop', 1, 1);
+INSERT INTO hosts(id, name, public_ipv4, token_hmac, joined_at, created_at, updated_at)
+VALUES ('host-edge', 'edge-1', '203.0.113.40', x'0000000000000000000000000000000000000000000000000000000000000001', 2, 2, 2);
+INSERT INTO services(id, project_id, name, host_id, source_json, environment_json, created_at, updated_at)
+VALUES
+  ('api', 'project', 'api', 'host-edge', '{"type":"public_image","image":{"reference":"example/api:latest"}}', '{}', 1, 1),
+  ('web', 'project', 'web', NULL, '{"type":"public_image","image":{"reference":"example/web:latest"}}', '{}', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	canvas, err := store.ProjectCanvas(context.Background(), "project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]CanvasResource{}
+	for _, resource := range canvas.Resources {
+		byID[resource.ID] = resource
+	}
+	if byID["api"].HostID != "host-edge" || byID["api"].HostName != "edge-1" {
+		t.Fatalf("child service host = %q/%q", byID["api"].HostID, byID["api"].HostName)
+	}
+	if byID["web"].HostID != "" || byID["web"].HostName != "" {
+		t.Fatalf("primary service host = %q/%q", byID["web"].HostID, byID["web"].HostName)
+	}
+}
+
 func TestProjectCanvasReturnsNotFound(t *testing.T) {
 	store, err := Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
 	if err != nil {

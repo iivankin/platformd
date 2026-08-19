@@ -10,7 +10,7 @@
 ## Architecture
 
 - This repository is one Go module and one Bun package under `_frontend/`. Do not introduce a workspace monorepo.
-- The only public CLI command is `platformd init`; private daemon/bootstrap modes must stay undocumented.
+- The public CLI commands are `platformd init` and `platformd join`; private daemon/bootstrap modes must stay undocumented.
 - SQLite is authoritative product state. Runtime state is reconstructed and never adopted after restart.
 - Keep internal packages small and expose narrow interfaces. Do not leak libpod types outside the runtime adapter.
 - Use hard cutovers for schema and internal API changes. Do not add compatibility layers unless explicitly requested.

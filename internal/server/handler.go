@@ -58,6 +58,7 @@ type handlerConfig struct {
 	managedStats            *managedstats.Application
 	objectStores            *objectstore.Application
 	installationSettings    *installationsettings.Application
+	hosts                   HostRepository
 	afterInstallationChange func()
 	mailer                  *mailer.Application
 	cloudflareDNS           *cloudflaredns.Application
@@ -191,6 +192,12 @@ func WithManagedStats(application *managedstats.Application) Option {
 func WithObjectStores(application *objectstore.Application) Option {
 	return func(config *handlerConfig) {
 		config.objectStores = application
+	}
+}
+
+func WithHosts(repository HostRepository) Option {
+	return func(config *handlerConfig) {
+		config.hosts = repository
 	}
 }
 
@@ -367,6 +374,9 @@ func Handler(meta Meta, options ...Option) http.Handler {
 	}
 	if config.installationSettings != nil {
 		registerInstallationSettingsRoutes(mux, config)
+	}
+	if config.hosts != nil {
+		registerHostRoutes(mux, config)
 	}
 	if config.mailer != nil {
 		registerMailRoutes(mux, config)

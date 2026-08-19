@@ -17,6 +17,7 @@ export interface ServiceSettingsDraft {
   beforeDeploy: BeforeDeployDraft;
   configuration: ServiceConfigurationDraft;
   domains: ServiceDomainDraft[];
+  hostId: string;
   listeners: ServiceListenerDraft[];
   portForward: PortForwardDraft;
   volumeMounts: Service["volumeMounts"];
@@ -106,6 +107,7 @@ export const createServiceSettingsDraft = (
   beforeDeploy: beforeDeployDraft(service.beforeDeploy),
   configuration: serviceConfigurationDraft(service),
   domains: domainDrafts(domains),
+  hostId: service.hostId ?? "",
   listeners: listenerDrafts(listeners),
   portForward: portForwardDraft(service.portForward),
   volumeMounts: sortedMounts(service.volumeMounts),
@@ -116,6 +118,13 @@ const configurationChangeDetails = (
   change: PendingServiceSettings
 ): ServiceSettingsChangeDetail[] => {
   const details: ServiceSettingsChangeDetail[] = [];
+  if ((change.baseline.service.hostId ?? "") !== change.draft.hostId) {
+    details.push({
+      detail: change.draft.hostId === "" ? "Primary VPS" : change.draft.hostId,
+      id: "host",
+      label: "Server",
+    });
+  }
   const baselineConfiguration = serviceConfigurationDraft(
     change.baseline.service
   );

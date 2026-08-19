@@ -29,15 +29,22 @@ func compileRuleset(name string, projects []Project) compiledRuleset {
 	policy := nftables.ChainPolicyAccept
 	input := &nftables.Chain{Name: "input", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookInput, Priority: priority, Policy: &policy}
 	forward := &nftables.Chain{Name: "forward", Table: table, Type: nftables.ChainTypeFilter, Hooknum: nftables.ChainHookForward, Priority: priority, Policy: &policy}
+	prerouting := &nftables.Chain{Name: "prerouting", Table: table, Type: nftables.ChainTypeNAT, Hooknum: nftables.ChainHookPrerouting, Priority: nftables.ChainPriorityNATDest, Policy: &policy}
 	postrouting := &nftables.Chain{Name: "postrouting", Table: table, Type: nftables.ChainTypeNAT, Hooknum: nftables.ChainHookPostrouting, Priority: nftables.ChainPriorityNATSource, Policy: &policy}
 
-	compiled := compiledRuleset{table: table, chains: []*nftables.Chain{input, forward, postrouting}}
+	compiled := compiledRuleset{table: table, chains: []*nftables.Chain{input, forward, prerouting, postrouting}}
 	compiled.rules = append(compiled.rules, rule(table, input, establishedRelated()...))
 	for _, project := range projects {
 		compiled.rules = append(compiled.rules,
 			rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, DNSPort), verdict(expr.VerdictAccept))...),
 			rule(table, input, append(matchProjectListener(project, unix.IPPROTO_UDP, DNSPort), verdict(expr.VerdictAccept))...),
 		)
+		if project.RemoteVIP.IsValid() {
+			compiled.rules = append(compiled.rules,
+				rule(table, input, append(matchTunnelListener(project), verdict(expr.VerdictAccept))...),
+				rule(table, prerouting, matchRemoteVIPRedirect(project)...),
+			)
+		}
 		if project.ObjectStoreEnabled {
 			compiled.rules = append(compiled.rules,
 				rule(table, input, append(matchProjectListener(project, unix.IPPROTO_TCP, ObjectStorePort), verdict(expr.VerdictAccept))...),
@@ -216,6 +223,35 @@ func matchInterface(key expr.MetaKey, operation expr.CmpOp, name string) []expr.
 		&expr.Meta{Key: key, Register: 1},
 		&expr.Cmp{Op: operation, Register: 1, Data: data},
 	}
+}
+
+func matchTunnelListener(project Project) []expr.Any {
+	return append(matchInputInterface(project.Bridge),
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseTransportHeader, Offset: 2, Len: 2},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(InternalTunnelPort)},
+	)
+}
+
+func matchRemoteVIPRedirect(project Project) []expr.Any {
+	expressions := append(matchInputInterface(project.Bridge), matchIPv4DestinationPrefix(project.RemoteVIP)...)
+	return append(expressions,
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{unix.IPPROTO_TCP}},
+		&expr.Immediate{Register: 1, Data: binaryutil.BigEndian.PutUint16(InternalTunnelPort)},
+		&expr.Redir{RegisterProtoMin: 1},
+	)
+}
+
+func matchIPv4DestinationPrefix(prefix netip.Prefix) []expr.Any {
+	address := prefix.Masked().Addr().As4()
+	mask := netipPrefixMask(prefix)
+	return append(matchIPv4Family(),
+		&expr.Payload{DestRegister: 1, Base: expr.PayloadBaseNetworkHeader, Offset: 16, Len: ipv4AddressLength},
+		&expr.Bitwise{SourceRegister: 1, DestRegister: 1, Len: ipv4AddressLength, Mask: mask[:], Xor: []byte{0, 0, 0, 0}},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: address[:]},
+	)
 }
 
 func matchIPv4Destination(address netip.Addr) []expr.Any {

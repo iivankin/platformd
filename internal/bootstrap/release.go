@@ -51,7 +51,7 @@ func LoadProductionRelease(ctx context.Context) (VerifiedRelease, error) {
 	return LoadRelease(ctx, ReleaseLoaderConfig{
 		ExecutablePath: executablePath,
 		Version:        version.Version,
-		ManifestURL:    releaseconfig.VersionManifestURL(version.Version),
+		ManifestURL:    productionManifestURL(version.Version),
 		PublicKey:      publicKey,
 	})
 }

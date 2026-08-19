@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package daemon
 
 import (
@@ -16,6 +18,7 @@ type publicHandlerFactory struct {
 	authenticator *automationauth.Authenticator
 	portForwards  *portforward.Application
 	imageUpload   http.Handler
+	hosts         http.Handler
 	available     bool
 }
 
@@ -25,6 +28,7 @@ func newPublicHandlerFactory(
 	authenticator *automationauth.Authenticator,
 	portForwards *portforward.Application,
 	imageUpload http.Handler,
+	hosts http.Handler,
 	available bool,
 ) (*publicHandlerFactory, error) {
 	if authenticator == nil || portForwards == nil || imageUpload == nil {
@@ -32,7 +36,7 @@ func newPublicHandlerFactory(
 	}
 	return &publicHandlerFactory{
 		api: apiConfig, mcp: mcpConfig, authenticator: authenticator,
-		portForwards: portForwards, imageUpload: imageUpload, available: available,
+		portForwards: portForwards, imageUpload: imageUpload, hosts: hosts, available: available,
 	}, nil
 }
 
@@ -69,6 +73,7 @@ func (factory *publicHandlerFactory) Build(hostname string) (http.Handler, error
 		factory.imageUpload,
 		forwardHandler,
 		createForward,
+		factory.hosts,
 		factory.authenticator.Protect(protectedMux),
 	)
 	if !factory.available {
@@ -80,12 +85,18 @@ func (factory *publicHandlerFactory) Build(hostname string) (http.Handler, error
 	return handler, nil
 }
 
-func publicHandler(imageUpload, forward, createForward, protected http.Handler) http.Handler {
+func publicHandler(imageUpload, forward, createForward, hosts, protected http.Handler) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("GET /public/api/v1/projects/{projectName}/services/{serviceName}/image", imageUpload)
 	mux.Handle("POST /public/api/v1/projects/{projectName}/services/{serviceName}/image", imageUpload)
 	mux.Handle("POST /public/api/v1/projects/{projectName}/resources/{resourceName}/port-forwards", createForward)
 	mux.Handle(portforward.EndpointPath, forward)
+	if hosts != nil {
+		mux.Handle("POST /public/api/v1/hosts/join", hosts)
+		mux.Handle("GET /public/api/v1/hosts/connect", hosts)
+		mux.Handle("GET /public/api/v1/hosts/tunnel", hosts)
+		mux.Handle("GET /public/api/v1/hosts/images/{revisionID}", hosts)
+	}
 	mux.Handle("/", protected)
 	return mux
 }

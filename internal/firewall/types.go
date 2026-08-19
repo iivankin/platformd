@@ -14,6 +14,7 @@ const (
 	ObjectStorePort      = 9000
 	ServiceTelemetryPort = 9001
 	OTLPHTTPPort         = 4318
+	InternalTunnelPort   = 4150
 )
 
 // Project describes only inspected runtime network facts. It is deliberately
@@ -25,6 +26,7 @@ type Project struct {
 	Gateway                  netip.Addr
 	ObjectStoreEnabled       bool
 	ServiceTelemetryEnabled  bool
+	RemoteVIP                netip.Prefix
 	BlockedDatabaseEndpoints []DatabaseEndpoint
 	GatewayListeners         []GatewayListener
 	PublicTrafficEndpoints   []PublicTrafficEndpoint
@@ -61,6 +63,9 @@ func canonicalProjects(projects []Project) ([]Project, error) {
 	for index := range result {
 		project := &result[index]
 		project.Subnet = project.Subnet.Masked()
+		if project.RemoteVIP.IsValid() {
+			project.RemoteVIP = project.RemoteVIP.Masked()
+		}
 		project.BlockedDatabaseEndpoints = slices.Clone(project.BlockedDatabaseEndpoints)
 		slices.SortFunc(project.BlockedDatabaseEndpoints, func(left, right DatabaseEndpoint) int {
 			if order := left.Address.Compare(right.Address); order != 0 {
@@ -116,6 +121,12 @@ func validateProject(project Project) error {
 	}
 	if !project.Gateway.IsValid() || !project.Gateway.Is4() || !project.Subnet.Contains(project.Gateway) {
 		return fmt.Errorf("firewall project %q gateway %s is outside %s", project.ID, project.Gateway, project.Subnet)
+	}
+	if project.RemoteVIP.IsValid() {
+		if !project.RemoteVIP.Addr().Is4() || project.RemoteVIP.Bits() != 27 ||
+			!project.Subnet.Contains(project.RemoteVIP.Addr()) {
+			return fmt.Errorf("firewall project %q remote VIP prefix %s is outside %s", project.ID, project.RemoteVIP, project.Subnet)
+		}
 	}
 	if project.Gateway == project.Subnet.Addr() || project.Gateway == lastAddress(project.Subnet) {
 		return fmt.Errorf("firewall project %q gateway %s is not a usable host address", project.ID, project.Gateway)

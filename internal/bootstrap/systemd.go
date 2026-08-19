@@ -129,8 +129,39 @@ func (SystemdManager) Health(ctx context.Context, hostname, certificatePEM strin
 	}
 }
 
+const platformdWorkerUnit = `[Unit]
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/platformd __worker
+Restart=always
+RestartSec=3
+TimeoutStartSec=600
+TimeoutStopSec=120
+LimitNOFILE=1048576
+TasksMax=infinity
+Delegate=yes
+DelegateSubgroup=control
+KillMode=mixed
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
+`
+
 func installSystemdUnit(paths layout.Paths, expectedUID int) error {
-	if err := writeAtomicFile(paths.UnitFile, []byte(platformdUnit), 0o644); err != nil {
+	return installSystemdUnitContent(paths, expectedUID, platformdUnit)
+}
+
+func installWorkerSystemdUnit(paths layout.Paths, expectedUID int) error {
+	return installSystemdUnitContent(paths, expectedUID, platformdWorkerUnit)
+}
+
+func installSystemdUnitContent(paths layout.Paths, expectedUID int, unit string) error {
+	if err := writeAtomicFile(paths.UnitFile, []byte(unit), 0o644); err != nil {
 		return fmt.Errorf("install systemd unit: %w", err)
 	}
 	info, err := os.Lstat(paths.UnitFile)

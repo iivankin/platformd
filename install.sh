@@ -5,9 +5,10 @@ repository="iivankin/platformd"
 
 usage() {
   cat >&2 <<'EOF'
-usage: install.sh platformd|forward
+usage: install.sh platformd|worker|forward
 
-  platformd  Install the server on a supported VPS.
+  platformd  Install the control plane on a supported VPS.
+  worker     Install the child-server binary on a supported VPS.
   forward    Install the local port-forward helper.
 EOF
 }
@@ -39,6 +40,16 @@ case "$mode" in
     fi
     binary="platformd"
     asset="platformd-linux-amd64"
+    install_dir="${PLATFORMD_INSTALL_DIR:-/usr/local/bin}"
+    version="${PLATFORMD_VERSION:-}"
+    ;;
+  worker)
+    if [ "$os/$arch" != "linux/amd64" ]; then
+      printf 'platformd worker requires a Linux amd64 VPS\n' >&2
+      exit 1
+    fi
+    binary="platformd"
+    asset="platformd-worker-linux-amd64"
     install_dir="${PLATFORMD_INSTALL_DIR:-/usr/local/bin}"
     version="${PLATFORMD_VERSION:-}"
     ;;

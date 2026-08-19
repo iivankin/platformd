@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package command
 
 import (
@@ -17,13 +19,13 @@ type initOptions struct {
 
 func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int) {
 	if len(args) == 1 && (args[0] == "-h" || args[0] == "--help") {
-		_, _ = io.WriteString(stdout, usage)
+		_, _ = io.WriteString(stdout, initUsage)
 		return initOptions{}, 0
 	}
 	options := initOptions{inputFD: -1}
 	flags := flag.NewFlagSet("platformd init", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.Usage = func() { _, _ = io.WriteString(stderr, usage) }
+	flags.Usage = func() { _, _ = io.WriteString(stderr, initUsage) }
 	flags.IntVar(&options.inputFD, "input-fd", -1, "read bounded bootstrap JSON from an inherited file descriptor")
 	flags.BoolVar(&options.restore, "restore", false, "restore an installation from its remote control backup")
 	flags.BoolVar(&options.resetConsolePassphrase, "reset-console-passphrase", false, "replace the server console passphrase verifier")
@@ -32,7 +34,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 	flags.StringVar(&options.binaryPath, "binary", "", "use a local binary with --install-signed-update")
 	if err := flags.Parse(args); err != nil {
 		if err == flag.ErrHelp {
-			_, _ = io.WriteString(stdout, usage)
+			_, _ = io.WriteString(stdout, initUsage)
 			return initOptions{}, 0
 		}
 		return initOptions{}, 2
@@ -53,7 +55,7 @@ func parseInitOptions(args []string, stdout, stderr io.Writer) (initOptions, int
 	if flags.NArg() != 0 || options.inputFD < -1 || recoveryModes > 1 ||
 		(recoveryModes != 0 && !options.restore && !options.resetConsolePassphrase && options.inputFD != -1) ||
 		(options.binaryPath != "" && options.installUpdate == "") {
-		_, _ = fmt.Fprint(stderr, usage)
+		_, _ = fmt.Fprint(stderr, initUsage)
 		return initOptions{}, 2
 	}
 	return options, -1

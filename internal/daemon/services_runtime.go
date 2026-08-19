@@ -13,6 +13,7 @@ import (
 	"github.com/iivankin/platformd/internal/cryptobox"
 	"github.com/iivankin/platformd/internal/deployment"
 	"github.com/iivankin/platformd/internal/firewall"
+	"github.com/iivankin/platformd/internal/hosthub"
 	"github.com/iivankin/platformd/internal/id"
 	"github.com/iivankin/platformd/internal/preview"
 	"github.com/iivankin/platformd/internal/projectwebhook"
@@ -78,7 +79,7 @@ func (stack *runtimeStack) ReconcileDeployments(ctx context.Context, store *stat
 	if closed || controller == nil {
 		return errors.New("service deployment runtime is not configured")
 	}
-	serviceIDs, err := store.EnabledServiceIDs(ctx)
+	serviceIDs, err := store.EnabledServiceIDsOnHost(ctx, "")
 	if err != nil {
 		return err
 	}
@@ -150,8 +151,34 @@ func (stack *runtimeStack) hasServiceFailure(serviceID string) bool {
 		!errors.Is(err, state.ErrServiceChanged)
 }
 
+func (stack *runtimeStack) SetHostPlacement(store *state.Store, hosts hostPlacement) {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	stack.catalog = store
+	stack.hosts = hosts
+}
+
+type hostPlacement interface {
+	Reconcile(context.Context, string, string, bool) error
+	Withdraw(context.Context, string, string) error
+}
+
+func (stack *runtimeStack) remoteHostID(ctx context.Context, serviceID string) (string, error) {
+	stack.mu.Lock()
+	catalog := stack.catalog
+	stack.mu.Unlock()
+	if catalog == nil {
+		return "", nil
+	}
+	desired, err := catalog.DesiredService(ctx, serviceID)
+	if err != nil {
+		return "", err
+	}
+	return desired.HostID, nil
+}
+
 func (stack *runtimeStack) DeployService(ctx context.Context, serviceID string, force bool) error {
-	return stack.deployService(ctx, serviceID, func(controller *deployment.Controller) error {
+	return stack.deployService(ctx, serviceID, force, func(controller *deployment.Controller) error {
 		return controller.Deploy(ctx, serviceID, force)
 	})
 }
@@ -162,7 +189,7 @@ func (stack *runtimeStack) DeployUploadedProduction(
 	image containerengine.Image,
 	identity state.ImageUploadIdentity,
 ) error {
-	return stack.deployService(ctx, serviceID, func(controller *deployment.Controller) error {
+	return stack.deployService(ctx, serviceID, true, func(controller *deployment.Controller) error {
 		return controller.DeployUploadedImage(ctx, serviceID, deploymentID, imageRevisionID, imageReference, image, identity)
 	})
 }
@@ -187,7 +214,20 @@ func (stack *runtimeStack) DeployServiceImage(ctx context.Context, serviceID str
 	})
 }
 
-func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, deploy func(*deployment.Controller) error) error {
+func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, force bool, deploy func(*deployment.Controller) error) error {
+	hostID, err := stack.remoteHostID(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	if hostID != "" {
+		stack.mu.Lock()
+		hosts := stack.hosts
+		stack.mu.Unlock()
+		if hosts == nil {
+			return nil
+		}
+		return hosts.Reconcile(ctx, hostID, serviceID, force)
+	}
 	stack.mu.Lock()
 	controller := stack.deployments
 	closed := stack.closed
@@ -198,12 +238,25 @@ func (stack *runtimeStack) deployService(ctx context.Context, serviceID string, 
 	if controller == nil {
 		return errors.New("deployment controller is not configured")
 	}
-	err := deploy(controller)
+	err = deploy(controller)
 	stack.recordServiceResult(serviceID, err)
 	return err
 }
 
 func (stack *runtimeStack) RestartServiceDeployment(ctx context.Context, serviceID, deploymentID string) error {
+	hostID, err := stack.remoteHostID(ctx, serviceID)
+	if err != nil {
+		return err
+	}
+	if hostID != "" {
+		stack.mu.Lock()
+		hosts := stack.hosts
+		stack.mu.Unlock()
+		if hosts == nil {
+			return nil
+		}
+		return hosts.Reconcile(ctx, hostID, serviceID, true)
+	}
 	stack.mu.Lock()
 	controller := stack.deployments
 	closed := stack.closed
@@ -211,12 +264,19 @@ func (stack *runtimeStack) RestartServiceDeployment(ctx context.Context, service
 	if closed || controller == nil {
 		return errors.New("service deployment runtime is not ready")
 	}
-	err := controller.RestartCurrent(ctx, serviceID, deploymentID)
+	err = controller.RestartCurrent(ctx, serviceID, deploymentID)
 	stack.recordServiceResult(serviceID, err)
 	return err
 }
 
 func (stack *runtimeStack) DeleteService(ctx context.Context, service state.ServiceDesired) error {
+	if hosts := stack.hostPlacement(); service.HostID != "" && hosts != nil {
+		err := hosts.Withdraw(ctx, service.HostID, service.ID)
+		if err != nil && !errors.Is(err, hosthub.ErrHostOffline) {
+			return err
+		}
+		return nil
+	}
 	stack.mu.Lock()
 	controller := stack.deployments
 	closed := stack.closed
@@ -229,7 +289,18 @@ func (stack *runtimeStack) DeleteService(ctx context.Context, service state.Serv
 	return err
 }
 
+func (stack *runtimeStack) hostPlacement() hostPlacement {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	return stack.hosts
+}
+
 func (stack *runtimeStack) deleteServiceDuringProjectDeletion(ctx context.Context, service state.ServiceDesired) error {
+	if hosts := stack.hostPlacement(); service.HostID != "" && hosts != nil {
+		if err := hosts.Withdraw(ctx, service.HostID, service.ID); err != nil && !errors.Is(err, hosthub.ErrHostOffline) {
+			return err
+		}
+	}
 	stack.mu.Lock()
 	controller := stack.deployments
 	closed := stack.closed

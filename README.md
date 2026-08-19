@@ -99,7 +99,28 @@ Keep interactive Access protection on the rest of the admin hostname. Only
 `/public/*` should bypass the Cloudflare login; platformd validates credentials
 for the public endpoints itself.
 
-### 3. Install the optional port-forward helper
+### 3. Join an optional child server
+
+Child servers run **services only**. PostgreSQL, Redis, object storage, and
+preview deployments stay on the primary VPS. Volumes are local to the host
+where they were created; a service with volumes cannot move between hosts.
+
+On the primary admin UI, open **Settings → Servers** and create a join token.
+On a separate Debian/Ubuntu VPS that does not already have a platformd control
+plane:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/iivankin/platformd/main/install.sh | sudo sh -s -- worker
+sudo platformd join --url https://admin.example.com --token pjn_...
+```
+
+After the child connects, attach a Cloudflare-proxied **A** record for each
+service hostname that should terminate on that child, pointing at the child's
+public IPv4. The admin hostname stays on the primary VPS. Sentry public
+hostnames stay CNAME'd to the admin hostname even when the application service
+runs on a child.
+
+### 4. Install the optional port-forward helper
 
 Install the local port-forward helper on macOS or Linux:
 
@@ -107,7 +128,7 @@ Install the local port-forward helper on macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/iivankin/platformd/main/install.sh | sh -s -- forward
 ```
 
-Both modes download the matching asset and verify it against `SHA256SUMS` from the latest [GitHub Release](https://github.com/iivankin/platformd/releases). Set `PLATFORMD_VERSION` or `PLATFORMD_FORWARD_VERSION` to install a specific release.
+The installer downloads the matching asset and verifies it against `SHA256SUMS` from the latest [GitHub Release](https://github.com/iivankin/platformd/releases). Set `PLATFORMD_VERSION` or `PLATFORMD_FORWARD_VERSION` to install a specific release. The child `worker` binary is a slimmer build: it can join and run services, but it cannot `init` a control plane. `{name}.{project}.internal` names stay reachable across the primary and its children over the host WebSocket.
 
 ## Development
 

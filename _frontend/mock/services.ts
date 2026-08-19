@@ -70,6 +70,15 @@ const updateServicePortForward = (
       : undefined;
 };
 
+const updateServiceHostId = (
+  service: Service,
+  input: Record<string, unknown>
+) => {
+  if (typeof input.hostId === "string") {
+    service.hostId = input.hostId || undefined;
+  }
+};
+
 const handleService = async (
   request: Request,
   state: MockState,
@@ -134,6 +143,7 @@ const handleService = async (
   service.volumeMounts = Array.isArray(input.volumeMounts)
     ? (input.volumeMounts as Service["volumeMounts"])
     : service.volumeMounts;
+  updateServiceHostId(service, input);
   service.updatedAt = mockNow();
   const canvas = state.canvases[service.projectId];
   if (canvas) {
@@ -141,6 +151,10 @@ const handleService = async (
       (resource) => resource.id === serviceID
     );
     if (canvasService) {
+      canvasService.hostId = service.hostId;
+      canvasService.hostName = state.hosts.find(
+        (host) => host.id === service.hostId
+      )?.name;
       const mountPaths = new Map(
         service.volumeMounts.map((mount) => [
           mount.volumeId,
@@ -560,13 +574,15 @@ const handleListeners = async (
     serviceId: serviceID,
     targetPort: numberField(input, "targetPort", 8080),
   };
+  const hostId = state.services[serviceID]?.hostId ?? "";
   const conflict = Object.values(state.listeners)
     .flat()
     .find(
       (current) =>
         current.protocol === listener.protocol &&
         current.publicPort === listener.publicPort &&
-        current.serviceId !== serviceID
+        current.serviceId !== serviceID &&
+        (state.services[current.serviceId]?.hostId ?? "") === hostId
     );
   if (conflict) {
     return json(

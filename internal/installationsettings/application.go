@@ -60,11 +60,12 @@ type CertificateMutation struct {
 }
 
 type Application struct {
-	repository   Repository
-	master       cryptobox.MasterKey
-	certificates *origin.Selector
-	random       io.Reader
-	publicMu     *sync.Mutex
+	repository            Repository
+	master                cryptobox.MasterKey
+	certificates          *origin.Selector
+	random                io.Reader
+	publicMu              *sync.Mutex
+	onCertificatesChanged func()
 }
 
 func New(
@@ -80,6 +81,17 @@ func New(
 		repository: repository, master: master, certificates: certificates,
 		random: rand.Reader, publicMu: publicMu,
 	}, nil
+}
+
+func (application *Application) SetOnCertificatesChanged(fn func()) {
+	application.onCertificatesChanged = fn
+}
+
+func (application *Application) notifyCertificatesChanged() {
+	if application.onCertificatesChanged == nil {
+		return
+	}
+	application.onCertificatesChanged()
 }
 
 func (application *Application) Settings(ctx context.Context) (Settings, error) {
@@ -193,6 +205,7 @@ func (application *Application) AddCertificate(ctx context.Context, mutation Cer
 	if err := application.certificates.Replace(candidate); err != nil {
 		return Settings{}, err
 	}
+	application.notifyCertificatesChanged()
 	return application.Settings(ctx)
 }
 
@@ -269,6 +282,7 @@ func (application *Application) replaceCertificateSet(
 	if err := application.certificates.Replace(candidate); err != nil {
 		return Settings{}, err
 	}
+	application.notifyCertificatesChanged()
 	return application.Settings(ctx)
 }
 

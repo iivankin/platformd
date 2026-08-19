@@ -1,12 +1,69 @@
 package daemon
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/deployment"
+	"github.com/iivankin/platformd/internal/hosthub"
 	"github.com/iivankin/platformd/internal/state"
 )
+
+type hostPlacementStub struct {
+	withdrawn string
+}
+
+func (stub *hostPlacementStub) Reconcile(context.Context, string, string, bool) error {
+	return nil
+}
+
+func (stub *hostPlacementStub) Withdraw(_ context.Context, hostID, serviceID string) error {
+	stub.withdrawn = hostID + "/" + serviceID
+	return nil
+}
+
+type offlineHostPlacement struct{}
+
+func (offlineHostPlacement) Reconcile(context.Context, string, string, bool) error {
+	return hosthub.ErrHostOffline
+}
+
+func (offlineHostPlacement) Withdraw(context.Context, string, string) error {
+	return hosthub.ErrHostOffline
+}
+
+func TestDeleteServiceWithdrawsRemoteHostOnParent(t *testing.T) {
+	t.Parallel()
+	hosts := &hostPlacementStub{}
+	stack := &runtimeStack{hosts: hosts}
+	if err := stack.DeleteService(context.Background(), state.ServiceDesired{ID: "api", HostID: "host-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if hosts.withdrawn != "host-1/api" {
+		t.Fatalf("withdrawn = %q", hosts.withdrawn)
+	}
+}
+
+func TestDeleteServiceSucceedsWhenChildIsOffline(t *testing.T) {
+	t.Parallel()
+	stack := &runtimeStack{hosts: offlineHostPlacement{}}
+	if err := stack.DeleteService(context.Background(), state.ServiceDesired{ID: "api", HostID: "host-1"}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDeleteServiceTearsDownLocallyOnWorkerEvenWithHostID(t *testing.T) {
+	t.Parallel()
+	stack := &runtimeStack{}
+	err := stack.DeleteService(context.Background(), state.ServiceDesired{
+		ID: "api", HostID: "host-1", ProjectID: "shop", ProjectName: "shop", Name: "api",
+	})
+	if err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("worker delete = %v, want local teardown", err)
+	}
+}
 
 func TestClassifyServiceStatusKeepsHealthyRuntimeVisibleDuringPullFailure(t *testing.T) {
 	status, message := classifyServiceStatus(

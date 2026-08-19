@@ -9,7 +9,7 @@ import (
 	"github.com/iivankin/platformd/internal/command"
 )
 
-func TestOnlyInitIsExposedAsPublicCommand(t *testing.T) {
+func TestUnknownCommandHidesPrivateModes(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
@@ -22,7 +22,10 @@ func TestOnlyInitIsExposedAsPublicCommand(t *testing.T) {
 	if !strings.Contains(stderr.String(), "unknown command") {
 		t.Fatalf("stderr = %q, want unknown command error", stderr.String())
 	}
-	if strings.Contains(stderr.String(), "__daemon") {
+	if !strings.Contains(stderr.String(), "platformd join") {
+		t.Fatalf("stderr = %q, want public join usage", stderr.String())
+	}
+	if strings.Contains(stderr.String(), "__daemon") || strings.Contains(stderr.String(), "__worker") {
 		t.Fatalf("private mode leaked in public usage: %q", stderr.String())
 	}
 }
@@ -39,6 +42,38 @@ func TestInitHelp(t *testing.T) {
 	}
 	if got := stdout.String(); got != "usage: platformd init [--input-fd <fd>] [--restore | --reset-console-passphrase | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n" {
 		t.Fatalf("stdout = %q", got)
+	}
+}
+
+func TestJoinHelp(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := command.Run(context.Background(), []string{"join", "--help"}, &stdout, &stderr)
+
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0; stderr = %q", code, stderr.String())
+	}
+	if got := stdout.String(); got != "usage: platformd join --url https://admin.example.com --token pjn_... [--public-ipv4 <ipv4>] [--name <label>]\n" {
+		t.Fatalf("stdout = %q", got)
+	}
+	if strings.Contains(stdout.String(), "__worker") {
+		t.Fatalf("private mode leaked in join help: %q", stdout.String())
+	}
+}
+
+func TestJoinRequiresHTTPS(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	code := command.Run(context.Background(), []string{"join", "--url", "http://admin.example.com", "--token", "pjn_x"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "https://") {
+		t.Fatalf("stderr = %q, want https requirement", stderr.String())
 	}
 }
 

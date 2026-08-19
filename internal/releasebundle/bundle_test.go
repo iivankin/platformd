@@ -72,6 +72,30 @@ func TestAppendOpenVerifyAndExtract(t *testing.T) {
 	}
 }
 
+func TestAppendAcceptsWorkerRuntimeProfile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	executable := filepath.Join(root, "platformd-worker")
+	writeFile(t, executable, append([]byte("\x7fELF"), bytes.Repeat([]byte{0x42}, 128)...), 0o755)
+	runtimeDirectory := filepath.Join(root, "source")
+	if err := os.MkdirAll(runtimeDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeWorkerRuntimeProfile(t, runtimeDirectory)
+	if err := releasebundle.Append(executable, runtimeDirectory); err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := releasebundle.Open(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bundle.Close()
+	if err := bundle.Verify(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAppendRejectsIncompleteOrUnknownRuntimeProfile(t *testing.T) {
 	t.Parallel()
 
@@ -318,6 +342,18 @@ func writeFile(t *testing.T, path string, value []byte, mode fs.FileMode) {
 func writeRuntimeProfile(t *testing.T, root string) {
 	t.Helper()
 	executables := []string{"catatonit", "conmon", "crun", "netavark", "platformd-telemetry", "platformd-objectstore"}
+	configurations := []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"}
+	for _, name := range executables {
+		writeFile(t, filepath.Join(root, name), []byte("runtime-"+name), 0o755)
+	}
+	for _, name := range configurations {
+		writeFile(t, filepath.Join(root, name), []byte("{}"), 0o644)
+	}
+}
+
+func writeWorkerRuntimeProfile(t *testing.T, root string) {
+	t.Helper()
+	executables := []string{"catatonit", "conmon", "crun", "netavark"}
 	configurations := []string{"containers.conf", "mounts.conf", "policy.json", "registries.conf", "seccomp.json", "storage.conf"}
 	for _, name := range executables {
 		writeFile(t, filepath.Join(root, name), []byte("runtime-"+name), 0o755)

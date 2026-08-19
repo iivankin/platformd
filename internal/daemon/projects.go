@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package daemon
 
 import (
@@ -26,7 +28,12 @@ type liveProjectRepository struct {
 	listeners        *liveServiceListenerRepository
 	gateways         *liveNetworkGatewayRepository
 	traffic          *trafficmetrics.Registry
+	hosts            hostServiceStatus
 	onCleanupError   func(error)
+}
+
+type hostServiceStatus interface {
+	ServiceStatus(hostID, serviceID string, enabled bool) (string, string)
 }
 
 type objectStoreDataCleaner interface {
@@ -48,12 +55,8 @@ func (repository liveProjectRepository) ProjectCanvas(ctx context.Context, proje
 		resource := &canvas.Resources[index]
 		switch resource.Kind {
 		case "service":
-			runtimeStatus, runtimeMessage := repository.runtime.ServiceStatus(resource.ID, resource.Enabled)
-			if (runtimeStatus == "pending" && resource.Status == "failed") ||
-				(runtimeStatus == "running" && resource.Status == "degraded") {
-				continue
-			}
-			resource.Status, resource.StatusMessage = runtimeStatus, runtimeMessage
+			status, message := repository.serviceCanvasStatus(resource)
+			applyCanvasServiceRuntimeStatus(resource, status, message)
 		case "redis":
 			resource.Status, resource.StatusMessage = repository.runtime.RedisStatus(resource.ID)
 		case "postgres":
@@ -74,8 +77,22 @@ func (repository liveProjectRepository) CreateProject(ctx context.Context, input
 	}
 	// Desired state is already committed. Runtime provisioning is best-effort
 	// and remains retryable from SQLite after a process restart.
-	_ = repository.runtime.AddProject(state.RuntimeProject{ID: created.ID, Name: created.Name})
+	project := state.RuntimeProject{ID: created.ID, Name: created.Name}
+	_ = repository.runtime.AddProject(project)
+	publishHostProjects(repository.hosts, project)
 	return created, nil
+}
+
+type hostProjectPublisher interface {
+	PushProjects([]state.RuntimeProject)
+}
+
+func publishHostProjects(hosts hostServiceStatus, project state.RuntimeProject) {
+	publisher, ok := hosts.(hostProjectPublisher)
+	if !ok {
+		return
+	}
+	publisher.PushProjects([]state.RuntimeProject{project})
 }
 
 func (repository liveProjectRepository) ProjectIcon(ctx context.Context, projectID string) (state.ProjectIcon, error) {
@@ -220,6 +237,24 @@ func removeProjectManagedVolumes(
 		remove("Redis", resource.VolumeID)
 	}
 	return errors.Join(failures...)
+}
+
+func (repository liveProjectRepository) serviceCanvasStatus(resource *state.CanvasResource) (string, string) {
+	if resource.HostID == "" {
+		return repository.runtime.ServiceStatus(resource.ID, resource.Enabled)
+	}
+	if repository.hosts == nil {
+		return "pending", "Child server is offline"
+	}
+	return repository.hosts.ServiceStatus(resource.HostID, resource.ID, resource.Enabled)
+}
+
+func applyCanvasServiceRuntimeStatus(resource *state.CanvasResource, runtimeStatus, runtimeMessage string) {
+	if (runtimeStatus == "pending" && resource.Status == "failed") ||
+		(runtimeStatus == "running" && resource.Status == "degraded") {
+		return
+	}
+	resource.Status, resource.StatusMessage = runtimeStatus, runtimeMessage
 }
 
 func (repository liveProjectRepository) reportCleanupError(err error) {

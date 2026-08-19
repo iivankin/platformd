@@ -35,6 +35,28 @@ CREATE TABLE cloudflare_mesh_settings (
   updated_at INTEGER NOT NULL
 ) STRICT;
 
+CREATE TABLE hosts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  public_ipv4 TEXT CHECK (public_ipv4 IS NULL OR length(public_ipv4) BETWEEN 7 AND 15),
+  token_hmac BLOB NOT NULL CHECK (length(token_hmac) = 32),
+  last_seen_at INTEGER,
+  joined_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+
+CREATE TABLE host_join_tokens (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  token_hmac BLOB NOT NULL CHECK (length(token_hmac) = 32),
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER,
+  created_at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX host_join_tokens_created_idx ON host_join_tokens(created_at, id);
+
 CREATE TABLE projects (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -88,6 +110,7 @@ CREATE TABLE services (
   sentry_tunnel_path TEXT CHECK (
     sentry_tunnel_path IS NULL OR length(sentry_tunnel_path) BETWEEN 2 AND 256
   ),
+  host_id TEXT REFERENCES hosts(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (active_deployment_id) REFERENCES deployments(id) DEFERRABLE INITIALLY DEFERRED,
@@ -317,11 +340,8 @@ CREATE TABLE service_listeners (
   service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
   target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
   created_at INTEGER NOT NULL,
-  PRIMARY KEY (protocol, public_port)
+  PRIMARY KEY (service_id, protocol, public_port)
 ) WITHOUT ROWID, STRICT;
-
-CREATE INDEX service_listeners_service_idx
-  ON service_listeners(service_id, protocol, public_port);
 
 CREATE TABLE network_gateways (
   id TEXT PRIMARY KEY,
@@ -674,4 +694,4 @@ CREATE TABLE mail_metric_alerts (
 
 CREATE INDEX mail_metric_alerts_scope_idx ON mail_metric_alerts(scope_kind, project_id, service_id, created_at, id);
 
-PRAGMA user_version = 18;
+PRAGMA user_version = 20;

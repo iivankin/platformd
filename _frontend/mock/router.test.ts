@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  attachServiceListener,
   createServiceMetricChart,
   createMetricChart,
   createAPIToken,
@@ -199,6 +200,12 @@ describe("mock API", () => {
         projectId: "project-demo",
         projectName: "storefront",
       },
+      {
+        id: "service-worker",
+        name: "worker",
+        projectId: "project-demo",
+        projectName: "storefront",
+      },
     ]);
 
     const smtp = await saveSMTPSettings(
@@ -255,6 +262,30 @@ describe("mock API", () => {
     expect(after.metricAlerts).toHaveLength(1);
   });
 
+  test("allows the same public listener on primary and child hosts", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+    await expect(
+      attachServiceListener(
+        "project-demo",
+        "service-worker",
+        { protocol: "tcp", publicPort: 9000, targetPort: 8080 },
+        mockFetch
+      )
+    ).resolves.toMatchObject({
+      protocol: "tcp",
+      publicPort: 9000,
+      serviceId: "service-worker",
+    });
+    await expect(
+      attachServiceListener(
+        "project-demo",
+        "service-api",
+        { protocol: "tcp", publicPort: 9000, targetPort: 9001 },
+        mockFetch
+      )
+    ).resolves.toMatchObject({ serviceId: "service-api", targetPort: 9001 });
+  });
+
   test("returns detected listening ports for live resources", async () => {
     const mockFetch = fetcher(createMockState("demo"));
 
@@ -299,7 +330,7 @@ describe("mock API", () => {
     expect(
       canvas.resources.some((resource) => resource.id === service.id)
     ).toBe(false);
-    expect(canvas.project.serviceCount).toBe(0);
+    expect(canvas.project.serviceCount).toBe(1);
   });
 
   test("demo fixtures satisfy the frontend response contracts", async () => {

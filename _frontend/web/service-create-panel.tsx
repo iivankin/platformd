@@ -11,6 +11,7 @@ import {
   parseServiceConfiguration,
   ServiceConfiguration,
 } from "@/service-configuration";
+import { ServiceHostPicker } from "@/service-host-picker";
 
 interface ServiceCreatePanelProperties {
   onClose: () => void;
@@ -22,6 +23,7 @@ export const ServiceCreatePanel = ({
   onDrafted,
 }: ServiceCreatePanelProperties) => {
   const [name, setName] = useState("");
+  const [hostId, setHostId] = useState("");
   const [configuration, setConfiguration] = useState(
     emptyServiceConfigurationDraft
   );
@@ -35,6 +37,7 @@ export const ServiceCreatePanel = ({
       onDrafted({
         environment: {},
         healthCheck: parsed.healthCheck,
+        hostId: hostId || undefined,
         name,
         registryCredential: parsed.registryCredential,
         source: parsed.source,
@@ -76,6 +79,13 @@ export const ServiceCreatePanel = ({
               required
               spellCheck={false}
               value={name}
+            />
+          </FormField>
+          <FormField label="Server" name="service-host">
+            <ServiceHostPicker
+              id="service-host"
+              onChange={setHostId}
+              value={hostId}
             />
           </FormField>
         </div>

@@ -25,6 +25,13 @@ type ResourceCreator = (
   input: Record<string, unknown>
 ) => Response;
 
+const hostPlacement = (state: MockState, hostId?: string) => ({
+  hostId,
+  hostName: hostId
+    ? state.hosts.find((host) => host.id === hostId)?.name
+    : undefined,
+});
+
 const initialBackupPolicy = (input: Record<string, unknown>) => {
   const value = input.backupPolicy;
   if (!(value && typeof value === "object" && !Array.isArray(value))) {
@@ -45,6 +52,11 @@ const initialCredentials = (input: Record<string, unknown>) => {
     ? (value as Record<string, unknown>)
     : {};
 };
+
+const optionalStringField = (
+  input: Record<string, unknown>,
+  key: string
+): string | undefined => stringField(input, key) || undefined;
 
 const createService: ResourceCreator = (state, projectID, input) => {
   const canvas = state.canvases[projectID];
@@ -87,6 +99,7 @@ const createService: ResourceCreator = (state, projectID, input) => {
       typeof input.healthCheck === "object" && input.healthCheck !== null
         ? (input.healthCheck as Service["healthCheck"])
         : undefined,
+    hostId: optionalStringField(input, "hostId"),
     id,
     memoryMaxBytes: 536_870_912,
     name,
@@ -174,6 +187,7 @@ const createService: ResourceCreator = (state, projectID, input) => {
   state.logs[id] = { records: [], truncated: false };
   canvas.resources.push({
     enabled: service.enabled,
+    ...hostPlacement(state, service.hostId),
     id,
     internalHostname: `${name}.${canvas.project.name}.internal`,
     kind: "service",

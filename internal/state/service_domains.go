@@ -23,6 +23,7 @@ type ServiceDomain struct {
 	ProjectID   string
 	ProjectName string
 	TargetPort  int
+	HostID      string
 	CreatedAt   int64
 }
 
@@ -65,7 +66,7 @@ func (store *Store) ServiceDomains(ctx context.Context, projectID, serviceID str
 		return nil, err
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at
+SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at, s.host_id
 FROM service_domains d
 JOIN services s ON s.id = d.service_id
 JOIN projects p ON p.id = s.project_id
@@ -80,7 +81,7 @@ ORDER BY d.hostname`, serviceID)
 
 func (store *Store) ApplicationDomains(ctx context.Context) ([]ServiceDomain, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at
+SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at, s.host_id
 FROM service_domains d
 JOIN services s ON s.id = d.service_id
 JOIN projects p ON p.id = s.project_id
@@ -247,14 +248,15 @@ WHERE s.id = ? AND s.project_id = ?`, serviceID, projectID).Scan(
 
 func loadServiceDomain(ctx context.Context, transaction *sql.Tx, hostname string) (ServiceDomain, bool, error) {
 	var domain ServiceDomain
+	var hostID sql.NullString
 	err := transaction.QueryRowContext(ctx, `
-SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at
+SELECT d.hostname, d.service_id, s.name, s.project_id, p.name, d.target_port, d.created_at, s.host_id
 FROM service_domains d
 JOIN services s ON s.id = d.service_id
 JOIN projects p ON p.id = s.project_id
 WHERE d.hostname = ?`, hostname).Scan(
 		&domain.Hostname, &domain.ServiceID, &domain.ServiceName,
-		&domain.ProjectID, &domain.ProjectName, &domain.TargetPort, &domain.CreatedAt,
+		&domain.ProjectID, &domain.ProjectName, &domain.TargetPort, &domain.CreatedAt, &hostID,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDomain{}, false, nil
@@ -262,6 +264,7 @@ WHERE d.hostname = ?`, hostname).Scan(
 	if err != nil {
 		return ServiceDomain{}, false, fmt.Errorf("load existing service domain: %w", err)
 	}
+	domain.HostID = hostID.String
 	return domain, true, nil
 }
 
@@ -289,12 +292,14 @@ func scanServiceDomains(rows *sql.Rows) ([]ServiceDomain, error) {
 	domains := make([]ServiceDomain, 0)
 	for rows.Next() {
 		var domain ServiceDomain
+		var hostID sql.NullString
 		if err := rows.Scan(
 			&domain.Hostname, &domain.ServiceID, &domain.ServiceName,
-			&domain.ProjectID, &domain.ProjectName, &domain.TargetPort, &domain.CreatedAt,
+			&domain.ProjectID, &domain.ProjectName, &domain.TargetPort, &domain.CreatedAt, &hostID,
 		); err != nil {
 			return nil, fmt.Errorf("scan service domain: %w", err)
 		}
+		domain.HostID = hostID.String
 		domains = append(domains, domain)
 	}
 	if err := rows.Err(); err != nil {

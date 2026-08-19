@@ -92,7 +92,9 @@ func adminTools() []Tool {
 			Name: "create_service", Description: "Create and immediately reconcile a service. Requires an admin token.",
 			InputSchema: objectSchema(map[string]any{
 				"projectId": map[string]any{"type": "string"}, "name": map[string]any{"type": "string"},
-				"enabled": map[string]any{"type": "boolean", "default": true}, "configuration": configuration,
+				"enabled":       map[string]any{"type": "boolean", "default": true},
+				"hostId":        map[string]any{"type": "string", "description": "Child server ID from list_hosts. Omit or empty to run on the primary VPS. Services with volumes cannot change hosts later."},
+				"configuration": configuration,
 			}, []string{"projectId", "name", "configuration"}),
 		},
 		{
@@ -100,6 +102,7 @@ func adminTools() []Tool {
 			InputSchema: objectSchema(map[string]any{
 				"projectId": base["projectId"], "serviceId": base["serviceId"],
 				"enabled": map[string]any{"type": "boolean"}, "expectedUpdatedAt": map[string]any{"type": "integer"},
+				"hostId":        map[string]any{"type": "string", "description": "Child server ID from list_hosts. Empty keeps the service on the primary VPS. Omit to leave placement unchanged. Services with volumes cannot change hosts."},
 				"configuration": configuration,
 			}, []string{"projectId", "serviceId", "enabled", "expectedUpdatedAt", "configuration"}),
 		},
@@ -146,6 +149,7 @@ func isAdminMutationTool(name string) bool {
 		"set_backup_policy", "run_backup", "restore_backup",
 		"query_managed_postgres", "mutate_redis_key",
 		"create_managed_redis", "create_managed_postgres", "server_exec",
+		"create_host_join_token", "delete_host", "delete_host_join_token",
 		"preview_managed_database_version_change", "start_managed_database_version_change",
 		"create_service_volume", "delete_service_volume", "create_port_forward":
 		return true
@@ -159,6 +163,7 @@ func (handler *Handler) createService(ctx context.Context, arguments json.RawMes
 		ProjectID     string                 `json:"projectId"`
 		Name          string                 `json:"name"`
 		Enabled       *bool                  `json:"enabled"`
+		HostID        string                 `json:"hostId"`
 		Configuration serviceconfig.Snapshot `json:"configuration"`
 	}
 	if err := decodeArguments(arguments, &input); err != nil {
@@ -169,7 +174,7 @@ func (handler *Handler) createService(ctx context.Context, arguments json.RawMes
 		enabled = *input.Enabled
 	}
 	result, err := handler.services.Create(ctx, identity, automation.CreateServiceInput{
-		ProjectID: input.ProjectID, Name: input.Name, Enabled: enabled, Configuration: input.Configuration,
+		ProjectID: input.ProjectID, Name: input.Name, Enabled: enabled, HostID: input.HostID, Configuration: input.Configuration,
 	})
 	if err != nil {
 		return nil, err
@@ -182,6 +187,7 @@ func (handler *Handler) updateService(ctx context.Context, arguments json.RawMes
 		ProjectID         string                 `json:"projectId"`
 		ServiceID         string                 `json:"serviceId"`
 		Enabled           *bool                  `json:"enabled"`
+		HostID            *string                `json:"hostId"`
 		ExpectedUpdatedAt int64                  `json:"expectedUpdatedAt"`
 		Configuration     serviceconfig.Snapshot `json:"configuration"`
 	}
@@ -191,8 +197,18 @@ func (handler *Handler) updateService(ctx context.Context, arguments json.RawMes
 	if input.Enabled == nil {
 		return nil, errInvalidArguments
 	}
+	hostID := ""
+	if input.HostID != nil {
+		hostID = *input.HostID
+	} else {
+		current, err := handler.repository.Service(ctx, input.ProjectID, input.ServiceID)
+		if err != nil {
+			return nil, err
+		}
+		hostID = current.HostID
+	}
 	result, err := handler.services.Update(ctx, identity, automation.UpdateServiceInput{
-		ProjectID: input.ProjectID, ServiceID: input.ServiceID, Enabled: *input.Enabled,
+		ProjectID: input.ProjectID, ServiceID: input.ServiceID, Enabled: *input.Enabled, HostID: hostID,
 		ExpectedUpdatedAt: input.ExpectedUpdatedAt, Configuration: input.Configuration,
 	})
 	if err != nil {

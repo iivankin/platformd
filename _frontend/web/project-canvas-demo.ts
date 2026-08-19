@@ -22,10 +22,17 @@ type CanvasResource = ProjectCanvas["resources"][number];
 type ResourceKind = CanvasResource["kind"];
 
 interface DemoResourceDefinition {
+  hostId?: string;
+  hostName?: string;
   id: string;
   kind: ResourceKind;
   name: string;
 }
+
+const childHost = {
+  hostId: "host-edge-1",
+  hostName: "edge-1",
+} as const;
 
 interface DemoPresetDefinition {
   connections: [sourceID: string, targetID: string][];
@@ -45,7 +52,7 @@ const webApp: DemoPresetDefinition = {
   resources: [
     { id: "demo-web", kind: "service", name: "web" },
     { id: "demo-api", kind: "service", name: "api" },
-    { id: "demo-worker", kind: "service", name: "worker" },
+    { id: "demo-worker", kind: "service", name: "worker", ...childHost },
     { id: "demo-primary", kind: "postgres", name: "primary" },
     { id: "demo-cache", kind: "redis", name: "cache" },
     { id: "demo-assets", kind: "object_store", name: "uploads" },
@@ -68,7 +75,7 @@ const saas: DemoPresetDefinition = {
   resources: [
     { id: "demo-dashboard", kind: "service", name: "dashboard" },
     { id: "demo-api", kind: "service", name: "api" },
-    { id: "demo-worker", kind: "service", name: "worker" },
+    { id: "demo-worker", kind: "service", name: "worker", ...childHost },
     { id: "demo-scheduler", kind: "service", name: "scheduler" },
     { id: "demo-mailer", kind: "service", name: "mailer" },
     { id: "demo-primary", kind: "postgres", name: "primary" },
@@ -98,7 +105,12 @@ const microservices: DemoPresetDefinition = {
     { id: "demo-identity", kind: "service", name: "identity" },
     { id: "demo-catalog", kind: "service", name: "catalog" },
     { id: "demo-checkout", kind: "service", name: "checkout" },
-    { id: "demo-worker", kind: "service", name: "orders-worker" },
+    {
+      id: "demo-worker",
+      kind: "service",
+      name: "orders-worker",
+      ...childHost,
+    },
     { id: "demo-accounts", kind: "postgres", name: "accounts" },
     { id: "demo-inventory", kind: "postgres", name: "inventory" },
     { id: "demo-orders", kind: "postgres", name: "orders" },
@@ -163,7 +175,7 @@ const diamond: DemoPresetDefinition = {
   resources: [
     { id: "demo-web", kind: "service", name: "web" },
     { id: "demo-api", kind: "service", name: "api" },
-    { id: "demo-worker", kind: "service", name: "worker" },
+    { id: "demo-worker", kind: "service", name: "worker", ...childHost },
     { id: "demo-primary", kind: "postgres", name: "primary" },
   ],
 };
@@ -187,7 +199,7 @@ const dense: DemoPresetDefinition = {
   ],
   resources: [
     { id: "demo-web", kind: "service", name: "web" },
-    { id: "demo-worker", kind: "service", name: "worker" },
+    { id: "demo-worker", kind: "service", name: "worker", ...childHost },
     { id: "demo-scheduler", kind: "service", name: "scheduler" },
     { id: "demo-api", kind: "service", name: "api" },
     { id: "demo-jobs", kind: "service", name: "jobs" },
@@ -222,7 +234,12 @@ const marketplace: DemoPresetDefinition = {
     { id: "demo-marketing", kind: "service", name: "marketing" },
     { id: "demo-ops-board", kind: "service", name: "ops-board" },
     { id: "demo-crawler", kind: "service", name: "crawler" },
-    { id: "demo-notify-worker", kind: "service", name: "notify-worker" },
+    {
+      id: "demo-notify-worker",
+      kind: "service",
+      name: "notify-worker",
+      ...childHost,
+    },
   ],
 };
 
@@ -261,6 +278,8 @@ const demoResource = (
 ): CanvasResource => ({
   bucketName: definition.kind === "object_store" ? definition.name : undefined,
   enabled: true,
+  hostId: definition.hostId,
+  hostName: definition.hostName,
   id: definition.id,
   imageReference: imageReference(definition.kind, definition.name),
   internalHostname: `${definition.name}.${projectName}.internal`,

@@ -31,6 +31,7 @@ type UpdateServiceInput struct {
 	Snapshot              serviceconfig.Snapshot
 	ImageCredential       *ServiceImageCredential
 	RemoveImageCredential bool
+	HostID                string
 	ExpectedUpdatedMillis int64
 	AuditEventID          string
 	ActorKind             string
@@ -204,7 +205,10 @@ func (store *Store) UpdateService(ctx context.Context, input UpdateServiceInput)
 		if err := validateServiceDependencies(ctx, transaction, input.ProjectID, input.ID, snapshot); err != nil {
 			return err
 		}
-		if err := replaceServiceConfig(ctx, transaction, input.ID, input.ProjectID, snapshot, input.Enabled, input.ExpectedUpdatedMillis, updatedAt); err != nil {
+		if err := validateServiceHost(ctx, transaction, input.ID, input.HostID, snapshot); err != nil {
+			return err
+		}
+		if err := replaceServiceConfig(ctx, transaction, input.ID, input.ProjectID, snapshot, input.Enabled, input.HostID, input.ExpectedUpdatedMillis, updatedAt); err != nil {
 			return err
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{
@@ -235,12 +239,13 @@ func (store *Store) DeployServiceVersion(ctx context.Context, input DeployServic
 		var currentSourceJSON string
 		var enabled int
 		var currentUpdated int64
+		var hostID sql.NullString
 		err := transaction.QueryRowContext(ctx, `
-SELECT d.image_digest, d.source_revision, d.snapshot_json, d.status, s.enabled, s.updated_at, s.source_json
+SELECT d.image_digest, d.source_revision, d.snapshot_json, d.status, s.enabled, s.updated_at, s.source_json, s.host_id
 FROM services s
 JOIN deployments d ON d.service_id = s.id
 WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, input.DeploymentID).Scan(
-			&imageDigest, &sourceRevision, &snapshotJSON, &status, &enabled, &currentUpdated, &currentSourceJSON,
+			&imageDigest, &sourceRevision, &snapshotJSON, &status, &enabled, &currentUpdated, &currentSourceJSON, &hostID,
 		)
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrDeploymentNotFound
@@ -285,7 +290,7 @@ WHERE s.id = ? AND s.project_id = ? AND d.id = ?`, input.ID, input.ProjectID, in
 		if err := validateServiceDependencies(ctx, transaction, input.ProjectID, input.ID, snapshot); err != nil {
 			return err
 		}
-		if err := replaceServiceConfig(ctx, transaction, input.ID, input.ProjectID, snapshot, enabled == 1, input.ExpectedUpdatedMillis, updatedAt); err != nil {
+		if err := replaceServiceConfig(ctx, transaction, input.ID, input.ProjectID, snapshot, enabled == 1, hostID.String, input.ExpectedUpdatedMillis, updatedAt); err != nil {
 			return err
 		}
 		return insertServiceAudit(ctx, transaction, serviceAudit{

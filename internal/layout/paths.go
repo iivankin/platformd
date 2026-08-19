@@ -27,6 +27,7 @@ type Paths struct {
 	DaemonLock            string
 	LocalBinary           string
 	UnitFile              string
+	WorkerConfig          string
 }
 
 func Production() Paths {
@@ -60,5 +61,6 @@ func FromRoots(dataRoot, configRoot, runtimeRoot, localBinary, unitFile string) 
 		DaemonLock:            filepath.Join(runtimeRoot, "locks", "daemon.lock"),
 		LocalBinary:           localBinary,
 		UnitFile:              unitFile,
+		WorkerConfig:          filepath.Join(configRoot, "worker.json"),
 	}
 }

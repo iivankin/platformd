@@ -113,7 +113,55 @@ SELECT project_id, service_id FROM volumes WHERE id = ?`, mount.VolumeID).Scan(&
 	return nil
 }
 
-func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, projectID string, snapshot serviceconfig.Snapshot, enabled bool, expectedUpdated, updatedAt int64) error {
+func validateServiceHost(ctx context.Context, transaction *sql.Tx, serviceID, hostID string, snapshot serviceconfig.Snapshot) error {
+	if hostID != "" {
+		var exists int
+		if err := transaction.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM hosts WHERE id = ?)", hostID).Scan(&exists); err != nil {
+			return fmt.Errorf("check service host: %w", err)
+		}
+		if exists != 1 {
+			return ErrUnknownServiceHost
+		}
+	}
+	var current sql.NullString
+	if err := transaction.QueryRowContext(ctx, "SELECT host_id FROM services WHERE id = ?", serviceID).Scan(&current); err != nil {
+		return fmt.Errorf("load current service host: %w", err)
+	}
+	if current.String == hostID {
+		return nil
+	}
+	if len(snapshot.VolumeMounts) > 0 {
+		return ErrServiceHostHasVolumes
+	}
+	var volumeCount int
+	if err := transaction.QueryRowContext(ctx, "SELECT count(*) FROM volumes WHERE service_id = ?", serviceID).Scan(&volumeCount); err != nil {
+		return fmt.Errorf("count service volumes for host change: %w", err)
+	}
+	if volumeCount > 0 {
+		return ErrServiceHostHasVolumes
+	}
+	var portConflict int
+	if err := transaction.QueryRowContext(ctx, `
+SELECT EXISTS(
+  SELECT 1
+  FROM service_listeners moving
+  JOIN service_listeners occupied
+    ON occupied.protocol = moving.protocol
+   AND occupied.public_port = moving.public_port
+   AND occupied.service_id != moving.service_id
+  JOIN services other ON other.id = occupied.service_id
+  WHERE moving.service_id = ?
+    AND IFNULL(other.host_id, '') = ?
+)`, serviceID, hostID).Scan(&portConflict); err != nil {
+		return fmt.Errorf("check service host listener ports: %w", err)
+	}
+	if portConflict == 1 {
+		return ErrPublicPortUnavailable
+	}
+	return nil
+}
+
+func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, projectID string, snapshot serviceconfig.Snapshot, enabled bool, hostID string, expectedUpdated, updatedAt int64) error {
 	commandJSON, err := optionalStringSliceJSON(snapshot.Command)
 	if err != nil {
 		return err
@@ -150,13 +198,13 @@ func replaceServiceConfig(ctx context.Context, transaction *sql.Tx, serviceID, p
 	UPDATE services SET
 	  source_json = ?, command_json = ?, args_json = ?,
 	  environment_json = ?, before_deploy_json = ?, port_forward_json = ?, health_port = ?, health_path = ?, health_timeout_seconds = ?,
-  cpu_millis = ?, memory_bytes = ?, enabled = ?,
+  cpu_millis = ?, memory_bytes = ?, enabled = ?, host_id = ?,
   active_deployment_id = CASE WHEN ? = 0 THEN NULL ELSE active_deployment_id END,
   updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
 		string(sourceJSON), commandJSON, argsJSON,
 		string(environmentJSON), beforeDeployJSON, portForwardJSON, healthPort, healthPath, healthTimeout,
-		nullablePositive(snapshot.CPUMillicores), nullablePositive(snapshot.MemoryMaxBytes), boolInteger(enabled),
+		nullablePositive(snapshot.CPUMillicores), nullablePositive(snapshot.MemoryMaxBytes), boolInteger(enabled), nullableString(hostID),
 		boolInteger(enabled), updatedAt, serviceID, projectID, expectedUpdated,
 	)
 	if err != nil {

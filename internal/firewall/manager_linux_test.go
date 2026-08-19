@@ -18,7 +18,7 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 		ID: "shop", Bridge: "pd-shop", Subnet: netip.MustParsePrefix("10.80.1.0/24"), Gateway: netip.MustParseAddr("10.80.1.1"),
 	}
 	compiled := compileRuleset(TableName, []Project{project})
-	if compiled.table.Family != nftables.TableFamilyINet || len(compiled.chains) != 3 {
+	if compiled.table.Family != nftables.TableFamilyINet || len(compiled.chains) != 4 {
 		t.Fatalf("unexpected table topology: %+v", compiled)
 	}
 	if compiled.chains[0].Hooknum != nftables.ChainHookInput || compiled.chains[0].Priority != nftables.ChainPriorityMangle {
@@ -27,8 +27,11 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	if compiled.chains[1].Hooknum != nftables.ChainHookForward || compiled.chains[1].Priority != nftables.ChainPriorityMangle {
 		t.Fatalf("unexpected forward chain: %+v", compiled.chains[1])
 	}
-	if compiled.chains[2].Hooknum != nftables.ChainHookPostrouting || compiled.chains[2].Type != nftables.ChainTypeNAT {
-		t.Fatalf("unexpected postrouting chain: %+v", compiled.chains[2])
+	if compiled.chains[2].Hooknum != nftables.ChainHookPrerouting || compiled.chains[2].Type != nftables.ChainTypeNAT {
+		t.Fatalf("unexpected prerouting chain: %+v", compiled.chains[2])
+	}
+	if compiled.chains[3].Hooknum != nftables.ChainHookPostrouting || compiled.chains[3].Type != nftables.ChainTypeNAT {
+		t.Fatalf("unexpected postrouting chain: %+v", compiled.chains[3])
 	}
 
 	var accepts, drops, masquerades int
@@ -74,6 +77,11 @@ func TestCompileRulesetOwnsAllRequiredHooks(t *testing.T) {
 	withGateway := compileRuleset(TableName, []Project{project})
 	if len(withGateway.rules) != len(withMaintenance.rules)+2 {
 		t.Fatalf("network gateway must add one exact accept and one cross-project drop: without=%d with=%d", len(withMaintenance.rules), len(withGateway.rules))
+	}
+	project.RemoteVIP = netip.MustParsePrefix("10.80.1.160/27")
+	withRemoteVIP := compileRuleset(TableName, []Project{project})
+	if len(withRemoteVIP.rules) != len(withGateway.rules)+2 {
+		t.Fatalf("remote VIP must add tunnel accept and prerouting redirect: without=%d with=%d", len(withGateway.rules), len(withRemoteVIP.rules))
 	}
 }
 

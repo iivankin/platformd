@@ -218,6 +218,12 @@ func (handler *Handler) listTools(response http.ResponseWriter, message requestM
 		if handler.serverExec != nil && identity.ProjectID == nil {
 			tools = append(tools, serverExecTool())
 		}
+		if handler.hosts != nil {
+			tools = append(tools, listHostsTool())
+			if identity.ProjectID == nil {
+				tools = append(tools, hostAdminMutationTools()...)
+			}
+		}
 		if handler.versions != nil {
 			tools = append(tools, previewDatabaseVersionTool(), startDatabaseVersionTool())
 		}
@@ -254,7 +260,8 @@ func destructiveTool(name string) bool {
 		"attach_service_domain", "create_object_store", "create_network_gateway", "run_backup",
 		"create_managed_redis", "create_managed_postgres", "create_service_volume", "create_port_forward",
 		"create_analytics_tracker", "create_analytics_goal", "create_analytics_funnel",
-		"create_analytics_flag", "create_analytics_experiment", "create_analytics_chart":
+		"create_analytics_flag", "create_analytics_experiment", "create_analytics_chart",
+		"create_host_join_token":
 		return false
 	default:
 		return true
@@ -570,6 +577,30 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.executeServerCommand(request.Context(), call.Arguments, identity)
+	case "list_hosts":
+		if handler.hosts == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.listHosts(request.Context(), call.Arguments, identity)
+	case "create_host_join_token":
+		if handler.hosts == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.createHostJoinToken(request.Context(), call.Arguments, identity)
+	case "delete_host":
+		if handler.hosts == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.deleteHost(request.Context(), call.Arguments, identity)
+	case "delete_host_join_token":
+		if handler.hosts == nil {
+			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
+			return
+		}
+		output, err = handler.deleteHostJoinToken(request.Context(), call.Arguments, identity)
 	case "start_managed_database_version_change":
 		if handler.versions == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")
@@ -776,6 +807,7 @@ type serviceOutput struct {
 	ProjectID          string                 `json:"projectId"`
 	Name               string                 `json:"name"`
 	Enabled            bool                   `json:"enabled"`
+	HostID             string                 `json:"hostId,omitempty"`
 	Snapshot           serviceconfig.Snapshot `json:"configuration"`
 	ActiveDeploymentID string                 `json:"activeDeploymentId,omitempty"`
 	ActiveImageDigest  string                 `json:"activeImageDigest,omitempty"`
@@ -806,7 +838,7 @@ func publicProject(project state.ProjectSummary) projectOutput {
 func publicService(service state.ServiceDesired) serviceOutput {
 	return serviceOutput{
 		ID: service.ID, ProjectID: service.ProjectID, Name: service.Name,
-		Enabled: service.Enabled, Snapshot: service.Snapshot,
+		Enabled: service.Enabled, HostID: service.HostID, Snapshot: service.Snapshot,
 		ActiveDeploymentID: service.ActiveDeploymentID, ActiveImageDigest: service.ActiveImageDigest,
 		CreatedAt: service.CreatedAtMillis, UpdatedAt: service.UpdatedAtMillis,
 	}

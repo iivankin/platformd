@@ -193,6 +193,7 @@ export const applyServiceSettings = async (
     environment: change.environment,
     expectedUpdatedAt: service.updatedAt,
     healthCheck: configuration.healthCheck,
+    hostId: change.draft.hostId,
     memoryMaxBytes: service.memoryMaxBytes,
     portForward: parsePortForward(change.draft.portForward),
     registryCredential: configuration.registryCredential,

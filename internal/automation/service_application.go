@@ -38,6 +38,7 @@ type CreateServiceInput struct {
 	ProjectID     string
 	Name          string
 	Enabled       bool
+	HostID        string
 	Configuration serviceconfig.Snapshot
 }
 
@@ -45,6 +46,7 @@ type UpdateServiceInput struct {
 	ProjectID         string
 	ServiceID         string
 	Enabled           bool
+	HostID            string
 	ExpectedUpdatedAt int64
 	Configuration     serviceconfig.Snapshot
 }
@@ -101,7 +103,7 @@ func (application *ServiceApplication) Create(ctx context.Context, identity Iden
 	}
 	service, err := application.repository.CreateService(ctx, state.CreateService{
 		ID: identifiers[0], ProjectID: input.ProjectID, Name: input.Name,
-		Enabled: input.Enabled, Snapshot: snapshot,
+		Enabled: input.Enabled, HostID: input.HostID, Snapshot: snapshot,
 		AuditEventID: identifiers[1], ActorKind: "token", ActorID: identity.TokenID,
 		RequestCorrelationID: identifiers[2], CreatedAtMillis: timestamp.UnixMilli(),
 	})
@@ -128,7 +130,7 @@ func (application *ServiceApplication) Update(ctx context.Context, identity Iden
 		return ServiceMutationResult{}, err
 	}
 	service, err := application.repository.UpdateService(ctx, state.UpdateServiceInput{
-		ID: input.ServiceID, ProjectID: input.ProjectID, Enabled: input.Enabled,
+		ID: input.ServiceID, ProjectID: input.ProjectID, Enabled: input.Enabled, HostID: input.HostID,
 		Snapshot: snapshot, ExpectedUpdatedMillis: input.ExpectedUpdatedAt,
 		AuditEventID: identifiers[0], ActorKind: "token", ActorID: identity.TokenID,
 		RequestCorrelationID: identifiers[1], UpdatedAtMillis: timestamp.UnixMilli(),

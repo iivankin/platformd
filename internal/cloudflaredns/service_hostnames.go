@@ -26,11 +26,22 @@ type HostResolver interface {
 }
 
 func (application *Application) EnsureServiceHostname(ctx context.Context, hostname, targetHostname string) (bool, error) {
-	hostname, err := publichostname.Normalize(hostname)
+	targetHostname, err := publichostname.Normalize(targetHostname)
 	if err != nil {
 		return false, err
 	}
-	targetHostname, err = publichostname.Normalize(targetHostname)
+	return application.ensureManagedRecord(ctx, hostname, "CNAME", targetHostname)
+}
+
+func (application *Application) EnsureServiceHostnameAddress(ctx context.Context, hostname, ipv4 string) (bool, error) {
+	if err := state.ValidatePublicIPv4(ipv4); err != nil {
+		return false, err
+	}
+	return application.ensureManagedRecord(ctx, hostname, "A", ipv4)
+}
+
+func (application *Application) ensureManagedRecord(ctx context.Context, hostname, recordType, content string) (bool, error) {
+	hostname, err := publichostname.Normalize(hostname)
 	if err != nil {
 		return false, err
 	}
@@ -62,7 +73,7 @@ func (application *Application) EnsureServiceHostname(ctx context.Context, hostn
 		managed = record
 	}
 	body := map[string]any{
-		"type": "CNAME", "name": hostname, "content": targetHostname,
+		"type": recordType, "name": hostname, "content": content,
 		"proxied": true, "ttl": 1, "comment": managedServiceRecordComment,
 	}
 	if managed == nil {
@@ -71,7 +82,7 @@ func (application *Application) EnsureServiceHostname(ctx context.Context, hostn
 		}
 		return true, nil
 	}
-	if managed.Type == "CNAME" && managed.Content == targetHostname && managed.Proxied {
+	if managed.Type == recordType && managed.Content == content && managed.Proxied {
 		return false, nil
 	}
 	path := "/zones/" + zone.ID + "/dns_records/" + url.PathEscape(managed.ID)

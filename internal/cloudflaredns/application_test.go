@@ -269,6 +269,13 @@ func TestServiceHostnameCreatesUpdatesChecksAndDeletesManagedCNAME(t *testing.T)
 	if records["app.example.com"][0].Content != "control.example.com" {
 		t.Fatalf("updated service CNAME = %+v", records["app.example.com"][0])
 	}
+	if _, err := application.EnsureServiceHostnameAddress(context.Background(), "app.example.com", "203.0.113.40"); err != nil {
+		t.Fatal(err)
+	}
+	moved := records["app.example.com"][0]
+	if moved.Type != "A" || moved.Content != "203.0.113.40" || !moved.Proxied {
+		t.Fatalf("rewritten service A = %+v", moved)
+	}
 	if status, err := application.ServiceHostnameDNSStatus(context.Background(), "app.example.com"); err != nil || status != DNSStatusPending {
 		t.Fatalf("pending DNS status = %q, %v", status, err)
 	}
@@ -289,5 +296,66 @@ func TestServiceHostnameCreatesUpdatesChecksAndDeletesManagedCNAME(t *testing.T)
 	}
 	if deleted, err := application.DeleteServiceHostname(context.Background(), "app.example.com"); err != nil || deleted || len(records["app.example.com"]) != 1 {
 		t.Fatalf("unmanaged delete = deleted %t, records %#v, %v", deleted, records["app.example.com"], err)
+	}
+}
+
+func TestServiceHostnameAddressCreatesProxiedARecord(t *testing.T) {
+	const token = "cloudflare-test-token-with-enough-entropy"
+	records := map[string][]dnsRecord{}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		writeResult := func(status int, result any) {
+			response.Header().Set("Content-Type", "application/json")
+			response.WriteHeader(status)
+			_ = json.NewEncoder(response).Encode(map[string]any{"success": true, "result": result})
+		}
+		switch {
+		case request.Method == http.MethodGet && request.URL.Path == "/user/tokens/verify":
+			writeResult(http.StatusOK, map[string]string{"status": "active"})
+		case request.Method == http.MethodGet && request.URL.Path == "/zones":
+			writeResult(http.StatusOK, []zone{{ID: "zone", Name: "example.com"}})
+		case request.Method == http.MethodGet && request.URL.Path == "/zones/zone/dns_records":
+			writeResult(http.StatusOK, records[request.URL.Query().Get("name")])
+		case request.Method == http.MethodPost && request.URL.Path == "/zones/zone/dns_records":
+			var created dnsRecord
+			if err := json.NewDecoder(request.Body).Decode(&created); err != nil {
+				http.Error(response, "invalid record", http.StatusBadRequest)
+				return
+			}
+			created.ID = "service-record"
+			records[created.Name] = []dnsRecord{created}
+			writeResult(http.StatusOK, created)
+		default:
+			http.Error(response, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	master, err := cryptobox.ParseMasterKey(bytes.Repeat([]byte{0x42}, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	application, err := New(Config{
+		Repository: &dnsRepository{}, Master: master, InstallationID: "installation",
+		HTTPClient: server.Client(), Resolver: &resolverStub{}, BaseURL: server.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.Configure(context.Background(), ConfigureInput{
+		APIToken: []byte(token), AuditEventID: "audit", ActorID: "actor",
+		ActorEmail: "actor@example.com", UpdatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	created, err := application.EnsureServiceHostnameAddress(context.Background(), "api.example.com", "203.0.113.40")
+	if err != nil || !created {
+		t.Fatalf("create service A = created %t, %v", created, err)
+	}
+	record := records["api.example.com"][0]
+	if record.Type != "A" || record.Content != "203.0.113.40" || !record.Proxied || record.Comment != managedServiceRecordComment {
+		t.Fatalf("service A = %+v", record)
+	}
+	if created, err := application.EnsureServiceHostnameAddress(context.Background(), "api.example.com", "203.0.113.40"); err != nil || created {
+		t.Fatalf("idempotent service A = created %t, %v", created, err)
 	}
 }

@@ -49,7 +49,9 @@ type runtimeStack struct {
 	dnsServers                 []*internaldns.Server
 	projectDNSServers          map[string]*internaldns.Server
 	dnsZones                   map[string]*internaldns.Zone
+	projectViews               map[string]*internaldns.View
 	projectNetworks            map[string]containerengine.Network
+	internalMesh               *internalBridge
 	paths                      layout.Paths
 	cgroupRoot                 string
 	growth                     deployment.GrowthGate
@@ -77,6 +79,8 @@ type runtimeStack struct {
 	cloudflareMeshNetworkError error
 	cloudflareMeshRuntime      interface{ Close() error }
 	cloudflareMeshCancel       context.CancelFunc
+	catalog                    *state.Store
+	hosts                      hostPlacement
 }
 
 func startRuntime(
@@ -165,6 +169,7 @@ func startRuntime(
 		firewallProjects:           make(map[string]firewall.Project),
 		projectFailures:            projectFailures,
 		dnsZones:                   make(map[string]*internaldns.Zone),
+		projectViews:               make(map[string]*internaldns.View),
 		projectDNSServers:          make(map[string]*internaldns.Server),
 		projectNetworks:            make(map[string]containerengine.Network),
 		paths:                      paths,
@@ -276,6 +281,7 @@ func startRuntime(
 			stack.cloudflareMeshNetworkError = nil
 		default:
 			stack.dnsZones[assignment.ProjectID] = zone
+			stack.projectViews[assignment.ProjectID] = view
 			stack.projectDNSServers[assignment.ProjectID] = dnsServer
 			stack.projectNetworks[assignment.ProjectID] = network
 		}
@@ -283,6 +289,7 @@ func startRuntime(
 			ID: assignment.ProjectID, Bridge: network.Interface,
 			Subnet: assignment.Subnet, Gateway: assignment.Gateway,
 			ObjectStoreEnabled: objectStores[assignment.ProjectID],
+			RemoteVIP:          projectRemoteVIP(assignment),
 		})
 		stack.firewallProjects[assignment.ProjectID] = firewallProjects[len(firewallProjects)-1]
 	}
@@ -390,6 +397,23 @@ func (stack *runtimeStack) ReleaseForUpdate() error {
 	return errors.Join(failures...)
 }
 
+func (stack *runtimeStack) projectNetworkExists(projectID string) bool {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	_, ok := stack.projectNetworks[projectID]
+	return ok
+}
+
+func (stack *runtimeStack) projectGateway(projectID string) (netip.Addr, bool) {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	project, ok := stack.firewallProjects[projectID]
+	if !ok {
+		return netip.Addr{}, false
+	}
+	return project.Gateway, true
+}
+
 func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
 	stack.mu.Lock()
 	defer stack.mu.Unlock()
@@ -477,6 +501,7 @@ func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
 	firewallProject := firewall.Project{
 		ID: project.ID, Bridge: network.Interface, Subnet: assignment.Subnet,
 		Gateway: assignment.Gateway, ObjectStoreEnabled: project.ObjectStoreEnabled,
+		RemoteVIP: projectRemoteVIP(assignment),
 	}
 	candidate := make([]firewall.Project, 0, len(stack.firewallProjects)+1)
 	for _, current := range stack.firewallProjects {
@@ -492,9 +517,11 @@ func (stack *runtimeStack) AddProject(project state.RuntimeProject) error {
 	stack.networks = append(stack.networks, network.Name)
 	stack.dnsServers = append(stack.dnsServers, dnsServer)
 	stack.dnsZones[project.ID] = zone
+	stack.projectViews[project.ID] = view
 	stack.projectDNSServers[project.ID] = dnsServer
 	stack.projectNetworks[project.ID] = network
 	stack.firewallProjects[project.ID] = firewallProject
+	stack.attachProjectMeshLocked(project.ID, view, zone, firewallProject)
 	return nil
 }
 
@@ -535,9 +562,13 @@ func (stack *runtimeStack) RemoveProject(projectID string) error {
 		stack.mu.Unlock()
 		return err
 	}
+	if stack.internalMesh != nil {
+		stack.internalMesh.UnregisterProject(projectID)
+	}
 	delete(stack.firewallProjects, projectID)
 	delete(stack.projectNetworks, projectID)
 	delete(stack.dnsZones, projectID)
+	delete(stack.projectViews, projectID)
 	delete(stack.projectDNSServers, projectID)
 	delete(stack.objectStoreProjects, projectID)
 	delete(stack.objectStoreFailures, projectID)
@@ -599,6 +630,35 @@ func (stack *runtimeStack) ensureForwarder(gateway netip.Addr) error {
 
 func (stack *runtimeStack) recordProjectFailure(projectID string, err error) {
 	stack.projectFailures = append(stack.projectFailures, projectnetwork.Failure{ProjectID: projectID, Err: err})
+}
+
+func (stack *runtimeStack) AttachInternalMesh(bridge *internalBridge) {
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	stack.internalMesh = bridge
+	for projectID, view := range stack.projectViews {
+		stack.attachProjectMeshLocked(projectID, view, stack.dnsZones[projectID], stack.firewallProjects[projectID])
+	}
+}
+
+func (stack *runtimeStack) attachProjectMeshLocked(projectID string, view *internaldns.View, zone *internaldns.Zone, project firewall.Project) {
+	if stack.internalMesh == nil || view == nil {
+		return
+	}
+	stack.internalMesh.RegisterProject(projectID, zone, project)
+	view.SetRemoteResolver(stack.internalMesh.Resolver(projectID))
+}
+
+func projectRemoteVIP(assignment projectnetwork.Assignment) netip.Prefix {
+	switch assignment.ProjectID {
+	case buildNetworkID, cloudflareMeshNetworkID:
+		return netip.Prefix{}
+	}
+	prefix, err := projectnetwork.RemoteVIPPrefix(assignment.Subnet)
+	if err != nil {
+		return netip.Prefix{}
+	}
+	return prefix
 }
 
 func resetTransientDirectory(path string) error {

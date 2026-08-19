@@ -1,3 +1,5 @@
+//go:build !platformd_worker
+
 package command
 
 import (
@@ -13,9 +15,11 @@ import (
 	"github.com/iivankin/platformd/internal/disasterrestore"
 )
 
-const usage = "usage: platformd init [--input-fd <fd>] [--restore | --reset-console-passphrase | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n"
+const usage = "usage: platformd init [--input-fd <fd>] [--restore | --reset-console-passphrase | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n       platformd join --url https://admin.example.com --token pjn_... [--public-ipv4 <ipv4>] [--name <label>]\n"
 
-// Run dispatches the one public command and private process modes.
+const initUsage = "usage: platformd init [--input-fd <fd>] [--restore | --reset-console-passphrase | --rollback-update | --install-signed-update <manifest> [--binary <path>]]\n"
+
+// Run dispatches the public commands and private process modes.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		_, _ = io.WriteString(stderr, usage)
@@ -25,6 +29,8 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "init":
 		return runInit(ctx, args[1:], stdout, stderr)
+	case "join":
+		return runJoin(ctx, args[1:], stdout, stderr)
 	case "__daemon":
 		// Keep the main OS thread (m0) permanently owned by this goroutine so
 		// LockOSThread+setns/unshare workers (portproxy, podman netns.NewNS, CNI)
@@ -32,6 +38,13 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 		// breaks /proc/net and host metrics.
 		runtime.LockOSThread()
 		if err := daemon.Run(ctx); err != nil {
+			_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
+			return 1
+		}
+		return 0
+	case "__worker":
+		runtime.LockOSThread()
+		if err := daemon.RunWorker(ctx); err != nil {
 			_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
 			return 1
 		}

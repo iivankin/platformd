@@ -16,6 +16,8 @@ import type {
   CloudflareMeshSettings,
   Deployment,
   DiskPressure,
+  Host,
+  HostJoinToken,
   Identity,
   InfrastructureLogWindow,
   InstallationSettings,
@@ -62,6 +64,8 @@ export interface MockState {
   deployments: Record<string, Deployment[]>;
   diskPressure: DiskPressure;
   domains: Record<string, ServiceDomain[]>;
+  hostJoinTokens: HostJoinToken[];
+  hosts: Host[];
   identity: Identity;
   infrastructureLogs: InfrastructureLogWindow;
   listeners: Record<string, ServiceListener[]>;
@@ -118,7 +122,7 @@ const project: Project = {
   objectStoreCount: 1,
   postgresCount: 1,
   redisCount: 1,
-  serviceCount: 1,
+  serviceCount: 2,
   updatedAt: now - 90_000,
 };
 
@@ -146,6 +150,34 @@ const service: Service = {
     type: "public_image",
   },
   updatedAt: now - 90_000,
+  volumeMounts: [],
+};
+
+const worker: Service = {
+  activeConfigHash: "config-worker",
+  activeDeploymentId: "deployment-worker",
+  activeImageDigest: "sha256:service-worker",
+  cpuMillicores: 250,
+  createdAt: project.createdAt,
+  enabled: true,
+  environment: {
+    LOG_LEVEL: "info",
+    POSTGRES_URL: reference("main", "POSTGRES_URL"),
+    REDIS_URL: reference("cache", "REDIS_URL"),
+  },
+  healthCheck: { path: "/health", port: 8080, timeoutSeconds: 30 },
+  hostId: "host-edge-1",
+  id: "service-worker",
+  memoryMaxBytes: 268_435_456,
+  name: "worker",
+  projectId: project.id,
+  secretReferences: [],
+  source: {
+    autoUpdate: true,
+    image: { reference: "ghcr.io/storefront/worker:stable" },
+    type: "public_image",
+  },
+  updatedAt: now - 120_000,
   volumeMounts: [],
 };
 
@@ -218,6 +250,16 @@ const canvas: ProjectCanvas = {
       sourceId: service.id,
       targetId: redis.id,
     },
+    {
+      environmentNames: ["POSTGRES_URL"],
+      sourceId: worker.id,
+      targetId: postgres.id,
+    },
+    {
+      environmentNames: ["REDIS_URL"],
+      sourceId: worker.id,
+      targetId: redis.id,
+    },
   ],
   project,
   resources: [
@@ -230,6 +272,20 @@ const canvas: ProjectCanvas = {
       kind: "service",
       name: service.name,
       source: service.source,
+      status: "running",
+      volumes: [],
+    },
+    {
+      activeDeploymentId: worker.activeDeploymentId,
+      enabled: true,
+      hostId: worker.hostId,
+      hostName: "edge-1",
+      id: worker.id,
+      imageDigest: worker.activeImageDigest,
+      internalHostname: "worker.storefront.internal",
+      kind: "service",
+      name: worker.name,
+      source: worker.source,
       status: "running",
       volumes: [],
     },
@@ -341,6 +397,8 @@ const makeEmptyState = (scenario: MockScenario): MockState => ({
     usedBytes: 57_982_058_496,
   },
   domains: {},
+  hostJoinTokens: [],
+  hosts: [],
   identity: {
     email: "developer@mock.local",
     name: "Mock Developer",
@@ -415,7 +473,9 @@ export const createMockState = (scenario: MockScenario): MockState => {
   };
   state.canvases[project.id] = canvas;
   state.services[service.id] = service;
+  state.services[worker.id] = worker;
   state.previews[service.id] = [];
+  state.previews[worker.id] = [];
   state.mail = {
     errorAlerts: [
       {
@@ -503,12 +563,17 @@ export const createMockState = (scenario: MockScenario): MockState => {
   state.redis[redis.id] = redis;
   state.objectStores[objectStore.id] = objectStore;
   state.containerFiles["service:service-api"] = mockContainerFiles("service");
+  state.containerFiles["service:service-worker"] =
+    mockContainerFiles("service");
   state.containerFiles["postgres:postgres-main"] =
     mockContainerFiles("postgres");
   state.containerFiles["redis:redis-cache"] = mockContainerFiles("redis");
   state.containerPorts["service:service-api"] = [
     { port: 3000, protocol: "tcp" },
     { port: 5353, protocol: "udp" },
+    { port: 8080, protocol: "tcp" },
+  ];
+  state.containerPorts["service:service-worker"] = [
     { port: 8080, protocol: "tcp" },
   ];
   state.containerPorts["postgres:postgres-main"] = [
@@ -580,6 +645,28 @@ export const createMockState = (scenario: MockScenario): MockState => {
         },
         volumeMounts: [],
       },
+      status: "succeeded",
+    },
+  ];
+  state.deployments[worker.id] = [
+    {
+      commitMessage: "Process checkout jobs on the edge host",
+      createdAt: now - 120_000,
+      finishedAt: now - 100_000,
+      id: "deployment-worker",
+      imageDigest: "sha256:service-worker",
+      serviceConfigHash: "config-worker",
+      serviceId: worker.id,
+      snapshot: {
+        cpuMillicores: worker.cpuMillicores,
+        environment: worker.environment,
+        healthCheck: worker.healthCheck,
+        memoryMaxBytes: worker.memoryMaxBytes,
+        secretReferences: [],
+        source: worker.source,
+        volumeMounts: [],
+      },
+      sourceRevision: "4c8a1b2d0e7f91a33c55",
       status: "succeeded",
     },
   ];
@@ -875,6 +962,18 @@ export const createMockState = (scenario: MockScenario): MockState => {
       },
     ];
   }
+  state.hosts = [
+    {
+      connected: true,
+      createdAt: now - 1_728_000_000,
+      id: "host-edge-1",
+      joinedAt: now - 1_728_000_000,
+      lastSeenAt: now - 8000,
+      name: "edge-1",
+      publicIpv4: "203.0.113.40",
+      updatedAt: now - 8000,
+    },
+  ];
   state.tokens = [
     {
       createdAt: now - 14 * 86_400_000,

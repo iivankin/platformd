@@ -1,4 +1,4 @@
-import { Network, Trash2 } from "lucide-react";
+import { Network, Server, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import type { Service, ServiceDomain, ServiceListener, Volume } from "@/api";
@@ -9,6 +9,7 @@ import { projectNameFromInternalHostname } from "@/github-action-example-dialog"
 import { ServiceBeforeDeploy } from "@/service-before-deploy";
 import { ServiceConfiguration } from "@/service-configuration";
 import { ServiceDomains } from "@/service-domains";
+import { ServiceHostPicker } from "@/service-host-picker";
 import { ServiceListeners } from "@/service-listeners";
 import { ServicePortForwardSettings } from "@/service-port-forward";
 import {
@@ -98,6 +99,32 @@ export const ServiceSettings = ({
         projectName={projectNameFromInternalHostname(internalHostname)}
         serviceName={service.name}
       />
+      <SectionCard className="grid lg:grid-cols-[14rem_minmax(18rem,1fr)]">
+        <div className="px-5 py-4">
+          <h3 className="flex items-center gap-2 text-[9px] tracking-[0.13em] text-muted-foreground uppercase">
+            <Server className="size-3" /> Server
+          </h3>
+          <p className="mt-2 text-[9px] leading-4 text-muted-foreground">
+            Child servers run this service only. Volumes stay on the host where
+            they were created.
+          </p>
+        </div>
+        <div className="border-t border-border px-5 py-4 lg:border-t-0 lg:border-l">
+          <ServiceHostPicker
+            disabled={
+              busy || draft.volumes.length > 0 || draft.volumeMounts.length > 0
+            }
+            id="service-host"
+            onChange={(hostId) => updateDraft({ ...draft, hostId })}
+            value={draft.hostId}
+          />
+          {draft.volumes.length > 0 || draft.volumeMounts.length > 0 ? (
+            <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
+              Move is blocked while this service has volumes.
+            </p>
+          ) : null}
+        </div>
+      </SectionCard>
       <ServiceBeforeDeploy
         domains={draft.domains}
         draft={draft.beforeDeploy}

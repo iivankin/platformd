@@ -188,3 +188,69 @@ func (selector *Selector) TLSConfig() *tls.Config {
 		NextProtos:     []string{"h2", "http/1.1"},
 	}
 }
+
+type Material struct {
+	ID             string
+	CertificatePEM string
+	PrivateKeyPEM  []byte
+}
+
+func Export(master cryptobox.MasterKey, values []state.OriginCertificate) ([]Material, error) {
+	materials := make([]Material, 0, len(values))
+	for _, value := range values {
+		box, err := cryptobox.NewBox(master, []byte(value.ID), privateKeyDomain)
+		if err != nil {
+			return nil, err
+		}
+		privateKey, err := box.Open(value.PrivateKeyEncrypted, []byte(value.ID+":private-key"))
+		if err != nil {
+			return nil, fmt.Errorf("decrypt Origin certificate %s: %w", value.ID, err)
+		}
+		copied := append([]byte(nil), privateKey...)
+		clear(privateKey)
+		materials = append(materials, Material{
+			ID: value.ID, CertificatePEM: value.CertificatePEM, PrivateKeyPEM: copied,
+		})
+	}
+	return materials, nil
+}
+
+func (selector *Selector) ReplaceMaterials(materials []Material) error {
+	next, err := LoadMaterials(materials)
+	if err != nil {
+		return err
+	}
+	selector.current.Store(next.current.Load())
+	return nil
+}
+
+func LoadMaterials(materials []Material) (*Selector, error) {
+	if len(materials) == 0 {
+		return nil, errors.New("installation has no Origin certificates")
+	}
+	certificates := make([]certificate, 0, len(materials))
+	for _, material := range materials {
+		pair, err := tls.X509KeyPair([]byte(material.CertificatePEM), material.PrivateKeyPEM)
+		if err != nil {
+			return nil, fmt.Errorf("load Origin certificate %s: %w", material.ID, err)
+		}
+		if len(pair.Certificate) == 0 {
+			return nil, fmt.Errorf("Origin certificate %s has no leaf", material.ID)
+		}
+		pair.Leaf, err = x509.ParseCertificate(pair.Certificate[0])
+		if err != nil {
+			return nil, fmt.Errorf("parse Origin certificate %s leaf: %w", material.ID, err)
+		}
+		exact := make(map[string]struct{}, len(pair.Leaf.DNSNames))
+		for _, name := range pair.Leaf.DNSNames {
+			if !strings.Contains(name, "*") {
+				exact[strings.ToLower(name)] = struct{}{}
+			}
+		}
+		certificates = append(certificates, certificate{id: material.ID, exact: exact, value: pair})
+	}
+	sort.Slice(certificates, func(left, right int) bool { return certificates[left].id < certificates[right].id })
+	selector := &Selector{}
+	selector.current.Store(&certificateSnapshot{certificates: certificates})
+	return selector, nil
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"strings"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -15,9 +16,16 @@ type Forwarder interface {
 	Resolve(context.Context, []byte) ([]byte, error)
 }
 
+// RemoteResolver answers .internal names that are not in the local zone.
+// It must not return addresses that DialLocal would loop back onto this host.
+type RemoteResolver interface {
+	ResolveRemote(context.Context, string) (netip.Addr, bool, error)
+}
+
 type View struct {
 	zone      *Zone
 	forwarder Forwarder
+	remote    RemoteResolver
 }
 
 func NewView(zone *Zone, forwarder Forwarder) (*View, error) {
@@ -25,6 +33,10 @@ func NewView(zone *Zone, forwarder Forwarder) (*View, error) {
 		return nil, errors.New("internal DNS view requires a zone and forwarder")
 	}
 	return &View{zone: zone, forwarder: forwarder}, nil
+}
+
+func (view *View) SetRemoteResolver(resolver RemoteResolver) {
+	view.remote = resolver
 }
 
 func (view *View) Resolve(ctx context.Context, packet []byte) ([]byte, error) {
@@ -53,6 +65,17 @@ func (view *View) Resolve(ctx context.Context, packet []byte) ([]byte, error) {
 		return responseFor(header, question, dnsmessage.RCodeRefused, nil)
 	}
 	address, found := view.zone.lookup(name)
+	if !found && view.remote != nil {
+		resolved, ok, resolveErr := view.remote.ResolveRemote(ctx, strings.TrimSuffix(name, "."))
+		if resolveErr != nil {
+			return responseFor(header, question, dnsmessage.RCodeServerFailure, nil)
+		}
+		if ok {
+			found = true
+			as4 := resolved.As4()
+			address = as4
+		}
+	}
 	if !found {
 		return responseFor(header, question, dnsmessage.RCodeNameError, nil)
 	}

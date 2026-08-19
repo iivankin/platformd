@@ -140,6 +140,32 @@ func TestSetAccessConfigurationNormalizesValuesAndReportsChange(t *testing.T) {
 	}
 }
 
+func TestAddCertificateNotifiesAfterCommit(t *testing.T) {
+	master := testMasterKey(t)
+	certificatePEM, privateKey := testCertificate(t, []string{"admin.example.com"})
+	certificate := encryptTestCertificate(t, master, "certificate-a", certificatePEM, privateKey)
+	selector, err := origin.Load(master, []state.OriginCertificate{certificate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository := &repositoryStub{installation: testInstallation(certificate), hostnames: []string{"admin.example.com"}}
+	application, err := New(repository, master, selector, &sync.Mutex{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	notified := 0
+	application.SetOnCertificatesChanged(func() { notified++ })
+	addedPEM, addedKey := testCertificate(t, []string{"extra.example.com"})
+	mutation := CertificateMutation{Mutation: testMutation(), CertificatePEM: addedPEM, PrivateKeyPEM: addedKey}
+	mutation.ResourceID = "certificate-b"
+	if _, err := application.AddCertificate(context.Background(), mutation); err != nil {
+		t.Fatal(err)
+	}
+	if notified != 1 {
+		t.Fatalf("notified = %d", notified)
+	}
+}
+
 func TestReplaceCertificateRejectsUncoveredHostWithoutPublishing(t *testing.T) {
 	master := testMasterKey(t)
 	oldPEM, oldKey := testCertificate(t, []string{"admin.example.com"})

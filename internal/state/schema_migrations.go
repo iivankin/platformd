@@ -805,3 +805,86 @@ func migrateSchemaVersionSeventeen(ctx context.Context, database *sql.DB) error 
 	}
 	return nil
 }
+
+const hostCatalogSchema = `
+CREATE TABLE hosts (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  public_ipv4 TEXT CHECK (public_ipv4 IS NULL OR length(public_ipv4) BETWEEN 7 AND 15),
+  token_hmac BLOB NOT NULL CHECK (length(token_hmac) = 32),
+  last_seen_at INTEGER,
+  joined_at INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+CREATE TABLE host_join_tokens (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  token_hmac BLOB NOT NULL CHECK (length(token_hmac) = 32),
+  expires_at INTEGER NOT NULL,
+  consumed_at INTEGER,
+  created_at INTEGER NOT NULL
+) STRICT;
+CREATE INDEX host_join_tokens_created_idx ON host_join_tokens(created_at, id);
+`
+
+func migrateSchemaVersionEighteen(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 18 to 19: %w", err)
+	}
+	if _, err := transaction.ExecContext(ctx, hostCatalogSchema); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 18 to 19: %w", err), transaction.Rollback())
+	}
+	if _, err := transaction.ExecContext(ctx, `ALTER TABLE services ADD COLUMN host_id TEXT REFERENCES hosts(id) ON DELETE RESTRICT`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 18 to 19: %w", err), transaction.Rollback())
+	}
+	if _, err := transaction.ExecContext(ctx, `PRAGMA user_version = 19`); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 18 to 19: %w", err), transaction.Rollback())
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 18 to 19: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionNineteen(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 19 to 20: %w", err)
+	}
+	const listenersTable = `CREATE TABLE service_listeners (
+  protocol TEXT NOT NULL CHECK (protocol IN ('tcp', 'udp')),
+  public_port INTEGER NOT NULL CHECK (public_port BETWEEN 1 AND 65535),
+  service_id TEXT NOT NULL REFERENCES services(id) ON DELETE CASCADE,
+  target_port INTEGER NOT NULL CHECK (target_port BETWEEN 1 AND 65535),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (service_id, protocol, public_port)
+) WITHOUT ROWID, STRICT`
+	var exists int
+	if err := transaction.QueryRowContext(ctx, `
+SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'service_listeners'`).Scan(&exists); err != nil {
+		return errors.Join(fmt.Errorf("migrate SQLite schema 19 to 20: %w", err), transaction.Rollback())
+	}
+	statements := []string{listenersTable, `PRAGMA user_version = 20`}
+	if exists == 1 {
+		statements = []string{
+			`ALTER TABLE service_listeners RENAME TO service_listeners_global_ports`,
+			listenersTable,
+			`INSERT INTO service_listeners(protocol, public_port, service_id, target_port, created_at)
+SELECT protocol, public_port, service_id, target_port, created_at
+FROM service_listeners_global_ports`,
+			`DROP TABLE service_listeners_global_ports`,
+			`PRAGMA user_version = 20`,
+		}
+	}
+	for _, statement := range statements {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 19 to 20: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 19 to 20: %w", err)
+	}
+	return nil
+}

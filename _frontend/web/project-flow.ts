@@ -34,6 +34,8 @@ export interface ResourceNodeData extends Record<string, unknown> {
   gatewayTransport?: "mesh" | "vpc";
   hasIncomingConnection?: boolean;
   hasOutgoingConnection?: boolean;
+  hostId?: string;
+  hostName?: string;
   leftHandles?: ResourceSideHandle[];
   rightHandles?: ResourceSideHandle[];
   source?: ServiceSource;
@@ -602,6 +604,8 @@ export const projectFlowElements = async (
         gatewayTransport: resource.gatewayTransport,
         hasIncomingConnection: incomingResourceIDs.has(resource.id),
         hasOutgoingConnection: outgoingResourceIDs.has(resource.id),
+        hostId: resource.hostId,
+        hostName: resource.hostName,
         imageDigest: resource.imageDigest,
         imageReference: resource.imageReference,
         internalHostname: resource.internalHostname,

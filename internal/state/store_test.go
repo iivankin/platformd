@@ -34,8 +34,8 @@ func TestOpenCreatesHardenedCurrentSchema(t *testing.T) {
 	if err := store.QueryRowContext(context.Background(), "PRAGMA user_version").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 18 || state.SupportedSchemaVersion() != 18 {
-		t.Fatalf("schema version = %d", version)
+	if version != state.SupportedSchemaVersion() {
+		t.Fatalf("schema version = %d, want %d", version, state.SupportedSchemaVersion())
 	}
 	var tableCount int
 	if err := store.QueryRowContext(context.Background(), "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name IN ('installation', 'services', 'deployments', 'runtime_deployments', 'object_stores', 'managed_postgres', 'managed_redis', 'service_image_revisions', 'service_image_uploads', 'preview_deployments', 'operations', 'audit_events')").Scan(&tableCount); err != nil {

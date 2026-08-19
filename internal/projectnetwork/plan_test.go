@@ -69,7 +69,30 @@ func TestHostAddressKeepsContainerAndGatewayRangesDisjoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if containerEnd.String() != "10.80.42.191" || gatewayStart.String() != "10.80.42.192" {
+	if containerEnd.String() != "10.80.42.159" || gatewayStart.String() != "10.80.42.192" {
 		t.Fatalf("unexpected reserved ranges: container=%s gateway=%s", containerEnd, gatewayStart)
+	}
+	remote, err := RemoteVIPPrefix(subnet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := HostAddress(subnet, RemoteVIPFirstHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := HostAddress(subnet, RemoteVIPLastHost)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := HostAddress(subnet, RemoteVIPFirstHost-1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := HostAddress(subnet, RemoteVIPLastHost+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if remote.String() != "10.80.42.160/27" || !remote.Contains(first) || !remote.Contains(last) || remote.Contains(before) || remote.Contains(after) {
+		t.Fatalf("unexpected remote VIP prefix %s", remote)
 	}
 }

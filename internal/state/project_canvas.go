@@ -37,6 +37,8 @@ type CanvasResource struct {
 	GatewayRemotePort      int
 	GatewayTargetServiceID string
 	GatewayTargetPort      int
+	HostID                 string
+	HostName               string
 }
 
 type CanvasVolume struct {
@@ -134,7 +136,8 @@ WHERE p.name = ?`, name).Scan(
 func (store *Store) canvasResources(ctx context.Context, project ProjectSummary) ([]CanvasResource, error) {
 	rows, err := store.database.QueryContext(ctx, `
 	SELECT id, kind, name, source_json, bucket_name, enabled,
-       active_deployment_id, image_digest, status, status_message
+       active_deployment_id, image_digest, status, status_message,
+       host_id, host_name
 FROM (
 	  SELECT s.id, 'service' AS kind, s.name, s.source_json, '' AS bucket_name,
          s.enabled, COALESCE(s.active_deployment_id, '') AS active_deployment_id,
@@ -147,8 +150,11 @@ FROM (
          END AS status,
          CASE WHEN latest.status IN ('failed', 'interrupted')
               THEN COALESCE(latest.error_message, latest.status)
-              ELSE '' END AS status_message
+              ELSE '' END AS status_message,
+         COALESCE(s.host_id, '') AS host_id,
+         COALESCE(h.name, '') AS host_name
   FROM services s
+  LEFT JOIN hosts h ON h.id = s.host_id
   LEFT JOIN deployments d ON d.id = s.active_deployment_id
   LEFT JOIN deployments latest ON latest.id = (
     SELECT candidate.id FROM deployments candidate
@@ -159,17 +165,17 @@ FROM (
   UNION ALL
 	  SELECT id, 'postgres' AS kind, name, '' AS source_json,
          '' AS bucket_name, 1 AS enabled,
-         '', image_digest, 'pending', ''
+         '', image_digest, 'pending', '', '', ''
   FROM managed_postgres WHERE project_id = ?
   UNION ALL
 	  SELECT id, 'redis' AS kind, name, '' AS source_json,
          '' AS bucket_name, 1 AS enabled,
-         '', image_digest, 'pending', ''
+         '', image_digest, 'pending', '', '', ''
   FROM managed_redis WHERE project_id = ?
   UNION ALL
   SELECT id, 'object_store' AS kind, name, '' AS image_reference,
          bucket_name, 1 AS enabled,
-         '', '', 'pending', ''
+         '', '', 'pending', '', '', ''
   FROM object_stores WHERE project_id = ?
 )
 ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
@@ -187,7 +193,7 @@ ORDER BY kind, name, id`, project.ID, project.ID, project.ID, project.ID)
 			&resource.ID, &resource.Kind, &resource.Name, &sourceJSON,
 			&resource.BucketName, &enabled,
 			&resource.ActiveDeployment, &resource.ImageDigest, &resource.Status,
-			&resource.StatusMessage,
+			&resource.StatusMessage, &resource.HostID, &resource.HostName,
 		); err != nil {
 			return nil, fmt.Errorf("scan project canvas resource: %w", err)
 		}

@@ -37,6 +37,33 @@ func TestViewKeepsInternalRecordsInsideProject(t *testing.T) {
 	assertViewResult(t, alpha, dnsQuery(t, 5, "example.com.", dnsmessage.TypeA), dnsmessage.RCodeSuccess, "1.1.1.1")
 }
 
+type remoteResolverFunc func(context.Context, string) (netip.Addr, bool, error)
+
+func (function remoteResolverFunc) ResolveRemote(ctx context.Context, hostname string) (netip.Addr, bool, error) {
+	return function(ctx, hostname)
+}
+
+func TestViewAnswersRemoteInternalNames(t *testing.T) {
+	t.Parallel()
+
+	view := mustView(t, map[string]netip.Addr{"api.shop.internal": netip.MustParseAddr("10.80.1.4")}, forwarderFunc(func(context.Context, []byte) ([]byte, error) {
+		t.Fatal("internal query was forwarded")
+		return nil, nil
+	}))
+	view.SetRemoteResolver(remoteResolverFunc(func(_ context.Context, hostname string) (netip.Addr, bool, error) {
+		if hostname != "db.shop.internal" {
+			t.Fatalf("resolved %q", hostname)
+		}
+		return netip.MustParseAddr("10.80.1.160"), true, nil
+	}))
+	assertViewResult(t, view, dnsQuery(t, 6, "api.shop.internal.", dnsmessage.TypeA), dnsmessage.RCodeSuccess, "10.80.1.4")
+	assertViewResult(t, view, dnsQuery(t, 7, "db.shop.internal.", dnsmessage.TypeA), dnsmessage.RCodeSuccess, "10.80.1.160")
+	view.SetRemoteResolver(remoteResolverFunc(func(context.Context, string) (netip.Addr, bool, error) {
+		return netip.Addr{}, false, nil
+	}))
+	assertViewResult(t, view, dnsQuery(t, 8, "missing.shop.internal.", dnsmessage.TypeA), dnsmessage.RCodeNameError, "")
+}
+
 func TestServerAnswersUDPAndTCP(t *testing.T) {
 	view := mustView(t, map[string]netip.Addr{"api.alpha.internal": netip.MustParseAddr("127.0.0.7")}, forwarderFunc(func(context.Context, []byte) ([]byte, error) {
 		t.Fatal("internal query was forwarded")
