@@ -22,6 +22,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -72,6 +73,7 @@ func TestHostInternalMeshTwoInstances(t *testing.T) {
 
 func runHostMeshParent(t *testing.T) {
 	t.Helper()
+	hostNS := captureHostMeshNamespace(t)
 	ipc := hostMeshIPCDir()
 	if err := os.RemoveAll(ipc); err != nil {
 		t.Fatal(err)
@@ -120,7 +122,7 @@ func runHostMeshParent(t *testing.T) {
 	}
 
 	child := startHostMeshChildProcess(t, ipc, joinToken, tree.WorkloadRoot())
-	setupHostMeshLink(t, child.Process.Pid)
+	setupHostMeshLink(t, hostNS, child.Process.Pid)
 	parentAddr := netip.MustParseAddr(hostMeshParentIP)
 	startHostMeshHTTP(t, net.JoinHostPort(hostMeshParentIP, fmt.Sprintf("%d", hostMeshParentPort)), hostMeshParentBody)
 	if err := runtime.dnsZones[hostMeshProjectID].Set("db.shop.internal", parentAddr); err != nil {
@@ -155,7 +157,7 @@ func runHostMeshParent(t *testing.T) {
 	}
 
 	project := runtime.firewallProjects[hostMeshProjectID]
-	probe := attachHostMeshProbe(t, "pdhmp0", "pdhmp1", project)
+	probe := attachHostMeshProbe(t, hostNS, "pdhmp0", "pdhmp1", project)
 	assertHostMeshName(t, probe, project, "db.shop.internal", parentAddr, false)
 	assertHostMeshHTTP(t, probe, "db.shop.internal", hostMeshParentPort, "parent-db")
 	assertHostMeshName(t, probe, project, "api.shop.internal", netip.Addr{}, true)
@@ -172,6 +174,7 @@ func runHostMeshParent(t *testing.T) {
 
 func runHostMeshChild(t *testing.T) {
 	t.Helper()
+	hostNS := captureHostMeshNamespace(t)
 	ipc := os.Getenv("PLATFORMD_HOST_MESH_IPC")
 	token := os.Getenv("PLATFORMD_HOST_MESH_TOKEN")
 	cgroupRoot := os.Getenv("PLATFORMD_HOST_MESH_CGROUP")
@@ -243,7 +246,7 @@ func runHostMeshChild(t *testing.T) {
 	waitHostMeshFile(t, ctx, filepath.Join(ipc, "catalog"))
 
 	project := runtime.firewallProjects[hostMeshProjectID]
-	probe := attachHostMeshProbe(t, "pdhmc0", "pdhmc1", project)
+	probe := attachHostMeshProbe(t, hostNS, "pdhmc0", "pdhmc1", project)
 	assertHostMeshName(t, probe, project, "api.shop.internal", childAddr, false)
 	assertHostMeshHTTP(t, probe, "api.shop.internal", hostMeshChildPort, "child-api")
 	assertHostMeshName(t, probe, project, "db.shop.internal", netip.Addr{}, true)
@@ -267,13 +270,7 @@ func startHostMeshChildProcess(t *testing.T, ipc, token, cgroupRoot string) *exe
 		t.Fatal(err)
 	}
 	cmd := exec.Command(binary, "-test.run=^TestHostInternalMeshTwoInstances$", "-test.timeout=3m", "-test.v")
-	cmd.Env = append(os.Environ(),
-		"PLATFORMD_HOST_MESH_INTEGRATION=1",
-		"PLATFORMD_HOST_MESH_ROLE=child",
-		"PLATFORMD_HOST_MESH_IPC="+ipc,
-		"PLATFORMD_HOST_MESH_TOKEN="+token,
-		"PLATFORMD_HOST_MESH_CGROUP="+cgroupRoot,
-	)
+	cmd.Env = hostMeshChildEnv(ipc, token, cgroupRoot)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.SysProcAttr = &syscall.SysProcAttr{Cloneflags: unix.CLONE_NEWNET}
@@ -290,58 +287,49 @@ func startHostMeshChildProcess(t *testing.T, ipc, token, cgroupRoot string) *exe
 	return cmd
 }
 
-func setupHostMeshLink(t *testing.T, childPID int) {
+func setupHostMeshLink(t *testing.T, hostNS netns.NsHandle, childPID int) {
 	t.Helper()
-	childNS, err := netns.GetFromPid(childPID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = childNS.Close() })
-	hostLink := &netlink.Veth{
-		LinkAttrs:     netlink.LinkAttrs{Name: "pdhm0"},
-		PeerName:      "pdhm1",
-		PeerNamespace: netlink.NsFd(childNS),
-	}
-	if err := netlink.LinkAdd(hostLink); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if link, err := netlink.LinkByName("pdhm0"); err == nil {
-			_ = netlink.LinkDel(link)
+	inHostMeshHostNamespace(t, hostNS, func() {
+		childNS := waitHostMeshChildNamespace(t, childPID)
+		t.Cleanup(func() { _ = childNS.Close() })
+		hostLink := &netlink.Veth{
+			LinkAttrs: netlink.LinkAttrs{Name: "pdhm0"},
+			PeerName:  "pdhm1",
+		}
+		if err := netlink.LinkAdd(hostLink); err != nil {
+			t.Fatalf("add pdhm0: %v", err)
+		}
+		t.Cleanup(func() {
+			deleteHostMeshLink(hostNS, "pdhm0")
+		})
+		configured := waitHostMeshLink(t, nil, "pdhm0")
+		if err := addHostMeshAddress(nil, configured, hostMeshParentIP+"/30"); err != nil {
+			t.Fatalf("address pdhm0: %v", err)
+		}
+		if err := netlink.LinkSetUp(configured); err != nil {
+			t.Fatalf("up pdhm0: %v", err)
+		}
+		peer := waitHostMeshLink(t, nil, "pdhm1")
+		if err := netlink.LinkSetNsFd(peer, int(childNS)); err != nil {
+			t.Fatalf("move pdhm1: %v", err)
+		}
+		childHandle, err := netlink.NewHandleAt(childNS)
+		if err != nil {
+			t.Fatalf("child netlink: %v", err)
+		}
+		defer childHandle.Close()
+		peer = waitHostMeshLink(t, childHandle, "pdhm1")
+		if err := addHostMeshAddress(childHandle, peer, hostMeshChildIP+"/30"); err != nil {
+			t.Fatalf("address pdhm1: %v", err)
+		}
+		if err := childHandle.LinkSetUp(peer); err != nil {
+			t.Fatalf("up pdhm1: %v", err)
+		}
+		loopback := waitHostMeshLink(t, childHandle, "lo")
+		if err := childHandle.LinkSetUp(loopback); err != nil {
+			t.Fatalf("up lo: %v", err)
 		}
 	})
-	configured, err := netlink.LinkByName("pdhm0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := addHostMeshAddress(nil, configured, hostMeshParentIP+"/30"); err != nil {
-		t.Fatal(err)
-	}
-	if err := netlink.LinkSetUp(configured); err != nil {
-		t.Fatal(err)
-	}
-	childHandle, err := netlink.NewHandleAt(childNS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer childHandle.Close()
-	peer, err := childHandle.LinkByName("pdhm1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := addHostMeshAddress(childHandle, peer, hostMeshChildIP+"/30"); err != nil {
-		t.Fatal(err)
-	}
-	if err := childHandle.LinkSetUp(peer); err != nil {
-		t.Fatal(err)
-	}
-	loopback, err := childHandle.LinkByName("lo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := childHandle.LinkSetUp(loopback); err != nil {
-		t.Fatal(err)
-	}
 }
 
 func startHostMeshHub(t *testing.T, hub *hosthub.Hub) {
@@ -542,89 +530,190 @@ type hostMeshProbe struct {
 	gateway   netip.Addr
 }
 
-func attachHostMeshProbe(t *testing.T, hostName, peerName string, project firewall.Project) hostMeshProbe {
+func attachHostMeshProbe(t *testing.T, hostNS netns.NsHandle, hostName, peerName string, project firewall.Project) hostMeshProbe {
 	t.Helper()
 	address, err := projectnetwork.HostAddress(project.Subnet, hostMeshProbeHost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, peerNS := createHostMeshNamespaces(t)
-	link := &netlink.Veth{
-		LinkAttrs:     netlink.LinkAttrs{Name: hostName},
-		PeerName:      peerName,
-		PeerNamespace: netlink.NsFd(peerNS),
-	}
-	if err := netlink.LinkAdd(link); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if current, err := netlink.LinkByName(hostName); err == nil {
-			_ = netlink.LinkDel(current)
+	var probe hostMeshProbe
+	inHostMeshHostNamespace(t, hostNS, func() {
+		peerNS := createHostMeshPeerNamespace(t, hostNS)
+		link := &netlink.Veth{
+			LinkAttrs: netlink.LinkAttrs{Name: hostName},
+			PeerName:  peerName,
 		}
+		if err := netlink.LinkAdd(link); err != nil {
+			t.Fatalf("add %s: %v", hostName, err)
+		}
+		t.Cleanup(func() {
+			deleteHostMeshLink(hostNS, hostName)
+		})
+		hostLink := waitHostMeshLink(t, nil, hostName)
+		peer := waitHostMeshLink(t, nil, peerName)
+		if err := netlink.LinkSetNsFd(peer, int(peerNS)); err != nil {
+			t.Fatalf("move %s: %v", peerName, err)
+		}
+		bridge := waitHostMeshLink(t, nil, project.Bridge)
+		if err := netlink.LinkSetMaster(hostLink, bridge); err != nil {
+			t.Fatalf("enslave %s to %s: %v", hostName, project.Bridge, err)
+		}
+		if err := netlink.LinkSetUp(hostLink); err != nil {
+			t.Fatalf("up %s: %v", hostName, err)
+		}
+		peerHandle, err := netlink.NewHandleAt(peerNS)
+		if err != nil {
+			t.Fatalf("probe netlink: %v", err)
+		}
+		defer peerHandle.Close()
+		peer = waitHostMeshLink(t, peerHandle, peerName)
+		if err := addHostMeshAddress(peerHandle, peer, address.String()+"/24"); err != nil {
+			t.Fatalf("address %s: %v", peerName, err)
+		}
+		if err := peerHandle.LinkSetUp(peer); err != nil {
+			t.Fatalf("up %s: %v", peerName, err)
+		}
+		if err := peerHandle.RouteAdd(&netlink.Route{
+			LinkIndex: peer.Attrs().Index,
+			Gw:        project.Gateway.AsSlice(),
+		}); err != nil {
+			t.Fatalf("default route via %s: %v", project.Gateway, err)
+		}
+		probe = hostMeshProbe{namespace: peerNS, gateway: project.Gateway}
 	})
-	hostLink, err := netlink.LinkByName(hostName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	bridge, err := netlink.LinkByName(project.Bridge)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := netlink.LinkSetMaster(hostLink, bridge); err != nil {
-		t.Fatal(err)
-	}
-	if err := netlink.LinkSetUp(hostLink); err != nil {
-		t.Fatal(err)
-	}
-	peerHandle, err := netlink.NewHandleAt(peerNS)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer peerHandle.Close()
-	peer, err := peerHandle.LinkByName(peerName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := addHostMeshAddress(peerHandle, peer, address.String()+"/24"); err != nil {
-		t.Fatal(err)
-	}
-	if err := peerHandle.LinkSetUp(peer); err != nil {
-		t.Fatal(err)
-	}
-	if err := peerHandle.RouteAdd(&netlink.Route{
-		LinkIndex: peer.Attrs().Index,
-		Gw:        project.Gateway.AsSlice(),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return hostMeshProbe{namespace: peerNS, gateway: project.Gateway}
+	return probe
 }
 
-func createHostMeshNamespaces(t *testing.T) (netns.NsHandle, netns.NsHandle) {
+func captureHostMeshNamespace(t *testing.T) netns.NsHandle {
 	t.Helper()
+	// Capture before startRuntime. libpod can leave OS threads inside a
+	// container netns; later netns.Get on those threads misses host links.
 	runtime.LockOSThread()
-	hostNamespace, err := netns.Get()
+	namespace, err := netns.Get()
 	if err != nil {
 		runtime.UnlockOSThread()
 		t.Fatal(err)
+	}
+	runtime.UnlockOSThread()
+	t.Cleanup(func() { _ = namespace.Close() })
+	return namespace
+}
+
+func inHostMeshHostNamespace(t *testing.T, hostNS netns.NsHandle, action func()) {
+	t.Helper()
+	runtime.LockOSThread()
+	if err := netns.Set(hostNS); err != nil {
+		t.Fatalf("restore host network namespace: %v", err)
+	}
+	defer func() {
+		if err := netns.Set(hostNS); err != nil {
+			t.Fatalf("restore host network namespace: %v", err)
+		}
+		runtime.UnlockOSThread()
+	}()
+	action()
+}
+
+func deleteHostMeshLink(hostNS netns.NsHandle, name string) {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	if err := netns.Set(hostNS); err != nil {
+		return
+	}
+	if link, err := netlink.LinkByName(name); err == nil {
+		_ = netlink.LinkDel(link)
+	}
+}
+
+func createHostMeshPeerNamespace(t *testing.T, hostNS netns.NsHandle) netns.NsHandle {
+	t.Helper()
+	if err := netns.Set(hostNS); err != nil {
+		t.Fatalf("restore host network namespace: %v", err)
 	}
 	peerNamespace, err := netns.New()
 	if err != nil {
-		_ = hostNamespace.Close()
-		runtime.UnlockOSThread()
 		t.Fatal(err)
 	}
-	if err := netns.Set(hostNamespace); err != nil {
+	if err := netns.Set(hostNS); err != nil {
 		_ = peerNamespace.Close()
-		_ = hostNamespace.Close()
 		t.Fatalf("restore host network namespace: %v", err)
 	}
-	runtime.UnlockOSThread()
-	t.Cleanup(func() {
-		_ = peerNamespace.Close()
-		_ = hostNamespace.Close()
-	})
-	return hostNamespace, peerNamespace
+	t.Cleanup(func() { _ = peerNamespace.Close() })
+	return peerNamespace
+}
+
+func waitHostMeshChildNamespace(t *testing.T, pid int) netns.NsHandle {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last error
+	for {
+		namespace, err := netns.GetFromPid(pid)
+		if err == nil {
+			handle, handleErr := netlink.NewHandleAt(namespace)
+			if handleErr == nil {
+				_, last = handle.LinkByName("lo")
+				handle.Close()
+				if last == nil {
+					return namespace
+				}
+			} else {
+				last = handleErr
+			}
+			_ = namespace.Close()
+		} else {
+			last = err
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child netns: %v", last)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func waitHostMeshLink(t *testing.T, handle *netlink.Handle, name string) netlink.Link {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var last error
+	for {
+		var link netlink.Link
+		var err error
+		if handle == nil {
+			link, err = netlink.LinkByName(name)
+		} else {
+			link, err = handle.LinkByName(name)
+		}
+		if err == nil {
+			return link
+		}
+		last = err
+		var notFound netlink.LinkNotFoundError
+		if !errors.As(err, &notFound) || time.Now().After(deadline) {
+			t.Fatalf("link %s: %v", name, last)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func hostMeshChildEnv(ipc, token, cgroupRoot string) []string {
+	overrides := map[string]string{
+		"PLATFORMD_HOST_MESH_INTEGRATION": "1",
+		"PLATFORMD_HOST_MESH_ROLE":        "child",
+		"PLATFORMD_HOST_MESH_IPC":         ipc,
+		"PLATFORMD_HOST_MESH_TOKEN":       token,
+		"PLATFORMD_HOST_MESH_CGROUP":      cgroupRoot,
+	}
+	env := make([]string, 0, len(os.Environ())+len(overrides))
+	for _, item := range os.Environ() {
+		key, _, _ := strings.Cut(item, "=")
+		if _, found := overrides[key]; found {
+			continue
+		}
+		env = append(env, item)
+	}
+	for key, value := range overrides {
+		env = append(env, key+"="+value)
+	}
+	return env
 }
 
 func addHostMeshAddress(handle *netlink.Handle, link netlink.Link, cidr string) error {
