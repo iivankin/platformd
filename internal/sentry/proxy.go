@@ -20,11 +20,17 @@ const (
 
 type targetContextKey struct{}
 
+type cloudflareGeo struct {
+	country string
+	region  string
+	city    string
+}
+
 type proxyTarget struct {
-	url               *url.URL
-	cloudflareCountry string
-	serviceID         string
-	artifactAllowed   bool
+	url             *url.URL
+	cloudflareGeo   cloudflareGeo
+	serviceID       string
+	artifactAllowed bool
 }
 
 type TargetResolver interface {
@@ -70,14 +76,22 @@ func NewProxy(
 				request.Out.Header.Set("X-Forwarded-For", address)
 			}
 			request.Out.Header.Del("Cf-IpCountry")
+			request.Out.Header.Del("Cf-Region")
+			request.Out.Header.Del("Cf-IpCity")
 			request.Out.Header.Del("X-Platformd-Service-Id")
 			request.Out.Header.Del("X-Platformd-Artifact-Authorized")
 			request.Out.Header.Set("X-Platformd-Service-Id", target.serviceID)
 			if target.artifactAllowed {
 				request.Out.Header.Set("X-Platformd-Artifact-Authorized", "1")
 			}
-			if target.cloudflareCountry != "" {
-				request.Out.Header.Set("Cf-IpCountry", target.cloudflareCountry)
+			if target.cloudflareGeo.country != "" {
+				request.Out.Header.Set("Cf-IpCountry", target.cloudflareGeo.country)
+			}
+			if target.cloudflareGeo.region != "" {
+				request.Out.Header.Set("Cf-Region", target.cloudflareGeo.region)
+			}
+			if target.cloudflareGeo.city != "" {
+				request.Out.Header.Set("Cf-IpCity", target.cloudflareGeo.city)
 			}
 		},
 		ModifyResponse: func(response *http.Response) error {
@@ -139,7 +153,7 @@ func directClientAddress(request *http.Request) string {
 }
 
 func (handler *Proxy) Serve(response http.ResponseWriter, request *http.Request, serviceID string) {
-	handler.serve(response, request, serviceID, "", false)
+	handler.serve(response, request, serviceID, cloudflareGeo{}, false)
 }
 
 func (handler *Proxy) ServePublic(response http.ResponseWriter, request *http.Request, serviceID string) {
@@ -149,14 +163,18 @@ func (handler *Proxy) ServePublic(response http.ResponseWriter, request *http.Re
 	if address := publicClientAddress(request); address != "" {
 		forwarded.Header.Set("X-Forwarded-For", address)
 	}
-	handler.serve(response, forwarded, serviceID, request.Header.Get("Cf-IpCountry"), true)
+	handler.serve(response, forwarded, serviceID, cloudflareGeo{
+		country: request.Header.Get("Cf-IpCountry"),
+		region:  request.Header.Get("Cf-Region"),
+		city:    request.Header.Get("Cf-IpCity"),
+	}, true)
 }
 
 func (handler *Proxy) serve(
 	response http.ResponseWriter,
 	request *http.Request,
 	serviceID string,
-	cloudflareCountry string,
+	geo cloudflareGeo,
 	requireArtifactToken bool,
 ) {
 	target, ok := handler.resolver.Target(serviceID)
@@ -178,7 +196,7 @@ func (handler *Proxy) serve(
 		artifactAllowed = true
 	}
 	ctx := context.WithValue(request.Context(), targetContextKey{}, proxyTarget{
-		url: target, cloudflareCountry: cloudflareCountry, serviceID: serviceID,
+		url: target, cloudflareGeo: geo, serviceID: serviceID,
 		artifactAllowed: artifactAllowed,
 	})
 	handler.proxy.ServeHTTP(response, request.WithContext(ctx))

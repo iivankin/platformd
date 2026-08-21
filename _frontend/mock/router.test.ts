@@ -76,6 +76,7 @@ import {
   setManagedPostgresExtension,
   uploadContainerFile,
   updateServiceMetricChart,
+  updateServiceOTLPTracePublicAccess,
   updateServiceTelemetryBrowserTunnel,
   updateServiceTelemetryPublicAccess,
   queryManagedPostgres,
@@ -873,6 +874,32 @@ describe("mock API", () => {
       mockFetch
     );
     expect(tunneled.browserTunnelPath).toBe("/client-report");
+
+    const publicOTLP = await updateServiceOTLPTracePublicAccess(
+      "project-demo",
+      "service-api",
+      {
+        expectedUpdatedAt: tunneled.updatedAt,
+        publicHostname: "shop.mock.local",
+        tracePath: "/otel/v1/traces",
+      },
+      mockFetch
+    );
+    expect(publicOTLP.publicOtlpTraceEndpoint).toBe(
+      "https://shop.mock.local/otel/v1/traces"
+    );
+
+    const disabledOTLP = await updateServiceOTLPTracePublicAccess(
+      "project-demo",
+      "service-api",
+      {
+        expectedUpdatedAt: publicOTLP.updatedAt,
+        publicHostname: "",
+        tracePath: "",
+      },
+      mockFetch
+    );
+    expect(disabledOTLP.publicOtlpTraceEndpoint).toBeUndefined();
   });
 
   test("mock service exposes traces with context and custom metric graphs", async () => {

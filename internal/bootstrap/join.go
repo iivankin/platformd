@@ -82,7 +82,7 @@ func (joiner Joiner) Join(ctx context.Context) error {
 	}
 	if err := hostagent.Save(joiner.Paths.WorkerConfig, hostagent.Config{
 		HostID: result.HostID, HostToken: result.HostToken,
-		ParentHostname: result.ParentHostname, Name: result.Name,
+		ParentURL: result.ParentURL, Name: result.Name,
 	}); err != nil {
 		return err
 	}

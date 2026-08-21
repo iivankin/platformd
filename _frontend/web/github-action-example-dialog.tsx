@@ -4,123 +4,7 @@ import { useState } from "react";
 import type { ReactNode } from "react";
 
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
-
-type YamlTokenKind =
-  | "comment"
-  | "expression"
-  | "key"
-  | "plain"
-  | "punctuation"
-  | "string";
-
-interface YamlToken {
-  kind: YamlTokenKind;
-  text: string;
-}
-
-const yamlTokenClass: Record<YamlTokenKind, string> = {
-  comment: "text-muted-foreground/80",
-  expression: "text-sky-600 dark:text-sky-300",
-  key: "text-emerald-700 dark:text-emerald-300",
-  plain: "text-foreground",
-  punctuation: "text-muted-foreground/70",
-  string: "text-amber-700 dark:text-amber-300",
-};
-
-export const tokenizeYamlLine = (line: string): YamlToken[] => {
-  const tokens: YamlToken[] = [];
-  let index = 0;
-
-  const pushLeading = () => {
-    let end = index;
-    while (end < line.length && (line[end] === " " || line[end] === "-")) {
-      end += 1;
-    }
-    if (end > index) {
-      tokens.push({ kind: "punctuation", text: line.slice(index, end) });
-      index = end;
-    }
-  };
-
-  const pushValue = (value: string) => {
-    let cursor = 0;
-    while (cursor < value.length) {
-      if (value[cursor] === "#") {
-        tokens.push({ kind: "comment", text: value.slice(cursor) });
-        return;
-      }
-
-      if (value.startsWith("${{", cursor)) {
-        const end = value.indexOf("}}", cursor);
-        if (end !== -1) {
-          tokens.push({
-            kind: "expression",
-            text: value.slice(cursor, end + 2),
-          });
-          cursor = end + 2;
-          continue;
-        }
-      }
-
-      if (value[cursor] === '"' || value[cursor] === "'") {
-        const quote = value[cursor];
-        let end = cursor + 1;
-        while (end < value.length && value[end] !== quote) {
-          end += 1;
-        }
-        if (end < value.length) {
-          end += 1;
-        }
-        tokens.push({ kind: "string", text: value.slice(cursor, end) });
-        cursor = end;
-        continue;
-      }
-
-      const nextSpecial = [
-        value.indexOf("${{", cursor),
-        value.indexOf("#", cursor),
-        value.indexOf('"', cursor),
-        value.indexOf("'", cursor),
-      ].filter((position) => position !== -1);
-      const next =
-        nextSpecial.length > 0 ? Math.min(...nextSpecial) : value.length;
-      if (next > cursor) {
-        tokens.push({ kind: "plain", text: value.slice(cursor, next) });
-      }
-      cursor = next;
-    }
-  };
-
-  pushLeading();
-  if (index >= line.length) {
-    return tokens;
-  }
-
-  if (line[index] === "#") {
-    tokens.push({ kind: "comment", text: line.slice(index) });
-    return tokens;
-  }
-
-  const colon = line.indexOf(":", index);
-  const beforeColon = colon === -1 ? "" : line.slice(index, colon);
-  if (
-    colon !== -1 &&
-    beforeColon.length > 0 &&
-    !beforeColon.includes(" ") &&
-    !beforeColon.includes("${{")
-  ) {
-    tokens.push(
-      { kind: "key", text: beforeColon },
-      { kind: "punctuation", text: ":" }
-    );
-    pushValue(line.slice(colon + 1));
-    return tokens;
-  }
-
-  pushValue(line.slice(index));
-  return tokens;
-};
+import { HighlightedSnippet } from "@/snippet-code";
 
 export const YamlExample = ({
   className,
@@ -129,29 +13,7 @@ export const YamlExample = ({
   className?: string;
   value: string;
 }) => (
-  <pre
-    className={cn(
-      "overflow-x-auto border border-border bg-muted/20 p-4 font-mono text-[10px] leading-5",
-      className
-    )}
-  >
-    {value.split("\n").map((line, lineIndex) => (
-      <div key={`${lineIndex}:${line}`}>
-        {line.length === 0 ? (
-          <span>{"\n"}</span>
-        ) : (
-          tokenizeYamlLine(line).map((token, tokenIndex) => (
-            <span
-              className={yamlTokenClass[token.kind]}
-              key={`${lineIndex}:${tokenIndex}:${token.kind}`}
-            >
-              {token.text}
-            </span>
-          ))
-        )}
-      </div>
-    ))}
-  </pre>
+  <HighlightedSnippet className={className} language="yaml" value={value} />
 );
 
 export const GitHubActionExampleDialog = ({

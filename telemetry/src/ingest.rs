@@ -19,27 +19,11 @@ const MAX_MESSAGE_BYTES: usize = 16 << 10;
 const MAX_ATTRIBUTE_BYTES: usize = 2048;
 const MAX_FINGERPRINT_COMPONENTS: usize = 32;
 const MAX_GROUPING_FRAMES: usize = 5;
-const SPAN_V2_CONTENT_TYPE: &str = "application/vnd.sentry.items.span.v2+json";
 
 pub struct PreparedIngest {
     pub documents: Vec<Document>,
     pub events: Vec<IngestedEvent>,
-    pub profiles: Vec<Value>,
-    pub standalone_spans: Vec<StandaloneSpan>,
-    pub transactions: Vec<Value>,
     pub response_event_id: String,
-}
-
-#[derive(Clone, Debug)]
-pub struct StandaloneSpan {
-    pub payload: Value,
-    pub version: StandaloneSpanVersion,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum StandaloneSpanVersion {
-    Legacy,
-    V2,
 }
 
 #[derive(Clone, Debug)]
@@ -69,12 +53,8 @@ pub fn prepare(
         .and_then(Value::as_object)
         .and_then(|trace| string(trace, "replay_id"))
         .and_then(normalize_event_id);
-    validate_span_items(&envelope.items)?;
     let mut documents = Vec::new();
     let mut events = Vec::new();
-    let mut profiles = Vec::new();
-    let mut standalone_spans = Vec::new();
-    let mut transactions = Vec::new();
 
     let mut envelope_document = Document::base("envelope", &service.id, &received_at, &received_at);
     envelope_document.ingest_id = Some(ingest_id.clone());
@@ -91,13 +71,16 @@ pub fn prepare(
     documents.push(envelope_document);
 
     for (item_index, mut item) in envelope.items.into_iter().enumerate() {
+        if matches!(
+            item.item_type.as_str(),
+            "transaction" | "span" | "profile" | "profile_chunk"
+        ) {
+            continue;
+        }
         let replay_video = (item.item_type == "replay_video")
             .then(|| crate::replay_video::decode(&item.payload))
             .transpose()?;
-        let is_required_json = matches!(
-            item.item_type.as_str(),
-            "event" | "transaction" | "profile" | "profile_chunk"
-        ) || is_span_v2_container(&item);
+        let is_required_json = item.item_type == "event";
         let mut parsed = if is_required_json || item.payload.len() <= MAX_INDEXED_JSON_BYTES {
             match serde_json::from_slice::<Value>(&item.payload) {
                 Ok(value) => Some(value),
@@ -112,7 +95,18 @@ pub fn prepare(
         } else {
             None
         };
-        if matches!(item.item_type.as_str(), "event" | "transaction" | "span")
+        // The legacy Store endpoint wraps transactions as event items. Ignore those
+        // too, while keeping ordinary error events that merely carry trace context.
+        if item.item_type == "event"
+            && parsed
+                .as_ref()
+                .and_then(|payload| payload.get("type"))
+                .and_then(Value::as_str)
+                == Some("transaction")
+        {
+            continue;
+        }
+        if item.item_type == "event"
             && let Some(payload) = parsed.as_mut()
         {
             scrub_sensitive_data(payload);
@@ -159,25 +153,6 @@ pub fn prepare(
             });
             (replay_id, segment_id)
         });
-        if item.item_type == "transaction"
-            && let Some(transaction) = parsed.as_ref()
-        {
-            transactions.push(transaction.clone());
-        }
-        if item.item_type == "span" {
-            standalone_spans.extend(standalone_span_items(&item, parsed.as_ref())?);
-        }
-        if matches!(item.item_type.as_str(), "profile" | "profile_chunk")
-            && let Some(profile) = parsed.as_ref()
-        {
-            let received_at_unix_nano =
-                u64::try_from(Timestamp::now().as_nanosecond()).unwrap_or_default();
-            profiles.extend(crate::profile::sentry_profile_rows(
-                &service.id,
-                profile,
-                received_at_unix_nano,
-            ));
-        }
         let event = if item.item_type == "event" {
             Some(
                 normalize_event_with_geoip(
@@ -277,9 +252,6 @@ pub fn prepare(
     Ok(PreparedIngest {
         documents,
         events,
-        profiles,
-        standalone_spans,
-        transactions,
         response_event_id,
     })
 }
@@ -378,68 +350,6 @@ fn sensitive_key(value: &str) -> bool {
             | "xcsrftoken"
             | "xsrftoken"
     )
-}
-
-fn standalone_span_items(
-    item: &crate::envelope::Item,
-    parsed: Option<&Value>,
-) -> Result<Vec<StandaloneSpan>> {
-    if is_span_v2_container(item) {
-        let items = parsed
-            .and_then(Value::as_object)
-            .and_then(|container| container.get("items"))
-            .and_then(Value::as_array)
-            .ok_or_else(|| Error::InvalidRequest("invalid Sentry span container".into()))?;
-        let expected = item.headers.get("item_count").and_then(Value::as_u64);
-        if expected != Some(items.len() as u64) {
-            return Err(Error::InvalidRequest(format!(
-                "Sentry span container item_count {expected:?} does not match {} items",
-                items.len()
-            )));
-        }
-        return Ok(items
-            .iter()
-            .filter(|span| span.is_object())
-            .cloned()
-            .map(|payload| StandaloneSpan {
-                payload,
-                version: StandaloneSpanVersion::V2,
-            })
-            .collect());
-    }
-    Ok(parsed
-        .filter(|span| span.is_object())
-        .cloned()
-        .map(|payload| {
-            vec![StandaloneSpan {
-                payload,
-                version: StandaloneSpanVersion::Legacy,
-            }]
-        })
-        .unwrap_or_default())
-}
-
-fn is_span_v2_container(item: &crate::envelope::Item) -> bool {
-    item.item_type == "span"
-        && string(&item.headers, "content_type")
-            .is_some_and(|value| value.eq_ignore_ascii_case(SPAN_V2_CONTENT_TYPE))
-}
-
-fn validate_span_items(items: &[crate::envelope::Item]) -> Result<()> {
-    let container_count = items
-        .iter()
-        .filter(|item| is_span_v2_container(item))
-        .count();
-    let legacy_count = items
-        .iter()
-        .filter(|item| item.item_type == "span" && !is_span_v2_container(item))
-        .count();
-    if container_count > 1 || (container_count == 1 && legacy_count > 0) {
-        return Err(Error::InvalidRequest(
-            "duplicate or mixed Sentry span items in one envelope".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn replay_recording_header(payload: &[u8]) -> Option<Value> {
@@ -1638,38 +1548,6 @@ mod tests {
     }
 
     #[test]
-    fn extracts_sentry_v2_span_container_only_when_item_count_matches() {
-        let payload = json!({
-            "version": 2,
-            "items": [{
-                "trace_id": "0123456789abcdef0123456789abcdef",
-                "span_id": "0123456789abcdef"
-            }]
-        });
-        let item = Item {
-            headers: Map::from_iter([
-                (
-                    "content_type".into(),
-                    Value::String("application/vnd.sentry.items.span.v2+json".into()),
-                ),
-                ("item_count".into(), Value::from(1)),
-            ]),
-            item_type: "span".into(),
-            payload: Vec::new(),
-        };
-
-        let spans = standalone_span_items(&item, Some(&payload)).unwrap();
-        assert_eq!(spans.len(), 1);
-        assert_eq!(spans[0].version, StandaloneSpanVersion::V2);
-
-        let mut mismatched = item;
-        mismatched
-            .headers
-            .insert("item_count".into(), Value::from(2));
-        assert!(standalone_span_items(&mismatched, Some(&payload)).is_err());
-    }
-
-    #[test]
     fn bounds_indexed_metadata_without_changing_the_raw_payload() {
         let long = "я".repeat(MAX_ATTRIBUTE_BYTES);
         let payload = json!({
@@ -1830,73 +1708,43 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_v2_span_containers_but_drops_malformed_legacy_spans() {
-        let app = fixture();
-        let error = prepare(
-            &app,
-            Envelope {
-                headers: Map::new(),
-                items: vec![Item {
-                    headers: Map::from_iter([
-                        (
-                            "content_type".into(),
-                            Value::String(SPAN_V2_CONTENT_TYPE.into()),
-                        ),
-                        ("item_count".into(), Value::from(1)),
-                    ]),
-                    item_type: "span".into(),
-                    payload: b"not-json".to_vec(),
-                }],
-            },
-            None,
-            None,
-            &GeoIpLookup::empty(),
-        )
-        .err()
-        .expect("malformed v2 span containers must be rejected");
-        assert!(error.to_string().contains("invalid span JSON"));
-
+    fn drops_unsupported_sentry_telemetry_but_keeps_error_events() {
         let prepared = prepare(
-            &app,
-            Envelope {
-                headers: Map::new(),
-                items: vec![Item {
-                    headers: Map::new(),
-                    item_type: "span".into(),
-                    payload: b"not-json".to_vec(),
-                }],
-            },
-            None,
-            None,
-            &GeoIpLookup::empty(),
-        )
-        .expect("Relay discards malformed legacy spans individually");
-        assert!(prepared.standalone_spans.is_empty());
-    }
-
-    #[test]
-    fn rejects_mixed_legacy_and_v2_span_items() {
-        let app = fixture();
-        let error = prepare(
-            &app,
+            &fixture(),
             Envelope {
                 headers: Map::new(),
                 items: vec![
                     Item {
                         headers: Map::new(),
-                        item_type: "span".into(),
-                        payload: b"{}".to_vec(),
+                        item_type: "transaction".into(),
+                        payload: b"not-json".to_vec(),
                     },
                     Item {
-                        headers: Map::from_iter([
-                            (
-                                "content_type".into(),
-                                Value::String(SPAN_V2_CONTENT_TYPE.into()),
-                            ),
-                            ("item_count".into(), Value::from(0)),
-                        ]),
+                        headers: Map::new(),
                         item_type: "span".into(),
-                        payload: br#"{"items":[]}"#.to_vec(),
+                        payload: b"not-json".to_vec(),
+                    },
+                    Item {
+                        headers: Map::new(),
+                        item_type: "profile".into(),
+                        payload: b"not-json".to_vec(),
+                    },
+                    Item {
+                        headers: Map::new(),
+                        item_type: "profile_chunk".into(),
+                        payload: b"not-json".to_vec(),
+                    },
+                    Item {
+                        headers: Map::new(),
+                        item_type: "event".into(),
+                        payload: br#"{"type":"transaction","transaction":"GET /checkout"}"#
+                            .to_vec(),
+                    },
+                    Item {
+                        headers: Map::new(),
+                        item_type: "event".into(),
+                        payload: br#"{"message":"checkout failed","contexts":{"trace":{"trace_id":"0123456789abcdef0123456789abcdef"}}}"#
+                            .to_vec(),
                     },
                 ],
             },
@@ -1904,8 +1752,13 @@ mod tests {
             None,
             &GeoIpLookup::empty(),
         )
-        .err()
-        .expect("mixed standalone span ingress must be rejected");
-        assert!(error.to_string().contains("duplicate or mixed"));
+        .expect("unsupported Sentry telemetry must be acknowledged and ignored");
+
+        assert_eq!(prepared.events.len(), 1);
+        assert_eq!(prepared.events[0].title, "checkout failed");
+        assert!(prepared.documents.iter().all(|document| !matches!(
+            document.doc_kind.as_str(),
+            "transaction" | "span" | "profile" | "profile_chunk"
+        )));
     }
 }

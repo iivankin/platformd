@@ -24,7 +24,7 @@ func TestHostServiceStatusReportsAndDisconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn, _, err := hostagent.DialWithOptions(context.Background(), hostagent.DialOptions{
-		ParentHostname: env.hostname, HostToken: joined.HostToken, PublicIPv4: "203.0.113.50",
+		ParentURL: env.server.URL, HostToken: joined.HostToken, PublicIPv4: "203.0.113.50",
 		HTTPClient: env.client,
 	})
 	if err != nil {
@@ -52,7 +52,6 @@ func TestHostServiceStatusReportsAndDisconnect(t *testing.T) {
 	}
 
 	if err := conn.Write(context.Background(), hostconn.KindStatus, hostconn.Status{
-		PublicIPv4: "203.0.113.50",
 		Services: []hostconn.ServiceRuntime{
 			{ServiceID: "api", Status: "running"},
 			{ServiceID: "web", Status: "failed", Message: "crash"},
@@ -75,8 +74,7 @@ func TestHostServiceStatusReportsAndDisconnect(t *testing.T) {
 	}
 
 	if err := conn.Write(context.Background(), hostconn.KindStatus, hostconn.Status{
-		PublicIPv4: "203.0.113.50",
-		Services:   []hostconn.ServiceRuntime{{ServiceID: "web", Status: "pending", Message: "restarting"}},
+		Services: []hostconn.ServiceRuntime{{ServiceID: "web", Status: "pending", Message: "restarting"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +90,18 @@ func TestHostServiceStatusReportsAndDisconnect(t *testing.T) {
 	status, message = env.hub.ServiceStatus(joined.HostID, "web", true)
 	if status != "pending" || message != "restarting" {
 		t.Fatalf("replaced web = %q/%q", status, message)
+	}
+	if err := conn.Write(context.Background(), hostconn.KindHeartbeat, struct{}{}); err != nil {
+		t.Fatal(err)
+	}
+	// This RPC is ordered after the heartbeat on the same connection, so its
+	// reply proves that the parent processed the heartbeat first.
+	if _, err := hostagent.LookupInternal(context.Background(), conn, "missing.shop.internal"); err != nil {
+		t.Fatal(err)
+	}
+	status, message = env.hub.ServiceStatus(joined.HostID, "web", true)
+	if status != "pending" || message != "restarting" {
+		t.Fatalf("heartbeat changed web = %q/%q", status, message)
 	}
 
 	stopServe()
@@ -119,7 +129,7 @@ func TestHostMeshPushesCatalogAndDisconnectsDeletedHost(t *testing.T) {
 	projects := make(chan []state.RuntimeProject, 1)
 	certificates := make(chan []hostconn.CertificatePEM, 1)
 	conn, welcome, err := hostagent.DialWithOptions(context.Background(), hostagent.DialOptions{
-		ParentHostname: env.hostname, HostToken: joined.HostToken, PublicIPv4: "203.0.113.51",
+		ParentURL: env.server.URL, HostToken: joined.HostToken, PublicIPv4: "203.0.113.51",
 		HTTPClient: env.client,
 		Handlers: hostagent.Handlers{
 			Projects: func(received []state.RuntimeProject) error {

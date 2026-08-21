@@ -45,7 +45,8 @@ SELECT EXISTS(
   UNION ALL SELECT 1 FROM preview_deployments WHERE hostname = ? AND status = 'active'
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
   UNION ALL SELECT 1 FROM services WHERE sentry_public_hostname = ?
-)`, hostname, hostname, hostname, hostname).Scan(&inUse); err != nil {
+  UNION ALL SELECT 1 FROM services WHERE otlp_trace_public_hostname = ?
+)`, hostname, hostname, hostname, hostname, hostname).Scan(&inUse); err != nil {
 			return fmt.Errorf("check admin hostname role: %w", err)
 		}
 		if inUse == 1 {

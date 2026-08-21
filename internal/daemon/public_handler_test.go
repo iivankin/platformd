@@ -39,6 +39,7 @@ func TestPublicHandlerExposesOnlyExactPublicEndpoints(t *testing.T) {
 		{method: http.MethodPost, path: "/public/api/v1/hosts/join", want: "hosts"},
 		{method: http.MethodGet, path: "/public/api/v1/hosts/connect", want: "hosts"},
 		{method: http.MethodGet, path: "/public/api/v1/hosts/tunnel", want: "hosts"},
+		{method: http.MethodPost, path: "/public/api/v1/hosts/otlp/v1/logs", want: "hosts"},
 		{method: http.MethodGet, path: "/public/api/v1/hosts/images/revision", want: "hosts"},
 		{method: http.MethodPost, path: "/public/api/v1/projects", want: "protected"},
 	} {
@@ -71,6 +72,30 @@ func TestAdminHostnameHandlerSplitsAdminAndPublicPaths(t *testing.T) {
 		handler.ServeHTTP(response, request)
 		if response.Body.String() != test.want {
 			t.Fatalf("%s reached %q, want %q", test.path, response.Body.String(), test.want)
+		}
+	}
+}
+
+func TestPrivateHostHandlerAllowsOnlyPrivatePeers(t *testing.T) {
+	handler := privateHostHandler(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write([]byte("hosts"))
+	}))
+
+	for _, test := range []struct {
+		remote string
+		code   int
+	}{
+		{remote: "10.20.0.4:12345", code: http.StatusOK},
+		{remote: "127.0.0.1:12345", code: http.StatusOK},
+		{remote: "[fd00::4]:12345", code: http.StatusOK},
+		{remote: "203.0.113.10:12345", code: http.StatusForbidden},
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/public/api/v1/hosts/connect", nil)
+		request.RemoteAddr = test.remote
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != test.code {
+			t.Fatalf("remote %s status = %d, want %d", test.remote, response.Code, test.code)
 		}
 	}
 }

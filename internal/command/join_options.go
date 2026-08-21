@@ -4,7 +4,8 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"strings"
+
+	"github.com/iivankin/platformd/internal/hostagent"
 )
 
 type joinOptions struct {
@@ -23,7 +24,7 @@ func parseJoinOptions(args []string, stdout, stderr io.Writer) (joinOptions, int
 	flags := flag.NewFlagSet("platformd join", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { _, _ = io.WriteString(stderr, joinUsage) }
-	flags.StringVar(&options.url, "url", "", "parent admin URL, for example https://admin.example.com")
+	flags.StringVar(&options.url, "url", "", "parent URL: HTTPS hostname or HTTP private IP")
 	flags.StringVar(&options.token, "token", "", "one-time join token from the parent Settings → Servers page")
 	flags.StringVar(&options.name, "name", "", "lowercase DNS label for this child server")
 	flags.StringVar(&options.publicIPv4, "public-ipv4", "", "public IPv4 for Cloudflare A records; detected when omitted")
@@ -34,10 +35,11 @@ func parseJoinOptions(args []string, stdout, stderr io.Writer) (joinOptions, int
 		_, _ = io.WriteString(stderr, joinUsage)
 		return joinOptions{}, 2
 	}
-	options.url = strings.TrimRight(strings.TrimSpace(options.url), "/")
-	if !strings.HasPrefix(options.url, "https://") {
-		_, _ = fmt.Fprintf(stderr, "platformd: join URL must be https://\n")
+	parentURL, err := hostagent.NormalizeParentURL(options.url)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "platformd: %v\n", err)
 		return joinOptions{}, 2
 	}
+	options.url = parentURL
 	return options, -1
 }

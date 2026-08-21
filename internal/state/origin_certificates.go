@@ -215,7 +215,8 @@ func queryPublicHostnames(ctx context.Context, querier hostnameQuerier) ([]strin
 SELECT admin_hostname FROM installation
 UNION SELECT hostname FROM service_domains
 UNION SELECT public_hostname FROM object_stores WHERE public_hostname IS NOT NULL
-UNION SELECT sentry_public_hostname FROM services WHERE sentry_public_hostname IS NOT NULL`)
+UNION SELECT sentry_public_hostname FROM services WHERE sentry_public_hostname IS NOT NULL
+UNION SELECT otlp_trace_public_hostname FROM services WHERE otlp_trace_public_hostname IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}

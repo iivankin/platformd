@@ -741,7 +741,6 @@ export const createMockState = (scenario: MockScenario): MockState => {
       internalOfrepUrl:
         "http://analytics-shop--mock--local.storefront.internal:9001",
       matchingHostnames: ["shop.mock.local"],
-      mode: "opt-out",
       name: "shop.mock.local",
       projectId: project.id,
       rootDomain: "shop.mock.local",
@@ -1053,5 +1052,3 @@ export const nextMockID = (state: MockState, prefix: string) => {
 };
 
 export const mockNow = () => now;
-
-export const mockResourceKey = resourceKey;

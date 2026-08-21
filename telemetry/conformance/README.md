@@ -27,10 +27,8 @@ PLATFORMD_TELEMETRY_TEST_API_URL='https://admin.example.com/public/api/v1/projec
 
 Set `CONFORMANCE_CASE` to a case name from `cases.tsv` to run only one client.
 The full harness covers Python, Flask, Node.js, Express, the browser JavaScript
-SDK, Node.js CPU profiling, Go, Rust, Java, .NET, PHP, Ruby, source maps,
-Sentry protocol boundaries, replays, and minidumps. The profiling case verifies
-the complete event-to-trace-to-profile link and decoded stack samples rather
-than only checking that the SDK request was accepted.
+SDK, Go, Rust, Java, .NET, PHP, Ruby, source maps, Sentry protocol boundaries,
+replays, and minidumps.
 Common API and MCP protocol/auth behavior is covered by the platformd Go test
 suite rather than duplicated here.
 

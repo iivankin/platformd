@@ -18,6 +18,8 @@
     "types": ["bun"]
   },
   "include": [
+    "analytics-sdk/**/*.ts",
+    "build-analytics.ts",
     "build.ts",
     "dev.ts",
     "mock/**/*.ts",

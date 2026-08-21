@@ -58,7 +58,7 @@ func (store *Store) UpdateServiceSentryPublicAccess(ctx context.Context, input U
 	}
 	err := store.WriteControl(ctx, func(transaction *sql.Tx) error {
 		if input.PublicHostname != "" {
-			inUse, err := publicHostnameRoleExistsExceptServiceSentry(ctx, transaction, input.PublicHostname, input.ID)
+			inUse, err := publicHostnameRoleExistsExceptServiceTelemetry(ctx, transaction, input.PublicHostname, input.ID)
 			if err != nil {
 				return err
 			}
@@ -186,21 +186,25 @@ INSERT INTO audit_events(
 }
 
 func normalizeServiceTelemetryTunnelPath(value string) (string, error) {
+	return normalizeServiceTelemetryPublicPath(value, ErrServiceTelemetryTunnelPathInvalid)
+}
+
+func normalizeServiceTelemetryPublicPath(value string, invalid error) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "", nil
 	}
 	if len(value) > 256 || value == "/" || !strings.HasPrefix(value, "/") || path.Clean(value) != value {
-		return "", ErrServiceTelemetryTunnelPathInvalid
+		return "", invalid
 	}
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Path != value || parsed.RawPath != "" {
-		return "", ErrServiceTelemetryTunnelPathInvalid
+		return "", invalid
 	}
 	return value, nil
 }
 
-func publicHostnameRoleExistsExceptServiceSentry(ctx context.Context, transaction *sql.Tx, hostname, serviceID string) (bool, error) {
+func publicHostnameRoleExistsExceptServiceTelemetry(ctx context.Context, transaction *sql.Tx, hostname, serviceID string) (bool, error) {
 	var exists int
 	err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
@@ -208,7 +212,8 @@ SELECT EXISTS(
   UNION ALL SELECT 1 FROM service_domains WHERE hostname = ? AND service_id != ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ?
   UNION ALL SELECT 1 FROM services WHERE sentry_public_hostname = ? AND id != ?
-)`, hostname, hostname, serviceID, hostname, hostname, serviceID).Scan(&exists)
+  UNION ALL SELECT 1 FROM services WHERE otlp_trace_public_hostname = ? AND id != ?
+)`, hostname, hostname, serviceID, hostname, hostname, serviceID, hostname, serviceID).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check public hostname roles: %w", err)
 	}

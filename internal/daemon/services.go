@@ -57,7 +57,7 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 			return state.DeleteServiceResult{}, errors.Join(err, repository.runtime.DeployService(ctx, service.ID, false))
 		}
 	}
-	removedTelemetryDNS := false
+	var removedTelemetryDNS []string
 	if repository.telemetryRoutes != nil {
 		removedTelemetryDNS, err = repository.telemetryRoutes.withdrawServiceDNS(ctx, service)
 		if err != nil {
@@ -71,8 +71,8 @@ func (repository liveServiceRepository) DeleteService(ctx context.Context, input
 			restoreListeners = repository.listeners.Restore(ctx)
 		}
 		var restoreTelemetryDNS error
-		if removedTelemetryDNS {
-			restoreTelemetryDNS = repository.telemetryRoutes.restoreServiceDNS(ctx, service)
+		if len(removedTelemetryDNS) > 0 {
+			restoreTelemetryDNS = repository.telemetryRoutes.restoreServiceDNS(ctx, removedTelemetryDNS)
 		}
 		return state.DeleteServiceResult{}, errors.Join(err, restoreListeners, restoreTelemetryDNS, repository.runtime.DeployService(ctx, service.ID, false))
 	}

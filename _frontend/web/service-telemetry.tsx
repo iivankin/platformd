@@ -36,10 +36,12 @@ import {
   projectNameFromInternalHostname,
 } from "@/github-action-example-dialog";
 import { ServiceAnalyticsSnippet } from "@/project-analytics";
+import { PublicOTLPTraces } from "@/public-otlp-traces";
 import { ResourceLogs } from "@/resource-logs";
 import { SentryCloudflareGeoIpHint } from "@/sentry-cloudflare-geoip-hint";
 import { ServiceMetrics } from "@/service-metrics";
 import { ServiceTraces } from "@/service-traces";
+import { HighlightedSnippet } from "@/snippet-code";
 import {
   errorDetailQueryParsers,
   logQueryParsers,
@@ -230,10 +232,10 @@ const PublicSentryEndpoint = ({
         on this hostname. Every other application path keeps its current
         behavior.
       </p>
-      {tunnelSettings}
       <div className="mt-4 max-w-3xl">
         <SentryCloudflareGeoIpHint />
       </div>
+      {tunnelSettings}
     </SettingsSection>
   );
 };
@@ -262,9 +264,11 @@ const TelemetryIngestionEndpoint = ({ endpoint }: { endpoint: string }) => {
       title="Telemetry ingestion"
     >
       <div className="relative max-w-3xl border-y border-border bg-muted/20">
-        <pre className="overflow-x-auto px-4 py-3 pr-24 text-[10px] leading-5 text-foreground/75">
-          {environment}
-        </pre>
+        <HighlightedSnippet
+          className="border-0 bg-transparent px-4 py-3 pr-24"
+          language="bash"
+          value={environment}
+        />
         <div className="absolute top-2 right-2">
           <Button onClick={() => void copy()} size="sm" variant="outline">
             {copied ? <Check /> : <Clipboard />}
@@ -584,6 +588,15 @@ export const ServiceTelemetryWorkspace = ({
                   />
                   <TelemetryIngestionEndpoint
                     endpoint={configuration.internalOtlpEndpoint}
+                  />
+                  <PublicOTLPTraces
+                    configuration={configuration}
+                    domains={domains}
+                    key={`otlp:${configuration.updatedAt}:${domains.map((domain) => domain.hostname).join(",")}`}
+                    onChanged={setConfiguration}
+                    projectID={projectID}
+                    serviceID={serviceID}
+                    serviceName={app.name}
                   />
                 </>
               }

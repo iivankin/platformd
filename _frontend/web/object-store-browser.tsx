@@ -1,4 +1,12 @@
-import { Download, File, HardDrive, Trash2, Upload } from "lucide-react";
+import {
+  ChevronRight,
+  Download,
+  File,
+  Folder,
+  HardDrive,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useRef, useState } from "react";
 import type { FormEvent } from "react";
 
@@ -104,7 +112,9 @@ export const ObjectStoreUploadBar = ({
 
 interface ObjectTableProperties {
   canGoBack: boolean;
+  currentPrefix: string;
   onNext: () => void;
+  onOpenFolder: (prefix: string) => void;
   onPrevious: () => void;
   onSelect: (object: ObjectMetadata) => void;
   page: ObjectPage | null;
@@ -113,7 +123,9 @@ interface ObjectTableProperties {
 
 export const ObjectStoreTable = ({
   canGoBack,
+  currentPrefix,
   onNext,
+  onOpenFolder,
   onPrevious,
   onSelect,
   page,
@@ -123,12 +135,33 @@ export const ObjectStoreTable = ({
     <table className="w-full border-collapse text-left text-[10px]">
       <thead className="sticky top-0 z-10 bg-background">
         <tr className="border-b border-border text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
-          <th className="px-4 py-2 font-medium">Key</th>
+          <th className="px-4 py-2 font-medium">Name</th>
           <th className="w-24 px-3 py-2 font-medium">Size</th>
           <th className="w-40 px-3 py-2 font-medium">Modified</th>
         </tr>
       </thead>
       <tbody>
+        {page?.prefixes.map((prefix) => (
+          <tr
+            className="border-b border-border text-foreground hover:bg-muted/40"
+            key={prefix}
+          >
+            <td className="p-0">
+              <button
+                className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-mono"
+                onClick={() => onOpenFolder(prefix)}
+                type="button"
+              >
+                <Folder className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="truncate">
+                  {prefix.slice(currentPrefix.length).replace(/\/$/u, "")}
+                </span>
+              </button>
+            </td>
+            <td className="px-3 py-2.5 text-muted-foreground">—</td>
+            <td className="px-3 py-2.5 text-muted-foreground">—</td>
+          </tr>
+        ))}
         {page?.objects.map((object) => (
           <tr
             className={`cursor-pointer border-b border-border hover:bg-muted/40 ${selectedKey === object.objectKey ? "bg-muted/60" : ""}`}
@@ -136,7 +169,11 @@ export const ObjectStoreTable = ({
             onClick={() => onSelect(object)}
           >
             <td className="max-w-0 px-4 py-2.5 font-mono break-all">
-              {object.objectKey}
+              <span className="inline-flex items-center gap-2">
+                <File className="size-3.5 shrink-0 text-muted-foreground" />
+                {object.objectKey.slice(currentPrefix.length) ||
+                  object.objectKey}
+              </span>
             </td>
             <td className="px-3 py-2.5 text-muted-foreground">
               {formatBytes(object.size)}
@@ -148,9 +185,9 @@ export const ObjectStoreTable = ({
         ))}
       </tbody>
     </table>
-    {page?.objects.length === 0 ? (
+    {page && page.objects.length === 0 && page.prefixes.length === 0 ? (
       <div className="grid min-h-52 place-items-center px-6 text-center text-[10px] text-muted-foreground">
-        No objects match this prefix.
+        This folder is empty.
       </div>
     ) : null}
     <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
@@ -173,6 +210,54 @@ export const ObjectStoreTable = ({
     </div>
   </div>
 );
+
+interface PathBarProperties {
+  onNavigate: (prefix: string) => void;
+  prefix: string;
+}
+
+export const ObjectStorePathBar = ({
+  onNavigate,
+  prefix,
+}: PathBarProperties) => {
+  const segments = prefix.split("/").filter(Boolean);
+  const crumbs = segments.map((label, index) => ({
+    label,
+    prefix: `${segments.slice(0, index + 1).join("/")}/`,
+  }));
+
+  return (
+    <nav
+      aria-label="Object folder path"
+      className="flex min-h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-4 text-[10px]"
+    >
+      <button
+        className={`shrink-0 font-mono hover:text-foreground ${prefix === "" ? "text-foreground" : "text-muted-foreground"}`}
+        disabled={prefix === ""}
+        onClick={() => onNavigate("")}
+        type="button"
+      >
+        Bucket
+      </button>
+      {crumbs.map((crumb, index) => {
+        const current = index === crumbs.length - 1;
+        return (
+          <span className="flex shrink-0 items-center gap-1" key={crumb.prefix}>
+            <ChevronRight className="size-3 text-muted-foreground" />
+            <button
+              className={`font-mono hover:text-foreground ${current ? "text-foreground" : "text-muted-foreground"}`}
+              disabled={current}
+              onClick={() => onNavigate(crumb.prefix)}
+              type="button"
+            >
+              {crumb.label}
+            </button>
+          </span>
+        );
+      })}
+    </nav>
+  );
+};
 
 interface PreviewPaneProperties {
   busy: boolean;

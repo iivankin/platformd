@@ -110,6 +110,10 @@ CREATE TABLE services (
   sentry_tunnel_path TEXT CHECK (
     sentry_tunnel_path IS NULL OR length(sentry_tunnel_path) BETWEEN 2 AND 256
   ),
+  otlp_trace_public_hostname TEXT,
+  otlp_trace_path TEXT CHECK (
+    otlp_trace_path IS NULL OR length(otlp_trace_path) BETWEEN 2 AND 256
+  ),
   host_id TEXT REFERENCES hosts(id) ON DELETE RESTRICT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
@@ -119,6 +123,9 @@ CREATE TABLE services (
 
 CREATE UNIQUE INDEX services_sentry_public_hostname_idx
 ON services(sentry_public_hostname) WHERE sentry_public_hostname IS NOT NULL;
+
+CREATE UNIQUE INDEX services_otlp_trace_public_hostname_idx
+ON services(otlp_trace_public_hostname) WHERE otlp_trace_public_hostname IS NOT NULL;
 
 CREATE TABLE service_image_credentials (
   service_id TEXT PRIMARY KEY REFERENCES services(id) ON DELETE CASCADE,
@@ -548,7 +555,6 @@ CREATE TABLE analytics_trackers (
   project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
   name TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 80),
   root_domain TEXT NOT NULL CHECK (length(root_domain) BETWEEN 1 AND 253),
-  mode TEXT NOT NULL DEFAULT 'opt-out' CHECK (mode IN ('cookieless', 'opt-out', 'opt-in')),
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   UNIQUE (project_id, root_domain),
@@ -694,4 +700,4 @@ CREATE TABLE mail_metric_alerts (
 
 CREATE INDEX mail_metric_alerts_scope_idx ON mail_metric_alerts(scope_kind, project_id, service_id, created_at, id);
 
-PRAGMA user_version = 20;
+PRAGMA user_version = 22;

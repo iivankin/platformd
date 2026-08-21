@@ -3,7 +3,6 @@ import { expect, test } from "bun:test";
 import {
   portForwardActionExample,
   projectNameFromInternalHostname,
-  tokenizeYamlLine,
   uploadImageActionExample,
 } from "@/github-action-example-dialog";
 
@@ -63,40 +62,4 @@ test("builds a service errors port-forward example", () => {
   expect(example).toContain("SENTRY_AUTH_TOKEN: internal");
   expect(example).not.toContain("secrets.SENTRY_AUTH_TOKEN");
   expect(example).not.toContain("port: 9001");
-});
-
-test("tokenizes one YAML key per line and leaves URL colons alone", () => {
-  expect(tokenizeYamlLine("  # tunnel postgres")).toEqual([
-    { kind: "punctuation", text: "  " },
-    { kind: "comment", text: "# tunnel postgres" },
-  ]);
-  expect(tokenizeYamlLine("  project: storefront")).toEqual([
-    { kind: "punctuation", text: "  " },
-    { kind: "key", text: "project" },
-    { kind: "punctuation", text: ":" },
-    { kind: "plain", text: " storefront" },
-  ]);
-  expect(tokenizeYamlLine("          url: http://127.0.0.1:3100")).toEqual([
-    { kind: "punctuation", text: "          " },
-    { kind: "key", text: "url" },
-    { kind: "punctuation", text: ":" },
-    { kind: "plain", text: " http://127.0.0.1:3100" },
-  ]);
-  expect(tokenizeYamlLine("      - uses: actions/checkout@v4")).toEqual([
-    { kind: "punctuation", text: "      - " },
-    { kind: "key", text: "uses" },
-    { kind: "punctuation", text: ":" },
-    { kind: "plain", text: " actions/checkout@v4" },
-  ]);
-  const expression = `\${{ runner.temp }}`;
-  expect(
-    tokenizeYamlLine(`          archive: ${expression}/image.oci`)
-  ).toEqual([
-    { kind: "punctuation", text: "          " },
-    { kind: "key", text: "archive" },
-    { kind: "punctuation", text: ":" },
-    { kind: "plain", text: " " },
-    { kind: "expression", text: expression },
-    { kind: "plain", text: "/image.oci" },
-  ]);
 });

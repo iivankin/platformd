@@ -129,7 +129,7 @@ func TestRouterDispatchesResourceHandlersAndPreservesIndependentRouteViews(t *te
 }
 
 func TestRouterSharesServiceHostnameWithTelemetryOnReservedPaths(t *testing.T) {
-	telemetryPaths := make(chan string, 2)
+	telemetryPaths := make(chan string, 4)
 	router, err := New(Config{
 		AdminHostname: "admin.example.com", AdminHandler: http.NotFoundHandler(),
 		ServiceTelemetryHandler: http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -143,7 +143,7 @@ func TestRouterSharesServiceHostnameWithTelemetryOnReservedPaths(t *testing.T) {
 	}
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	router.ReloadServiceTelemetry(map[string]ServiceTelemetryRoute{
-		"app.example.com": {BrowserTunnelPath: "/client-report"},
+		"app.example.com": {BrowserTunnelPath: "/client-report", OTLPTracePath: "/otel/v1/traces"},
 	})
 
 	ingest := tlsRequest("app.example.com", "app.example.com")
@@ -171,6 +171,29 @@ func TestRouterSharesServiceHostnameWithTelemetryOnReservedPaths(t *testing.T) {
 	router.ServeHTTP(response, artifact)
 	if response.Code != http.StatusAccepted || <-telemetryPaths != artifact.URL.Path {
 		t.Fatalf("shared Sentry artifact upload = %d", response.Code)
+	}
+
+	preflight := tlsRequest("app.example.com", "app.example.com")
+	preflight.Method = http.MethodOptions
+	preflight.URL.Path = "/otel/v1/traces"
+	preflight.Header.Set("Origin", "https://browser.example.com")
+	preflight.Header.Set("Access-Control-Request-Method", http.MethodPost)
+	preflight.Header.Set("Access-Control-Request-Headers", "content-type")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, preflight)
+	if response.Code != http.StatusNoContent || response.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("OTLP trace preflight = %d, origin %q", response.Code, response.Header().Get("Access-Control-Allow-Origin"))
+	}
+
+	otlp := tlsRequest("app.example.com", "app.example.com")
+	otlp.Method = http.MethodPost
+	otlp.URL.Path = "/otel/v1/traces"
+	otlp.Header.Set("Content-Type", "application/x-protobuf")
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, otlp)
+	if response.Code != http.StatusAccepted || <-telemetryPaths != "/v1/traces" ||
+		response.Header().Get("Access-Control-Allow-Origin") != "*" {
+		t.Fatalf("shared OTLP trace ingest = %d", response.Code)
 	}
 
 	for _, path := range []string{"/", "/client-report/", "/api/0/users/me/", "/api/1/envelope", "/_sentry/api/1/envelope/"} {
@@ -495,8 +518,8 @@ func TestRouterRejectsExcessiveHeaderCount(t *testing.T) {
 	}
 }
 
-func TestRouterDispatchesReservedAnalyticsPathsBeforeProxy(t *testing.T) {
-	analyticsHits := make(chan string, 2)
+func TestRouterDispatchesReservedAnalyticsPathBeforeProxy(t *testing.T) {
+	analyticsHits := make(chan string, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		t.Error("application proxy should not see reserved analytics paths")
 	}))
@@ -523,18 +546,10 @@ func TestRouterDispatchesReservedAnalyticsPathsBeforeProxy(t *testing.T) {
 	}
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: port}})
 
-	script := tlsRequest("app.example.com", "app.example.com")
-	script.URL.Path = "/analytics.js"
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, script)
-	if response.Code != http.StatusNoContent || <-analyticsHits != "/analytics.js" {
-		t.Fatalf("analytics.js status = %d", response.Code)
-	}
-
 	event := tlsRequest("app.example.com", "app.example.com")
 	event.Method = http.MethodPost
 	event.URL.Path = "/analytics/e"
-	response = httptest.NewRecorder()
+	response := httptest.NewRecorder()
 	router.ServeHTTP(response, event)
 	if response.Code != http.StatusNoContent || <-analyticsHits != "/analytics/e" {
 		t.Fatalf("analytics/e status = %d", response.Code)
@@ -551,7 +566,8 @@ func TestRouterReturns404ForReservedAnalyticsWithoutHandler(t *testing.T) {
 	}
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	request := tlsRequest("app.example.com", "app.example.com")
-	request.URL.Path = "/analytics.js"
+	request.Method = http.MethodPost
+	request.URL.Path = "/analytics/e"
 	response := httptest.NewRecorder()
 	router.ServeHTTP(response, request)
 	if response.Code != http.StatusNotFound {

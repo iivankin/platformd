@@ -53,7 +53,6 @@ type analyticsTrackerResponse struct {
 	ProjectID         string   `json:"projectId"`
 	Name              string   `json:"name"`
 	RootDomain        string   `json:"rootDomain"`
-	Mode              string   `json:"mode"`
 	InternalHostname  string   `json:"internalHostname"`
 	InternalOFREPURL  string   `json:"internalOfrepUrl"`
 	MatchingHostnames []string `json:"matchingHostnames"`
@@ -202,7 +201,6 @@ func createAnalyticsTracker(repository AnalyticsRepository) http.HandlerFunc {
 	type requestBody struct {
 		Name       string `json:"name"`
 		RootDomain string `json:"rootDomain"`
-		Mode       string `json:"mode"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		if _, ok := requireAccessIdentity(response, request); !ok {
@@ -213,7 +211,7 @@ func createAnalyticsTracker(repository AnalyticsRepository) http.HandlerFunc {
 			return
 		}
 		tracker, err := repository.CreateAnalyticsTracker(request.Context(), state.AnalyticsTracker{
-			ProjectID: request.PathValue("projectID"), Name: body.Name, RootDomain: body.RootDomain, Mode: body.Mode,
+			ProjectID: request.PathValue("projectID"), Name: body.Name, RootDomain: body.RootDomain,
 		})
 		if err != nil {
 			writeAnalyticsError(response, err)
@@ -232,7 +230,6 @@ func updateAnalyticsTracker(repository AnalyticsRepository) http.HandlerFunc {
 	type requestBody struct {
 		Name              string `json:"name"`
 		RootDomain        string `json:"rootDomain"`
-		Mode              string `json:"mode"`
 		ExpectedUpdatedAt int64  `json:"expectedUpdatedAt"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
@@ -249,7 +246,7 @@ func updateAnalyticsTracker(repository AnalyticsRepository) http.HandlerFunc {
 		}
 		tracker, err := repository.UpdateAnalyticsTracker(request.Context(), state.AnalyticsTracker{
 			ID: request.PathValue("trackerID"), ProjectID: request.PathValue("projectID"),
-			Name: body.Name, RootDomain: body.RootDomain, Mode: body.Mode,
+			Name: body.Name, RootDomain: body.RootDomain,
 		}, body.ExpectedUpdatedAt)
 		if err != nil {
 			writeAnalyticsError(response, err)
@@ -803,7 +800,7 @@ func publicTrackers(ctx context.Context, repository AnalyticsRepository, project
 		internal := telemetry.InternalAnalyticsHostname(project.Name, state.TrackerSlug(tracker.RootDomain))
 		payload = append(payload, analyticsTrackerResponse{
 			ID: tracker.ID, ProjectID: tracker.ProjectID, Name: tracker.Name, RootDomain: tracker.RootDomain,
-			Mode: tracker.Mode, InternalHostname: internal,
+			InternalHostname:  internal,
 			InternalOFREPURL:  "http://" + internal + ":" + strconv.Itoa(firewall.ServiceTelemetryPort),
 			MatchingHostnames: matching, CreatedAt: tracker.CreatedAtMillis, UpdatedAt: tracker.UpdatedAtMillis,
 		})

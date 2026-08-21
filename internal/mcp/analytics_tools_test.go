@@ -159,7 +159,7 @@ func (stub *analyticsStub) defaultTrackers() []state.AnalyticsTracker {
 	}
 	return []state.AnalyticsTracker{{
 		ID: "tracker", ProjectID: "project-a", Name: "site", RootDomain: "example.com",
-		Mode: state.AnalyticsModeOptOut, CreatedAtMillis: 1, UpdatedAtMillis: 1,
+		CreatedAtMillis: 1, UpdatedAtMillis: 1,
 	}}
 }
 

@@ -228,6 +228,38 @@ const updateBrowserTunnel = async (
   return json(configuration);
 };
 
+const updatePublicOTLPTraces = async (
+  request: Request,
+  configuration: ServiceTelemetry
+) => {
+  const input = await readObject(request);
+  if (numberField(input, "expectedUpdatedAt", -1) !== configuration.updatedAt) {
+    return mockError("service_telemetry_conflict", "Service changed", 409);
+  }
+  const publicHostname = stringField(input, "publicHostname").trim();
+  const tracePath = stringField(input, "tracePath").trim();
+  const invalidPath =
+    tracePath.length > 256 ||
+    tracePath === "/" ||
+    (tracePath !== "" && !tracePath.startsWith("/")) ||
+    tracePath.includes("?") ||
+    tracePath.includes("#");
+  if (Boolean(publicHostname) !== Boolean(tracePath) || invalidPath) {
+    return mockError(
+      "invalid_public_otlp_traces",
+      "Public OTLP trace fields are invalid",
+      400
+    );
+  }
+  configuration.publicOtlpTraceHostname = publicHostname || undefined;
+  configuration.publicOtlpTracePath = tracePath || undefined;
+  configuration.publicOtlpTraceEndpoint = publicHostname
+    ? `https://${publicHostname}${tracePath}`
+    : undefined;
+  configuration.updatedAt = mockNow();
+  return json(configuration);
+};
+
 const handleTelemetryResource = async (
   request: Request,
   state: MockState,
@@ -265,6 +297,13 @@ const handleTelemetryResource = async (
     request.method === "PUT"
   ) {
     return updateBrowserTunnel(request, configuration);
+  }
+  if (
+    action === "public-otlp-traces" &&
+    tail.length === 0 &&
+    request.method === "PUT"
+  ) {
+    return updatePublicOTLPTraces(request, configuration);
   }
   if (
     action === "artifact-token" &&
@@ -369,55 +408,6 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
       timeUnixNano: (mockTraceStarted + 1_380_000_000n).toString(),
       unit: "s",
       value: 1.38,
-    },
-  ],
-  profiles: [
-    {
-      endedAtUnixNano: (mockTraceStarted + 1_200_000_000n).toString(),
-      platform: "node",
-      profileId: "b571a405ae724ed6bd4c8ca8114ba88a",
-      profilerId: "e55d702586e84da7a1c8741c748f18f5",
-      sampleCount: 92,
-      serviceId: "service-storefront",
-      stacks: [
-        {
-          durationNano: "620000000",
-          frames: [
-            { filename: "node:internal/http", function: "emit" },
-            {
-              filename: "src/checkout.ts",
-              function: "confirmCheckout",
-              lineno: 184,
-            },
-            {
-              filename: "src/inventory.ts",
-              function: "reserveInventory",
-              lineno: 71,
-            },
-          ],
-          sampleCount: 62,
-          spanId: "8f3a0f34b17c9d20",
-          threadId: "main",
-          threadName: "MainThread",
-        },
-        {
-          durationNano: "300000000",
-          frames: [
-            { filename: "node:internal/http", function: "emit" },
-            {
-              filename: "src/checkout.ts",
-              function: "confirmCheckout",
-              lineno: 184,
-            },
-            { filename: "node:internal/timers", function: "processTimers" },
-          ],
-          sampleCount: 30,
-          spanId: "8f3a0f34b17c9d20",
-          threadId: "main",
-          threadName: "MainThread",
-        },
-      ],
-      startedAtUnixNano: mockTraceStarted.toString(),
     },
   ],
   relatedSegments: [],
@@ -534,7 +524,6 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
   const scope = { name: "@ai-sdk/otel", version: "1.0.58" };
   return {
     metrics: [],
-    profiles: [],
     relatedSegments: [],
     segmentId: mockAITraceSegmentID,
     spans: [

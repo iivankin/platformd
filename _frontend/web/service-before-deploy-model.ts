@@ -49,5 +49,3 @@ export const parseBeforeDeploy = (
     command: draft.commandEnabled ? command : undefined,
   };
 };
-
-export const comparableBeforeDeployDraft = (draft: BeforeDeployDraft) => draft;

@@ -14,7 +14,12 @@ import {
   TrackerDialog,
 } from "@/analytics-dialogs";
 import {
+  analyticsCountryName,
+  analyticsLocationName,
+} from "@/analytics-location";
+import {
   analyticsBotPurpose,
+  analyticsCookieDomain,
   analyticsFlagSummary,
   asNumber,
   asString,
@@ -32,7 +37,7 @@ import {
   wilsonInterval,
 } from "@/analytics-model";
 import { AnalyticsSetupGuide } from "@/analytics-setup";
-import { analyticsCountryName, AnalyticsWorldMap } from "@/analytics-world-map";
+import { AnalyticsWorldMap } from "@/analytics-world-map";
 import {
   deleteAnalyticsChart,
   deleteAnalyticsFlag,
@@ -1171,7 +1176,6 @@ const BehavioursPanel = ({
             }
           />
           <FunnelDialog
-            cookieless={tracker.mode === "cookieless"}
             hostnames={hostnames}
             onSaved={(funnel) => {
               setFunnels((current) => [...current, funnel]);
@@ -1257,11 +1261,6 @@ const BehavioursPanel = ({
               value={funnelID}
             />
           )}
-          {tracker.mode === "cookieless" ? (
-            <p className="mt-2 text-[10px] text-amber-600">
-              Cookieless identity lasts one day.
-            </p>
-          ) : null}
           <div className="mt-4 grid gap-3">
             {(selectedFunnel?.steps ?? []).map((step, index) => {
               const current = funnelRows[index];
@@ -1475,11 +1474,6 @@ const VisitorsPage = ({
     <div className="grid min-h-[32rem] lg:grid-cols-[minmax(0,1fr)_20rem]">
       <div className="overflow-x-auto">
         <QueryError error={query.error} />
-        {tracker.mode === "cookieless" ? (
-          <p className="border-b border-border px-5 py-2 text-[10px] text-muted-foreground">
-            In cookieless mode the same person is only the same for one day.
-          </p>
-        ) : null}
         <table className="w-full text-[10px]">
           <thead className="border-b border-border text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
             <tr>
@@ -1508,7 +1502,11 @@ const VisitorsPage = ({
                   {formatCount(asNumber(row.events))}
                 </td>
                 <td className="px-3 py-2">
-                  {asString(row.city)} {asString(row.country)}
+                  {analyticsLocationName({
+                    city: asString(row.city),
+                    country: asString(row.country),
+                    region: asString(row.region),
+                  })}
                 </td>
                 <td className="px-3 py-2">
                   {asString(row.browser)} · {asString(row.os)} ·{" "}
@@ -1545,7 +1543,11 @@ const VisitorsPage = ({
             <dd>{formatDuration(asNumber(selected.duration))}</dd>
             <dt className="text-muted-foreground">Location</dt>
             <dd>
-              {asString(selected.city)}, {asString(selected.country)}
+              {analyticsLocationName({
+                city: asString(selected.city),
+                country: asString(selected.country),
+                region: asString(selected.region),
+              })}
             </dd>
           </dl>
         </aside>
@@ -1700,13 +1702,12 @@ const RetentionPage = ({
   to?: number;
   tracker: AnalyticsTracker;
 }) => {
-  const query = useAnalyticsQuery(
-    projectID,
-    tracker.id,
-    tracker.mode === "cookieless"
-      ? undefined
-      : { filters, from, report: "retention", to }
-  );
+  const query = useAnalyticsQuery(projectID, tracker.id, {
+    filters,
+    from,
+    report: "retention",
+    to,
+  });
   const rows = recordRows(query.data);
   const means = retentionDays.map((day) => {
     const values = rows.map((row) => asNumber(row[`d${day}`]));
@@ -1715,14 +1716,6 @@ const RetentionPage = ({
     }
     return values.reduce((sum, value) => sum + value, 0) / values.length;
   });
-  if (tracker.mode === "cookieless") {
-    return (
-      <p className="px-5 py-8 text-[10px] text-muted-foreground">
-        Retention needs an anonymous identity. Switch this tracker from
-        cookieless to opt-out or opt-in.
-      </p>
-    );
-  }
   return (
     <div className="overflow-x-auto px-5 py-5">
       <QueryError error={query.error} />
@@ -1797,28 +1790,43 @@ const AIPage = ({
   return (
     <div className="grid gap-8 px-5 py-5 lg:grid-cols-2">
       <QueryError className="lg:col-span-2" error={query.error} />
-      <section>
+      <section className="lg:col-span-2">
         <h2 className="text-sm font-medium">Crawlers</h2>
-        <p className="mt-1 text-[10px] text-muted-foreground">
-          HTML user-agents, not the JS snippet. Search crawl: so the page can
-          appear in ChatGPT, Claude, or Perplexity search answers. Asked in
-          ChatGPT: live fetch when someone asks the assistant about the page.
+        <p className="mt-1 max-w-4xl text-[10px] leading-5 text-muted-foreground">
+          Server-side HTML requests, not the browser SDK. Current releases count
+          OpenAI, Anthropic, and Perplexity agents only when both the user-agent
+          and source IP match the provider&apos;s published ranges. Search
+          indexing prepares pages for future answers; a question asked by a user
+          may cause a live page fetch; training crawlers collect content that
+          may be used for model development.
         </p>
-        <div className="mt-4">
+        <div className="mt-4 overflow-x-auto">
+          <div className="grid min-w-[48rem] grid-cols-[minmax(18rem,2fr)_minmax(10rem,1fr)_minmax(12rem,1.3fr)_4rem] border-b border-border pb-2 text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
+            <span>What triggered the request</span>
+            <span>Verified agent</span>
+            <span>Path</span>
+            <span className="text-right">Hits</span>
+          </div>
           {hits.map((row) => (
             <div
-              className="grid grid-cols-4 border-b border-border py-2 text-[10px]"
+              className="grid min-w-[48rem] grid-cols-[minmax(18rem,2fr)_minmax(10rem,1fr)_minmax(12rem,1.3fr)_4rem] items-start border-b border-border py-2.5 text-[10px]"
               key={`${asString(row.bot_name)}:${asString(row.pathname)}`}
             >
-              <span>
+              <span className="pr-5 leading-4">
                 {analyticsBotPurpose(
                   asString(row.bot_name),
                   asString(row.bot_kind)
                 )}
               </span>
-              <span>{asString(row.bot_name)}</span>
-              <span>{asString(row.pathname)}</span>
-              <span>{formatCount(asNumber(row.hits))}</span>
+              <span className="font-mono text-muted-foreground">
+                {asString(row.bot_name)}
+              </span>
+              <span className="font-mono break-all">
+                {asString(row.pathname)}
+              </span>
+              <span className="text-right">
+                {formatCount(asNumber(row.hits))}
+              </span>
             </div>
           ))}
         </div>
@@ -2021,11 +2029,6 @@ const FlagsPage = ({
           trackerID={tracker.id}
         />
       ))}
-      {tracker.mode === "cookieless" ? (
-        <p className="mt-4 text-[10px] text-muted-foreground">
-          Browser OpenFeature is not initialized in cookieless mode.
-        </p>
-      ) : null}
     </div>
   );
 };
@@ -2359,8 +2362,7 @@ const SettingsPage = ({
           <div>
             <h2 className="text-sm font-medium">{tracker.name}</h2>
             <p className="mt-1 text-[10px] text-muted-foreground">
-              Root {tracker.rootDomain} · {tracker.mode} ·{" "}
-              {tracker.internalOfrepUrl}
+              Root {tracker.rootDomain} · {tracker.internalOfrepUrl}
             </p>
             <p className="mt-2 text-[10px] text-muted-foreground">
               Matching hostnames:{" "}
@@ -2410,9 +2412,12 @@ export const ServiceAnalyticsSnippet = ({
   trackedBy,
 }: {
   projectID: string;
-  trackedBy?: { id: string; name: string; rootDomain: string }[];
+  trackedBy?: {
+    id: string;
+    name: string;
+    rootDomain: string;
+  }[];
 }) => {
-  const snippet = `<script defer src="/analytics.js"></script>`;
   if (!trackedBy || trackedBy.length === 0) {
     return (
       <section className="border-b border-border px-5 py-6 lg:px-7">
@@ -2432,14 +2437,42 @@ export const ServiceAnalyticsSnippet = ({
       </section>
     );
   }
+  const configurations = trackedBy
+    .toSorted((left, right) => right.rootDomain.length - left.rootDomain.length)
+    .map((tracker) => ({
+      cookieDomain: analyticsCookieDomain(tracker.rootDomain) || undefined,
+      rootDomain: tracker.rootDomain,
+    }));
+  const snippet = `// analytics.ts — rebuild after changing the identity mode or root domains.
+import { createAnalytics } from "@platformd/analytics";
+
+const mode = "opt-out" as const; // Or "opt-in" / "cookieless".
+const trackerConfigurations = ${JSON.stringify(configurations, null, 2)} as const;
+const configuration = trackerConfigurations.find(
+  ({ rootDomain }) =>
+    location.hostname === rootDomain || location.hostname.endsWith(\`.\${rootDomain}\`)
+);
+
+if (!configuration) {
+  throw new Error("No platformd analytics tracker matches this hostname");
+}
+
+export const analytics = createAnalytics({ ...configuration, mode });`;
   return (
     <section className="border-b border-border px-5 py-6 lg:px-7">
       <h2 className="text-sm font-medium">Web analytics</h2>
       <p className="mt-1.5 text-[10px] leading-4 text-muted-foreground">
         Tracked by {trackedBy.map((tracker) => tracker.rootDomain).join(", ")}.
-        OpenFeature examples live on the tracker.
+        Install the package once; OpenFeature examples live on the tracker.
       </p>
-      <HighlightedSnippet className="mt-3" language="html" value={snippet} />
+      <p className="mt-3 font-mono text-[10px] text-muted-foreground">
+        npm install @platformd/analytics
+      </p>
+      <HighlightedSnippet
+        className="mt-3"
+        language="typescript"
+        value={snippet}
+      />
       <div className="mt-3 flex flex-wrap gap-2">
         {trackedBy.map((tracker) => (
           <Button

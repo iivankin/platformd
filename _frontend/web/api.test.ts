@@ -1560,18 +1560,31 @@ test("uses the Access-only object storage browser contract", async () => {
     fetchObjects(
       resource.projectId,
       resource.id,
-      { continuationToken: "cursor+/=", limit: 25, prefix: "docs/" },
+      {
+        continuationToken: "cursor+/=",
+        delimiter: "/",
+        limit: 25,
+        prefix: "docs/",
+      },
       undefined,
       (input) => {
         expect(input.toString()).toContain("limit=25");
         expect(input.toString()).toContain("prefix=docs%2F");
+        expect(input.toString()).toContain("delimiter=%2F");
         expect(input.toString()).toContain("continuationToken=cursor%2B%2F%3D");
         return Promise.resolve(
-          Response.json({ nextContinuationToken: "", objects: [metadata] })
+          Response.json({
+            nextContinuationToken: "",
+            objects: [metadata],
+            prefixes: ["docs/archive/"],
+          })
         );
       }
     )
-  ).resolves.toMatchObject({ objects: [metadata] });
+  ).resolves.toMatchObject({
+    objects: [metadata],
+    prefixes: ["docs/archive/"],
+  });
 
   await expect(
     previewObject(

@@ -338,24 +338,44 @@ func browseObjects(application *objectstore.Application) http.HandlerFunc {
 				return
 			}
 		}
-		objects, more, err := application.List(request.Context(), store.ID, request.URL.Query().Get("prefix"), after, limit)
+		entries, more, err := application.ListEntries(
+			request.Context(),
+			store.ID,
+			request.URL.Query().Get("prefix"),
+			request.URL.Query().Get("delimiter"),
+			after,
+			limit,
+		)
 		if err != nil {
 			writeObjectStoreError(response, err)
 			return
 		}
 		nextToken := ""
-		if more && len(objects) != 0 {
-			nextToken, err = application.EncodeContinuationToken(store.ID, objects[len(objects)-1].ObjectKey)
+		if more && len(entries) != 0 {
+			last := entries[len(entries)-1]
+			cursor := last.CommonPrefix
+			if last.Object != nil {
+				cursor = last.Object.ObjectKey
+			}
+			nextToken, err = application.EncodeContinuationToken(store.ID, cursor)
 			if err != nil {
 				writeObjectStoreError(response, err)
 				return
 			}
 		}
-		result := make([]objectMetadataResponse, 0, len(objects))
-		for _, object := range objects {
-			result = append(result, publicObjectMetadata(object))
+		objects := make([]objectMetadataResponse, 0, len(entries))
+		prefixes := make([]string, 0, len(entries))
+		for _, entry := range entries {
+			if entry.Object != nil {
+				objects = append(objects, publicObjectMetadata(*entry.Object))
+			}
+			if entry.CommonPrefix != "" {
+				prefixes = append(prefixes, entry.CommonPrefix)
+			}
 		}
-		writeJSON(response, http.StatusOK, map[string]any{"objects": result, "nextContinuationToken": nextToken})
+		writeJSON(response, http.StatusOK, map[string]any{
+			"objects": objects, "prefixes": prefixes, "nextContinuationToken": nextToken,
+		})
 	}
 }
 

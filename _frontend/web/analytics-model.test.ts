@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 
 import {
+  analyticsCountryName,
+  analyticsLocationName,
+} from "@/analytics-location";
+import {
   analyticsBotPurpose,
   analyticsCookieDomain,
   analyticsEffectiveRollout,
@@ -14,6 +18,23 @@ import {
 } from "@/analytics-model";
 
 const now = 1_700_000_000_000;
+
+test("analytics locations omit missing and duplicate parts", () => {
+  expect(analyticsCountryName("RS")).toBe("Serbia");
+  expect(analyticsLocationName({ city: "", country: "RS", region: "" })).toBe(
+    "Serbia"
+  );
+  expect(
+    analyticsLocationName({
+      city: "Belgrade",
+      country: "RS",
+      region: "Belgrade",
+    })
+  ).toBe("Belgrade, Serbia");
+  expect(analyticsLocationName({ city: "", country: "", region: "" })).toBe(
+    "Unknown"
+  );
+});
 
 test("boolean flag summary uses rollout, not fake 50/50 weights", () => {
   const targeting = {
@@ -99,16 +120,24 @@ test("funnelReached treats rows as exact max-level counts", () => {
 
 test("bot purpose names the crawler job, not the bucket", () => {
   expect(analyticsBotPurpose("OAI-SearchBot", "search")).toBe(
-    "ChatGPT search crawl"
+    "ChatGPT indexed the page for future search answers"
   );
   expect(analyticsBotPurpose("GPTBot", "training")).toBe(
-    "OpenAI model training"
+    "OpenAI fetched the page for possible model training"
   );
-  expect(analyticsBotPurpose("ChatGPT-User", "fetch")).toBe("Asked in ChatGPT");
-  expect(analyticsBotPurpose("Bytespider", "search")).toBe("Toutiao search");
-  expect(analyticsBotPurpose("CCBot", "training")).toBe("Common Crawl");
+  expect(analyticsBotPurpose("ChatGPT-User", "fetch")).toBe(
+    "A user asked ChatGPT or a Custom GPT a question, triggering a live page fetch"
+  );
+  expect(analyticsBotPurpose("Bytespider", "search")).toBe(
+    "ByteDance indexed the page for search"
+  );
+  expect(analyticsBotPurpose("CCBot", "training")).toBe(
+    "Common Crawl archived the page for its web dataset"
+  );
   expect(analyticsBotPurpose("Google-Extended", "training")).toBe(
-    "Gemini training and grounding"
+    "Google may use the page for Gemini grounding"
   );
-  expect(analyticsBotPurpose("UnknownBot", "search")).toBe("Search");
+  expect(analyticsBotPurpose("UnknownBot", "search")).toBe(
+    "A crawler indexed the page for future search answers"
+  );
 });

@@ -4,8 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build:analytics": "bun run build-analytics.ts",
     "build:mock": "bun run compile-mock.ts",
-    "build:web": "bun run build.ts",
+    "build:web": "bun run build:analytics && bun run build.ts",
     "check": "bun --bun ultracite check",
     "dev:mock": "bun --hot dev.ts",
     "dev:mock:empty": "bun --hot dev.ts --scenario empty",

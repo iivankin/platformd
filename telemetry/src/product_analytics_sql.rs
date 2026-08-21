@@ -11,8 +11,7 @@ use crate::storage::chdb_string;
 
 pub(crate) const ANALYTICS_EVENTS: &str = "FROM telemetry.analytics_events";
 pub(crate) const INTERNAL_EVENTS: &str = "event_name != '$flag_called'";
-pub(crate) const VISIT_EVENTS: &str =
-    "event_name NOT IN ('$flag_called', '$pageleave')";
+pub(crate) const VISIT_EVENTS: &str = "event_name NOT IN ('$flag_called', '$pageleave')";
 
 pub fn compile(
     sql: &str,

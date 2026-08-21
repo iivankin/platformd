@@ -78,19 +78,22 @@ export const analyticsOperatorLabel = (
 };
 
 const analyticsBotPurposes: Record<string, string> = {
-  "Applebot-Extended": "Apple foundation models",
-  Bytespider: "Toutiao search",
-  CCBot: "Common Crawl",
-  "ChatGPT-User": "Asked in ChatGPT",
-  "Claude-SearchBot": "Claude search crawl",
-  "Claude-User": "Asked in Claude",
-  ClaudeBot: "Claude model training",
-  GPTBot: "OpenAI model training",
-  "Google-Extended": "Gemini training and grounding",
-  "OAI-SearchBot": "ChatGPT search crawl",
-  "Perplexity-User": "Asked in Perplexity",
-  PerplexityBot: "Perplexity search crawl",
-  "anthropic-ai": "Anthropic (retired)",
+  "Applebot-Extended": "Apple may use the page for foundation models",
+  Bytespider: "ByteDance indexed the page for search",
+  CCBot: "Common Crawl archived the page for its web dataset",
+  "ChatGPT-User":
+    "A user asked ChatGPT or a Custom GPT a question, triggering a live page fetch",
+  "Claude-SearchBot":
+    "Claude indexed the page to improve future search answers",
+  "Claude-User": "A user asked Claude a question, triggering a live page fetch",
+  ClaudeBot: "Anthropic fetched the page for possible model training",
+  GPTBot: "OpenAI fetched the page for possible model training",
+  "Google-Extended": "Google may use the page for Gemini grounding",
+  "OAI-SearchBot": "ChatGPT indexed the page for future search answers",
+  "Perplexity-User":
+    "A user asked Perplexity a question, triggering a live page fetch",
+  PerplexityBot: "Perplexity indexed the page for future search answers",
+  "anthropic-ai": "A retired Anthropic crawler fetched the page",
 };
 
 export const analyticsBotPurpose = (name: string, kind: string) => {
@@ -101,7 +104,13 @@ export const analyticsBotPurpose = (name: string, kind: string) => {
   if (!kind) {
     return name;
   }
-  return `${kind.slice(0, 1).toUpperCase()}${kind.slice(1)}`;
+  if (kind === "fetch") {
+    return "A user asked an assistant a question, triggering a live page fetch";
+  }
+  if (kind === "training") {
+    return "A crawler fetched the page for possible model training";
+  }
+  return "A crawler indexed the page for future search answers";
 };
 
 export const analyticsFilterChip = (filter: AnalyticsFilter) => {

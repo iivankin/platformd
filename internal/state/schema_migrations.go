@@ -888,3 +888,47 @@ FROM service_listeners_global_ports`,
 	}
 	return nil
 }
+
+func migrateSchemaVersionTwenty(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 20 to 21: %w", err)
+	}
+	statements := []string{
+		`ALTER TABLE services ADD COLUMN otlp_trace_public_hostname TEXT`,
+		`ALTER TABLE services ADD COLUMN otlp_trace_path TEXT CHECK (
+  otlp_trace_path IS NULL OR length(otlp_trace_path) BETWEEN 2 AND 256
+)`,
+		`CREATE UNIQUE INDEX services_otlp_trace_public_hostname_idx
+ON services(otlp_trace_public_hostname) WHERE otlp_trace_public_hostname IS NOT NULL`,
+		`PRAGMA user_version = 21`,
+	}
+	for _, statement := range statements {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 20 to 21: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 20 to 21: %w", err)
+	}
+	return nil
+}
+
+func migrateSchemaVersionTwentyOne(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 21 to 22: %w", err)
+	}
+	for _, statement := range []string{
+		`ALTER TABLE analytics_trackers DROP COLUMN mode`,
+		`PRAGMA user_version = 22`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 21 to 22: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 21 to 22: %w", err)
+	}
+	return nil
+}

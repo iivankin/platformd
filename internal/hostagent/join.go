@@ -24,15 +24,19 @@ type JoinInput struct {
 }
 
 type JoinResult struct {
-	HostID         string
-	HostToken      string
-	ParentHostname string
-	Name           string
+	HostID    string
+	HostToken string
+	ParentURL string `json:"-"`
+	Name      string
 }
 
 func Join(ctx context.Context, input JoinInput) (JoinResult, error) {
 	if input.URL == "" || input.Token == "" {
 		return JoinResult{}, fmt.Errorf("join URL and token are required")
+	}
+	parentURL, err := NormalizeParentURL(input.URL)
+	if err != nil {
+		return JoinResult{}, err
 	}
 	publicIPv4 := input.PublicIPv4
 	if publicIPv4 == "" {
@@ -51,7 +55,7 @@ func Join(ctx context.Context, input JoinInput) (JoinResult, error) {
 	if err != nil {
 		return JoinResult{}, err
 	}
-	endpoint := strings.TrimRight(input.URL, "/") + hostconn.JoinPath
+	endpoint := parentURL + hostconn.JoinPath
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return JoinResult{}, err
@@ -78,9 +82,10 @@ func Join(ctx context.Context, input JoinInput) (JoinResult, error) {
 	if err := json.Unmarshal(payload, &result); err != nil {
 		return JoinResult{}, err
 	}
-	if result.HostID == "" || result.HostToken == "" || result.ParentHostname == "" {
+	if result.HostID == "" || result.HostToken == "" {
 		return JoinResult{}, fmt.Errorf("join response is incomplete")
 	}
+	result.ParentURL = parentURL
 	return result, nil
 }
 

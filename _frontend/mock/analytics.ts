@@ -48,13 +48,6 @@ const decorateTracker = (
   };
 };
 
-const parseMode = (value: string): AnalyticsTracker["mode"] => {
-  if (value === "cookieless" || value === "opt-in" || value === "opt-out") {
-    return value;
-  }
-  return "opt-out";
-};
-
 const parseWindowUnit = (value: string): AnalyticsFunnel["windowUnit"] => {
   if (value === "minute" || value === "hour" || value === "day") {
     return value;
@@ -350,7 +343,6 @@ export const handleAnalyticsAPI = async (
         internalHostname: "",
         internalOfrepUrl: "",
         matchingHostnames: [],
-        mode: parseMode(stringField(input, "mode", "opt-out")),
         name: stringField(input, "name", "Tracker"),
         projectId: projectID,
         rootDomain: normalizeTrackerRoot(stringField(input, "rootDomain")),
@@ -390,7 +382,6 @@ export const handleAnalyticsAPI = async (
       }
       tracker.name = stringField(input, "name", tracker.name);
       tracker.rootDomain = rootDomain;
-      tracker.mode = parseMode(stringField(input, "mode", tracker.mode));
       tracker.updatedAt = mockNow() + 1;
       return json(decorateTracker(state, tracker));
     }

@@ -10,12 +10,6 @@ import (
 	"strings"
 )
 
-const (
-	AnalyticsModeCookieless = "cookieless"
-	AnalyticsModeOptOut     = "opt-out"
-	AnalyticsModeOptIn      = "opt-in"
-)
-
 var (
 	ErrAnalyticsTrackerNotFound    = errors.New("analytics tracker not found")
 	ErrAnalyticsTrackerChanged     = errors.New("analytics tracker changed")
@@ -36,7 +30,6 @@ type AnalyticsTracker struct {
 	ProjectID       string
 	Name            string
 	RootDomain      string
-	Mode            string
 	CreatedAtMillis int64
 	UpdatedAtMillis int64
 }
@@ -156,7 +149,7 @@ func (store *Store) AnalyticsTrackers(ctx context.Context, projectID string) ([]
 		return nil, err
 	}
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, project_id, name, root_domain, mode, created_at, updated_at
+SELECT id, project_id, name, root_domain, created_at, updated_at
 FROM analytics_trackers WHERE project_id = ? ORDER BY created_at, id`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list analytics trackers: %w", err)
@@ -166,7 +159,7 @@ FROM analytics_trackers WHERE project_id = ? ORDER BY created_at, id`, projectID
 	for rows.Next() {
 		var tracker AnalyticsTracker
 		if err := rows.Scan(&tracker.ID, &tracker.ProjectID, &tracker.Name, &tracker.RootDomain,
-			&tracker.Mode, &tracker.CreatedAtMillis, &tracker.UpdatedAtMillis); err != nil {
+			&tracker.CreatedAtMillis, &tracker.UpdatedAtMillis); err != nil {
 			return nil, fmt.Errorf("scan analytics tracker: %w", err)
 		}
 		trackers = append(trackers, tracker)
@@ -176,7 +169,7 @@ FROM analytics_trackers WHERE project_id = ? ORDER BY created_at, id`, projectID
 
 func (store *Store) AllAnalyticsTrackers(ctx context.Context) ([]AnalyticsTracker, error) {
 	rows, err := store.database.QueryContext(ctx, `
-SELECT id, project_id, name, root_domain, mode, created_at, updated_at
+SELECT id, project_id, name, root_domain, created_at, updated_at
 FROM analytics_trackers ORDER BY created_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("list all analytics trackers: %w", err)
@@ -186,7 +179,7 @@ FROM analytics_trackers ORDER BY created_at, id`)
 	for rows.Next() {
 		var tracker AnalyticsTracker
 		if err := rows.Scan(&tracker.ID, &tracker.ProjectID, &tracker.Name, &tracker.RootDomain,
-			&tracker.Mode, &tracker.CreatedAtMillis, &tracker.UpdatedAtMillis); err != nil {
+			&tracker.CreatedAtMillis, &tracker.UpdatedAtMillis); err != nil {
 			return nil, fmt.Errorf("scan analytics tracker: %w", err)
 		}
 		trackers = append(trackers, tracker)
@@ -197,10 +190,10 @@ FROM analytics_trackers ORDER BY created_at, id`)
 func (store *Store) AnalyticsTracker(ctx context.Context, projectID, trackerID string) (AnalyticsTracker, error) {
 	var tracker AnalyticsTracker
 	err := store.database.QueryRowContext(ctx, `
-SELECT id, project_id, name, root_domain, mode, created_at, updated_at
+SELECT id, project_id, name, root_domain, created_at, updated_at
 FROM analytics_trackers WHERE id = ? AND project_id = ?`, trackerID, projectID).Scan(
 		&tracker.ID, &tracker.ProjectID, &tracker.Name, &tracker.RootDomain,
-		&tracker.Mode, &tracker.CreatedAtMillis, &tracker.UpdatedAtMillis)
+		&tracker.CreatedAtMillis, &tracker.UpdatedAtMillis)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AnalyticsTracker{}, ErrAnalyticsTrackerNotFound
 	}
@@ -213,10 +206,10 @@ FROM analytics_trackers WHERE id = ? AND project_id = ?`, trackerID, projectID).
 func (store *Store) AnalyticsTrackerByID(ctx context.Context, trackerID string) (AnalyticsTracker, error) {
 	var tracker AnalyticsTracker
 	err := store.database.QueryRowContext(ctx, `
-SELECT id, project_id, name, root_domain, mode, created_at, updated_at
+SELECT id, project_id, name, root_domain, created_at, updated_at
 FROM analytics_trackers WHERE id = ?`, trackerID).Scan(
 		&tracker.ID, &tracker.ProjectID, &tracker.Name, &tracker.RootDomain,
-		&tracker.Mode, &tracker.CreatedAtMillis, &tracker.UpdatedAtMillis)
+		&tracker.CreatedAtMillis, &tracker.UpdatedAtMillis)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AnalyticsTracker{}, ErrAnalyticsTrackerNotFound
 	}
@@ -239,9 +232,9 @@ func (store *Store) CreateAnalyticsTracker(ctx context.Context, tracker Analytic
 			return err
 		}
 		_, err := transaction.ExecContext(ctx, `
-INSERT INTO analytics_trackers(id, project_id, name, root_domain, mode, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			tracker.ID, tracker.ProjectID, tracker.Name, tracker.RootDomain, tracker.Mode,
+INSERT INTO analytics_trackers(id, project_id, name, root_domain, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+			tracker.ID, tracker.ProjectID, tracker.Name, tracker.RootDomain,
 			tracker.CreatedAtMillis, tracker.UpdatedAtMillis)
 		if err != nil {
 			if isUniqueConstraint(err) {
@@ -270,9 +263,9 @@ func (store *Store) UpdateAnalyticsTracker(ctx context.Context, tracker Analytic
 			return err
 		}
 		result, err := transaction.ExecContext(ctx, `
-UPDATE analytics_trackers SET name = ?, root_domain = ?, mode = ?, updated_at = ?
+UPDATE analytics_trackers SET name = ?, root_domain = ?, updated_at = ?
 WHERE id = ? AND project_id = ? AND updated_at = ?`,
-			tracker.Name, tracker.RootDomain, tracker.Mode, tracker.UpdatedAtMillis,
+			tracker.Name, tracker.RootDomain, tracker.UpdatedAtMillis,
 			tracker.ID, tracker.ProjectID, expectedUpdatedAt)
 		if err != nil {
 			if isUniqueConstraint(err) {
@@ -929,12 +922,7 @@ func validateAnalyticsTracker(tracker AnalyticsTracker) error {
 	if root == "" || strings.Contains(root, "/") || strings.Contains(root, " ") {
 		return ErrAnalyticsInvalid
 	}
-	switch tracker.Mode {
-	case AnalyticsModeCookieless, AnalyticsModeOptOut, AnalyticsModeOptIn:
-		return nil
-	default:
-		return ErrAnalyticsInvalid
-	}
+	return nil
 }
 
 func validateAnalyticsGoal(goal AnalyticsGoal) error {

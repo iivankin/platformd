@@ -14,13 +14,13 @@ import (
 
 type ArchiveStore struct {
 	*RemoteStore
-	parentHostname string
-	hostToken      string
-	imageRoot      string
+	parentURL string
+	hostToken string
+	imageRoot string
 }
 
-func NewArchiveStore(store *RemoteStore, parentHostname, hostToken, imageRoot string) *ArchiveStore {
-	return &ArchiveStore{RemoteStore: store, parentHostname: parentHostname, hostToken: hostToken, imageRoot: imageRoot}
+func NewArchiveStore(store *RemoteStore, parentURL, hostToken, imageRoot string) *ArchiveStore {
+	return &ArchiveStore{RemoteStore: store, parentURL: parentURL, hostToken: hostToken, imageRoot: imageRoot}
 }
 
 func (store *ArchiveStore) LatestReusableProductionRevision(ctx context.Context, serviceID string) (state.ImageRevision, error) {
@@ -28,7 +28,7 @@ func (store *ArchiveStore) LatestReusableProductionRevision(ctx context.Context,
 	if err != nil {
 		return state.ImageRevision{}, err
 	}
-	local, err := DownloadArchive(ctx, store.parentHostname, store.hostToken, revision.ID, store.imageRoot)
+	local, err := DownloadArchive(ctx, store.parentURL, store.hostToken, revision.ID, store.imageRoot)
 	if err != nil {
 		return state.ImageRevision{}, err
 	}
@@ -36,7 +36,7 @@ func (store *ArchiveStore) LatestReusableProductionRevision(ctx context.Context,
 	return revision, nil
 }
 
-func DownloadArchive(ctx context.Context, parentHostname, hostToken, revisionID, imageRoot string) (string, error) {
+func DownloadArchive(ctx context.Context, parentURL, hostToken, revisionID, imageRoot string) (string, error) {
 	if err := os.MkdirAll(imageRoot, 0o700); err != nil {
 		return "", err
 	}
@@ -44,7 +44,11 @@ func DownloadArchive(ctx context.Context, parentHostname, hostToken, revisionID,
 	if info, err := os.Stat(destination); err == nil && info.Mode().IsRegular() && info.Size() > 0 {
 		return destination, nil
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+parentHostname+hostconn.ImagePathPrefix+revisionID, nil)
+	endpoint, err := parentHTTPURL(parentURL, hostconn.ImagePathPrefix+revisionID)
+	if err != nil {
+		return "", err
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return "", err
 	}

@@ -46,7 +46,7 @@ func TestHostMeshTwoInstances(t *testing.T) {
 		env.hostID = joined.HostID
 		env.hostToken = joined.HostToken
 		_, err = hostagent.DialTunnelWithOptions(context.Background(), hostagent.TunnelOptions{
-			ParentHostname: env.hostname, HostToken: joined.HostToken, HTTPClient: env.client,
+			ParentURL: env.server.URL, HostToken: joined.HostToken, HTTPClient: env.client,
 		})
 		if err == nil || !strings.Contains(err.Error(), "409") {
 			t.Fatalf("tunnel before control = %v", err)
@@ -75,7 +75,7 @@ func TestHostMeshTwoInstances(t *testing.T) {
 	synced := make(chan string, 1)
 	var conn *hostagent.Conn
 	conn, welcome, err := hostagent.DialWithOptions(context.Background(), hostagent.DialOptions{
-		ParentHostname: env.hostname, HostToken: env.hostToken, PublicIPv4: "203.0.113.40",
+		ParentURL: env.server.URL, HostToken: env.hostToken, PublicIPv4: "203.0.113.40",
 		HTTPClient: env.client,
 		Handlers: hostagent.Handlers{
 			Reconcile: func(serviceID string, _ bool) error {
@@ -188,7 +188,7 @@ func TestHostMeshTwoInstances(t *testing.T) {
 	})
 
 	tunnel, err := hostagent.DialTunnelWithOptions(context.Background(), hostagent.TunnelOptions{
-		ParentHostname: env.hostname, HostToken: env.hostToken, HTTPClient: env.client,
+		ParentURL: env.server.URL, HostToken: env.hostToken, HTTPClient: env.client,
 		DialLocal: func(ctx context.Context, hostname string, port uint16) (net.Conn, error) {
 			if hostname != "api.shop.internal" || port != childPort {
 				return nil, errTestDial
@@ -240,7 +240,7 @@ func TestHostMeshTwoInstances(t *testing.T) {
 			t.Fatal("parent tunnel peer is missing")
 		}
 		replacement, err := hostagent.DialTunnelWithOptions(context.Background(), hostagent.TunnelOptions{
-			ParentHostname: env.hostname, HostToken: env.hostToken, HTTPClient: env.client,
+			ParentURL: env.server.URL, HostToken: env.hostToken, HTTPClient: env.client,
 			DialLocal: func(ctx context.Context, hostname string, port uint16) (net.Conn, error) {
 				if hostname != "api.shop.internal" || port != childPort {
 					return nil, errTestDial
@@ -288,6 +288,38 @@ func TestHostMeshTwoInstances(t *testing.T) {
 			t.Fatal("tunnel dial succeeded after control close")
 		}
 	})
+}
+
+func TestHostMeshConnectsOverPrivateHTTP(t *testing.T) {
+	env := startHostMeshServer(t, false)
+	joinToken, _, err := env.hub.CreateJoinToken(context.Background(), "edge-private", "actor", "admin@example.com", "req-private")
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined, err := hostagent.Join(context.Background(), hostagent.JoinInput{
+		URL: env.server.URL, Token: joinToken, Name: "edge-private", PublicIPv4: "203.0.113.41",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if joined.ParentURL != env.server.URL {
+		t.Fatalf("parent URL = %q, want %q", joined.ParentURL, env.server.URL)
+	}
+	connection, _, err := hostagent.DialWithOptions(context.Background(), hostagent.DialOptions{
+		ParentURL: joined.ParentURL, HostToken: joined.HostToken, PublicIPv4: "203.0.113.41",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if !env.hub.Connected(joined.HostID) {
+		t.Fatal("private HTTP control connection was not attached")
+	}
+	tunnel, err := hostagent.DialTunnel(context.Background(), joined.ParentURL, joined.HostToken, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tunnel.Close() })
 }
 
 func TestHostMeshTwoChildrenRelay(t *testing.T) {
@@ -371,6 +403,10 @@ type hostMeshChild struct {
 }
 
 func startHostMesh(t *testing.T) *hostMeshEnv {
+	return startHostMeshServer(t, true)
+}
+
+func startHostMeshServer(t *testing.T, secure bool) *hostMeshEnv {
 	t.Helper()
 	store, err := state.Open(context.Background(), filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
 	if err != nil {
@@ -416,7 +452,7 @@ func startHostMesh(t *testing.T) *hostMeshEnv {
 
 	if err := store.CreateAnalyticsTracker(context.Background(), state.AnalyticsTracker{
 		ID: "tracker", ProjectID: "shop", Name: "shop", RootDomain: "shop.example",
-		Mode: state.AnalyticsModeOptOut, CreatedAtMillis: 4, UpdatedAtMillis: 4,
+		CreatedAtMillis: 4, UpdatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -449,7 +485,11 @@ func startHostMesh(t *testing.T) *hostMeshEnv {
 	server.Listener = listener
 	server.EnableHTTP2 = false
 	server.TLS = &tls.Config{NextProtos: []string{"http/1.1"}}
-	server.StartTLS()
+	if secure {
+		server.StartTLS()
+	} else {
+		server.Start()
+	}
 	t.Cleanup(server.Close)
 
 	env.hub = hub
@@ -472,7 +512,7 @@ func (env *hostMeshEnv) joinChild(t *testing.T, name, ipv4 string) *hostMeshChil
 		t.Fatal(err)
 	}
 	conn, _, err := hostagent.DialWithOptions(context.Background(), hostagent.DialOptions{
-		ParentHostname: env.hostname, HostToken: joined.HostToken, PublicIPv4: ipv4, HTTPClient: env.client,
+		ParentURL: env.server.URL, HostToken: joined.HostToken, PublicIPv4: ipv4, HTTPClient: env.client,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -486,7 +526,7 @@ func (env *hostMeshEnv) joinChild(t *testing.T, name, ipv4 string) *hostMeshChil
 func (child *hostMeshChild) dialTunnel(t *testing.T, env *hostMeshEnv, name string, port uint16, addr string) {
 	t.Helper()
 	tunnel, err := hostagent.DialTunnelWithOptions(context.Background(), hostagent.TunnelOptions{
-		ParentHostname: env.hostname, HostToken: child.hostToken, HTTPClient: env.client,
+		ParentURL: env.server.URL, HostToken: child.hostToken, HTTPClient: env.client,
 		DialLocal: func(ctx context.Context, hostname string, got uint16) (net.Conn, error) {
 			if hostname != name || got != port {
 				return nil, errTestDial

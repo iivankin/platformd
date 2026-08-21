@@ -4,10 +4,13 @@ package daemon
 
 import (
 	"errors"
+	"net"
 	"net/http"
+	"net/netip"
 
 	"github.com/iivankin/platformd/internal/automationapi"
 	"github.com/iivankin/platformd/internal/automationauth"
+	"github.com/iivankin/platformd/internal/hostconn"
 	"github.com/iivankin/platformd/internal/mcp"
 	"github.com/iivankin/platformd/internal/portforward"
 )
@@ -95,10 +98,26 @@ func publicHandler(imageUpload, forward, createForward, hosts, protected http.Ha
 		mux.Handle("POST /public/api/v1/hosts/join", hosts)
 		mux.Handle("GET /public/api/v1/hosts/connect", hosts)
 		mux.Handle("GET /public/api/v1/hosts/tunnel", hosts)
+		mux.Handle("POST "+hostconn.OTLPPathPrefix+"/v1/{signal}", hosts)
 		mux.Handle("GET /public/api/v1/hosts/images/{revisionID}", hosts)
 	}
 	mux.Handle("/", protected)
 	return mux
+}
+
+func privateHostHandler(hosts http.Handler) http.Handler {
+	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		host, _, err := net.SplitHostPort(request.RemoteAddr)
+		if err != nil {
+			host = request.RemoteAddr
+		}
+		address, err := netip.ParseAddr(host)
+		if err != nil || (!address.IsPrivate() && !address.IsLoopback()) {
+			http.Error(response, http.StatusText(http.StatusForbidden), http.StatusForbidden)
+			return
+		}
+		hosts.ServeHTTP(response, request)
+	})
 }
 
 func adminHostnameHandler(admin, public http.Handler) http.Handler {

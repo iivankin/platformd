@@ -17,10 +17,9 @@ type joinRequest struct {
 }
 
 type joinResponse struct {
-	HostID         string `json:"hostId"`
-	HostToken      string `json:"hostToken"`
-	ParentHostname string `json:"parentHostname"`
-	Name           string `json:"name"`
+	HostID    string `json:"hostId"`
+	HostToken string `json:"hostToken"`
+	Name      string `json:"name"`
 }
 
 func (hub *Hub) JoinHandler() http.Handler {
@@ -80,7 +79,7 @@ func (hub *Hub) JoinHandler() http.Handler {
 		response.Header().Set("Content-Type", "application/json; charset=utf-8")
 		response.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(response).Encode(joinResponse{
-			HostID: host.ID, HostToken: plaintext, ParentHostname: hub.adminHostname, Name: host.Name,
+			HostID: host.ID, HostToken: plaintext, Name: host.Name,
 		})
 	})
 }

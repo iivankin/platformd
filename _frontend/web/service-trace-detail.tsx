@@ -1,3 +1,4 @@
+import { Dialog } from "@base-ui/react/dialog";
 import {
   ArrowLeft,
   Bot,
@@ -16,6 +17,7 @@ import {
   RotateCcw,
   Search,
   Wrench,
+  X,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -53,7 +55,6 @@ import {
   webVitalName,
 } from "@/trace-details-model";
 import type { TraceRow, WebVitalMeasurement } from "@/trace-details-model";
-import { TraceProfileFlamegraph } from "@/trace-profile-flamegraph";
 import { TraceRelatedLogs } from "@/trace-related-logs";
 import { matchingTraceSpans } from "@/trace-search";
 import { traceSpanSelfTime } from "@/trace-span-context";
@@ -251,30 +252,6 @@ const traceAttributeGroups = (span: ServiceTraceSpan) => {
     { label: "Resource", values: otlpAttributes(span.resource) },
     { label: "Instrumentation", values: otlpAttributes(span.scope) },
   ].filter((group) => group.values.length > 0);
-};
-
-const TraceAttributeHeader = ({
-  span,
-  traceStart,
-}: {
-  span: ServiceTraceSpan;
-  traceStart: bigint;
-}) => {
-  const offset = integer(span.startTimeUnixNano) - traceStart;
-  return (
-    <header className="px-4 py-3">
-      <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
-        {span.aiKind || "Selected span"}
-      </p>
-      <h3 className="mt-1 text-xs font-medium">
-        {span.aiKind ? aiSpanLabel(span) : span.name}
-      </h3>
-      <p className="mt-1 text-[9px] text-muted-foreground">
-        {spanKind(span.kind)} · {formatDuration(span.durationNano)} · +
-        {formatDuration(offset.toString())}
-      </p>
-    </header>
-  );
 };
 
 const TraceSpanActions = ({
@@ -533,12 +510,14 @@ const TraceAttributeDetails = ({
   );
 };
 
-const TraceAttributes = ({
+const TraceSpanDialog = ({
   metrics,
   onOpenError,
   onOpenLogs,
   onOpenTrace,
+  onOpenChange,
   onSelectSpan,
+  open,
   span,
   traceSpans,
   traceStart,
@@ -547,7 +526,9 @@ const TraceAttributes = ({
   onOpenError?: (issueID: string, eventID?: string) => void;
   onOpenLogs?: (traceID: string, spanID?: string) => void;
   onOpenTrace?: (traceID: string, segmentID?: string) => void;
+  onOpenChange: (open: boolean) => void;
   onSelectSpan: (spanID: string) => void;
+  open: boolean;
   span: ServiceTraceSpan;
   traceSpans: ServiceTraceSpan[];
   traceStart: bigint;
@@ -563,44 +544,81 @@ const TraceAttributes = ({
     null,
     2
   );
+  const offset = integer(span.startTimeUnixNano) - traceStart;
 
   return (
-    <aside className="min-h-0 border-l border-border max-lg:border-t max-lg:border-l-0">
-      <TraceAttributeHeader span={span} traceStart={traceStart} />
-      <nav
-        aria-label="Span inspector"
-        className="flex h-9 items-end border-t border-b border-border px-3"
-      >
-        {(["details", "raw"] as const).map((value) => (
-          <button
-            className={cn(
-              "h-full border-b-2 border-transparent px-3 text-[9px] text-muted-foreground hover:text-foreground",
-              tab === value && "border-foreground text-foreground"
-            )}
-            key={value}
-            onClick={() => setTab(value)}
-            type="button"
-          >
-            {value === "details" ? "Details" : "Raw data"}
-          </button>
-        ))}
-      </nav>
-      {tab === "raw" ? (
-        <pre className="max-h-[44rem] overflow-auto px-4 py-3 font-mono text-[9px] leading-relaxed whitespace-pre-wrap text-foreground/80">
-          {raw}
-        </pre>
-      ) : (
-        <TraceAttributeDetails
-          metrics={metrics}
-          onOpenError={onOpenError}
-          onOpenLogs={onOpenLogs}
-          onOpenTrace={onOpenTrace}
-          onSelectSpan={onSelectSpan}
-          span={span}
-          traceSpans={traceSpans}
-        />
-      )}
-    </aside>
+    <Dialog.Root
+      onOpenChange={(nextOpen) => {
+        onOpenChange(nextOpen);
+        if (!nextOpen) {
+          setTab("details");
+        }
+      }}
+      open={open}
+    >
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[1px] data-open:animate-in data-open:fade-in data-closed:animate-out data-closed:fade-out" />
+        <Dialog.Viewport className="fixed inset-0 z-50 grid place-items-center overflow-y-auto p-4">
+          <Dialog.Popup className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col border border-border bg-background text-foreground shadow-2xl data-open:animate-in data-open:zoom-in-95 data-open:fade-in data-closed:animate-out data-closed:zoom-out-95 data-closed:fade-out">
+            <header className="flex items-start justify-between gap-5 border-b border-border px-5 py-4">
+              <div className="min-w-0">
+                <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
+                  {span.aiKind || "Selected span"}
+                </p>
+                <Dialog.Title className="mt-1 truncate text-sm font-medium">
+                  {span.aiKind ? aiSpanLabel(span) : span.name}
+                </Dialog.Title>
+                <Dialog.Description className="mt-1.5 text-[9px] text-muted-foreground">
+                  {spanKind(span.kind)} · {formatDuration(span.durationNano)} ·
+                  +{formatDuration(offset.toString())}
+                </Dialog.Description>
+              </div>
+              <Dialog.Close
+                aria-label="Close span details"
+                className="flex size-8 shrink-0 items-center justify-center text-muted-foreground outline-none hover:bg-muted hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring"
+              >
+                <X className="size-4" />
+              </Dialog.Close>
+            </header>
+            <nav
+              aria-label="Span inspector"
+              className="flex h-9 shrink-0 items-end border-b border-border px-3"
+            >
+              {(["details", "raw"] as const).map((value) => (
+                <button
+                  className={cn(
+                    "h-full border-b-2 border-transparent px-3 text-[9px] text-muted-foreground hover:text-foreground",
+                    tab === value && "border-foreground text-foreground"
+                  )}
+                  key={value}
+                  onClick={() => setTab(value)}
+                  type="button"
+                >
+                  {value === "details" ? "Details" : "Raw data"}
+                </button>
+              ))}
+            </nav>
+            <div className="min-h-0 overflow-y-auto">
+              {tab === "raw" ? (
+                <pre className="overflow-auto px-4 py-3 font-mono text-[9px] leading-relaxed whitespace-pre-wrap text-foreground/80">
+                  {raw}
+                </pre>
+              ) : (
+                <TraceAttributeDetails
+                  metrics={metrics}
+                  onOpenError={onOpenError}
+                  onOpenLogs={onOpenLogs}
+                  onOpenTrace={onOpenTrace}
+                  onSelectSpan={onSelectSpan}
+                  span={span}
+                  traceSpans={traceSpans}
+                />
+              )}
+            </div>
+          </Dialog.Popup>
+        </Dialog.Viewport>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 };
 
@@ -899,6 +917,7 @@ const TraceWaterfall = ({
   onOpenTrace?: (traceID: string, segmentID?: string) => void;
 }) => {
   const [selectedID, setSelectedID] = useState(detail.spans[0]?.spanId ?? "");
+  const [spanDialogOpen, setSpanDialogOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
     () => new Set()
@@ -975,6 +994,10 @@ const TraceWaterfall = ({
       return next;
     });
   };
+  const selectSpan = (spanID: string) => {
+    setSelectedID(spanID);
+    setSpanDialogOpen(true);
+  };
   const moveMatch = (direction: -1 | 1) => {
     if (matches.length === 0) {
       return;
@@ -986,7 +1009,7 @@ const TraceWaterfall = ({
     }
     const match = matches[next];
     if (match) {
-      setSelectedID(match.spanId);
+      selectSpan(match.spanId);
     }
   };
   const zoom = (direction: "in" | "out") => {
@@ -1026,7 +1049,7 @@ const TraceWaterfall = ({
   const selectedMatch = matches.findIndex((span) => span.spanId === selectedID);
 
   return (
-    <div className="grid border-b border-border lg:grid-cols-[minmax(0,1fr)_minmax(24rem,0.42fr)]">
+    <div className="border-b border-border">
       <section className="min-w-0">
         <div className="flex min-h-11 items-center gap-2 overflow-x-auto border-b border-border px-3 py-1.5">
           <div className="relative min-w-48 flex-1">
@@ -1165,7 +1188,7 @@ const TraceWaterfall = ({
                 collapsed={collapsed}
                 expandedGroups={expandedGroups}
                 key={row.id}
-                onSelect={setSelectedID}
+                onSelect={selectSpan}
                 onToggleCollapsed={toggleCollapsed}
                 onToggleGroup={toggleGroup}
                 row={row}
@@ -1178,13 +1201,14 @@ const TraceWaterfall = ({
         </div>
       </section>
       {selected ? (
-        <TraceAttributes
-          key={selected.spanId}
+        <TraceSpanDialog
           metrics={detail.metrics}
           onOpenError={onOpenError}
           onOpenLogs={onOpenLogs}
           onOpenTrace={onOpenTrace}
-          onSelectSpan={setSelectedID}
+          onOpenChange={setSpanDialogOpen}
+          onSelectSpan={selectSpan}
+          open={spanDialogOpen}
           span={selected}
           traceSpans={detail.spans}
           traceStart={baseViewport.start}
@@ -1348,12 +1372,6 @@ export const ServiceTraceDetailView = ({
         onOpenLogs={onOpenLogs}
         onOpenTrace={onOpenTrace}
       />
-      {detail.profiles.length > 0 ? (
-        <TraceProfileFlamegraph
-          profiles={detail.profiles}
-          spans={detail.spans}
-        />
-      ) : null}
       {onOpenLogs ? (
         <TraceRelatedLogs
           onOpenLogs={(traceID) => onOpenLogs(traceID)}

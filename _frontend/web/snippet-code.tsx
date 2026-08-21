@@ -1,19 +1,39 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { cn } from "@/lib/utils";
 
-interface SyntaxToken {
+export interface SyntaxToken {
   color?: string;
   content: string;
   fontStyle?: number;
 }
 
-export type SnippetLanguage = "html" | "javascript" | "tsx" | "typescript";
+export type SnippetLanguage =
+  | "bash"
+  | "c"
+  | "cpp"
+  | "csharp"
+  | "css"
+  | "go"
+  | "html"
+  | "java"
+  | "javascript"
+  | "json"
+  | "php"
+  | "python"
+  | "ruby"
+  | "rust"
+  | "text"
+  | "toml"
+  | "tsx"
+  | "typescript"
+  | "vue"
+  | "yaml";
 
 const plainLines = (value: string): SyntaxToken[][] =>
   value.split("\n").map((line) => [{ content: line || " " }]);
 
-const tokenStyle = (fontStyle?: number): React.CSSProperties => ({
+export const syntaxTokenStyle = (fontStyle?: number): React.CSSProperties => ({
   fontStyle:
     fontStyle && [1, 3, 5, 7].includes(fontStyle) ? "italic" : undefined,
   fontWeight: fontStyle && [2, 3, 6, 7].includes(fontStyle) ? 700 : undefined,
@@ -21,19 +41,74 @@ const tokenStyle = (fontStyle?: number): React.CSSProperties => ({
     fontStyle && [4, 5, 6, 7].includes(fontStyle) ? "underline" : undefined,
 });
 
-const useDocumentDark = () => {
-  const [dark, setDark] = useState(() =>
-    document.documentElement.classList.contains("dark")
-  );
+const darkModeListeners = new Set<() => void>();
+let darkModeObserver: MutationObserver | undefined;
+
+const documentIsDark = () =>
+  typeof document !== "undefined" &&
+  document.documentElement.classList.contains("dark");
+
+const subscribeToDarkMode = (listener: () => void) => {
+  darkModeListeners.add(listener);
+  if (!darkModeObserver && typeof MutationObserver !== "undefined") {
+    darkModeObserver = new MutationObserver(() => {
+      for (const notify of darkModeListeners) {
+        notify();
+      }
+    });
+    darkModeObserver.observe(document.documentElement, {
+      attributeFilter: ["class"],
+      attributes: true,
+    });
+  }
+  return () => {
+    darkModeListeners.delete(listener);
+    if (darkModeListeners.size === 0) {
+      darkModeObserver?.disconnect();
+      darkModeObserver = undefined;
+    }
+  };
+};
+
+const useDocumentDark = () =>
+  useSyncExternalStore(subscribeToDarkMode, documentIsDark, () => false);
+
+export const useHighlightedCode = (
+  value: string,
+  language: SnippetLanguage
+) => {
+  const dark = useDocumentDark();
+  const key = `${dark ? "dark" : "light"}\0${language}\0${value}`;
+  const [highlighted, setHighlighted] = useState<{
+    key: string;
+    tokens: SyntaxToken[][];
+  }>();
+
   useEffect(() => {
-    const root = document.documentElement;
-    const sync = () => setDark(root.classList.contains("dark"));
-    const observer = new MutationObserver(sync);
-    observer.observe(root, { attributeFilter: ["class"], attributes: true });
-    sync();
-    return () => observer.disconnect();
-  }, []);
-  return dark;
+    let active = true;
+    const highlight = async () => {
+      try {
+        const { codeToTokens } = await import("shiki/bundle/full");
+        const result = await codeToTokens(value, {
+          lang: language,
+          theme: dark ? "github-dark-default" : "github-light",
+        });
+        if (active) {
+          setHighlighted({ key, tokens: result.tokens });
+        }
+      } catch {
+        if (active) {
+          setHighlighted({ key, tokens: plainLines(value) });
+        }
+      }
+    };
+    void highlight();
+    return () => {
+      active = false;
+    };
+  }, [dark, key, language, value]);
+
+  return highlighted?.key === key ? highlighted.tokens : plainLines(value);
 };
 
 export const HighlightedSnippet = ({
@@ -45,34 +120,7 @@ export const HighlightedSnippet = ({
   language: SnippetLanguage;
   value: string;
 }) => {
-  const dark = useDocumentDark();
-  const [tokens, setTokens] = useState<SyntaxToken[][]>(() =>
-    plainLines(value)
-  );
-
-  useEffect(() => {
-    let active = true;
-    const highlight = async () => {
-      try {
-        const { codeToTokens } = await import("shiki/bundle/web");
-        const result = await codeToTokens(value, {
-          lang: language,
-          theme: dark ? "github-dark-default" : "github-light",
-        });
-        if (active) {
-          setTokens(result.tokens);
-        }
-      } catch {
-        if (active) {
-          setTokens(plainLines(value));
-        }
-      }
-    };
-    void highlight();
-    return () => {
-      active = false;
-    };
-  }, [dark, language, value]);
+  const tokens = useHighlightedCode(value, language);
 
   return (
     <pre
@@ -91,7 +139,10 @@ export const HighlightedSnippet = ({
             line.map((token, tokenIndex) => (
               <span
                 key={`${tokenIndex}:${token.content}`}
-                style={{ color: token.color, ...tokenStyle(token.fontStyle) }}
+                style={{
+                  color: token.color,
+                  ...syntaxTokenStyle(token.fontStyle),
+                }}
               >
                 {token.content}
               </span>

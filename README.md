@@ -7,7 +7,8 @@ endpoint. Container stdout/stderr, SDK logs, traces, metrics, and Sentry events
 flow into the always-running embedded telemetry process and are stored in chDB.
 Versioned issue state lives beside its events, so telemetry has one source of
 truth. A service can expose its Sentry receiver on a public domain, while
-OTLP remains private to the project network.
+OTLP logs and metrics remain private to the project network. Browser services
+can expose one exact CORS-enabled OTLP HTTP/protobuf path for traces.
 
 The server, admin UI, and container runtime are distributed as one `platformd` release executable. `platformd-forward` is a small local helper that connects short-lived API/MCP port-forward tickets to a localhost TCP port.
 
@@ -48,7 +49,11 @@ Tunnel is not required. Before running the installer:
    requests under this path authenticate with platformd API tokens instead of
    the interactive Cloudflare Access session. Image uploads use GitHub Actions
    OIDC, and port-forward connections use their own scoped tickets.
-5. Record the values required by `platformd init`:
+5. To collect city and region in web analytics and Sentry events for proxied
+   service domains, enable **Rules → Settings → Managed Transforms → Add visitor
+   location headers**. Without this transform, Cloudflare may send only the country.
+   See the [Managed Transform reference](https://developers.cloudflare.com/rules/transform/managed-transforms/reference/#add-visitor-location-headers).
+6. Record the values required by `platformd init`:
    - **Team domain** — `<team>.cloudflareaccess.com`, shown under Zero Trust
      settings. Do not include `https://`. See Cloudflare's
      [team domain explanation](https://developers.cloudflare.com/cloudflare-one/faq/getting-started-faq/#what-is-a-team-domainteam-name).
@@ -113,6 +118,8 @@ plane:
 curl -fsSL https://raw.githubusercontent.com/iivankin/platformd/main/install.sh | sudo sh -s -- worker
 sudo platformd join --url https://admin.example.com --token pjn_...
 ```
+
+When the child can reach the parent over a trusted private network, the join URL may use a private or loopback IP over HTTP, for example `--url http://10.20.0.4`. The worker keeps that URL for control, tunnel, telemetry, and image traffic. Plain HTTP is rejected for public IPs and hostnames.
 
 After the child connects, attach a Cloudflare-proxied **A** record for each
 service hostname that should terminate on that child, pointing at the child's

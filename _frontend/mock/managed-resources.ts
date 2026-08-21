@@ -1,4 +1,9 @@
-import type { ManagedPostgres, ManagedRedis, ObjectStore } from "../web/api";
+import type {
+  ManagedPostgres,
+  ManagedRedis,
+  ObjectMetadata,
+  ObjectStore,
+} from "../web/api";
 import { json, mockError, noContent } from "./http";
 import {
   mockManagedStatsHistory,
@@ -425,6 +430,30 @@ const handlePostgresExtensions = (
   return json(operation, 202);
 };
 
+const browseObjectPage = (
+  available: ObjectMetadata[],
+  prefix: string,
+  delimiter: string
+) => {
+  const objects: ObjectMetadata[] = [];
+  const prefixes = new Set<string>();
+  for (const object of available) {
+    if (!object.objectKey.startsWith(prefix)) {
+      continue;
+    }
+    const remainder = object.objectKey.slice(prefix.length);
+    const delimiterIndex = delimiter ? remainder.indexOf(delimiter) : -1;
+    if (delimiterIndex < 0) {
+      objects.push(object);
+      continue;
+    }
+    prefixes.add(
+      `${prefix}${remainder.slice(0, delimiterIndex + delimiter.length)}`
+    );
+  }
+  return { objects, prefixes: [...prefixes].toSorted() };
+};
+
 const handleObjects = (
   request: Request,
   state: MockState,
@@ -456,11 +485,15 @@ const handleObjects = (
   }
   if (request.method === "GET") {
     const prefix = url.searchParams.get("prefix") ?? "";
+    const delimiter = url.searchParams.get("delimiter") ?? "";
+    const page = browseObjectPage(
+      state.objectMetadata[storeID] ?? [],
+      prefix,
+      delimiter
+    );
     return json({
       nextContinuationToken: "",
-      objects: (state.objectMetadata[storeID] ?? []).filter((object) =>
-        object.objectKey.startsWith(prefix)
-      ),
+      ...page,
     });
   }
   if (request.method === "DELETE") {

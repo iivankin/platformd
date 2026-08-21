@@ -8,19 +8,20 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/iivankin/platformd/internal/state"
 )
 
 func TestReservedPaths(t *testing.T) {
 	t.Parallel()
-	if !Reserved(http.MethodGet, "/analytics.js") || !Reserved(http.MethodPost, "/analytics/e") {
-		t.Fatal("script and event paths should be reserved")
+	if !Reserved(http.MethodPost, "/analytics/e") {
+		t.Fatal("event path should be reserved")
 	}
 	if !Reserved(http.MethodPost, "/ofrep/v1/evaluate/flags") || !Reserved(http.MethodPost, "/ofrep/v1/evaluate/flags/pricing-v2") {
 		t.Fatal("OFREP paths should be reserved")
 	}
-	if Reserved(http.MethodGet, "/") || Reserved(http.MethodPost, "/api/1/envelope/") {
+	if Reserved(http.MethodGet, "/analytics.js") || Reserved(http.MethodGet, "/") || Reserved(http.MethodPost, "/api/1/envelope/") {
 		t.Fatal("application paths must not be reserved")
 	}
 }
@@ -28,26 +29,30 @@ func TestReservedPaths(t *testing.T) {
 func TestPublicHandlerStripsSpoofedTrackerHeader(t *testing.T) {
 	t.Parallel()
 	catalog := &catalogStub{trackers: []state.AnalyticsTracker{{
-		ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example", Mode: state.AnalyticsModeOptOut,
+		ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example",
 	}}}
-	handler := NewHandler(catalog, nil, nil)
-	request := httptest.NewRequest(http.MethodGet, "https://shop.example/analytics.js", nil)
+	target, captured, client := ingestCapture(t)
+	handler := NewHandler(catalog, client, target, nil)
+	request := httptest.NewRequest(http.MethodPost, "https://shop.example/analytics/e", strings.NewReader(`{"n":"custom","u":"https://shop.example/"}`))
 	request.Host = "shop.example"
 	request.Header.Set(TrackerHeader, "spoofed")
+	request.Header.Set("Content-Type", "application/json")
+	request.AddCookie(&http.Cookie{Name: AidCookie, Value: "aid-1"})
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
+	if response.Code != http.StatusNoContent {
 		t.Fatalf("status = %d", response.Code)
 	}
-	if !strings.Contains(response.Body.String(), "window.platformd") {
-		t.Fatalf("script body = %q", response.Body.String())
+	events := captured.snapshot()
+	if len(events) != 1 || events[0].TrackerID != "tracker-shop" {
+		t.Fatalf("events = %+v", events)
 	}
 }
 
 func TestPublicHandler404WithoutTracker(t *testing.T) {
 	t.Parallel()
-	handler := NewHandler(&catalogStub{}, nil, nil)
-	request := httptest.NewRequest(http.MethodGet, "https://unknown.example/analytics.js", nil)
+	handler := NewHandler(&catalogStub{}, nil, nil, nil)
+	request := httptest.NewRequest(http.MethodPost, "https://unknown.example/analytics/e", strings.NewReader(`{"n":"custom"}`))
 	request.Host = "unknown.example"
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
@@ -56,11 +61,34 @@ func TestPublicHandler404WithoutTracker(t *testing.T) {
 	}
 }
 
-func TestPublicCookielessOFREPUsesDailyHash(t *testing.T) {
+func TestPublicEventWithoutAIDUsesCookielessIdentity(t *testing.T) {
+	t.Parallel()
+	target, captured, client := ingestCapture(t)
+	handler := NewHandler(shopCatalog(), client, target, nil)
+	now := time.Date(2026, 8, 21, 12, 0, 0, 0, time.UTC)
+	handler.Now = func() time.Time { return now }
+	request := httptest.NewRequest(http.MethodPost, "https://shop.example/analytics/e", strings.NewReader(`{"n":"$pageview","u":"https://shop.example/","s":"spoofed"}`))
+	request.Host = "shop.example"
+	request.RemoteAddr = "10.0.0.1:443"
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("User-Agent", "Mozilla/5.0")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d body=%s", response.Code, response.Body)
+	}
+	events := captured.snapshot()
+	wantID := DailyHash("tracker-shop", "install", "10.0.0.1", "Mozilla/5.0", now)
+	if len(events) != 1 || events[0].DistinctID != wantID || events[0].SessionID != "" {
+		t.Fatalf("cookieless event = %+v", events)
+	}
+}
+
+func TestPublicOFREPRequiresAIDForTargeting(t *testing.T) {
 	t.Parallel()
 	catalog := &catalogStub{
 		trackers: []state.AnalyticsTracker{{
-			ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example", Mode: state.AnalyticsModeCookieless,
+			ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example",
 		}},
 		flags: []state.AnalyticsFlag{{
 			ID: "flag-1", TrackerID: "tracker-shop", Key: "pricing-v2", Type: "boolean", Enabled: true,
@@ -68,7 +96,7 @@ func TestPublicCookielessOFREPUsesDailyHash(t *testing.T) {
 			TargetingJSON: `{"groups":[{"properties":[],"rollout_percentage":100}]}`,
 		}},
 	}
-	handler := NewHandler(catalog, nil, nil)
+	handler := NewHandler(catalog, nil, nil, nil)
 	request := httptest.NewRequest(http.MethodPost, "https://shop.example/ofrep/v1/evaluate/flags/pricing-v2", strings.NewReader(`{"context":{}}`))
 	request.Host = "shop.example"
 	request.RemoteAddr = "10.0.0.1:443"
@@ -87,8 +115,52 @@ func TestPublicCookielessOFREPUsesDailyHash(t *testing.T) {
 	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
 		t.Fatal(err)
 	}
+	if body.Reason != "DEFAULT" || body.Value || body.Variant != "false" {
+		t.Fatalf("OFREP without AID = %+v", body)
+	}
+
+	identified := httptest.NewRequest(http.MethodPost, "https://shop.example/ofrep/v1/evaluate/flags/pricing-v2", strings.NewReader(`{"context":{}}`))
+	identified.Host = "shop.example"
+	identified.Header.Set("Content-Type", "application/json")
+	identified.AddCookie(&http.Cookie{Name: AidCookie, Value: "aid-1"})
+	identifiedResponse := httptest.NewRecorder()
+	handler.ServeHTTP(identifiedResponse, identified)
+	if identifiedResponse.Code != http.StatusOK {
+		t.Fatalf("identified status = %d body=%s", identifiedResponse.Code, identifiedResponse.Body)
+	}
+	if err := json.NewDecoder(identifiedResponse.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
 	if body.Reason != "TARGETING_MATCH" || !body.Value || body.Variant != "true" {
-		t.Fatalf("cookieless OFREP = %+v", body)
+		t.Fatalf("OFREP with AID = %+v", body)
+	}
+}
+
+func TestObserveDocumentOnlyRecordsVerifiedBotIP(t *testing.T) {
+	t.Parallel()
+	target, captured, client := ingestCapture(t)
+	handler := NewHandler(shopCatalog(), client, target, botIPVerifierStub{
+		botName: "OAI-SearchBot", address: "203.0.113.7",
+	})
+
+	spoofed := httptest.NewRequest(http.MethodGet, "https://shop.example/.git/config", nil)
+	spoofed.Host = "shop.example"
+	spoofed.Header.Set("User-Agent", "OAI-SearchBot")
+	spoofed.Header.Set("CF-Connecting-IP", "198.51.100.9")
+	spoofed.Header.Set("X-Forwarded-For", "203.0.113.7")
+	handler.ObserveDocument(spoofed, "service-shop")
+	if captured.len() != 0 {
+		t.Fatalf("spoofed bot events = %+v", captured.snapshot())
+	}
+
+	verified := httptest.NewRequest(http.MethodGet, "https://shop.example/products", nil)
+	verified.Host = "shop.example"
+	verified.Header.Set("User-Agent", "OAI-SearchBot")
+	verified.Header.Set("CF-Connecting-IP", "203.0.113.7")
+	handler.ObserveDocument(verified, "service-shop")
+	events := captured.snapshot()
+	if len(events) != 1 || events[0].BotName != "OAI-SearchBot" || events[0].Pathname != "/products" {
+		t.Fatalf("verified bot events = %+v", events)
 	}
 }
 
@@ -159,7 +231,7 @@ func TestInternalOFREPUnknownFlagIs404WithETag(t *testing.T) {
 func internalOFREPCatalog() *catalogStub {
 	return &catalogStub{
 		trackers: []state.AnalyticsTracker{{
-			ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example", Mode: state.AnalyticsModeOptOut,
+			ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example",
 		}},
 		flags: []state.AnalyticsFlag{{
 			ID: "flag-1", TrackerID: "tracker-shop", Key: "pricing-v2", Type: "boolean", Enabled: true,
@@ -177,6 +249,15 @@ type catalogStub struct {
 	trackers    []state.AnalyticsTracker
 	flags       []state.AnalyticsFlag
 	experiments []state.AnalyticsExperiment
+}
+
+type botIPVerifierStub struct {
+	botName string
+	address string
+}
+
+func (verifier botIPVerifierStub) Verify(botName, address string) bool {
+	return botName == verifier.botName && address == verifier.address
 }
 
 func (catalog *catalogStub) AllAnalyticsTrackers(context.Context) ([]state.AnalyticsTracker, error) {

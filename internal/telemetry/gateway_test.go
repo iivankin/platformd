@@ -66,3 +66,52 @@ func TestServiceOTLPGatewayRejectsWrongSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestPublicOTLPTraceProxyInjectsTrustedIdentity(t *testing.T) {
+	var receivedServiceID, receivedPath, receivedBody string
+	receiver := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		receivedServiceID = request.Header.Get("X-Platformd-Service-Id")
+		receivedPath = request.URL.Path
+		body, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		receivedBody = string(body)
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer receiver.Close()
+	target, err := url.Parse(receiver.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &ServiceManager{otlpProxy: httputil.NewSingleHostReverseProxy(target)}
+	request := httptest.NewRequest(http.MethodPost, "https://otel.example.com/v1/traces", strings.NewReader("trace-payload"))
+	request.Header.Set("X-Platformd-Service-Id", "spoofed")
+	response := httptest.NewRecorder()
+	manager.ServePublicOTLPTraces(response, request, "service-1")
+	if response.Code != http.StatusNoContent || receivedServiceID != "service-1" ||
+		receivedPath != "/v1/traces" || receivedBody != "trace-payload" {
+		t.Fatalf("public OTLP proxy = status %d, service %q, path %q, body %q",
+			response.Code, receivedServiceID, receivedPath, receivedBody)
+	}
+}
+
+func TestPublicOTLPTraceProxyRejectsKnownOversizedBody(t *testing.T) {
+	forwarded := false
+	receiver := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		forwarded = true
+	}))
+	defer receiver.Close()
+	target, err := url.Parse(receiver.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &ServiceManager{otlpProxy: httputil.NewSingleHostReverseProxy(target)}
+	request := httptest.NewRequest(http.MethodPost, "https://otel.example.com/v1/traces", strings.NewReader("trace"))
+	request.ContentLength = maximumPublicOTLPTraceBytes + 1
+	response := httptest.NewRecorder()
+	manager.ServePublicOTLPTraces(response, request, "service-1")
+	if response.Code != http.StatusRequestEntityTooLarge || forwarded {
+		t.Fatalf("oversized public OTLP proxy = status %d, forwarded %t", response.Code, forwarded)
+	}
+}

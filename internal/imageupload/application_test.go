@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -312,6 +313,133 @@ func TestRejectsChunkOverCloudflareBodyLimit(t *testing.T) {
 	}
 	if store.upload.ID != "" {
 		t.Fatalf("oversized first chunk should not begin upload: %+v", store.upload)
+	}
+}
+
+type errReader struct{ err error }
+
+func (reader errReader) Read([]byte) (int, error) {
+	return 0, reader.err
+}
+
+func TestWritePartFileUnexpectedEOF(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "0-10.part")
+	err := writePartFile(path, 10, io.MultiReader(strings.NewReader("ab"), errReader{io.ErrUnexpectedEOF}))
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatal("partial part file was kept")
+	}
+}
+
+func TestLogsDisconnectedChunk(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jwks, err := json.Marshal(map[string]any{"keys": []map[string]string{{
+		"alg": "RS256", "e": base64.RawURLEncoding.EncodeToString([]byte{1, 0, 1}),
+		"kid": "test-key", "kty": "RSA", "n": base64.RawURLEncoding.EncodeToString(privateKey.N.Bytes()),
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Transport: oidcRoundTrip(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header), Request: request,
+			Body: io.NopCloser(bytes.NewReader(jwks)),
+		}, nil
+	})}
+	const endpoint = "/public/api/v1/projects/shop/services/api/image"
+	const audience = "https://platform.example.com" + endpoint
+	token := signedUploadToken(t, privateKey, now, audience)
+	store := &uploadTestStore{service: state.ServiceDesired{
+		ID: "service-id", ProjectID: "project-id", ProjectName: "shop", Name: "api", Enabled: true,
+		Snapshot: serviceconfig.Snapshot{Source: servicesource.Source{
+			Type: servicesource.DockerImageUpload,
+			DockerUpload: &servicesource.DockerUpload{
+				Repository: "acme/backend", Branch: "main", Workflows: []string{"deploy.yml"},
+			},
+		}},
+	}}
+	var logged []string
+	application, err := New(Config{
+		Context: context.Background(), Store: store, Engine: uploadTestEngine{}, Runtime: uploadTestRuntime{},
+		Growth: uploadTestGrowth{}, Verifier: NewOIDCVerifier(client, func() time.Time { return now }),
+		PublicHostname: "platform.example.com", UploadRoot: t.TempDir(), ImageRoot: t.TempDir(),
+		Now: func() time.Time { return now },
+		OnError: func(uploadErr error) {
+			logged = append(logged, uploadErr.Error())
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body := io.MultiReader(strings.NewReader("ab"), errReader{io.ErrUnexpectedEOF})
+	request := httptest.NewRequest(http.MethodPost, endpoint, body)
+	request.ContentLength = 10
+	request.RemoteAddr = "203.0.113.10:54321"
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Upload-ID", "upload-identifier-0003")
+	request.Header.Set("Upload-Tag", "latest")
+	request.Header.Set("Upload-Offset", "0")
+	request.Header.Set("Upload-Length", "10")
+	request.Header.Set("Upload-SHA256", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+	response := httptest.NewRecorder()
+	application.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("disconnected chunk response = %d %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "chunk_write_failed") {
+		t.Fatalf("expected chunk_write_failed, got %s", response.Body.String())
+	}
+	if len(logged) != 1 {
+		t.Fatalf("logged = %#v", logged)
+	}
+	message := logged[0]
+	for _, want := range []string{
+		"chunk write failed",
+		"upload=upload-identifier-0003",
+		"service=service-id",
+		"offset=0",
+		"length=10",
+		"remote=203.0.113.10:54321",
+		"unexpected EOF",
+	} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("logged %q, want substring %q", message, want)
+		}
+	}
+}
+
+func TestWriteRequestErrorLogsInternal(t *testing.T) {
+	var logged []string
+	application := &Application{onError: func(err error) {
+		logged = append(logged, err.Error())
+	}}
+	recorder := httptest.NewRecorder()
+	application.writeRequestError(recorder, errors.New("disk full"))
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status = %d %s", recorder.Code, recorder.Body.String())
+	}
+	if !strings.Contains(recorder.Body.String(), "internal_error") {
+		t.Fatalf("body = %s", recorder.Body.String())
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "disk full") {
+		t.Fatalf("logged = %#v", logged)
+	}
+
+	logged = nil
+	client := httptest.NewRecorder()
+	application.writeRequestError(client, requestError{code: "empty_chunk", message: "Upload chunk is empty"})
+	if client.Code != http.StatusBadRequest {
+		t.Fatalf("client error status = %d", client.Code)
+	}
+	if len(logged) != 0 {
+		t.Fatalf("logged client error: %#v", logged)
 	}
 }
 

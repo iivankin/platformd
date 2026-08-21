@@ -5,6 +5,7 @@ export const mcpClients = [
     hint: "Export PLATFORMD_API_TOKEN, add this to ~/.codex/config.toml, then restart Codex:",
     id: "codex",
     label: "Codex",
+    language: "toml",
     snippet: (endpoint: string) =>
       [
         "[mcp_servers.platformd]",
@@ -16,6 +17,7 @@ export const mcpClients = [
     hint: "Export PLATFORMD_API_TOKEN, then run:",
     id: "claude-code",
     label: "Claude Code",
+    language: "bash",
     snippet: (endpoint: string) =>
       [
         "claude mcp add platformd \\",
@@ -28,6 +30,7 @@ export const mcpClients = [
     hint: "Add to claude_desktop_config.json:",
     id: "claude-desktop",
     label: "Claude Desktop",
+    language: "json",
     snippet: (endpoint: string) =>
       JSON.stringify(
         {
@@ -46,6 +49,7 @@ export const mcpClients = [
     hint: "Add to .cursor/mcp.json in your project:",
     id: "cursor",
     label: "Cursor",
+    language: "json",
     snippet: (endpoint: string) =>
       JSON.stringify(
         {
@@ -64,6 +68,7 @@ export const mcpClients = [
     hint: "Add to .vscode/mcp.json in your project:",
     id: "vscode",
     label: "VS Code",
+    language: "json",
     snippet: (endpoint: string) =>
       JSON.stringify(
         {
@@ -83,6 +88,7 @@ export const mcpClients = [
     hint: "Add to opencode.json:",
     id: "opencode",
     label: "OpenCode",
+    language: "json",
     snippet: (endpoint: string) =>
       JSON.stringify(
         {

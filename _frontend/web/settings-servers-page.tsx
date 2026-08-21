@@ -16,6 +16,7 @@ import { Input } from "@/components/ui/input";
 import { PageStack } from "@/components/ui/page-stack";
 import { FormField } from "@/form-field";
 import { SettingsError } from "@/settings-error";
+import { HighlightedSnippet } from "@/snippet-code";
 
 const formatTime = (value?: number) =>
   value ? new Date(value).toLocaleString() : "Never";
@@ -198,9 +199,11 @@ export const SettingsServersPage = () => {
                   <p className="text-[10px] text-muted-foreground">
                     Install the worker
                   </p>
-                  <pre className="mt-1 overflow-x-auto border border-border bg-muted/40 px-3 py-2 text-[10px] leading-4 whitespace-pre-wrap">
-                    {workerInstallCommand}
-                  </pre>
+                  <HighlightedSnippet
+                    className="mt-1 bg-muted/40 px-3 py-2 leading-4 whitespace-pre-wrap"
+                    language="bash"
+                    value={workerInstallCommand}
+                  />
                   <Button
                     className="mt-2"
                     onClick={() => void copy(workerInstallCommand, "install")}
@@ -215,9 +218,11 @@ export const SettingsServersPage = () => {
                   <p className="text-[10px] text-muted-foreground">
                     Join this installation
                   </p>
-                  <pre className="mt-1 overflow-x-auto border border-border bg-muted/40 px-3 py-2 text-[10px] leading-4 whitespace-pre-wrap">
-                    {revealedJoin}
-                  </pre>
+                  <HighlightedSnippet
+                    className="mt-1 bg-muted/40 px-3 py-2 leading-4 whitespace-pre-wrap"
+                    language="bash"
+                    value={revealedJoin ?? ""}
+                  />
                   <Button
                     className="mt-2"
                     onClick={() => {

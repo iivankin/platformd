@@ -63,7 +63,7 @@ func TestJoinHelp(t *testing.T) {
 	}
 }
 
-func TestJoinRequiresHTTPS(t *testing.T) {
+func TestJoinRejectsPlaintextDomain(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
@@ -72,8 +72,8 @@ func TestJoinRequiresHTTPS(t *testing.T) {
 	if code != 2 {
 		t.Fatalf("exit code = %d, want 2; stderr = %q", code, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "https://") {
-		t.Fatalf("stderr = %q, want https requirement", stderr.String())
+	if !strings.Contains(stderr.String(), "private or loopback IP") {
+		t.Fatalf("stderr = %q, want private IP requirement", stderr.String())
 	}
 }
 

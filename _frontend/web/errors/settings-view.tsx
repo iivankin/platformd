@@ -16,6 +16,7 @@ import {
   GitHubActionExampleDialog,
   portForwardActionExample,
 } from "@/github-action-example-dialog";
+import { HighlightedSnippet } from "@/snippet-code";
 
 import { api } from "./api";
 import { ErrorView, LoadingView } from "./common-ui";
@@ -218,9 +219,11 @@ export const ApplicationSettingsView = ({
         {uploadTarget === "internal" ? (
           <div className="max-w-3xl">
             <div className="relative border-y border-border bg-muted/20">
-              <pre className="overflow-x-auto p-4 pr-24 text-[10px] leading-5 text-foreground/75">
-                {internalUploadCommand}
-              </pre>
+              <HighlightedSnippet
+                className="border-0 bg-transparent p-4 pr-24"
+                language="bash"
+                value={internalUploadCommand}
+              />
               <div className="absolute top-2 right-2">
                 <CopyButton notify={notify} value={internalUploadCommand} />
               </div>
@@ -252,9 +255,11 @@ export const ApplicationSettingsView = ({
           <div className="max-w-3xl">
             {publicUploadCommand ? (
               <div className="relative border-y border-border bg-muted/20">
-                <pre className="overflow-x-auto p-4 pr-24 text-[10px] leading-5 text-foreground/75">
-                  {publicUploadCommand}
-                </pre>
+                <HighlightedSnippet
+                  className="border-0 bg-transparent p-4 pr-24"
+                  language="bash"
+                  value={publicUploadCommand}
+                />
                 {uploadToken ? (
                   <div className="absolute top-2 right-2">
                     <CopyButton

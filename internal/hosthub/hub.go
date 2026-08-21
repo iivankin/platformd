@@ -1,12 +1,10 @@
 package hosthub
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -26,11 +24,11 @@ import (
 )
 
 const (
-	joinTokenTTL     = 24 * time.Hour
-	otlpTimeout      = 10 * time.Second
-	maximumOTLPBytes = 4 << 20
-	writeQueueDepth  = 64
-	sessionIdleAfter = 90 * time.Second
+	joinTokenTTL          = 24 * time.Hour
+	otlpTimeout           = 10 * time.Second
+	maximumHostFrameBytes = 4 << 20
+	writeQueueDepth       = 64
+	sessionIdleAfter      = 90 * time.Second
 
 	childOfflineMessage        = "Child server is offline"
 	childAwaitingStatusMessage = "Waiting for child status"
@@ -79,12 +77,15 @@ type Hub struct {
 }
 
 type session struct {
-	hostID   string
-	hub      *Hub
-	cancel   context.CancelFunc
-	writes   chan hostconn.Envelope
-	tunnel   *hosttunnel.Peer
-	services map[string]serviceReport
+	hostID string
+	hub    *Hub
+	cancel context.CancelFunc
+	// OTLP is high-volume, so reuse the credential verified by the control
+	// handshake instead of reading SQLite for every exported batch.
+	tokenHMAC []byte
+	writes    chan hostconn.Envelope
+	tunnel    *hosttunnel.Peer
+	services  map[string]serviceReport
 }
 
 func New(config Config) (*Hub, error) {
@@ -327,9 +328,9 @@ func (hub *Hub) send(hostID, kind string, payload any) error {
 	}
 }
 
-func (hub *Hub) attach(hostID string, cancel context.CancelFunc) *session {
+func (hub *Hub) attach(hostID string, tokenHMAC []byte, cancel context.CancelFunc) *session {
 	current := &session{
-		hostID: hostID, hub: hub, cancel: cancel,
+		hostID: hostID, hub: hub, cancel: cancel, tokenHMAC: append([]byte(nil), tokenHMAC...),
 		writes:   make(chan hostconn.Envelope, writeQueueDepth),
 		services: map[string]serviceReport{},
 	}
@@ -358,38 +359,6 @@ func (hub *Hub) detach(current *session) {
 	}
 }
 
-func (hub *Hub) ingestOTLP(ctx context.Context, batch hostconn.OTLPBatch) error {
-	path := batch.Path
-	if path == "" {
-		path = "/v1/logs"
-	}
-	if !strings.HasPrefix(path, "/v1/") || strings.Contains(path, "..") {
-		return errors.New("OTLP path is invalid")
-	}
-	if len(batch.Body) > maximumOTLPBytes {
-		return errors.New("OTLP payload is too large")
-	}
-	contentType := batch.ContentType
-	if contentType == "" {
-		contentType = "application/x-protobuf"
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, hub.otlpBaseURL+path, bytes.NewReader(batch.Body))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", contentType)
-	response, err := hub.otlpClient.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 1<<20))
-	if response.StatusCode >= 300 {
-		return fmt.Errorf("OTLP ingest status %d", response.StatusCode)
-	}
-	return nil
-}
-
 var (
 	ErrHostOffline = errors.New("child server is offline")
 	ErrHostBusy    = errors.New("child server is not accepting commands")
@@ -410,6 +379,7 @@ func (hub *Hub) Handler() http.Handler {
 	mux.Handle("POST "+hostconn.JoinPath, hub.JoinHandler())
 	mux.Handle("GET "+hostconn.ConnectPath, hub.ConnectHandler())
 	mux.Handle("GET "+hostconn.TunnelPath, hub.TunnelHandler())
+	mux.Handle("POST "+hostconn.OTLPPathPrefix+"/v1/{signal}", hub.OTLPHandler())
 	mux.Handle("GET "+hostconn.ImagePathPrefix+"{revisionID}", hub.ImageHandler())
 	return mux
 }

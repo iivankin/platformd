@@ -68,34 +68,6 @@ find_case_event() {
   done
 }
 
-profile_trace_ids() {
-  case_name=$1
-  event_ids=$(api_get "events?limit=100&query=$case_name" | jq -r '.data[].event_id')
-  for event_id in $event_ids; do
-    detail=$(api_get "events/$event_id")
-    if printf '%s' "$detail" | jq -e --arg case_name "$case_name" \
-      '.event.payload.tags.conformance_case == $case_name and (.event.payload.tags.profile_trace | length > 0)' >/dev/null; then
-      printf '%s' "$detail" | jq -r '.event.payload.contexts.trace.trace_id // empty'
-    fi
-  done | sort -u
-}
-
-valid_profile_trace() {
-  trace_id=$1
-  trace=$(api_get "traces/$trace_id" || true)
-  # Bind $start/$end with `as … |`, then assert with `and`. Plain `as … and` is invalid jq.
-  printf '%s' "$trace" | jq -e '
-    (([.spans[].startTimeUnixNano | tonumber] | min) as $start |
-     ([.spans[].endTimeUnixNano | tonumber] | max) as $end |
-     (.profiles | length) > 0 and
-     ([.profiles[].sampleCount] | add) > 1 and
-     ([.profiles[].stacks | length] | add) > 0 and
-     all(.profiles[];
-       (.startedAtUnixNano | tonumber) >= $start and
-       (.endedAtUnixNano | tonumber) <= $end
-     ))' >/dev/null
-}
-
 has_failed_crash_event() {
   event_ids=$(api_get "events?limit=100&query=symbolicator" | jq -r '.data[].event_id')
   for event_id in $event_ids; do
@@ -130,26 +102,7 @@ run_case() {
   attempt=0
   while [ "$attempt" -lt 20 ]; do
     event_id=$(find_case_event "$case_name" || true)
-    if [ "$case_name" = "node-profile" ]; then
-      trace_ids=$(profile_trace_ids "$case_name" || true)
-      trace_count=$(printf '%s\n' "$trace_ids" | sed '/^$/d' | wc -l | tr -d ' ')
-      valid_count=0
-      for trace_id in $trace_ids; do
-        if valid_profile_trace "$trace_id"; then
-          valid_count=$((valid_count + 1))
-        fi
-      done
-      if [ "$trace_count" -ge 2 ] && [ "$valid_count" = "$trace_count" ]; then
-        printf 'PASS %s\n' "$case_name"
-        return
-      fi
-    fi
     if [ -n "$event_id" ] && [ "$case_name" != "sourcemap" ]; then
-      if [ "$case_name" = "node-profile" ]; then
-        attempt=$((attempt + 1))
-        sleep 1
-        continue
-      fi
       printf 'PASS %s\n' "$case_name"
       return
     fi

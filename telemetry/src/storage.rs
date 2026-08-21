@@ -30,7 +30,6 @@ const RECORDING_RETENTION: &str = "INTERVAL 14 DAY";
 pub(crate) enum SignalTable {
     Logs,
     Metrics,
-    Profiles,
     Spans,
 }
 
@@ -39,7 +38,6 @@ impl SignalTable {
         match self {
             Self::Logs => "logs",
             Self::Metrics => "metrics",
-            Self::Profiles => "profiles",
             Self::Spans => "spans",
         }
     }
@@ -246,7 +244,6 @@ pub(crate) struct TraceDetail {
     pub spans: Vec<TraceSpan>,
     pub related_segments: Vec<RelatedTraceSegment>,
     pub metrics: Vec<TraceMetricSample>,
-    pub profiles: Vec<TraceProfile>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -262,33 +259,6 @@ pub(crate) struct RelatedTraceSegment {
     pub duration_nano: u64,
     pub span_count: u64,
     pub error_span_count: u64,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TraceProfile {
-    pub service_id: String,
-    pub profile_id: String,
-    pub profiler_id: String,
-    pub platform: String,
-    #[serde(serialize_with = "serialize_u64_string")]
-    pub started_at_unix_nano: u64,
-    #[serde(serialize_with = "serialize_u64_string")]
-    pub ended_at_unix_nano: u64,
-    pub sample_count: u64,
-    pub stacks: Vec<TraceProfileStack>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct TraceProfileStack {
-    pub thread_id: String,
-    pub thread_name: String,
-    pub span_id: String,
-    pub sample_count: u64,
-    #[serde(serialize_with = "serialize_u64_string")]
-    pub duration_nano: u64,
-    pub frames: Value,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -402,23 +372,6 @@ struct TraceIdRow {
 #[derive(Deserialize)]
 struct TraceSegmentIdRow {
     segment_id: String,
-}
-
-#[derive(Deserialize)]
-struct TraceProfileRow {
-    service_id: String,
-    profile_key: String,
-    stored_profile_id: String,
-    profiler_id: String,
-    platform: String,
-    thread_id: String,
-    thread_name: String,
-    span_id: String,
-    sample_count: u64,
-    total_duration_nano: u64,
-    started_at_unix_nano: u64,
-    ended_at_unix_nano: u64,
-    stack: String,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -604,7 +557,7 @@ impl Store {
             .analytics
             .lock()
             .map_err(|_| Error::Storage("chDB session lock is poisoned".into()))?;
-        for table in ["documents", "spans", "logs", "metrics", "profiles"] {
+        for table in ["documents", "spans", "logs", "metrics"] {
             analytics
                 .execute(
                     &format!(
@@ -1167,16 +1120,6 @@ impl Store {
                 if spans.is_empty() {
                     return Err(Error::NotFound);
                 }
-                let trace_start = spans
-                    .iter()
-                    .map(|span| span.start_time_unix_nano)
-                    .min()
-                    .unwrap_or_default();
-                let trace_end = spans
-                    .iter()
-                    .map(|span| span.end_time_unix_nano.max(span.start_time_unix_nano))
-                    .max()
-                    .unwrap_or(trace_start);
                 let baseline_query = format!(
                     "SELECT name, kind, avg(duration_nano) AS baseline_duration_nano \
                      FROM {ANALYTICS_DATABASE}.spans FINAL \
@@ -1285,22 +1228,12 @@ impl Store {
                         })
                     })
                     .collect::<Result<Vec<_>>>()?;
-                let profile_ids = trace_profile_ids(&spans);
-                let profiles = trace_profiles(
-                    analytics,
-                    &service_ids,
-                    &trace_id,
-                    &profile_ids,
-                    trace_start,
-                    trace_end,
-                )?;
                 Ok(TraceDetail {
                     trace_id,
                     segment_id,
                     spans,
                     related_segments,
                     metrics,
-                    profiles,
                 })
             })
         })
@@ -1811,153 +1744,6 @@ impl Store {
     }
 }
 
-fn trace_profile_ids(spans: &[TraceSpan]) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for span in spans {
-        collect_profile_ids(&span.span, &mut ids);
-        collect_profile_ids(&span.resource, &mut ids);
-    }
-    ids
-}
-
-fn collect_profile_ids(value: &Value, ids: &mut HashSet<String>) {
-    match value {
-        Value::Array(values) => {
-            for value in values {
-                collect_profile_ids(value, ids);
-            }
-        }
-        Value::Object(object) => {
-            if let Some(key) = object.get("key").and_then(Value::as_str)
-                && is_profile_id_key(key)
-                && let Some(value) = object.get("value").and_then(attribute_string)
-            {
-                insert_profile_id(ids, value);
-            }
-            for (key, value) in object {
-                if is_profile_id_key(key)
-                    && let Some(value) = attribute_string(value)
-                {
-                    insert_profile_id(ids, value);
-                }
-                collect_profile_ids(value, ids);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn is_profile_id_key(key: &str) -> bool {
-    matches!(
-        key.chars()
-            .filter(|character| character.is_ascii_alphanumeric())
-            .flat_map(char::to_lowercase)
-            .collect::<String>()
-            .as_str(),
-        "profileid" | "profilerid" | "sentryprofileid" | "sentryprofilerid"
-    )
-}
-
-fn attribute_string(value: &Value) -> Option<&str> {
-    value.as_str().or_else(|| {
-        value
-            .as_object()
-            .and_then(|value| {
-                value
-                    .get("stringValue")
-                    .or_else(|| value.get("string_value"))
-            })
-            .and_then(Value::as_str)
-    })
-}
-
-fn insert_profile_id(ids: &mut HashSet<String>, value: &str) {
-    let value = value.replace('-', "").to_ascii_lowercase();
-    if value.len() == 32 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        ids.insert(value);
-    }
-}
-
-fn trace_profiles(
-    analytics: &Session,
-    service_ids: &[String],
-    trace_id: &str,
-    profile_ids: &HashSet<String>,
-    trace_start: u64,
-    trace_end: u64,
-) -> Result<Vec<TraceProfile>> {
-    let id_filter = if profile_ids.is_empty() {
-        String::new()
-    } else {
-        let ids = profile_ids
-            .iter()
-            .map(|value| chdb_string(value))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(" OR profiler_id IN ({ids}) OR profile_id IN ({ids})")
-    };
-    let services = service_filter(service_ids);
-    let query = format!(
-        "SELECT service_id, if(notEmpty(profiler_id), profiler_id, profile_id) AS profile_key, \
-         any(profile_id) AS stored_profile_id, profiler_id, any(platform) AS platform, \
-         thread_id, any(thread_name) AS thread_name, \
-         span_id, count() AS sample_count, \
-         sum(least(sample_time_unix_nano + duration_nano, {trace_end}) - greatest(sample_time_unix_nano, {trace_start})) AS total_duration_nano, \
-         min(greatest(sample_time_unix_nano, {trace_start})) AS started_at_unix_nano, \
-         max(least(sample_time_unix_nano + duration_nano, {trace_end})) AS ended_at_unix_nano, stack \
-         FROM {ANALYTICS_DATABASE}.profiles FINAL \
-         WHERE {services} AND sample_time_unix_nano <= {trace_end} \
-         AND sample_time_unix_nano + duration_nano >= {trace_start} \
-         AND (trace_id = {}{id_filter}) \
-         GROUP BY service_id, profile_key, profiler_id, thread_id, span_id, stack \
-         ORDER BY started_at_unix_nano, profile_key, total_duration_nano DESC LIMIT 20000",
-        chdb_string(trace_id),
-    );
-    let output = analytics
-        .execute(
-            &query,
-            Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
-        )
-        .map_err(|error| Error::Storage(format!("query chDB trace profiles: {error}")))?;
-    let mut profiles: HashMap<(String, String), TraceProfile> = HashMap::new();
-    for line in output
-        .data_utf8_lossy()
-        .lines()
-        .filter(|line| !line.is_empty())
-    {
-        let row: TraceProfileRow = serde_json::from_str(line)
-            .map_err(|error| Error::Storage(format!("decode chDB trace profile: {error}")))?;
-        let frames = serde_json::from_str(&row.stack)
-            .map_err(|error| Error::Storage(format!("decode chDB profile stack: {error}")))?;
-        let profile = profiles
-            .entry((row.service_id.clone(), row.profile_key))
-            .or_insert_with(|| TraceProfile {
-                service_id: row.service_id,
-                profile_id: row.stored_profile_id,
-                profiler_id: row.profiler_id,
-                platform: row.platform,
-                started_at_unix_nano: row.started_at_unix_nano,
-                ended_at_unix_nano: row.ended_at_unix_nano,
-                sample_count: 0,
-                stacks: Vec::new(),
-            });
-        profile.started_at_unix_nano = profile.started_at_unix_nano.min(row.started_at_unix_nano);
-        profile.ended_at_unix_nano = profile.ended_at_unix_nano.max(row.ended_at_unix_nano);
-        profile.sample_count += row.sample_count;
-        profile.stacks.push(TraceProfileStack {
-            thread_id: row.thread_id,
-            thread_name: row.thread_name,
-            span_id: row.span_id,
-            sample_count: row.sample_count,
-            duration_nano: row.total_duration_nano,
-            frames,
-        });
-    }
-    let mut profiles = profiles.into_values().collect::<Vec<_>>();
-    profiles.sort_unstable_by_key(|profile| profile.started_at_unix_nano);
-    Ok(profiles)
-}
-
 fn log_field_clause(filter: &LogFieldFilter) -> String {
     let path = chdb_string(&format!("$.{}", filter.path));
     let value = chdb_string(&filter.value);
@@ -2106,15 +1892,7 @@ fn initialize_analytics(session: &Session) -> Result<()> {
              ) ENGINE=ReplacingMergeTree(version) ORDER BY (service_id, trace_id, span_id) \
              TTL toDateTime(start_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
         ),
-        format!(
-            "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.profiles (\n\
-             service_id String, profile_id String, profiler_id String, trace_id String, span_id String,\n\
-             platform LowCardinality(String), thread_id String, thread_name String,\n\
-             sample_time_unix_nano UInt64, duration_nano UInt64, stack String,\n\
-             received_at_unix_nano UInt64, sample_id String, version UInt64\n\
-             ) ENGINE=ReplacingMergeTree(version) ORDER BY (service_id, profile_id, sample_id) \
-             TTL toDateTime(sample_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
-        ),
+        format!("DROP TABLE IF EXISTS {ANALYTICS_DATABASE}.profiles"),
         format!(
             "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.logs (\n\
              id UUID, service_id String, deployment_id String, attempt_id String, stream LowCardinality(String), partial Bool,\n\
@@ -3717,7 +3495,7 @@ mod tests {
                         "name": "GET /checkout", "kind": 2,
                         "start_time_unix_nano": started, "end_time_unix_nano": started + 10_000_000,
                         "duration_nano": 10_000_000, "status_code": 0, "status_message": "", "flags": 1,
-                        "resource": "{\"attributes\":[]}", "scope": "{}", "span": "{\"attributes\":[{\"key\":\"profiler_id\",\"value\":{\"stringValue\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\"}}]}",
+                        "resource": "{\"attributes\":[]}", "scope": "{}", "span": "{}",
                         "received_at_unix_nano": started + 10_000_000, "version": 1, "source": "otlp"
                     }),
                     json!({
@@ -3903,38 +3681,6 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
-        store
-            .ingest_signal_rows(
-                SignalTable::Profiles,
-                vec![
-                    json!({
-                        "service_id": "service-1", "profile_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        "profiler_id": "", "trace_id": trace_id, "span_id": "0123456789abcdef",
-                        "platform": "node", "thread_id": "main", "thread_name": "MainThread",
-                        "sample_time_unix_nano": started, "duration_nano": 10_000_000,
-                        "stack": "[{\"function\":\"main\"},{\"function\":\"checkout\"}]",
-                        "received_at_unix_nano": started, "sample_id": "sample-1", "version": started
-                    }),
-                    json!({
-                        "service_id": "service-1", "profile_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-                        "profiler_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "trace_id": "", "span_id": "",
-                        "platform": "node", "thread_id": "main", "thread_name": "MainThread",
-                        "sample_time_unix_nano": started + 4_000_000, "duration_nano": 1_000_000,
-                        "stack": "[{\"function\":\"continuous-inside\"}]",
-                        "received_at_unix_nano": started, "sample_id": "sample-2", "version": started
-                    }),
-                    json!({
-                        "service_id": "service-1", "profile_id": "cccccccccccccccccccccccccccccccc",
-                        "profiler_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "trace_id": "", "span_id": "",
-                        "platform": "node", "thread_id": "main", "thread_name": "MainThread",
-                        "sample_time_unix_nano": started + 100_000_000_000, "duration_nano": 1_000_000,
-                        "stack": "[{\"function\":\"continuous-outside\"}]",
-                        "received_at_unix_nano": started, "sample_id": "sample-3", "version": started
-                    }),
-                ],
-            )
-            .await
-            .unwrap();
         let detail = store
             .trace(
                 Some("service-1".into()),
@@ -3946,30 +3692,6 @@ mod tests {
             .unwrap();
         assert_eq!(detail.spans.len(), 4);
         assert!(detail.spans[0].resource.is_object());
-        assert_eq!(detail.profiles.len(), 2);
-        assert_eq!(detail.profiles[0].sample_count, 1);
-        assert_eq!(
-            detail.profiles[0].stacks[0].frames[1]["function"],
-            "checkout"
-        );
-        assert_eq!(
-            detail
-                .profiles
-                .iter()
-                .map(|profile| profile.sample_count)
-                .sum::<u64>(),
-            2
-        );
-        assert!(detail.profiles.iter().all(|profile| {
-            profile.stacks.iter().all(|stack| {
-                stack
-                    .frames
-                    .as_array()
-                    .into_iter()
-                    .flatten()
-                    .all(|frame| frame["function"] != "continuous-outside")
-            })
-        }));
         let project_detail = store
             .trace(
                 Some("service-1".into()),

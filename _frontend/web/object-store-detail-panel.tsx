@@ -1,6 +1,5 @@
-import { RefreshCw, Search } from "lucide-react";
+import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { FormEvent } from "react";
 
 import {
   deleteObject,
@@ -19,7 +18,6 @@ import type {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { SectionCard } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { PageStack } from "@/components/ui/page-stack";
 import { ConnectionDetails } from "@/connection-details";
 import {
@@ -30,6 +28,7 @@ import { projectNameFromInternalHostname } from "@/github-action-example-dialog"
 import { ObjectStoreTelemetry } from "@/managed-resource-telemetry";
 import {
   ObjectStorePreviewPane,
+  ObjectStorePathBar,
   ObjectStoreTable,
   ObjectStoreUploadBar,
 } from "@/object-store-browser";
@@ -65,7 +64,6 @@ export const ObjectStoreDetailPanel = ({
 }: ObjectStoreDetailPanelProperties) => {
   const [resource, setResource] = useState<ObjectStore | null>(null);
   const [page, setPage] = useState<ObjectPage | null>(null);
-  const [prefixInput, setPrefixInput] = useState("");
   const [prefix, setPrefix] = useState("");
   const [continuationToken, setContinuationToken] = useState("");
   const [tokenHistory, setTokenHistory] = useState<string[]>([]);
@@ -108,7 +106,7 @@ export const ObjectStoreDetailPanel = ({
           await fetchObjects(
             projectID,
             storeID,
-            { continuationToken, prefix },
+            { continuationToken, delimiter: "/", prefix },
             controller.signal
           )
         );
@@ -161,9 +159,9 @@ export const ObjectStoreDetailPanel = ({
     setPreview(null);
   };
 
-  const applyPrefix = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    setPrefix(prefixInput);
+  const navigateToPrefix = (nextPrefix: string) => {
+    setPage(null);
+    setPrefix(nextPrefix);
     setContinuationToken("");
     setTokenHistory([]);
     clearSelection();
@@ -370,27 +368,14 @@ export const ObjectStoreDetailPanel = ({
             prefix={prefix}
           />
 
-          <form
-            className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2"
-            onSubmit={applyPrefix}
-          >
-            <Search className="size-3.5 text-muted-foreground" />
-            <Input
-              aria-label="Object key prefix"
-              className="h-7 border-0 px-1 focus-visible:ring-0"
-              onChange={(event) => setPrefixInput(event.target.value)}
-              placeholder="Filter by exact key prefix"
-              value={prefixInput}
-            />
-            <Button size="sm" type="submit" variant="ghost">
-              Apply
-            </Button>
-          </form>
+          <ObjectStorePathBar onNavigate={navigateToPrefix} prefix={prefix} />
 
           <div className="grid min-h-0 flex-1 lg:grid-cols-[minmax(0,3fr)_minmax(20rem,2fr)]">
             <ObjectStoreTable
               canGoBack={tokenHistory.length > 0}
+              currentPrefix={prefix}
               onNext={nextPage}
+              onOpenFolder={navigateToPrefix}
               onPrevious={previousPage}
               onSelect={selectObject}
               page={page}

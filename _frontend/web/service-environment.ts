@@ -31,12 +31,6 @@ export const looksLikeServiceEnvironment = (value: string) => {
   }
 };
 
-export const formatServiceEnvironment = (environment: Record<string, string>) =>
-  Object.entries(environment)
-    .toSorted(([left], [right]) => left.localeCompare(right))
-    .map(([name, value]) => `${name}=${value}`)
-    .join("\n");
-
 export const applyParsedEnvironment = (
   rows: VariableRow[],
   environment: Record<string, string>,

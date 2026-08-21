@@ -82,29 +82,33 @@ type Transport interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-type Handler struct {
-	Catalog  Catalog
-	Client   Transport
-	Target   *url.URL
-	Now      func() time.Time
-	internal bool
+type BotIPVerifier interface {
+	Verify(botName, address string) bool
 }
 
-func NewHandler(catalog Catalog, client Transport, target *url.URL) *Handler {
-	return &Handler{Catalog: catalog, Client: client, Target: target, Now: time.Now}
+type Handler struct {
+	Catalog     Catalog
+	Client      Transport
+	Target      *url.URL
+	Now         func() time.Time
+	BotVerifier BotIPVerifier
+	internal    bool
+}
+
+func NewHandler(catalog Catalog, client Transport, target *url.URL, botVerifier BotIPVerifier) *Handler {
+	return &Handler{
+		Catalog: catalog, Client: client, Target: target, Now: time.Now, BotVerifier: botVerifier,
+	}
 }
 
 func InternalHandler(catalog Catalog, client Transport, target *url.URL) *Handler {
-	handler := NewHandler(catalog, client, target)
+	handler := NewHandler(catalog, client, target, nil)
 	handler.internal = true
 	return handler
 }
 
 func Reserved(method, path string) bool {
 	path = strings.TrimSuffix(path, "/")
-	if method == http.MethodGet && path == "/analytics.js" {
-		return true
-	}
 	if method == http.MethodPost && path == "/analytics/e" {
 		return true
 	}
@@ -133,8 +137,6 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 	}
 	request.Header.Set(TrackerHeader, tracker.ID)
 	switch {
-	case request.Method == http.MethodGet && strings.TrimSuffix(request.URL.Path, "/") == "/analytics.js":
-		handler.serveScript(response, tracker)
 	case request.Method == http.MethodPost && strings.TrimSuffix(request.URL.Path, "/") == "/analytics/e":
 		handler.serveEvent(response, request, tracker)
 	default:
@@ -143,22 +145,38 @@ func (handler *Handler) ServeHTTP(response http.ResponseWriter, request *http.Re
 }
 
 func (handler *Handler) ObserveDocument(request *http.Request, serviceID string) {
-	if handler == nil || !IsDocumentRequest(request) || ClassifyBot(request.UserAgent()).Kind == "" {
+	if handler == nil || !IsDocumentRequest(request) {
+		return
+	}
+	bot := handler.verifiedBot(request)
+	if bot.Kind == "" {
 		return
 	}
 	tracker, ok := handler.lookupTracker(request)
 	if !ok {
 		return
 	}
-	handler.RecordBotHit(request, tracker, serviceID)
+	handler.recordBotHit(request, tracker, serviceID, bot)
 }
 
-func (handler *Handler) RecordBotHit(request *http.Request, tracker state.AnalyticsTracker, serviceID string) {
-	if handler == nil || handler.Catalog == nil {
-		return
-	}
+func (handler *Handler) verifiedBot(request *http.Request) BotClass {
 	bot := ClassifyBot(request.UserAgent())
-	if bot.Kind == "" {
+	if bot.Kind == "" || handler.BotVerifier == nil || !handler.BotVerifier.Verify(bot.Name, botClientIP(request)) {
+		return BotClass{}
+	}
+	return bot
+}
+
+func botClientIP(request *http.Request) string {
+	values := request.Header.Values("CF-Connecting-IP")
+	if len(values) != 1 {
+		return ""
+	}
+	return strings.TrimSpace(values[0])
+}
+
+func (handler *Handler) recordBotHit(request *http.Request, tracker state.AnalyticsTracker, serviceID string, bot BotClass) {
+	if handler == nil || handler.Catalog == nil {
 		return
 	}
 	installation, _ := handler.Catalog.Installation(request.Context())
@@ -204,13 +222,6 @@ func (handler *Handler) lookupTracker(request *http.Request) (state.AnalyticsTra
 	return MatchTracker(trackers, host)
 }
 
-func (handler *Handler) serveScript(response http.ResponseWriter, tracker state.AnalyticsTracker) {
-	response.Header().Set("Content-Type", "text/javascript; charset=utf-8")
-	response.Header().Set("Cache-Control", "public, max-age=300")
-	response.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(response, Script(tracker))
-}
-
 type browserEvent struct {
 	Name        string         `json:"n"`
 	URL         string         `json:"u"`
@@ -238,7 +249,7 @@ func (handler *Handler) serveEvent(response http.ResponseWriter, request *http.R
 			http.Error(response, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 			return
 		}
-		identity = Identity{DistinctID: body.DistinctID, SessionID: body.SessionID}
+		identity = Identity{DistinctID: body.DistinctID, SessionID: body.SessionID, Identified: true}
 	}
 	if identity.Drop {
 		response.WriteHeader(http.StatusNoContent)
@@ -250,7 +261,7 @@ func (handler *Handler) serveEvent(response http.ResponseWriter, request *http.R
 	}
 	serviceID, _ := handler.Catalog.ServiceIDByHostname(request.Context(), hostnameOf(request))
 	event := handler.baseEvent(tracker, request, identity, serviceID)
-	if body.SessionID != "" {
+	if handler.internal && body.SessionID != "" {
 		event.SessionID = body.SessionID
 	}
 	event.EventName = strings.TrimSpace(body.Name)
@@ -283,7 +294,7 @@ func (handler *Handler) serveEvent(response http.ResponseWriter, request *http.R
 func (handler *Handler) acceptFlagCalled(ctx context.Context, tracker state.AnalyticsTracker, body browserEvent, identity Identity) bool {
 	flagKey, _ := body.Props["flag"].(string)
 	variant, _ := body.Props["variant"].(string)
-	if flagKey == "" || variant == "" || identity.DistinctID == "" || tracker.Mode == state.AnalyticsModeCookieless {
+	if flagKey == "" || variant == "" || identity.DistinctID == "" || !identity.Identified {
 		return false
 	}
 	flag, err := handler.Catalog.AnalyticsFlagByKey(ctx, tracker.ID, flagKey)
@@ -325,7 +336,7 @@ func (handler *Handler) serveOFREP(response http.ResponseWriter, request *http.R
 	} else if !RequestDenied(request) {
 		installation, _ := handler.Catalog.Installation(request.Context())
 		identity := ResolveIdentity(tracker, request, ClientIP(request), request.UserAgent(), installation.ID, handler.now())
-		if !identity.Drop {
+		if !identity.Drop && identity.Identified {
 			targetingKey = identity.DistinctID
 		}
 	}

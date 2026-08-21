@@ -242,7 +242,8 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryPublicAc
 	}
 	deletedPrevious := false
 	_, previousUsesApplicationDNS := applicationHostnames[service.SentryPublicHostname]
-	if service.SentryPublicHostname != input.PublicHostname && !previousUsesApplicationDNS {
+	if service.SentryPublicHostname != input.PublicHostname && !previousUsesApplicationDNS &&
+		service.SentryPublicHostname != service.OTLPTracePublicHostname {
 		deletedPrevious, err = repository.deleteDNS(ctx, service.SentryPublicHostname)
 		if err != nil {
 			if createdNew {
@@ -293,6 +294,77 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryTunnel(
 	}
 	// The committed path must become visible even if the API client disconnects
 	// while ingress is rebuilding its immutable route snapshot.
+	reloadContext, cancelReload := context.WithTimeout(context.WithoutCancel(ctx), serviceTelemetryRouteReloadTimeout)
+	defer cancelReload()
+	if err := repository.reloadPublicRoutes(reloadContext); err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	return repository.manager.Configuration(updated)
+}
+
+func (repository *liveServiceTelemetryRepository) UpdateServiceOTLPTracePublicAccess(
+	ctx context.Context,
+	input state.UpdateServiceOTLPTracePublicAccess,
+) (telemetry.ServiceConfiguration, error) {
+	repository.publicMu.Lock()
+	defer repository.publicMu.Unlock()
+	service, err := repository.store.Service(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	if service.UpdatedAtMillis != input.ExpectedUpdatedMillis {
+		return telemetry.ServiceConfiguration{}, state.ErrServiceChanged
+	}
+	if input.PublicHostname != "" {
+		input.PublicHostname, err = publichostname.Normalize(input.PublicHostname)
+		if err != nil {
+			return telemetry.ServiceConfiguration{}, err
+		}
+		if !repository.certificates.Covers(input.PublicHostname) {
+			return telemetry.ServiceConfiguration{}, state.ErrCertificateCoverage
+		}
+	}
+	domains, err := repository.store.ServiceDomains(ctx, input.ProjectID, input.ID)
+	if err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	applicationHostnames := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		applicationHostnames[domain.Hostname] = struct{}{}
+	}
+	_, nextUsesApplicationDNS := applicationHostnames[input.PublicHostname]
+	createdNew := false
+	if !nextUsesApplicationDNS && input.PublicHostname != service.SentryPublicHostname {
+		createdNew, err = repository.ensureDNS(ctx, input.PublicHostname)
+	}
+	if err != nil {
+		return telemetry.ServiceConfiguration{}, err
+	}
+	deletedPrevious := false
+	_, previousUsesApplicationDNS := applicationHostnames[service.OTLPTracePublicHostname]
+	if service.OTLPTracePublicHostname != input.PublicHostname && !previousUsesApplicationDNS &&
+		service.OTLPTracePublicHostname != service.SentryPublicHostname {
+		deletedPrevious, err = repository.deleteDNS(ctx, service.OTLPTracePublicHostname)
+		if err != nil {
+			if createdNew {
+				_, cleanupErr := repository.deleteDNS(ctx, input.PublicHostname)
+				err = errors.Join(err, cleanupErr)
+			}
+			return telemetry.ServiceConfiguration{}, err
+		}
+	}
+	updated, err := repository.store.UpdateServiceOTLPTracePublicAccess(ctx, input)
+	if err != nil {
+		if deletedPrevious {
+			_, restoreErr := repository.ensureDNS(ctx, service.OTLPTracePublicHostname)
+			err = errors.Join(err, restoreErr)
+		}
+		if createdNew {
+			_, cleanupErr := repository.deleteDNS(ctx, input.PublicHostname)
+			err = errors.Join(err, cleanupErr)
+		}
+		return telemetry.ServiceConfiguration{}, err
+	}
 	reloadContext, cancelReload := context.WithTimeout(context.WithoutCancel(ctx), serviceTelemetryRouteReloadTimeout)
 	defer cancelReload()
 	if err := repository.reloadPublicRoutes(reloadContext); err != nil {
@@ -441,9 +513,14 @@ func (repository *liveServiceTelemetryRepository) reloadPublicRoutes(ctx context
 	routes := make(map[string]ingress.ServiceTelemetryRoute, len(services))
 	for _, service := range services {
 		if service.SentryPublicHostname != "" {
-			routes[service.SentryPublicHostname] = ingress.ServiceTelemetryRoute{
-				BrowserTunnelPath: service.SentryTunnelPath,
-			}
+			route := routes[service.SentryPublicHostname]
+			route.BrowserTunnelPath = service.SentryTunnelPath
+			routes[service.SentryPublicHostname] = route
+		}
+		if service.OTLPTracePublicHostname != "" {
+			route := routes[service.OTLPTracePublicHostname]
+			route.OTLPTracePath = service.OTLPTracePath
+			routes[service.OTLPTracePublicHostname] = route
 		}
 	}
 	repository.router.ReloadServiceTelemetry(routes)
@@ -459,12 +536,19 @@ func (repository *liveServiceTelemetryRepository) reconcileDNS(ctx context.Conte
 		return err
 	}
 	var result error
+	reconciled := make(map[string]struct{}, len(services)*2)
 	for _, service := range services {
-		if service.SentryPublicHostname == "" {
-			continue
-		}
-		if _, err := repository.ensureDNS(ctx, service.SentryPublicHostname); err != nil {
-			result = errors.Join(result, fmt.Errorf("reconcile Cloudflare DNS for service %s telemetry: %w", service.ID, err))
+		for _, hostname := range []string{service.SentryPublicHostname, service.OTLPTracePublicHostname} {
+			if hostname == "" {
+				continue
+			}
+			if _, exists := reconciled[hostname]; exists {
+				continue
+			}
+			reconciled[hostname] = struct{}{}
+			if _, err := repository.ensureDNS(ctx, hostname); err != nil {
+				result = errors.Join(result, fmt.Errorf("reconcile Cloudflare DNS for service %s telemetry: %w", service.ID, err))
+			}
 		}
 	}
 	return result
@@ -496,14 +580,24 @@ func (repository *liveServiceTelemetryRepository) deleteProjectDNS(
 	ctx context.Context,
 	services []state.ServiceDesired,
 ) ([]string, error) {
-	deleted := make([]string, 0, len(services))
+	deleted := make([]string, 0, len(services)*2)
+	seen := make(map[string]struct{}, len(services)*2)
 	for _, service := range services {
-		removed, err := repository.deleteDNS(ctx, service.SentryPublicHostname)
-		if err != nil {
-			return nil, errors.Join(err, repository.restoreDNS(ctx, deleted))
-		}
-		if removed {
-			deleted = append(deleted, service.SentryPublicHostname)
+		for _, hostname := range []string{service.SentryPublicHostname, service.OTLPTracePublicHostname} {
+			if hostname == "" {
+				continue
+			}
+			if _, exists := seen[hostname]; exists {
+				continue
+			}
+			seen[hostname] = struct{}{}
+			removed, err := repository.deleteDNS(ctx, hostname)
+			if err != nil {
+				return nil, errors.Join(err, repository.restoreDNS(ctx, deleted))
+			}
+			if removed {
+				deleted = append(deleted, hostname)
+			}
 		}
 	}
 	return deleted, nil
@@ -522,18 +616,14 @@ func (repository *liveServiceTelemetryRepository) restoreDNS(ctx context.Context
 func (repository *liveServiceTelemetryRepository) withdrawServiceDNS(
 	ctx context.Context,
 	service state.ServiceDesired,
-) (bool, error) {
+) ([]string, error) {
 	repository.publicMu.Lock()
 	defer repository.publicMu.Unlock()
-	return repository.deleteDNS(ctx, service.SentryPublicHostname)
+	return repository.deleteProjectDNS(ctx, []state.ServiceDesired{service})
 }
 
-func (repository *liveServiceTelemetryRepository) restoreServiceDNS(
-	ctx context.Context,
-	service state.ServiceDesired,
-) error {
+func (repository *liveServiceTelemetryRepository) restoreServiceDNS(ctx context.Context, hostnames []string) error {
 	repository.publicMu.Lock()
 	defer repository.publicMu.Unlock()
-	_, err := repository.ensureDNS(ctx, service.SentryPublicHostname)
-	return err
+	return repository.restoreDNS(ctx, hostnames)
 }

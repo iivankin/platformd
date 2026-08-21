@@ -50,9 +50,9 @@ func (hub *Hub) ConnectHandler() http.Handler {
 		if err != nil {
 			return
 		}
-		connection.SetReadLimit(maximumOTLPBytes)
+		connection.SetReadLimit(maximumHostFrameBytes)
 		ctx, cancel := context.WithCancel(context.Background())
-		current := hub.attach(hostID, cancel)
+		current := hub.attach(hostID, stored.TokenHMAC, cancel)
 		defer func() {
 			hub.detach(current)
 			cancel()
@@ -120,13 +120,9 @@ func (hub *Hub) handle(ctx context.Context, hostID string, envelope hostconn.Env
 			return err
 		}
 		hub.recordServices(hostID, status.Services)
-		return hub.observe(ctx, hostID, status.PublicIPv4)
-	case hostconn.KindOTLP:
-		var batch hostconn.OTLPBatch
-		if err := json.Unmarshal(envelope.Payload, &batch); err != nil {
-			return err
-		}
-		return hub.ingestOTLP(ctx, batch)
+		return hub.touch(ctx, hostID)
+	case hostconn.KindHeartbeat:
+		return hub.touch(ctx, hostID)
 	case hostconn.KindRPC:
 		return hub.handleRPC(ctx, hostID, envelope)
 	case hostconn.KindPurgeCache:
@@ -171,6 +167,13 @@ func (hub *Hub) observe(ctx context.Context, hostID, publicIPv4 string) error {
 		hub.onAddress(hostID)
 	}
 	return nil
+}
+
+func (hub *Hub) touch(ctx context.Context, hostID string) error {
+	now := hub.now().UnixMilli()
+	return hub.store.UpdateHostRuntime(ctx, state.UpdateHostRuntimeInput{
+		ID: hostID, LastSeenMillis: now, UpdatedAtMillis: now,
+	})
 }
 
 func (hub *Hub) handlePurge(ctx context.Context, hostID string, envelope hostconn.Envelope) error {

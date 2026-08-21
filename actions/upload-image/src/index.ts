@@ -7,12 +7,16 @@ import { collapsePreview, formatError } from "./errors.js";
 
 const terminalStatuses = new Set(["failed", "succeeded", "superseded"]);
 
-// Cloudflare proxies reject request bodies over 100 MiB. Default just under that
-// so large OCI archives use few parallel parts without tripping the proxy.
+// Cloudflare proxies reject request bodies over 100 MiB. Parts stay far below
+// that so several services can upload at once without each POST sitting in the
+// proxy for the 125s read / 30s origin-write timeouts.
 const CLOUDFLARE_MAX_BODY_BYTES = 100 * 1024 * 1024;
-const DEFAULT_CHUNK_BYTES = 95 * 1024 * 1024;
-const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
+const DEFAULT_CONCURRENCY = 2;
 const MAX_CONCURRENCY = 8;
+const PART_ATTEMPTS = 6;
+const PART_REQUEST_TIMEOUT_MS = 110_000;
+const PART_RETRY_BASE_MS = 1_000;
 const OIDC_REFRESH_SKEW_MS = 60_000;
 const PROGRESS_INTERVAL_MS = 400;
 const MAX_COMMIT_MESSAGE_BYTES = 512;
@@ -351,12 +355,38 @@ async function responseBody(response: Response): Promise<unknown> {
   }
 }
 
+function isRetryableUploadError(error: unknown): boolean {
+  const text = formatError(error);
+  const statusMatch = /\bstatus=(\d{3})\b/u.exec(text);
+  if (statusMatch) {
+    const status = Number(statusMatch[1]);
+    if (
+      status >= 400 &&
+      status < 500 &&
+      ![408, 409, 425, 429].includes(status)
+    ) {
+      return false;
+    }
+  }
+  if (
+    text.includes("invalid_oidc") ||
+    text.includes("chunk_too_large") ||
+    text.includes("chunk_exceeds") ||
+    text.includes("range_overlap") ||
+    text.includes("upload_changed")
+  ) {
+    return false;
+  }
+  return true;
+}
+
 async function request(
   endpoint: string,
   audience: string,
   method: string,
   headers: Record<string, string>,
   body: Readable | undefined,
+  timeoutMs?: number,
 ): Promise<UploadStatus> {
   const token = await oidcToken(audience);
   const label = `platformd ${method} ${uploadRequestLabel(method, headers)}`;
@@ -369,6 +399,7 @@ async function request(
       ...headers,
     },
     method,
+    signal: timeoutMs ? AbortSignal.timeout(timeoutMs) : undefined,
   } as RequestInit);
   let payload: unknown;
   try {
@@ -863,34 +894,50 @@ async function run(): Promise<void> {
   };
 
   await mapPool(parts, concurrency, async (part) => {
-    const source = createReadStream(archive, {
-      end: part.offset + part.length - 1,
-      start: part.offset,
-    });
-    const body = countingStream(source, (bytes) => {
-      sentBytes += bytes;
-      renderPush();
-    });
-    await request(
-      endpoint,
-      audience,
-      "POST",
-      {
-        "Content-Length": String(part.length),
-        "Content-Type": "application/octet-stream",
-        "Upload-ID": uploadID,
-        "Upload-Length": String(fileStat.size),
-        "Upload-Offset": String(part.offset),
-        "Upload-SHA256": digest,
-        "Upload-Tag": tag,
-        ...(commitMessageHeader
-          ? { "Upload-Commit-Message": commitMessageHeader }
-          : {}),
-      },
-      body,
-    );
-    completedParts += 1;
-    renderPush(true);
+    const headers = {
+      "Content-Length": String(part.length),
+      "Content-Type": "application/octet-stream",
+      "Upload-ID": uploadID,
+      "Upload-Length": String(fileStat.size),
+      "Upload-Offset": String(part.offset),
+      "Upload-SHA256": digest,
+      "Upload-Tag": tag,
+      ...(commitMessageHeader ? { "Upload-Commit-Message": commitMessageHeader } : {}),
+    };
+    const label = `platformd POST ${uploadRequestLabel("POST", headers)}`;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= PART_ATTEMPTS; attempt += 1) {
+      let attemptBytes = 0;
+      const source = createReadStream(archive, {
+        end: part.offset + part.length - 1,
+        start: part.offset,
+      });
+      const body = countingStream(source, (bytes) => {
+        attemptBytes += bytes;
+        sentBytes += bytes;
+        renderPush();
+      });
+      try {
+        await request(endpoint, audience, "POST", headers, body, PART_REQUEST_TIMEOUT_MS);
+        completedParts += 1;
+        renderPush(true);
+        return;
+      } catch (error) {
+        lastError = error;
+        sentBytes -= attemptBytes;
+        renderPush(true);
+        source.destroy();
+        if (attempt === PART_ATTEMPTS || !isRetryableUploadError(error)) {
+          throw error;
+        }
+        const delay = PART_RETRY_BASE_MS * 2 ** (attempt - 1);
+        console.error(
+          `${label} attempt ${attempt}/${PART_ATTEMPTS} failed; retrying in ${delay}ms: ${formatError(error)}`,
+        );
+        await sleep(delay);
+      }
+    }
+    throw lastError;
   });
 
   progress.done(

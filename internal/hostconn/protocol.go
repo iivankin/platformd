@@ -10,6 +10,11 @@ import (
 const WebSocketProtocol = "platformd-host-v1"
 
 const (
+	MaximumOTLPRequestBytes  = 4 << 20
+	MaximumOTLPResponseBytes = 1 << 20
+)
+
+const (
 	KindHello        = "hello"
 	KindWelcome      = "welcome"
 	KindReconcile    = "reconcile"
@@ -17,7 +22,7 @@ const (
 	KindSyncPublic   = "sync-public"
 	KindRPC          = "rpc"
 	KindRPCResult    = "rpc.result"
-	KindOTLP         = "otlp"
+	KindHeartbeat    = "heartbeat"
 	KindStatus       = "status"
 	KindCertificates = "certificates"
 	KindProjects     = "projects"
@@ -46,6 +51,7 @@ const (
 	JoinPath        = "/public/api/v1/hosts/join"
 	ConnectPath     = "/public/api/v1/hosts/connect"
 	TunnelPath      = "/public/api/v1/hosts/tunnel"
+	OTLPPathPrefix  = "/public/api/v1/hosts/otlp"
 	ImagePathPrefix = "/public/api/v1/hosts/images/"
 )
 
@@ -77,14 +83,7 @@ type RPCRequest struct {
 	Params json.RawMessage `json:"params"`
 }
 
-type OTLPBatch struct {
-	Path        string `json:"path"`
-	ContentType string `json:"contentType"`
-	Body        []byte `json:"body"`
-}
-
 type Status struct {
-	PublicIPv4    string           `json:"publicIpv4"`
 	CPUMillicores int64            `json:"cpuMillicores,omitempty"`
 	MemoryBytes   int64            `json:"memoryBytes,omitempty"`
 	DiskFreeBytes int64            `json:"diskFreeBytes,omitempty"`

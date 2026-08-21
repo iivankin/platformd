@@ -137,11 +137,15 @@ func TestProxyPreservesValidatedClientAddress(t *testing.T) {
 	}
 }
 
-func TestProxyOnlyForwardsCloudflareCountryFromPublicIngress(t *testing.T) {
+func TestProxyOnlyForwardsCloudflareGeoFromPublicIngress(t *testing.T) {
 	t.Parallel()
-	countries := make([]string, 0, 2)
+	locations := make([]cloudflareGeo, 0, 2)
 	backend := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		countries = append(countries, request.Header.Get("Cf-IpCountry"))
+		locations = append(locations, cloudflareGeo{
+			country: request.Header.Get("Cf-IpCountry"),
+			region:  request.Header.Get("Cf-Region"),
+			city:    request.Header.Get("Cf-IpCity"),
+		})
 		response.WriteHeader(http.StatusNoContent)
 	}))
 	defer backend.Close()
@@ -157,13 +161,18 @@ func TestProxyOnlyForwardsCloudflareCountryFromPublicIngress(t *testing.T) {
 
 	internal := httptest.NewRequest("POST", "http://errors.internal/api/1/envelope/", nil)
 	internal.Header.Set("Cf-IpCountry", "US")
+	internal.Header.Set("Cf-Region", "California")
+	internal.Header.Set("Cf-IpCity", "San Francisco")
 	proxy.Serve(httptest.NewRecorder(), internal, "tracker")
 	public := httptest.NewRequest("POST", "https://errors.example.com/api/1/envelope/", nil)
 	public.Header.Set("Cf-IpCountry", "RS")
+	public.Header.Set("Cf-Region", "Belgrade")
+	public.Header.Set("Cf-IpCity", "Belgrade")
 	proxy.ServePublic(httptest.NewRecorder(), public, "tracker")
 
-	if len(countries) != 2 || countries[0] != "" || countries[1] != "RS" {
-		t.Fatalf("forwarded Cloudflare countries = %v", countries)
+	want := []cloudflareGeo{{}, {country: "RS", region: "Belgrade", city: "Belgrade"}}
+	if len(locations) != len(want) || locations[0] != want[0] || locations[1] != want[1] {
+		t.Fatalf("forwarded Cloudflare locations = %#v, want %#v", locations, want)
 	}
 }
 

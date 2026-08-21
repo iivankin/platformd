@@ -18,34 +18,8 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	catalog := shopCatalog()
 	target, captured, client := ingestCapture(t)
-	handler := NewHandler(catalog, client, target)
+	handler := NewHandler(catalog, client, target, nil)
 	handler.Now = func() time.Time { return now }
-
-	script := httptest.NewRequest(http.MethodGet, "https://shop.example/analytics.js", nil)
-	script.Host = "shop.example"
-	scriptResponse := httptest.NewRecorder()
-	handler.ServeHTTP(scriptResponse, script)
-	if scriptResponse.Code != http.StatusOK {
-		t.Fatalf("script status = %d", scriptResponse.Code)
-	}
-	source := scriptResponse.Body.String()
-	for _, fragment := range []string{
-		"window.platformd",
-		"heatmapClick",
-		"$heatmap",
-		"platformd:consent",
-		"navigator.sendBeacon('/analytics/e'",
-		"wrapHistory('replaceState')",
-		"location.protocol==='https:'",
-		"TARGETING_MATCH",
-	} {
-		if !strings.Contains(source, fragment) {
-			t.Fatalf("script missing %q", fragment)
-		}
-	}
-	if strings.Contains(source, "function identify") || strings.Contains(source, "identify:identify") {
-		t.Fatal("script must not expose identify")
-	}
 
 	pageview := postBrowser(handler, `{
 		"n":"$pageview","u":"https://shop.example/pricing?utm_source=google","t":"Pricing",
@@ -115,14 +89,19 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 	if gpc.Code != http.StatusNoContent {
 		t.Fatalf("gpc status = %d", gpc.Code)
 	}
-	if captured.len() != beforeGPC {
-		t.Fatal("GPC must drop the browser event before ingest")
+	if captured.len() != beforeGPC+1 {
+		t.Fatalf("GPC event count = %d, want %d", captured.len(), beforeGPC+1)
 	}
+	gpcEvent := captured.snapshot()[beforeGPC]
+	if gpcEvent.DistinctID == "aid-1" || len(gpcEvent.DistinctID) != 32 || gpcEvent.SessionID != "" {
+		t.Fatalf("GPC must force cookieless identity: %+v", gpcEvent)
+	}
+	afterGPC := captured.len()
 
 	unknown := postBrowser(handler, `{
 		"n":"$flag_called","u":"https://shop.example/","p":{"flag":"pricing-v2","variant":"nope"},"s":"sid-1"
 	}`, nil)
-	if unknown.Code != http.StatusNoContent || captured.len() != beforeGPC {
+	if unknown.Code != http.StatusNoContent || captured.len() != afterGPC {
 		t.Fatalf("unknown variant ingested: status=%d count=%d", unknown.Code, captured.len())
 	}
 
@@ -135,7 +114,7 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 	if ofrepResponse.Code != http.StatusOK {
 		t.Fatalf("ofrep status = %d body=%s", ofrepResponse.Code, ofrepResponse.Body)
 	}
-	if captured.len() != beforeGPC {
+	if captured.len() != afterGPC {
 		t.Fatalf("public OFREP must not ingest $flag_called: %+v", captured.snapshot())
 	}
 }
@@ -143,7 +122,7 @@ func TestBrowserAnalyticsProtocol(t *testing.T) {
 func shopCatalog() *catalogStub {
 	return &catalogStub{
 		trackers: []state.AnalyticsTracker{{
-			ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example", Mode: state.AnalyticsModeOptOut,
+			ID: "tracker-shop", ProjectID: "project", RootDomain: "shop.example",
 		}},
 		flags: []state.AnalyticsFlag{{
 			ID: "flag-1", TrackerID: "tracker-shop", Key: "pricing-v2", Type: "boolean", Enabled: true,

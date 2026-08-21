@@ -8,9 +8,9 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-func TestResolveIdentityDropsDeniedAndGPC(t *testing.T) {
+func TestResolveIdentityDropsDeniedAndMakesGPCCookieless(t *testing.T) {
 	t.Parallel()
-	tracker := state.AnalyticsTracker{ID: "tracker", Mode: state.AnalyticsModeOptOut, RootDomain: "shop.com"}
+	tracker := state.AnalyticsTracker{ID: "tracker", RootDomain: "shop.com"}
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 
 	denied := httptestRequest()
@@ -21,18 +21,22 @@ func TestResolveIdentityDropsDeniedAndGPC(t *testing.T) {
 
 	gpc := httptestRequest()
 	gpc.Header.Set("Sec-GPC", "1")
-	if identity := ResolveIdentity(tracker, gpc, "1.1.1.1", "Mozilla", "install", now); !identity.Drop {
-		t.Fatal("GPC should drop")
+	gpc.AddCookie(&http.Cookie{Name: AidCookie, Value: "aid-1"})
+	gpc.AddCookie(&http.Cookie{Name: SidCookie, Value: "sid-1"})
+	identity := ResolveIdentity(tracker, gpc, "1.1.1.1", "Mozilla", "install", now)
+	if identity.Drop || identity.Identified || identity.SessionID != "" ||
+		identity.DistinctID != DailyHash(tracker.ID, "install", "1.1.1.1", "Mozilla", now) {
+		t.Fatalf("GPC identity = %+v", identity)
 	}
 }
 
-func TestResolveIdentityCookielessHashesDaily(t *testing.T) {
+func TestResolveIdentityWithoutAIDHashesDaily(t *testing.T) {
 	t.Parallel()
-	tracker := state.AnalyticsTracker{ID: "tracker", Mode: state.AnalyticsModeCookieless}
+	tracker := state.AnalyticsTracker{ID: "tracker"}
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
 	request := httptestRequest()
 	identity := ResolveIdentity(tracker, request, "10.0.0.1", "Mozilla/5.0", "install", now)
-	if identity.Drop || identity.DistinctID == "" {
+	if identity.Drop || identity.Identified || identity.DistinctID == "" {
 		t.Fatalf("cookieless identity = %+v", identity)
 	}
 	same := ResolveIdentity(tracker, request, "10.0.0.1", "Mozilla/5.0", "install", now)
@@ -45,19 +49,16 @@ func TestResolveIdentityCookielessHashesDaily(t *testing.T) {
 	}
 }
 
-func TestResolveIdentityOptInRequiresGrant(t *testing.T) {
+func TestResolveIdentityWithAIDIsIdentified(t *testing.T) {
 	t.Parallel()
-	tracker := state.AnalyticsTracker{ID: "tracker", Mode: state.AnalyticsModeOptIn}
+	tracker := state.AnalyticsTracker{ID: "tracker"}
 	now := time.Now()
-	if identity := ResolveIdentity(tracker, httptestRequest(), "1.1.1.1", "ua", "install", now); !identity.Drop {
-		t.Fatal("opt-in without grant should drop")
-	}
-	granted := httptestRequest()
-	granted.AddCookie(&http.Cookie{Name: ConsentCookie, Value: ConsentGranted})
-	granted.AddCookie(&http.Cookie{Name: AidCookie, Value: "aid-1"})
-	identity := ResolveIdentity(tracker, granted, "1.1.1.1", "ua", "install", now)
-	if identity.Drop || identity.DistinctID != "aid-1" {
-		t.Fatalf("opt-in granted identity = %+v", identity)
+	request := httptestRequest()
+	request.AddCookie(&http.Cookie{Name: AidCookie, Value: "aid-1"})
+	request.AddCookie(&http.Cookie{Name: SidCookie, Value: "sid-1"})
+	identity := ResolveIdentity(tracker, request, "1.1.1.1", "ua", "install", now)
+	if identity.Drop || !identity.Identified || identity.DistinctID != "aid-1" || identity.SessionID != "sid-1" {
+		t.Fatalf("identified identity = %+v", identity)
 	}
 }
 

@@ -38,6 +38,7 @@ type Route struct {
 
 type ServiceTelemetryRoute struct {
 	BrowserTunnelPath string
+	OTLPTracePath     string
 }
 
 type Config struct {
@@ -174,6 +175,12 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.objectStoreHandler.ServeHTTP(response, request)
 		return
 	}
+	telemetryRoute, hasTelemetryRoute := routes.serviceTelemetry[hostname]
+	if hasTelemetryRoute && telemetryRoute.OTLPTracePath != "" && request.URL.Path == telemetryRoute.OTLPTracePath &&
+		(request.Method == http.MethodPost || request.Method == http.MethodOptions) {
+		router.servePublicOTLPTraces(response, request)
+		return
+	}
 	if analytics.Reserved(request.Method, request.URL.Path) {
 		if router.analyticsHandler == nil {
 			http.NotFound(response, request)
@@ -182,7 +189,7 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		router.analyticsHandler.ServeHTTP(response, request)
 		return
 	}
-	if telemetryRoute, exists := routes.serviceTelemetry[hostname]; exists {
+	if hasTelemetryRoute {
 		if upstreamPath, telemetryPath := sentry.PublicDataPlanePath(request.Method, request.URL.Path, telemetryRoute.BrowserTunnelPath); telemetryPath {
 			if router.serviceTelemetryHandler == nil {
 				unavailable(response)
@@ -241,6 +248,25 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		streaming = true
 		router.traffic.ObserveStreamingHTTP(serviceRoute.ServiceID, statusCode, time.Since(startedAt))
 	}).ServeHTTP(response, request)
+}
+
+func (router *Router) servePublicOTLPTraces(response http.ResponseWriter, request *http.Request) {
+	response.Header().Set("Access-Control-Allow-Origin", "*")
+	response.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+	response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding")
+	response.Header().Set("Access-Control-Max-Age", "86400")
+	if request.Method == http.MethodOptions {
+		response.WriteHeader(http.StatusNoContent)
+		return
+	}
+	if router.serviceTelemetryHandler == nil {
+		unavailable(response)
+		return
+	}
+	forwarded := request.Clone(request.Context())
+	forwarded.URL.Path = "/v1/traces"
+	forwarded.URL.RawPath = ""
+	router.serviceTelemetryHandler.ServeHTTP(response, forwarded)
 }
 
 func cloneMap(input map[string]Route) map[string]Route {

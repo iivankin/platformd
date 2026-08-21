@@ -23,9 +23,6 @@ const defaultViewByKind: Record<ResourceNodeData["kind"], string> = {
   service: "deployments",
 };
 
-export const resourceCollection = (kind: ResourceNodeData["kind"]) =>
-  collectionByKind[kind];
-
 export const resourcePath = (
   projectID: string,
   resourceID: string,

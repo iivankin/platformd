@@ -12,48 +12,37 @@ import (
 )
 
 const (
-	AidCookie      = "platformd_aid"
-	SidCookie      = "platformd_sid"
-	ConsentCookie  = "platformd_consent"
-	ConsentGranted = "granted"
-	ConsentDenied  = "denied"
-	TrackerHeader  = "X-Platformd-Tracker-Id"
+	AidCookie     = "platformd_aid"
+	SidCookie     = "platformd_sid"
+	ConsentCookie = "platformd_consent"
+	ConsentDenied = "denied"
+	TrackerHeader = "X-Platformd-Tracker-Id"
 )
 
 type Identity struct {
 	DistinctID string
 	SessionID  string
+	Identified bool
 	Drop       bool
 }
 
 func RequestDenied(request *http.Request) bool {
-	if strings.TrimSpace(request.Header.Get("Sec-GPC")) == "1" {
-		return true
-	}
 	cookie, _ := request.Cookie(ConsentCookie)
 	return cookie != nil && cookie.Value == ConsentDenied
 }
 
-func RequestGranted(request *http.Request) bool {
-	cookie, _ := request.Cookie(ConsentCookie)
-	return cookie != nil && cookie.Value == ConsentGranted
+func RequestGPC(request *http.Request) bool {
+	return strings.TrimSpace(request.Header.Get("Sec-GPC")) == "1"
 }
 
 func ResolveIdentity(tracker state.AnalyticsTracker, request *http.Request, clientIP, userAgent, installationID string, now time.Time) Identity {
 	if RequestDenied(request) {
 		return Identity{Drop: true}
 	}
-	switch tracker.Mode {
-	case state.AnalyticsModeCookieless:
-		return Identity{DistinctID: DailyHash(tracker.ID, installationID, clientIP, userAgent, now)}
-	case state.AnalyticsModeOptIn:
-		if !RequestGranted(request) {
-			return Identity{Drop: true}
-		}
-		return cookieIdentity(request)
-	default:
+	if aid, _ := request.Cookie(AidCookie); !RequestGPC(request) && aid != nil && strings.TrimSpace(aid.Value) != "" {
 		return cookieIdentity(request)
 	}
+	return Identity{DistinctID: DailyHash(tracker.ID, installationID, clientIP, userAgent, now)}
 }
 
 func cookieIdentity(request *http.Request) Identity {
@@ -61,7 +50,7 @@ func cookieIdentity(request *http.Request) Identity {
 	if aid == nil || strings.TrimSpace(aid.Value) == "" {
 		return Identity{Drop: true}
 	}
-	identity := Identity{DistinctID: aid.Value}
+	identity := Identity{DistinctID: aid.Value, Identified: true}
 	if sid, _ := request.Cookie(SidCookie); sid != nil {
 		identity.SessionID = sid.Value
 	}

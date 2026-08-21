@@ -24,19 +24,19 @@ func TestAnalyticsTrackerRootsMustNotOverlap(t *testing.T) {
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "shop", ProjectID: "project", Name: "Shop", RootDomain: "shop.com",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 2, UpdatedAtMillis: 2,
+		CreatedAtMillis: 2, UpdatedAtMillis: 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "nested", ProjectID: "project", Name: "App", RootDomain: "app.shop.com",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 3, UpdatedAtMillis: 3,
+		CreatedAtMillis: 3, UpdatedAtMillis: 3,
 	}); err != ErrAnalyticsTrackerConflict {
 		t.Fatalf("nested root = %v", err)
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "admin", ProjectID: "project", Name: "Admin", RootDomain: "admin.other.io",
-		Mode: AnalyticsModeCookieless, CreatedAtMillis: 4, UpdatedAtMillis: 4,
+		CreatedAtMillis: 4, UpdatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestAnalyticsTrackerRootsMustNotOverlap(t *testing.T) {
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "ported", ProjectID: "project", Name: "Ported", RootDomain: "shop.com:443",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 5, UpdatedAtMillis: 5,
+		CreatedAtMillis: 5, UpdatedAtMillis: 5,
 	}); err != ErrAnalyticsTrackerConflict {
 		t.Fatalf("ported overlapping root = %v", err)
 	}
@@ -81,13 +81,13 @@ func TestAnalyticsTrackerRootsMustNotOverlapAcrossProjects(t *testing.T) {
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "shop", ProjectID: "project", Name: "Shop", RootDomain: "shop.com",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 2, UpdatedAtMillis: 2,
+		CreatedAtMillis: 2, UpdatedAtMillis: 2,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "stolen", ProjectID: "other", Name: "Stolen", RootDomain: "shop.com",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 3, UpdatedAtMillis: 3,
+		CreatedAtMillis: 3, UpdatedAtMillis: 3,
 	}); err != ErrAnalyticsTrackerConflict {
 		t.Fatalf("cross-project root = %v", err)
 	}
@@ -132,7 +132,7 @@ func TestCreateAnalyticsExperimentRequiresFlagOnTracker(t *testing.T) {
 	seedShopTracker(t, store)
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "other", ProjectID: "project", Name: "Other", RootDomain: "other.com",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 3, UpdatedAtMillis: 3,
+		CreatedAtMillis: 3, UpdatedAtMillis: 3,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +442,7 @@ func seedShopTracker(t *testing.T, store *Store) {
 	}
 	if err := store.CreateAnalyticsTracker(ctx, AnalyticsTracker{
 		ID: "shop", ProjectID: "project", Name: "Shop", RootDomain: "shop.com",
-		Mode: AnalyticsModeOptOut, CreatedAtMillis: 2, UpdatedAtMillis: 2,
+		CreatedAtMillis: 2, UpdatedAtMillis: 2,
 	}); err != nil {
 		t.Fatal(err)
 	}

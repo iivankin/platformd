@@ -166,38 +166,57 @@ func TestServiceTelemetryCanShareAnOwnedApplicationDomain(t *testing.T) {
 	if err != nil || resolved.ID != "service-a" {
 		t.Fatalf("service telemetry public domain = %q, %v", resolved.ID, err)
 	}
+	updated, err = store.UpdateServiceOTLPTracePublicAccess(ctx, UpdateServiceOTLPTracePublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com", Path: " /otel/v1/traces ",
+		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "otlp-traces-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 8,
+	})
+	if err != nil || updated.OTLPTracePublicHostname != "api.example.com" || updated.OTLPTracePath != "/otel/v1/traces" {
+		t.Fatalf("public OTLP trace endpoint = %q%s, %v", updated.OTLPTracePublicHostname, updated.OTLPTracePath, err)
+	}
+	resolved, err = store.ServiceByOTLPTraceHostname(ctx, "api.example.com")
+	if err != nil || resolved.ID != "service-a" {
+		t.Fatalf("service OTLP trace public domain = %q, %v", resolved.ID, err)
+	}
+	if _, err := store.UpdateServiceOTLPTracePublicAccess(ctx, UpdateServiceOTLPTracePublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com", Path: "/otel/../traces",
+		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "invalid-otlp-traces-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 9,
+	}); !errors.Is(err, ErrServiceOTLPTracePublicAccessInvalid) {
+		t.Fatalf("invalid public OTLP trace endpoint = %v", err)
+	}
 	if _, err := store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
 		ID: "service-a", ProjectID: "project", Path: "/client/../report",
 		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "invalid-tunnel-audit", ActorKind: "access",
-		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 8,
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 10,
 	}); !errors.Is(err, ErrServiceTelemetryTunnelPathInvalid) {
 		t.Fatalf("invalid browser telemetry tunnel = %v", err)
 	}
 	if err := store.DetachServiceDomain(ctx, DetachServiceDomainInput{
 		ProjectID: "project", ServiceID: "service-a", Hostname: "api.example.com",
 		AuditEventID: "detach-audit", ActorKind: "access", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 9,
+		ActorEmail: "admin@example.com", CreatedAtMillis: 11,
 	}); !errors.Is(err, ErrDomainTelemetryUse) {
 		t.Fatalf("detach selected telemetry domain = %v", err)
 	}
 	if _, err := store.AttachServiceDomain(ctx, AttachServiceDomainInput{
 		ProjectID: "project", ServiceID: "service-b", Hostname: "api.example.com", TargetPort: 8080, Move: true,
 		AuditEventID: "move-audit", ActorKind: "access", ActorID: "actor",
-		ActorEmail: "admin@example.com", CreatedAtMillis: 10,
+		ActorEmail: "admin@example.com", CreatedAtMillis: 12,
 	}); !errors.Is(err, ErrDomainTelemetryUse) {
 		t.Fatalf("move selected telemetry domain = %v", err)
 	}
 	if _, err := store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
 		ID: "service-a", ProjectID: "project", PublicHostname: "web.example.com",
 		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "foreign-domain-audit", ActorKind: "access",
-		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 11,
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 13,
 	}); !errors.Is(err, ErrHostnameInUse) {
 		t.Fatalf("foreign service telemetry domain = %v", err)
 	}
 	cleared, err := store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
 		ID: "service-a", ProjectID: "project", PublicHostname: "",
 		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "clear-telemetry-audit", ActorKind: "access",
-		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 12,
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 14,
 	})
 	if err != nil || cleared.SentryPublicHostname != "" || cleared.SentryTunnelPath != "" {
 		t.Fatalf("cleared telemetry endpoint = hostname %q, tunnel %q, %v", cleared.SentryPublicHostname, cleared.SentryTunnelPath, err)

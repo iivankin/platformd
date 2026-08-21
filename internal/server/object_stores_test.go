@@ -130,8 +130,13 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 
 	listResponse := httptest.NewRecorder()
 	handler.ServeHTTP(listResponse, projectRequest(http.MethodGet, base+"/objects?prefix=docs%2F", ""))
-	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"contentType":"text/plain"`) {
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"contentType":"text/plain"`) || !strings.Contains(listResponse.Body.String(), `"prefixes":[]`) {
 		t.Fatalf("list = %d/%s", listResponse.Code, listResponse.Body)
+	}
+	folderResponse := httptest.NewRecorder()
+	handler.ServeHTTP(folderResponse, projectRequest(http.MethodGet, base+"/objects?delimiter=%2F", ""))
+	if folderResponse.Code != http.StatusOK || !strings.Contains(folderResponse.Body.String(), `"objects":[]`) || !strings.Contains(folderResponse.Body.String(), `"prefixes":["docs/"]`) {
+		t.Fatalf("folder list = %d/%s", folderResponse.Code, folderResponse.Body)
 	}
 	statsResponse := httptest.NewRecorder()
 	handler.ServeHTTP(statsResponse, projectRequest(http.MethodGet, base+"/stats", ""))
@@ -265,14 +270,42 @@ func (storage *serverObjectStorage) ReadRange(_ context.Context, storeID, key st
 	return err
 }
 
-func (storage *serverObjectStorage) ListEntries(_ context.Context, storeID, prefix, _ string, after string, limit int) ([]objectstore.ObjectListEntry, bool, error) {
+func (storage *serverObjectStorage) ListEntries(_ context.Context, storeID, prefix, delimiter, after string, limit int) ([]objectstore.ObjectListEntry, bool, error) {
 	entries := make([]objectstore.ObjectListEntry, 0)
+	seen := make(map[string]struct{})
 	for key, object := range storage.objects[storeID] {
-		if strings.HasPrefix(key, prefix) && key > after {
+		if !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		if delimiter != "" {
+			remainder := strings.TrimPrefix(key, prefix)
+			if index := strings.Index(remainder, delimiter); index >= 0 {
+				commonPrefix := prefix + remainder[:index+len(delimiter)]
+				if commonPrefix > after {
+					if _, exists := seen[commonPrefix]; !exists {
+						entries = append(entries, objectstore.ObjectListEntry{CommonPrefix: commonPrefix})
+						seen[commonPrefix] = struct{}{}
+					}
+				}
+				continue
+			}
+		}
+		if key > after {
 			metadata := object.metadata
 			entries = append(entries, objectstore.ObjectListEntry{Object: &metadata})
 		}
 	}
+	sort.Slice(entries, func(left, right int) bool {
+		leftKey := entries[left].CommonPrefix
+		if entries[left].Object != nil {
+			leftKey = entries[left].Object.ObjectKey
+		}
+		rightKey := entries[right].CommonPrefix
+		if entries[right].Object != nil {
+			rightKey = entries[right].Object.ObjectKey
+		}
+		return leftKey < rightKey
+	})
 	if len(entries) > limit {
 		return entries[:limit], true, nil
 	}

@@ -46,9 +46,6 @@ func (repository *liveAnalyticsRepository) CreateAnalyticsTracker(ctx context.Co
 	tracker.ID = trackerID
 	tracker.Name = strings.TrimSpace(tracker.Name)
 	tracker.RootDomain = state.NormalizeTrackerRoot(tracker.RootDomain)
-	if tracker.Mode == "" {
-		tracker.Mode = state.AnalyticsModeOptOut
-	}
 	tracker.CreatedAtMillis = now
 	tracker.UpdatedAtMillis = now
 	if err := repository.store.CreateAnalyticsTracker(ctx, tracker); err != nil {

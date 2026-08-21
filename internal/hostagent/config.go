@@ -8,10 +8,10 @@ import (
 )
 
 type Config struct {
-	HostID         string `json:"hostId"`
-	HostToken      string `json:"hostToken"`
-	ParentHostname string `json:"parentHostname"`
-	Name           string `json:"name"`
+	HostID    string `json:"hostId"`
+	HostToken string `json:"hostToken"`
+	ParentURL string `json:"parentUrl"`
+	Name      string `json:"name"`
 }
 
 func Load(path string) (Config, error) {
@@ -23,16 +23,26 @@ func Load(path string) (Config, error) {
 	if err := json.Unmarshal(raw, &config); err != nil {
 		return Config{}, err
 	}
-	if config.HostID == "" || config.HostToken == "" || config.ParentHostname == "" {
+	if config.HostID == "" || config.HostToken == "" || config.ParentURL == "" {
 		return Config{}, errors.New("worker config is incomplete")
 	}
+	parentURL, err := NormalizeParentURL(config.ParentURL)
+	if err != nil {
+		return Config{}, err
+	}
+	config.ParentURL = parentURL
 	return config, nil
 }
 
 func Save(path string, config Config) error {
-	if config.HostID == "" || config.HostToken == "" || config.ParentHostname == "" {
+	if config.HostID == "" || config.HostToken == "" || config.ParentURL == "" {
 		return errors.New("worker config is incomplete")
 	}
+	parentURL, err := NormalizeParentURL(config.ParentURL)
+	if err != nil {
+		return err
+	}
+	config.ParentURL = parentURL
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}

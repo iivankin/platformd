@@ -198,7 +198,7 @@ func runHostMeshChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	conn, welcome, err := hostagent.DialWithOptions(ctx, hostagent.DialOptions{
-		ParentHostname: hostMeshHubAddr, HostToken: joined.HostToken,
+		ParentURL: "https://" + hostMeshHubAddr, HostToken: joined.HostToken,
 		PublicIPv4: "203.0.113.40", HTTPClient: client,
 	})
 	if err != nil {
@@ -228,7 +228,7 @@ func runHostMeshChild(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = mesh.Close() })
 	tunnel, err := hostagent.DialTunnelWithOptions(ctx, hostagent.TunnelOptions{
-		ParentHostname: hostMeshHubAddr, HostToken: joined.HostToken,
+		ParentURL: "https://" + hostMeshHubAddr, HostToken: joined.HostToken,
 		DialLocal: mesh.DialLocal, HTTPClient: client,
 	})
 	if err != nil {
@@ -411,7 +411,7 @@ func openHostMeshStore(t *testing.T, ctx context.Context, paths layout.Paths) (*
 	}
 	if err := store.CreateAnalyticsTracker(ctx, state.AnalyticsTracker{
 		ID: "tracker", ProjectID: hostMeshProjectID, Name: "shop", RootDomain: "shop.example",
-		Mode: state.AnalyticsModeOptOut, CreatedAtMillis: 4, UpdatedAtMillis: 4,
+		CreatedAtMillis: 4, UpdatedAtMillis: 4,
 	}); err != nil {
 		t.Fatal(err)
 	}

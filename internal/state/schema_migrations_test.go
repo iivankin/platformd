@@ -321,3 +321,83 @@ WHERE name IN ('service_id', 'protocol', 'public_port') AND pk > 0`).Scan(&pk); 
 		t.Fatalf("schema version/pk columns = %d/%d", version, pk)
 	}
 }
+
+func TestMigrateSchemaVersionTwentyAddsPublicOTLPTraceEndpoint(t *testing.T) {
+	t.Parallel()
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE services (id TEXT PRIMARY KEY) STRICT;
+INSERT INTO services(id) VALUES ('service');
+PRAGMA user_version = 20;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionTwenty(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version, columns int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`
+SELECT count(*) FROM pragma_table_info('services')
+WHERE name IN ('otlp_trace_public_hostname', 'otlp_trace_path')`).Scan(&columns); err != nil {
+		t.Fatal(err)
+	}
+	if version != 21 || columns != 2 {
+		t.Fatalf("schema version/OTLP trace columns = %d/%d", version, columns)
+	}
+	if _, err := database.Exec(`
+INSERT INTO services(id, otlp_trace_public_hostname, otlp_trace_path)
+VALUES ('other', 'otel.example.com', '/otel/v1/traces')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`
+UPDATE services SET otlp_trace_public_hostname = 'otel.example.com', otlp_trace_path = '/traces'
+WHERE id = 'service'`); err == nil {
+		t.Fatal("duplicate public OTLP trace hostname was accepted")
+	}
+}
+
+func TestMigrateSchemaVersionTwentyOneRemovesAnalyticsTrackerMode(t *testing.T) {
+	t.Parallel()
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE analytics_trackers (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  root_domain TEXT NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'opt-out' CHECK (mode IN ('cookieless', 'opt-out', 'opt-in')),
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+) STRICT;
+INSERT INTO analytics_trackers(id, project_id, name, root_domain, mode, created_at, updated_at)
+VALUES ('tracker', 'project', 'Shop', 'shop.example', 'opt-in', 1, 2);
+PRAGMA user_version = 21;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionTwentyOne(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version, modeColumns, rows int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT count(*) FROM pragma_table_info('analytics_trackers') WHERE name = 'mode'`).Scan(&modeColumns); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow(`SELECT count(*) FROM analytics_trackers WHERE id = 'tracker' AND root_domain = 'shop.example'`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if version != 22 || modeColumns != 0 || rows != 1 {
+		t.Fatalf("schema version/mode columns/rows = %d/%d/%d", version, modeColumns, rows)
+	}
+}

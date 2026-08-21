@@ -69,9 +69,14 @@ impl GeoIpLookup {
         }
     }
 
-    pub(crate) fn request_geo(&self, cloudflare_country: Option<&str>) -> Option<Geo> {
+    pub(crate) fn request_geo(
+        &self,
+        cloudflare_country: Option<&str>,
+        cloudflare_region: Option<&str>,
+        cloudflare_city: Option<&str>,
+    ) -> Option<Geo> {
         (self.source == GeoIpSource::Cloudflare)
-            .then(|| cloudflare_country.and_then(Geo::from_cloudflare_country))
+            .then(|| Geo::from_cloudflare(cloudflare_country, cloudflare_region, cloudflare_city))
             .flatten()
     }
 
@@ -243,19 +248,20 @@ pub(crate) struct Geo {
 }
 
 impl Geo {
-    fn from_cloudflare_country(value: &str) -> Option<Self> {
-        let country_code = value.trim().to_ascii_uppercase();
-        if country_code.len() != 2
-            || !country_code.bytes().all(|byte| byte.is_ascii_alphabetic())
-            || matches!(country_code.as_str(), "XX" | "T1")
-        {
-            return None;
-        }
-        Some(Self {
-            country_code: Some(country_code),
+    fn from_cloudflare(
+        country: Option<&str>,
+        region: Option<&str>,
+        city: Option<&str>,
+    ) -> Option<Self> {
+        let country_code = country.and_then(cloudflare_country);
+        let geo = Self {
+            country_code,
+            city: cloudflare_location(city),
+            subdivision: cloudflare_location(region),
             source: Some("Cloudflare".into()),
             ..Self::default()
-        })
+        };
+        geo.has_values().then_some(geo)
     }
 
     fn has_values(&self) -> bool {
@@ -287,6 +293,21 @@ impl Geo {
     }
 }
 
+fn cloudflare_country(value: &str) -> Option<String> {
+    let country_code = value.trim().to_ascii_uppercase();
+    (country_code.len() == 2
+        && country_code.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && !matches!(country_code.as_str(), "XX" | "T1"))
+    .then_some(country_code)
+}
+
+fn cloudflare_location(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
 fn insert(value: &mut Map<String, Value>, key: &str, field: Option<String>) {
     if let Some(field) = field {
         value.insert(key.into(), Value::String(field));
@@ -305,15 +326,19 @@ mod tests {
         let lookup = GeoIpLookup::from_volume(volume.path(), GeoIpSource::Cloudflare).await;
 
         assert_eq!(
-            lookup.request_geo(Some("rs")).map(Geo::into_value),
+            lookup
+                .request_geo(Some("rs"), Some("Belgrade"), Some("Belgrade"))
+                .map(Geo::into_value),
             Some(serde_json::json!({
                 "country_code": "RS",
+                "city": "Belgrade",
+                "subdivision": "Belgrade",
                 "source": "Cloudflare"
             }))
         );
-        assert!(lookup.request_geo(Some("XX")).is_none());
-        assert!(lookup.request_geo(Some("T1")).is_none());
-        assert!(lookup.request_geo(Some("invalid")).is_none());
+        assert!(lookup.request_geo(Some("XX"), None, None).is_none());
+        assert!(lookup.request_geo(Some("T1"), None, None).is_none());
+        assert!(lookup.request_geo(Some("invalid"), None, None).is_none());
         assert!(!volume.path().join(DATABASE_FILENAME).exists());
     }
 

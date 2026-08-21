@@ -226,12 +226,24 @@ func (application *Application) upload(response http.ResponseWriter, request *ht
 	partPath := partFilePath(temporaryPath, offset, partLength)
 	if err := writePartFile(partPath, partLength, request.Body); err != nil {
 		if !errors.Is(err, os.ErrExist) {
+			application.onError(fmt.Errorf(
+				"chunk write failed upload=%s service=%s offset=%d length=%d remote=%s: %w",
+				uploadID, service.ID, offset, partLength, request.RemoteAddr, err,
+			))
 			writeUploadError(response, http.StatusInternalServerError, "chunk_write_failed", "Unable to store upload chunk")
 			return
 		}
 		info, statErr := os.Stat(partPath)
 		if statErr != nil || info.Size() != partLength {
+			size := int64(-1)
+			if info != nil {
+				size = info.Size()
+			}
 			_ = os.Remove(partPath)
+			application.onError(fmt.Errorf(
+				"incomplete part file upload=%s service=%s offset=%d length=%d size=%d stat=%v",
+				uploadID, service.ID, offset, partLength, size, statErr,
+			))
 			writeUploadError(response, http.StatusConflict, "chunk_write_failed", "Incomplete upload part file; retry this part")
 			return
 		}
@@ -651,10 +663,8 @@ func writePartFile(path string, length int64, body io.Reader) error {
 		_ = os.Remove(path)
 		return fmt.Errorf("upload chunk length = %d, want %d", written, length)
 	}
-	if err := file.Sync(); err != nil {
-		_ = os.Remove(path)
-		return err
-	}
+	// Do not fsync on this path: Cloudflare's 125s proxy-read timeout includes
+	// the time until HTTP response headers. assembleParts syncs the combined archive.
 	return nil
 }
 
@@ -769,6 +779,7 @@ func (application *Application) writeRequestError(response http.ResponseWriter, 
 	case errors.Is(err, state.ErrImageUploadChanged):
 		writeUploadError(response, http.StatusConflict, "upload_changed", "Image upload changed")
 	default:
+		application.onError(fmt.Errorf("image upload internal error: %w", err))
 		writeUploadError(response, http.StatusInternalServerError, "internal_error", "Unable to process image upload")
 	}
 }

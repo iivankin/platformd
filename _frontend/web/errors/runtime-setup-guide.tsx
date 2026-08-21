@@ -1,6 +1,9 @@
 import { useState } from "react";
 
+import { browserSentryInstall, browserSentrySetup } from "@/browser-otel-setup";
 import { cn } from "@/lib/utils";
+import { HighlightedSnippet } from "@/snippet-code";
+import type { SnippetLanguage } from "@/snippet-code";
 
 import { CopyButton } from "./settings-common";
 import type { App } from "./types";
@@ -9,6 +12,7 @@ interface RuntimeGuide {
   id: string;
   install: string;
   label: string;
+  language: SnippetLanguage;
   note: string;
   scope: "browser" | "server";
   source: (dsn: string, tunnel?: string) => string;
@@ -29,36 +33,23 @@ const publicTunnelURL = (app: App) => {
 const runtimeGuides: RuntimeGuide[] = [
   {
     id: "browser",
-    install: "npm install @sentry/browser",
+    install: browserSentryInstall,
     label: "Browser / React",
-    note: "Replay and browser profiling are sampled explicitly; neither is sent by the SDK by default.",
+    language: "typescript",
+    note: "Configure Browser OTLP traces above first. OTel owns tracing; Sentry sends errors and replay and attaches errors to the active OTel span.",
     scope: "browser",
-    source: (dsn, tunnel) => `import * as Sentry from "@sentry/browser";
-
-Sentry.init({
-  dsn: ${quoted(dsn)},
-${tunnel ? `  tunnel: ${quoted(tunnel)},\n` : ""}  integrations: [
-    Sentry.replayIntegration(),
-    Sentry.browserProfilingIntegration(),
-  ],
-  replaysSessionSampleRate: 0.1,
-  replaysOnErrorSampleRate: 1.0,
-  profileSessionSampleRate: 0.1,
-});`,
+    source: browserSentrySetup,
   },
   {
     id: "node",
-    install: "npm install @sentry/node @sentry/profiling-node",
+    install: "npm install @sentry/node",
     label: "Node.js / Express",
-    note: "Import the instrumentation module before the rest of the application. Profiling requires an integration and a non-zero sample rate.",
+    language: "typescript",
+    note: "Import the instrumentation module before the rest of the application.",
     scope: "server",
     source: (dsn) => `import * as Sentry from "@sentry/node";
-import { nodeProfilingIntegration } from "@sentry/profiling-node";
-
 Sentry.init({
   dsn: ${quoted(dsn)},
-  integrations: [nodeProfilingIntegration()],
-  profileSessionSampleRate: 0.1,
 });
 
 // Express: call after routes are registered.
@@ -68,6 +59,7 @@ Sentry.setupExpressErrorHandler(app);`,
     id: "bun",
     install: "bun add @sentry/bun",
     label: "Bun",
+    language: "typescript",
     note: "Initialize Sentry in the entry module before importing the rest of the application.",
     scope: "server",
     source: (dsn) => `import * as Sentry from "@sentry/bun";
@@ -80,6 +72,7 @@ Sentry.init({
     id: "python",
     install: 'pip install "sentry-sdk[flask]"',
     label: "Python / Flask",
+    language: "python",
     note: "For plain Python, omit FlaskIntegration and install sentry-sdk without the extra.",
     scope: "server",
     source: (dsn) => `import sentry_sdk
@@ -94,6 +87,7 @@ sentry_sdk.init(
     id: "go",
     install: "go get github.com/getsentry/sentry-go",
     label: "Go / net/http",
+    language: "go",
     note: "Flush before short-lived processes exit; long-running servers send in the background.",
     scope: "server",
     source: (dsn) => `import (
@@ -114,6 +108,7 @@ defer sentry.Flush(2 * time.Second)`,
     id: "rust",
     install: "cargo add sentry",
     label: "Rust",
+    language: "rust",
     note: "Keep the guard alive for the lifetime of the process so queued events can be flushed.",
     scope: "server",
     source: (dsn) => `let _sentry_guard = sentry::init((
@@ -125,6 +120,7 @@ defer sentry.Flush(2 * time.Second)`,
     id: "java",
     install: "Maven: io.sentry:sentry",
     label: "Java",
+    language: "java",
     note: "Use the matching Sentry framework integration for Spring, Log4j, or another stack.",
     scope: "server",
     source: (dsn) => `import io.sentry.Sentry;
@@ -137,6 +133,7 @@ Sentry.init(options ->
     id: "dotnet",
     install: "dotnet add package Sentry",
     label: ".NET",
+    language: "csharp",
     note: "ASP.NET Core applications can pass the same DSN to UseSentry.",
     scope: "server",
     source: (dsn) => `using Sentry;
@@ -149,6 +146,7 @@ using var sentry = SentrySdk.Init(options =>
     id: "php",
     install: "composer require sentry/sentry",
     label: "PHP",
+    language: "php",
     note: "Initialize once during application bootstrap before handling requests.",
     scope: "server",
     source: (dsn) => `Sentry\\init([
@@ -159,6 +157,7 @@ using var sentry = SentrySdk.Init(options =>
     id: "ruby",
     install: "bundle add sentry-ruby",
     label: "Ruby",
+    language: "ruby",
     note: "Rails applications can use sentry-rails with the same configuration block.",
     scope: "server",
     source: (dsn) => `require "sentry-ruby"
@@ -261,9 +260,11 @@ export const RuntimeSetupGuide = ({
             </code>
             <CopyButton notify={notify} value={setup} />
           </div>
-          <pre className="overflow-x-auto px-3 py-4 text-[10px] leading-5 text-foreground/75">
-            {source}
-          </pre>
+          <HighlightedSnippet
+            className="border-0 bg-transparent px-3 py-4 pr-3"
+            language={guide.language}
+            value={source}
+          />
         </div>
       ) : (
         <div className="border-b border-border py-5 text-[10px] leading-5 text-muted-foreground">

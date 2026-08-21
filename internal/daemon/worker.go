@@ -8,6 +8,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
+	"sort"
 	"sync"
 	"time"
 
@@ -76,7 +78,9 @@ type workerControl struct {
 	forwarder   *hostagent.Forwarder
 	proxy       *portproxy.Manager
 	listenerIDs map[string]struct{}
-	publicIPv4  string
+	statusMu    sync.Mutex
+	lastStatus  []hostconn.ServiceRuntime
+	reported    bool
 }
 
 func RunWorker(ctx context.Context) error {
@@ -108,9 +112,8 @@ func runWorker(ctx context.Context, paths layout.Paths) (returnErr error) {
 	}
 	control := &workerControl{
 		assigned: map[string]state.ServiceDesired{}, listenerIDs: map[string]struct{}{},
-		publicIPv4: publicIPv4,
 	}
-	conn, welcome, err := hostagent.Dial(ctx, config.ParentHostname, config.HostToken, publicIPv4, hostagent.Handlers{
+	conn, welcome, err := hostagent.Dial(ctx, config.ParentURL, config.HostToken, publicIPv4, hostagent.Handlers{
 		Certificates: func(certificates []hostconn.CertificatePEM) error {
 			return control.replaceCertificates(certificates)
 		},
@@ -161,7 +164,7 @@ func runWorker(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return err
 	}
 	defer func() { returnErr = errors.Join(returnErr, mesh.Close()) }()
-	tunnel, err := hostagent.DialTunnel(ctx, config.ParentHostname, config.HostToken, mesh.DialLocal)
+	tunnel, err := hostagent.DialTunnel(ctx, config.ParentURL, config.HostToken, mesh.DialLocal)
 	if err != nil {
 		return err
 	}
@@ -172,7 +175,10 @@ func runWorker(ctx context.Context, paths layout.Paths) (returnErr error) {
 			cancel()
 		}
 	}()
-	forwarder := hostagent.NewForwarder(conn)
+	forwarder, err := hostagent.NewForwarder(config.ParentURL, config.HostToken)
+	if err != nil {
+		return err
+	}
 	otlpAddresses := []string{"127.0.0.1:4318"}
 	for _, project := range runtime.firewallProjects {
 		otlpAddresses = append(otlpAddresses, net.JoinHostPort(project.Gateway.String(), "4318"))
@@ -185,7 +191,7 @@ func runWorker(ctx context.Context, paths layout.Paths) (returnErr error) {
 	containerLogs := telemetry.NewLogExporter(ctx, "http://127.0.0.1:4318")
 	defer containerLogs.Close()
 	remoteStore := hostagent.NewArchiveStore(
-		hostagent.NewRemoteStore(conn), config.ParentHostname, config.HostToken, paths.ImagesRoot,
+		hostagent.NewRemoteStore(conn), config.ParentURL, config.HostToken, paths.ImagesRoot,
 	)
 	control.store = remoteStore
 	if err := configureWorkerDeployments(ctx, runtime, remoteStore, conn, containerLogs); err != nil {
@@ -389,23 +395,26 @@ func (control *workerControl) reportLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			control.reportStatus(ctx)
+			if !control.reportStatus(ctx) {
+				control.reportHeartbeat(ctx)
+			}
 		}
 	}
 }
 
-func (control *workerControl) reportStatus(ctx context.Context) {
+func (control *workerControl) reportStatus(ctx context.Context) bool {
+	control.statusMu.Lock()
+	defer control.statusMu.Unlock()
 	control.mu.Lock()
 	conn := control.conn
 	runtime := control.runtime
-	publicIPv4 := control.publicIPv4
 	assigned := make([]state.ServiceDesired, 0, len(control.assigned))
 	for _, desired := range control.assigned {
 		assigned = append(assigned, desired)
 	}
 	control.mu.Unlock()
 	if conn == nil || runtime == nil {
-		return
+		return false
 	}
 	services := make([]hostconn.ServiceRuntime, 0, len(assigned))
 	for _, desired := range assigned {
@@ -414,10 +423,32 @@ func (control *workerControl) reportStatus(ctx context.Context) {
 			ServiceID: desired.ID, Status: status, Message: message,
 		})
 	}
-	if err := conn.Write(ctx, hostconn.KindStatus, hostconn.Status{
-		PublicIPv4: publicIPv4, Services: services,
-	}); err != nil && ctx.Err() == nil {
-		log.Printf("worker status: %v", err)
+	// assigned is a map; keep snapshot order stable so it does not create
+	// false status changes and unnecessary traffic.
+	sort.Slice(services, func(left, right int) bool { return services[left].ServiceID < services[right].ServiceID })
+	if control.reported && slices.Equal(control.lastStatus, services) {
+		return false
+	}
+	if err := conn.Write(ctx, hostconn.KindStatus, hostconn.Status{Services: services}); err != nil {
+		if ctx.Err() == nil {
+			log.Printf("worker status: %v", err)
+		}
+		return true
+	}
+	control.lastStatus = slices.Clone(services)
+	control.reported = true
+	return true
+}
+
+func (control *workerControl) reportHeartbeat(ctx context.Context) {
+	control.mu.Lock()
+	conn := control.conn
+	control.mu.Unlock()
+	if conn == nil {
+		return
+	}
+	if err := conn.Write(ctx, hostconn.KindHeartbeat, struct{}{}); err != nil && ctx.Err() == nil {
+		log.Printf("worker heartbeat: %v", err)
 	}
 }
 

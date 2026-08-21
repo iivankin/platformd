@@ -1376,9 +1376,6 @@ async fn ingest(
     let PreparedIngest {
         mut documents,
         mut events,
-        profiles,
-        standalone_spans,
-        transactions,
         response_event_id,
     } = prepared;
     let mut event_ids = HashSet::new();
@@ -1411,7 +1408,7 @@ async fn ingest(
                 .map(str::to_owned)
         }));
     }
-    if !events.is_empty() && duplicate_event_ids.len() == events.len() && profiles.is_empty() {
+    if !events.is_empty() && duplicate_event_ids.len() == events.len() {
         return Ok(IngestResult {
             event_id: response_event_id,
             notifications: Vec::new(),
@@ -1487,35 +1484,18 @@ async fn ingest(
             status,
         )?);
     }
-    let mut sentry_spans = Vec::new();
-    for transaction in &transactions {
-        sentry_spans.extend(crate::telemetry::sentry_trace_rows(
-            &service.id,
-            transaction,
-        )?);
-    }
-    for span in &standalone_spans {
-        match crate::telemetry::sentry_standalone_span_row(&service.id, &span.payload, span.version)
-        {
-            Ok(row) => sentry_spans.push(row),
-            Err(error) => tracing::warn!(%error, "discarding invalid standalone Sentry span"),
-        }
-    }
+    let mut trace_markers = Vec::new();
     for event in &events {
         if let Some(marker) = crate::telemetry::sentry_error_trace_row(&service.id, event)? {
-            sentry_spans.push(marker);
+            trace_markers.push(marker);
         }
     }
-    // Persist replaceable spans first. If the document commit fails, an SDK retry
-    // can safely upsert the same spans; committing documents first could make the
-    // duplicate-event fast path permanently skip spans after a partial failure.
+    // Persist replaceable error markers first. If the document commit fails, an SDK
+    // retry can safely upsert the marker; committing documents first could make the
+    // duplicate-event fast path permanently skip it after a partial failure.
     state
         .store
-        .ingest_signal_rows(crate::storage::SignalTable::Spans, sentry_spans)
-        .await?;
-    state
-        .store
-        .ingest_signal_rows(crate::storage::SignalTable::Profiles, profiles)
+        .ingest_signal_rows(crate::storage::SignalTable::Spans, trace_markers)
         .await?;
     state.store.ingest(documents).await?;
     drop(ingest_guard);
@@ -2623,6 +2603,12 @@ fn request_geo(headers: &HeaderMap, geoip: &GeoIpLookup) -> Option<Geo> {
     geoip.request_geo(
         headers
             .get("cf-ipcountry")
+            .and_then(|value| value.to_str().ok()),
+        headers
+            .get("cf-region")
+            .and_then(|value| value.to_str().ok()),
+        headers
+            .get("cf-ipcity")
             .and_then(|value| value.to_str().ok()),
     )
 }

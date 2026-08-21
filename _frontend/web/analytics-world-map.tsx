@@ -1,19 +1,12 @@
 import { useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 
+import { analyticsCountryName } from "@/analytics-location";
 import { formatCount } from "@/analytics-model";
 import {
   analyticsWorldCountries,
   analyticsWorldViewBox,
 } from "@/analytics-world-paths";
-
-export const analyticsCountryName = (code: string) => {
-  try {
-    return new Intl.DisplayNames(["en"], { type: "region" }).of(code) ?? code;
-  } catch {
-    return code;
-  }
-};
 
 export const AnalyticsWorldMap = ({
   onSelect,

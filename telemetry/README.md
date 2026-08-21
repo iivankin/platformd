@@ -38,6 +38,26 @@ SQLite stores artifact-token verifiers, webhook configuration, encrypted
 webhook secrets, public hostnames, and all other control-plane state. chDB never
 stores a second project or service catalog.
 
+## Browser traces
+
+The service telemetry settings can reserve one exact public path for OTLP
+HTTP/protobuf traces. The generated browser example initializes OpenTelemetry
+before the application, exports with a batch span processor, and instruments
+document load, user interactions, fetch, and XMLHttpRequest. It also provides a
+`traced()` helper for framework-specific route loaders and important business
+operations that generic browser instrumentation cannot identify.
+
+Only explicitly selected API origins receive W3C trace propagation headers.
+Cross-origin APIs must allow `traceparent` and `tracestate` in their CORS
+configuration. The public trace exporter path itself supports browser
+preflight requests and is excluded from fetch/XHR instrumentation.
+
+Sentry remains responsible for errors and replay. Its generated browser setup
+disables Sentry transaction export and uses a global
+`beforeSend` hook to copy the active OpenTelemetry trace and span IDs into an
+error event. Errors outside an active OpenTelemetry span remain valid Sentry
+events but cannot be attached to a trace.
+
 ## Storage and backups
 
 - `<volume>/chdb` stores Sentry events and replays plus OTLP logs, traces, and
@@ -45,7 +65,8 @@ stores a second project or service catalog.
 - `<volume>/blobs` stores content-addressed envelope payloads and debug
   artifacts.
 - `<volume>/GeoIP-City.mmdb` is downloaded only for non-Cloudflare deployments
-  that select database GeoIP. platformd uses Cloudflare's country header.
+  that select database GeoIP. platformd uses Cloudflare's visitor location
+  headers.
 
 The telemetry resource backup contains a native chDB backup plus referenced
 blobs. The normal platformd control backup contains SQLite, including webhook

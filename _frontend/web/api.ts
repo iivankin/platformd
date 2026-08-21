@@ -364,6 +364,9 @@ const serviceTelemetrySchema = z.object({
   internalOtlpEndpoint: z.string().url(),
   publicDsn: z.string().url().optional(),
   publicHostname: z.string().min(1).optional(),
+  publicOtlpTraceEndpoint: z.string().url().optional(),
+  publicOtlpTraceHostname: z.string().min(1).optional(),
+  publicOtlpTracePath: z.string().min(2).max(256).optional(),
   serviceId: z.string().min(1),
   trackedBy: z
     .array(
@@ -468,29 +471,8 @@ const serviceTraceMetricSampleSchema = z.object({
   value: z.number().nullable(),
 });
 
-const serviceTraceProfileStackSchema = z.object({
-  durationNano: z.string().regex(/^\d+$/u),
-  frames: z.array(z.record(z.string(), z.unknown())),
-  sampleCount: z.number().int().nonnegative(),
-  spanId: z.string(),
-  threadId: z.string(),
-  threadName: z.string(),
-});
-
-const serviceTraceProfileSchema = z.object({
-  endedAtUnixNano: z.string().regex(/^\d+$/u),
-  platform: z.string(),
-  profileId: z.string().min(1),
-  profilerId: z.string(),
-  sampleCount: z.number().int().nonnegative(),
-  serviceId: z.string().min(1),
-  stacks: z.array(serviceTraceProfileStackSchema),
-  startedAtUnixNano: z.string().regex(/^\d+$/u),
-});
-
 const serviceTraceDetailSchema = z.object({
   metrics: z.array(serviceTraceMetricSampleSchema).default([]),
-  profiles: z.array(serviceTraceProfileSchema).default([]),
   relatedSegments: z
     .array(
       z.object({
@@ -542,10 +524,6 @@ export type ServiceTraceSummary = z.infer<typeof serviceTraceSummarySchema>;
 export type ServiceTraceSpan = z.infer<typeof serviceTraceSpanSchema>;
 export type ServiceTraceMetricSample = z.infer<
   typeof serviceTraceMetricSampleSchema
->;
-export type ServiceTraceProfile = z.infer<typeof serviceTraceProfileSchema>;
-export type ServiceTraceProfileStack = z.infer<
-  typeof serviceTraceProfileStackSchema
 >;
 export type ServiceTraceDetail = z.infer<typeof serviceTraceDetailSchema>;
 export type ServiceMetricDescriptor = z.infer<
@@ -1374,6 +1352,7 @@ const objectMetadataSchema = z.object({
 const objectPageSchema = z.object({
   nextContinuationToken: z.string(),
   objects: z.array(objectMetadataSchema),
+  prefixes: z.array(z.string()),
 });
 
 const objectStoreTrafficSchema = z.object({
@@ -2141,6 +2120,33 @@ export const updateServiceTelemetryBrowserTunnel = async (
   return serviceTelemetrySchema.parse(await response.json());
 };
 
+export const updateServiceOTLPTracePublicAccess = async (
+  projectID: string,
+  serviceID: string,
+  input: {
+    expectedUpdatedAt: number;
+    publicHostname: string;
+    tracePath: string;
+  },
+  fetcher: Fetcher = globalThis.fetch
+): Promise<ServiceTelemetry> => {
+  const response = await fetcher(
+    `${serviceTelemetryPath(projectID, serviceID)}/public-otlp-traces`,
+    {
+      body: JSON.stringify(input),
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      method: "PUT",
+    }
+  );
+  if (!response.ok) {
+    throw await apiError(response, "public OTLP trace update failed");
+  }
+  return serviceTelemetrySchema.parse(await response.json());
+};
+
 export const fetchTelemetryTraces = async (
   scope: MetricScope,
   signal?: AbortSignal,
@@ -2459,18 +2465,6 @@ export const deleteMetricChart = async (
     throw await apiError(response, "service metric chart deletion failed");
   }
 };
-
-export const deleteServiceMetricChart = (
-  projectID: string,
-  serviceID: string,
-  chartID: string,
-  fetcher: Fetcher = globalThis.fetch
-): Promise<void> =>
-  deleteMetricChart(
-    { kind: "service", projectID, serviceID },
-    chartID,
-    fetcher
-  );
 
 const resolvedEnvironmentSchema = z.object({
   environment: z.record(z.string(), z.string()),
@@ -4030,7 +4024,12 @@ export const cancelLargestObjectsSearch = (
 export const fetchObjects = async (
   projectID: string,
   storeID: string,
-  options: { continuationToken?: string; limit?: number; prefix?: string } = {},
+  options: {
+    continuationToken?: string;
+    delimiter?: string;
+    limit?: number;
+    prefix?: string;
+  } = {},
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ObjectPage> => {
@@ -4040,6 +4039,9 @@ export const fetchObjects = async (
   }
   if (options.continuationToken) {
     query.set("continuationToken", options.continuationToken);
+  }
+  if (options.delimiter) {
+    query.set("delimiter", options.delimiter);
   }
   const response = await fetcher(
     `${objectStorePath(projectID, storeID)}/objects?${query.toString()}`,
@@ -5300,7 +5302,6 @@ const analyticsTrackerSchema = z.object({
   internalHostname: z.string().min(1),
   internalOfrepUrl: z.string().min(1),
   matchingHostnames: z.array(z.string()),
-  mode: z.enum(["cookieless", "opt-out", "opt-in"]),
   name: z.string().min(1),
   projectId: z.string().min(1),
   rootDomain: z.string().min(1),
@@ -5308,7 +5309,6 @@ const analyticsTrackerSchema = z.object({
 });
 
 export type AnalyticsTracker = z.infer<typeof analyticsTrackerSchema>;
-export type AnalyticsMode = AnalyticsTracker["mode"];
 
 const analyticsGoalSchema = z.object({
   actionType: z.enum(["path", "event"]),
@@ -5453,7 +5453,7 @@ export const fetchAnalyticsTrackers = async (
 
 export const createAnalyticsTracker = async (
   projectID: string,
-  input: { mode?: AnalyticsMode; name: string; rootDomain: string },
+  input: { name: string; rootDomain: string },
   fetcher: Fetcher = globalThis.fetch
 ): Promise<AnalyticsTracker> => {
   const response = await fetcher(analyticsBase(projectID), {
@@ -5473,7 +5473,6 @@ export const updateAnalyticsTracker = async (
   trackerID: string,
   input: {
     expectedUpdatedAt: number;
-    mode: AnalyticsMode;
     name: string;
     rootDomain: string;
   },

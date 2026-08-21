@@ -220,8 +220,9 @@ func serviceUsesDomainForTelemetry(ctx context.Context, transaction *sql.Tx, ser
 	err := transaction.QueryRowContext(ctx, `
 SELECT EXISTS(
   SELECT 1
-  FROM services s JOIN service_domains d ON d.service_id = s.id AND d.hostname = s.sentry_public_hostname
+  FROM services s JOIN service_domains d ON d.service_id = s.id
   WHERE s.id = ? AND d.hostname = ?
+    AND d.hostname IN (s.sentry_public_hostname, s.otlp_trace_public_hostname)
 )`, serviceID, hostname).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check service telemetry domain: %w", err)
@@ -281,7 +282,8 @@ SELECT EXISTS(
   UNION ALL SELECT 1 FROM service_domains WHERE hostname = ?
   UNION ALL SELECT 1 FROM object_stores WHERE public_hostname = ? AND id != ?
   UNION ALL SELECT 1 FROM services WHERE sentry_public_hostname = ?
-)`, hostname, hostname, hostname, exceptObjectStoreID, hostname).Scan(&exists)
+  UNION ALL SELECT 1 FROM services WHERE otlp_trace_public_hostname = ?
+)`, hostname, hostname, hostname, exceptObjectStoreID, hostname, hostname).Scan(&exists)
 	if err != nil {
 		return false, fmt.Errorf("check public hostname roles: %w", err)
 	}

@@ -47,23 +47,27 @@ type rpcReply struct {
 }
 
 type DialOptions struct {
-	ParentHostname string
-	HostToken      string
-	PublicIPv4     string
-	Handlers       Handlers
-	HTTPClient     *http.Client
+	ParentURL  string
+	HostToken  string
+	PublicIPv4 string
+	Handlers   Handlers
+	HTTPClient *http.Client
 }
 
-func Dial(ctx context.Context, parentHostname, hostToken, publicIPv4 string, handlers Handlers) (*Conn, hostconn.Welcome, error) {
+func Dial(ctx context.Context, parentURL, hostToken, publicIPv4 string, handlers Handlers) (*Conn, hostconn.Welcome, error) {
 	return DialWithOptions(ctx, DialOptions{
-		ParentHostname: parentHostname, HostToken: hostToken, PublicIPv4: publicIPv4, Handlers: handlers,
+		ParentURL: parentURL, HostToken: hostToken, PublicIPv4: publicIPv4, Handlers: handlers,
 	})
 }
 
 func DialWithOptions(ctx context.Context, options DialOptions) (*Conn, hostconn.Welcome, error) {
+	connectURL, err := parentWebSocketURL(options.ParentURL, hostconn.ConnectPath)
+	if err != nil {
+		return nil, hostconn.Welcome{}, err
+	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+options.HostToken)
-	connection, _, err := websocket.Dial(ctx, "wss://"+options.ParentHostname+hostconn.ConnectPath, &websocket.DialOptions{
+	connection, _, err := websocket.Dial(ctx, connectURL, &websocket.DialOptions{
 		HTTPHeader:   header,
 		Subprotocols: []string{hostconn.WebSocketProtocol},
 		HTTPClient:   options.HTTPClient,
@@ -484,22 +488,26 @@ func LookupInternal(ctx context.Context, conn *Conn, hostname string) (state.Int
 }
 
 type TunnelOptions struct {
-	ParentHostname string
-	HostToken      string
-	DialLocal      hosttunnel.DialLocal
-	HTTPClient     *http.Client
+	ParentURL  string
+	HostToken  string
+	DialLocal  hosttunnel.DialLocal
+	HTTPClient *http.Client
 }
 
-func DialTunnel(ctx context.Context, parentHostname, hostToken string, dial hosttunnel.DialLocal) (*hosttunnel.Peer, error) {
+func DialTunnel(ctx context.Context, parentURL, hostToken string, dial hosttunnel.DialLocal) (*hosttunnel.Peer, error) {
 	return DialTunnelWithOptions(ctx, TunnelOptions{
-		ParentHostname: parentHostname, HostToken: hostToken, DialLocal: dial,
+		ParentURL: parentURL, HostToken: hostToken, DialLocal: dial,
 	})
 }
 
 func DialTunnelWithOptions(ctx context.Context, options TunnelOptions) (*hosttunnel.Peer, error) {
+	tunnelURL, err := parentWebSocketURL(options.ParentURL, hostconn.TunnelPath)
+	if err != nil {
+		return nil, err
+	}
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+options.HostToken)
-	connection, _, err := websocket.Dial(ctx, "wss://"+options.ParentHostname+hostconn.TunnelPath, &websocket.DialOptions{
+	connection, _, err := websocket.Dial(ctx, tunnelURL, &websocket.DialOptions{
 		HTTPHeader:   header,
 		Subprotocols: []string{hostconn.WebSocketTunnelProtocol},
 		HTTPClient:   options.HTTPClient,

@@ -112,9 +112,6 @@ const hasFeature = (span: ServiceTraceSpan, value: string) => {
   if (value === "issue") {
     return span.source === "sentry_error" || Boolean(payload?.issue_id);
   }
-  if (value === "profile") {
-    return Boolean(payload?.profile_id ?? payload?.profileId);
-  }
   if (value === "link") {
     return Array.isArray(payload?.links) && payload.links.length > 0;
   }

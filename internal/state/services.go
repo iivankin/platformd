@@ -20,22 +20,24 @@ var (
 )
 
 type ServiceDesired struct {
-	ID                   string
-	ProjectID            string
-	ProjectName          string
-	Name                 string
-	Enabled              bool
-	ActiveDeploymentID   string
-	ActiveImageDigest    string
-	ActiveConfigHash     string
-	ActiveSourceRevision string
-	SentryPublicHostname string
-	SentryTunnelPath     string
-	HostID               string
-	CreatedAtMillis      int64
-	UpdatedAtMillis      int64
-	Snapshot             serviceconfig.Snapshot
-	ImageCredential      *ServiceImageCredential
+	ID                      string
+	ProjectID               string
+	ProjectName             string
+	Name                    string
+	Enabled                 bool
+	ActiveDeploymentID      string
+	ActiveImageDigest       string
+	ActiveConfigHash        string
+	ActiveSourceRevision    string
+	SentryPublicHostname    string
+	SentryTunnelPath        string
+	OTLPTracePublicHostname string
+	OTLPTracePath           string
+	HostID                  string
+	CreatedAtMillis         int64
+	UpdatedAtMillis         int64
+	Snapshot                serviceconfig.Snapshot
+	ImageCredential         *ServiceImageCredential
 }
 
 type CreateService struct {
@@ -228,6 +230,8 @@ func (store *Store) DesiredService(ctx context.Context, serviceID string) (Servi
 	var activeSourceRevision sql.NullString
 	var sentryPublicHostname sql.NullString
 	var sentryTunnelPath sql.NullString
+	var otlpTracePublicHostname sql.NullString
+	var otlpTracePath sql.NullString
 	var hostID sql.NullString
 	var sourceJSON string
 	var commandJSON sql.NullString
@@ -245,7 +249,8 @@ SELECT s.id, s.project_id, p.name, s.name, s.enabled, s.active_deployment_id,
 	   d.image_digest, d.service_config_hash, d.source_revision,
 	       s.source_json, s.command_json, s.args_json,
 	       s.environment_json, s.before_deploy_json, s.port_forward_json, s.health_port, s.health_path, s.health_timeout_seconds,
-	       s.cpu_millis, s.memory_bytes, s.sentry_public_hostname, s.sentry_tunnel_path, s.host_id, s.created_at, s.updated_at
+	       s.cpu_millis, s.memory_bytes, s.sentry_public_hostname, s.sentry_tunnel_path,
+	       s.otlp_trace_public_hostname, s.otlp_trace_path, s.host_id, s.created_at, s.updated_at
 FROM services s
 JOIN projects p ON p.id = s.project_id
 LEFT JOIN deployments d ON d.id = s.active_deployment_id
@@ -254,7 +259,8 @@ WHERE s.id = ?`, serviceID).Scan(
 		&activeDeploymentID, &activeImageDigest, &activeConfigHash, &activeSourceRevision,
 		&sourceJSON, &commandJSON, &argsJSON,
 		&environmentJSON, &beforeDeployJSON, &portForwardJSON, &healthPort, &healthPath, &healthTimeout,
-		&cpuMillis, &memoryBytes, &sentryPublicHostname, &sentryTunnelPath, &hostID, &service.CreatedAtMillis, &service.UpdatedAtMillis,
+		&cpuMillis, &memoryBytes, &sentryPublicHostname, &sentryTunnelPath,
+		&otlpTracePublicHostname, &otlpTracePath, &hostID, &service.CreatedAtMillis, &service.UpdatedAtMillis,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ServiceDesired{}, sql.ErrNoRows
@@ -269,6 +275,8 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveSourceRevision = activeSourceRevision.String
 	service.SentryPublicHostname = sentryPublicHostname.String
 	service.SentryTunnelPath = sentryTunnelPath.String
+	service.OTLPTracePublicHostname = otlpTracePublicHostname.String
+	service.OTLPTracePath = otlpTracePath.String
 	service.HostID = hostID.String
 	if err := json.Unmarshal([]byte(sourceJSON), &service.Snapshot.Source); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service source: %w", err)

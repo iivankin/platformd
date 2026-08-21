@@ -34,7 +34,6 @@ import type {
   AnalyticsFunnel,
   AnalyticsFunnelStep,
   AnalyticsGoal,
-  AnalyticsMode,
   AnalyticsTracker,
 } from "@/api";
 import { Button } from "@/components/ui/button";
@@ -46,24 +45,6 @@ import { FormFooter, Modal } from "@/errors/dialog-frame";
 import { FieldSelect } from "@/field-select";
 
 /* eslint-disable promise/prefer-await-to-then */
-
-const modes: { hint: string; label: string; value: AnalyticsMode }[] = [
-  {
-    hint: "Daily hash. No anonymous identity, retention, or browser OpenFeature.",
-    label: "Cookieless",
-    value: "cookieless",
-  },
-  {
-    hint: "UUID for one year. Track until consent is denied or GPC.",
-    label: "Opt-out",
-    value: "opt-out",
-  },
-  {
-    hint: 'No events until platformd.consent("granted"). There is no banner here.',
-    label: "Opt-in",
-    value: "opt-in",
-  },
-];
 
 const anyValue = "__any__";
 
@@ -96,7 +77,6 @@ export const TrackerDialog = ({
   const [rootDomain, setRootDomain] = useState(
     tracker?.rootDomain ?? candidates[0] ?? ""
   );
-  const [mode, setMode] = useState<AnalyticsMode>(tracker?.mode ?? "opt-out");
   const preview = matchingHostnames(rootDomain, hostnames);
   const conflict = trackers.some(
     (entry) =>
@@ -115,12 +95,10 @@ export const TrackerDialog = ({
       const saved = tracker
         ? await updateAnalyticsTracker(tracker.projectId, tracker.id, {
             expectedUpdatedAt: tracker.updatedAt,
-            mode,
             name,
             rootDomain,
           })
         : await createAnalyticsTracker(projectID, {
-            mode,
             name: name || rootDomain,
             rootDomain,
           });
@@ -139,7 +117,7 @@ export const TrackerDialog = ({
 
   return (
     <Modal
-      description="A tracker is one cookie root. Hostnames under the root share visitors. Roots must not overlap."
+      description="A tracker covers one root domain and its matching hostnames. Roots must not overlap."
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) {
@@ -148,7 +126,6 @@ export const TrackerDialog = ({
         setError("");
         setName(tracker?.name ?? "");
         setRootDomain(tracker?.rootDomain ?? candidates[0] ?? "");
-        setMode(tracker?.mode ?? "opt-out");
       }}
       open={open}
       title={tracker ? "Edit tracker" : "New tracker"}
@@ -209,35 +186,6 @@ export const TrackerDialog = ({
               </p>
             ) : null}
           </div>
-          <fieldset>
-            <legend className="mb-1.5 text-[9px] tracking-[0.12em] text-muted-foreground uppercase">
-              Identity
-            </legend>
-            <div className="grid gap-2">
-              {modes.map((entry) => (
-                <div
-                  className="flex items-start gap-2 border border-border px-3 py-2 text-xs"
-                  key={entry.value}
-                >
-                  <input
-                    aria-label={entry.label}
-                    checked={mode === entry.value}
-                    className="mt-0.5"
-                    name="tracker-mode"
-                    onChange={() => setMode(entry.value)}
-                    type="radio"
-                    value={entry.value}
-                  />
-                  <span>
-                    <span className="font-medium">{entry.label}</span>
-                    <span className="mt-1 block text-[10px] leading-4 text-muted-foreground">
-                      {entry.hint}
-                    </span>
-                  </span>
-                </div>
-              ))}
-            </div>
-          </fieldset>
         </div>
         <FormFooter
           error={error}
@@ -413,14 +361,12 @@ export const GoalDialog = ({
 };
 
 export const FunnelDialog = ({
-  cookieless,
   hostnames,
   onSaved,
   projectID,
   trackerID,
   trigger,
 }: {
-  cookieless: boolean;
   hostnames: string[];
   onSaved: (funnel: AnalyticsFunnel) => void;
   projectID: string;
@@ -519,12 +465,6 @@ export const FunnelDialog = ({
               />
             </div>
           </div>
-          {cookieless && windowUnit === "day" && windowValue > 1 ? (
-            <p className="text-[10px] text-amber-600">
-              Cookieless identity lasts one day, so a longer window will not
-              stitch the same visitor.
-            </p>
-          ) : null}
           <div className="grid gap-2">
             {steps.map((step, index) => (
               <div
@@ -748,7 +688,7 @@ export const FlagDialog = ({
   return (
     <Modal
       className="max-w-2xl"
-      description="OpenFeature flags evaluate with targetingKey = platformd.anonymousId()."
+      description="OpenFeature flags evaluate with targetingKey = analytics.anonymousId()."
       onOpenChange={(next) => {
         setOpen(next);
         if (!next) {

@@ -105,6 +105,11 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	defer func() {
 		returnErr = errors.Join(returnErr, lock.Close())
 	}()
+	privateListener, err := net.Listen("tcp", ":80")
+	if err != nil {
+		return fmt.Errorf("listen on :80 for private host transport: %w", err)
+	}
+	defer func() { _ = privateListener.Close() }()
 	cgroups, err := cgrouptree.Setup()
 	if err != nil {
 		return fmt.Errorf("configure delegated cgroups: %w", err)
@@ -416,7 +421,20 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		return fmt.Errorf("configure service telemetry: %w", err)
 	}
 	defer func() { returnErr = errors.Join(returnErr, serviceTelemetry.Close()) }()
-	publicAnalytics := analytics.NewHandler(store, telemetryProcess, telemetryProcess.Target())
+	botRangeVerifier := analytics.NewBotRangeVerifier(nil)
+	botRangeContext, cancelBotRanges := context.WithCancel(ctx)
+	botRangeDone := make(chan struct{})
+	go func() {
+		defer close(botRangeDone)
+		botRangeVerifier.Run(botRangeContext, func(refreshErr error) {
+			log.Printf("analytics bot IP ranges: %v", refreshErr)
+		})
+	}()
+	defer func() {
+		cancelBotRanges()
+		<-botRangeDone
+	}()
+	publicAnalytics := analytics.NewHandler(store, telemetryProcess, telemetryProcess.Target(), botRangeVerifier)
 	internalAnalytics := analytics.InternalHandler(store, telemetryProcess, telemetryProcess.Target())
 	serviceTelemetry.SetAnalyticsHandler(internalAnalytics)
 	analyticsRepository := &liveAnalyticsRepository{
@@ -947,6 +965,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		liveServiceListeners.SetRemote(hostHub)
 	}
 	domains.SetRemote(hostHub)
+	hostHandler := hostHub.Handler()
 	publicFactory, err := newPublicHandlerFactory(automationapi.Config{
 		Repository: automationRepository, Projects: projectAutomation, Services: serviceAutomation,
 		Domains: domainAutomation, Logs: logAutomation, Images: managedImageCatalog, Redis: redisAutomation,
@@ -968,7 +987,7 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		ServerExec: serverExecAutomation, Volumes: volumeAutomation, PortForwards: portForwards,
 		Admission: mutationAdmission, Telemetry: serviceTelemetryRepository,
 		Analytics: analyticsRepository, Hosts: hostHub,
-	}, authenticator, portForwards, imageUploads.Handler(), hostHub.Handler(), !installation.RecoveryMode)
+	}, authenticator, portForwards, imageUploads.Handler(), hostHandler, !installation.RecoveryMode)
 	if err != nil {
 		return err
 	}
@@ -1110,7 +1129,14 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 			return fmt.Errorf("configure automatic disaster recovery: %w", err)
 		}
 	}
-	httpServer := &http.Server{
+	privateHTTPServer := &http.Server{
+		Addr:              ":80",
+		Handler:           privateHostHandler(hostHandler),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
+		MaxHeaderBytes:    64 << 10,
+	}
+	httpsServer := &http.Server{
 		Addr:              ":443",
 		Handler:           ingressRouter,
 		ReadHeaderTimeout: 10 * time.Second,
@@ -1119,13 +1145,17 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 		TLSConfig:         tlsConfig,
 	}
 
-	rawListener, err := net.Listen("tcp", httpServer.Addr)
+	rawListener, err := net.Listen("tcp", httpsServer.Addr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", httpServer.Addr, err)
+		_ = privateListener.Close()
+		return fmt.Errorf("listen on %s: %w", httpsServer.Addr, err)
 	}
-	listener := tls.NewListener(netutil.LimitListener(rawListener, maximumHTTPSConnections), tlsConfig)
+	httpsListener := tls.NewListener(netutil.LimitListener(rawListener, maximumHTTPSConnections), tlsConfig)
 	defer func() { _ = sdnotify.Stopping("platformd is stopping") }()
-	return serveListener(ctx, httpServer, listener, func() error {
+	return serveHTTPListeners(ctx, []httpListener{
+		{server: privateHTTPServer, listener: netutil.LimitListener(privateListener, maximumHTTPSConnections)},
+		{server: httpsServer, listener: httpsListener},
+	}, func() error {
 		if err := sdnotify.Ready("platformd admin control plane is ready"); err != nil {
 			return err
 		}

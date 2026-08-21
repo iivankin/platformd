@@ -116,7 +116,7 @@ func analyticsTargetingSchema() map[string]any {
 			"items": objectSchema(map[string]any{
 				"properties": map[string]any{
 					"type":        "array",
-					"description": "AND conditions against OpenFeature evaluation context. targetingKey is platformd.anonymousId().",
+					"description": "AND conditions against OpenFeature evaluation context. targetingKey is analytics.anonymousId().",
 					"items": objectSchema(map[string]any{
 						"key":      map[string]any{"type": "string", "description": "Context attribute, for example country or path"},
 						"operator": map[string]any{"type": "string", "enum": []string{"exact", "icontains", "is_not", "is_set", "gt", "lt"}},
@@ -177,7 +177,7 @@ func analyticsReadTools() []Tool {
 	query["sql"] = analyticsSQLSchema(false)
 	return []Tool{
 		{Name: "list_analytics_trackers", Description: "List web-analytics trackers for a project. Start here before any analytics query. Each tracker is one root domain (example.com also matches www and app). Returns matching service hostnames and the internal OFREP URL. This is not service telemetry: do not use get_service_telemetry or invent PLATFORMD_* analytics environment variables.", InputSchema: objectSchema(map[string]any{"projectId": analyticsProjectID()}, []string{"projectId"})},
-		{Name: "get_analytics_tracker", Description: "Read one tracker plus its goals, funnels, flags, experiments, and saved SQL charts. Copy IDs and updatedAt from this payload into query_analytics and mutations. internalOfrepUrl is the in-cluster OpenFeature SDK baseUrl (the provider appends /ofrep/v1). targetingKey is platformd.anonymousId(). Browser snippets load /analytics.js from the page origin once a tracker exists.", InputSchema: tracker},
+		{Name: "get_analytics_tracker", Description: "Read one tracker plus its goals, funnels, flags, experiments, and saved SQL charts. Copy IDs and updatedAt from this payload into query_analytics and mutations. internalOfrepUrl is the in-cluster OpenFeature SDK baseUrl (the provider appends /ofrep/v1). Browser apps install @platformd/analytics and choose cookieless, opt-in, or opt-out in application code. Use analytics.anonymousId() as the OpenFeature targetingKey when it is available.", InputSchema: tracker},
 		{Name: "query_analytics", Description: "Run one web-analytics report for a tracker. This is product analytics (pageviews, events, funnels, experiments), not metrics or traces. Call list_projects, then list_analytics_trackers, then this tool with the exact trackerId. Pass from and to as Unix milliseconds except for report=realtime. Prefer a built-in report; use sql only when no built-in report answers the question, and keep SQL to one SELECT FROM analytics.", InputSchema: objectSchema(query, []string{"projectId", "trackerId", "report"})},
 	}
 }
@@ -222,17 +222,15 @@ func analyticsAdminTools() []Tool {
 	updateChart["chartId"] = map[string]any{"type": "string", "description": "Exact chart ID from get_analytics_tracker.charts"}
 	updateChart["expectedUpdatedAt"] = expected
 	return []Tool{
-		{Name: "create_analytics_tracker", Description: "Create a project web-analytics tracker for one root domain. Roots must not overlap (example.com already covers www.example.com). mode is cookieless, opt-out (default), or opt-in. After create, browsers load /analytics.js from the page origin; in-cluster OpenFeature uses internalOfrepUrl. Requires an admin token.", InputSchema: objectSchema(map[string]any{
+		{Name: "create_analytics_tracker", Description: "Create a project web-analytics tracker for one root domain. Roots must not overlap (example.com already covers www.example.com). Browser apps install @platformd/analytics and choose their identity and consent mode in application code; in-cluster OpenFeature uses internalOfrepUrl. Requires an admin token.", InputSchema: objectSchema(map[string]any{
 			"projectId": analyticsProjectID(), "name": map[string]any{"type": "string"},
 			"rootDomain": map[string]any{"type": "string", "description": "Registrable domain such as example.com, without a scheme or path"},
-			"mode":       map[string]any{"type": "string", "enum": []string{"cookieless", "opt-out", "opt-in"}, "description": "cookieless has no cookie; opt-out (default) sets a cookie unless the visitor opts out; opt-in waits for consent."},
 		}, []string{"projectId", "name", "rootDomain"})},
-		{Name: "update_analytics_tracker", Description: "Update a tracker name, root domain, or identity mode. Copy expectedUpdatedAt from get_analytics_tracker.tracker.updatedAt. Requires an admin token.", InputSchema: objectSchema(map[string]any{
+		{Name: "update_analytics_tracker", Description: "Update a tracker name or root domain. Copy expectedUpdatedAt from get_analytics_tracker.tracker.updatedAt. Requires an admin token.", InputSchema: objectSchema(map[string]any{
 			"projectId": analyticsProjectID(), "trackerId": analyticsTrackerID(),
 			"name": map[string]any{"type": "string"}, "rootDomain": map[string]any{"type": "string"},
-			"mode":              map[string]any{"type": "string", "enum": []string{"cookieless", "opt-out", "opt-in"}},
 			"expectedUpdatedAt": expected,
-		}, []string{"projectId", "trackerId", "name", "rootDomain", "mode", "expectedUpdatedAt"})},
+		}, []string{"projectId", "trackerId", "name", "rootDomain", "expectedUpdatedAt"})},
 		{Name: "delete_analytics_tracker", Description: "Delete a tracker and its goals, funnels, flags, experiments, and charts. Stored events expire by TTL and are not deleted immediately. Requires an admin token.", InputSchema: objectSchema(analyticsTrackerArgs(), []string{"projectId", "trackerId"})},
 		{Name: "create_analytics_goal", Description: "Create a conversion goal. actionType=path matches a pathname; actionType=event matches an event name. Use the returned id as experiment metric.goalId. Requires an admin token.", InputSchema: objectSchema(goalFields, []string{"projectId", "trackerId", "name", "actionType", "actionValue"})},
 		{Name: "update_analytics_goal", Description: "Replace a goal definition. Copy expectedUpdatedAt from get_analytics_tracker.goals[].updatedAt. Requires an admin token.", InputSchema: objectSchema(updateGoal, []string{"projectId", "trackerId", "goalId", "name", "actionType", "actionValue", "expectedUpdatedAt"})},
@@ -246,7 +244,7 @@ func analyticsAdminTools() []Tool {
 			"projectId": analyticsProjectID(), "trackerId": analyticsTrackerID(),
 			"funnelId": map[string]any{"type": "string"},
 		}, []string{"projectId", "trackerId", "funnelId"})},
-		{Name: "create_analytics_flag", Description: "Create an OpenFeature flag on a tracker. Evaluation uses targetingKey = platformd.anonymousId() and OF evaluation context. Boolean flags ignore variant weights: in-bucket is true, else false. Omit targeting for a full rollout. Set enabled true to serve. Requires an admin token.", InputSchema: objectSchema(flagFields, []string{"projectId", "trackerId", "key", "type", "variants"})},
+		{Name: "create_analytics_flag", Description: "Create an OpenFeature flag on a tracker. Evaluation uses targetingKey = analytics.anonymousId() and OF evaluation context. Boolean flags ignore variant weights: in-bucket is true, else false. Omit targeting for a full rollout. Set enabled true to serve. Requires an admin token.", InputSchema: objectSchema(flagFields, []string{"projectId", "trackerId", "key", "type", "variants"})},
 		{Name: "update_analytics_flag", Description: "Replace a flag key, variants, payload, or targeting. Copy enabled and targeting from the latest flag. Do not change variant weights while an experiment is running; ship or stop the experiment first. Copy expectedUpdatedAt from get_analytics_tracker.flags[].updatedAt. Requires an admin token.", InputSchema: objectSchema(updateFlag, []string{"projectId", "trackerId", "flagId", "key", "type", "enabled", "variants", "targeting", "expectedUpdatedAt"})},
 		{Name: "delete_analytics_flag", Description: "Delete a tracker flag by the ID from get_analytics_tracker.flags. Stop or ship a running experiment on the flag first. Requires an admin token.", InputSchema: objectSchema(map[string]any{
 			"projectId": analyticsProjectID(), "trackerId": analyticsTrackerID(),
@@ -479,7 +477,6 @@ func (handler *Handler) createAnalyticsTracker(ctx context.Context, arguments js
 		ProjectID  string `json:"projectId"`
 		Name       string `json:"name"`
 		RootDomain string `json:"rootDomain"`
-		Mode       string `json:"mode"`
 	}
 	if err := decodeArguments(arguments, &input); err != nil || input.ProjectID == "" {
 		return nil, fmt.Errorf("%w: projectId is required", errInvalidArguments)
@@ -488,7 +485,7 @@ func (handler *Handler) createAnalyticsTracker(ctx context.Context, arguments js
 		return nil, errProjectBoundary
 	}
 	tracker, err := handler.analytics.CreateAnalyticsTracker(ctx, state.AnalyticsTracker{
-		ProjectID: input.ProjectID, Name: input.Name, RootDomain: input.RootDomain, Mode: input.Mode,
+		ProjectID: input.ProjectID, Name: input.Name, RootDomain: input.RootDomain,
 	})
 	if err != nil {
 		return nil, err
@@ -506,7 +503,6 @@ func (handler *Handler) updateAnalyticsTracker(ctx context.Context, arguments js
 		TrackerID         string `json:"trackerId"`
 		Name              string `json:"name"`
 		RootDomain        string `json:"rootDomain"`
-		Mode              string `json:"mode"`
 		ExpectedUpdatedAt int64  `json:"expectedUpdatedAt"`
 	}
 	if err := decodeArguments(arguments, &input); err != nil || input.ProjectID == "" || input.TrackerID == "" {
@@ -516,7 +512,7 @@ func (handler *Handler) updateAnalyticsTracker(ctx context.Context, arguments js
 		return nil, errProjectBoundary
 	}
 	tracker, err := handler.analytics.UpdateAnalyticsTracker(ctx, state.AnalyticsTracker{
-		ID: input.TrackerID, ProjectID: input.ProjectID, Name: input.Name, RootDomain: input.RootDomain, Mode: input.Mode,
+		ID: input.TrackerID, ProjectID: input.ProjectID, Name: input.Name, RootDomain: input.RootDomain,
 	}, input.ExpectedUpdatedAt)
 	if err != nil {
 		return nil, err
@@ -930,7 +926,7 @@ func (handler *Handler) publicAnalyticsTrackers(ctx context.Context, projectID s
 		internal := telemetry.InternalAnalyticsHostname(project.Name, state.TrackerSlug(tracker.RootDomain))
 		payload = append(payload, map[string]any{
 			"id": tracker.ID, "projectId": tracker.ProjectID, "name": tracker.Name,
-			"rootDomain": tracker.RootDomain, "mode": tracker.Mode,
+			"rootDomain":        tracker.RootDomain,
 			"internalHostname":  internal,
 			"internalOfrepUrl":  "http://" + internal + ":" + strconv.Itoa(firewall.ServiceTelemetryPort),
 			"matchingHostnames": matching, "createdAt": tracker.CreatedAtMillis, "updatedAt": tracker.UpdatedAtMillis,

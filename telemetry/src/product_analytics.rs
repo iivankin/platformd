@@ -701,13 +701,7 @@ fn filter_clause(
         } else {
             format!("argMin({PAGE_LABEL}, timestamp)")
         };
-        return visit_entry_filter(
-            tracker_id,
-            query,
-            &label,
-            filter.operator.as_str(),
-            &values,
-        );
+        return visit_entry_filter(tracker_id, query, &label, filter.operator.as_str(), &values);
     }
     if let Some(column) = acquisition_entry_expr(filter.dimension.as_str()) {
         return visit_entry_filter(
@@ -1028,10 +1022,7 @@ mod tests {
             .await
             .unwrap();
         let current = overview["current"][0]["visitors"].as_u64().unwrap_or(0);
-        assert_eq!(
-            current, 2,
-            "heatmap must not inflate visitors: {overview}"
-        );
+        assert_eq!(current, 2, "heatmap must not inflate visitors: {overview}");
 
         let mut events_lookup = query("lookup", from, to);
         events_lookup.dimension = Some("event".into());
@@ -1040,8 +1031,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            event_labels[0]["label"],
-            "$pageview",
+            event_labels[0]["label"], "$pageview",
             "lookup must hide $heatmap: {event_labels}"
         );
         assert_eq!(event_labels.as_array().map(Vec::len).unwrap_or(0), 1);

@@ -17,6 +17,7 @@ import { PageStack } from "@/components/ui/page-stack";
 import { cn } from "@/lib/utils";
 import { mcpClients } from "@/mcp-client-config";
 import type { MCPClientID } from "@/mcp-client-config";
+import { HighlightedSnippet } from "@/snippet-code";
 
 type CopiedField = "endpoint" | "openapi" | "snippet";
 
@@ -156,9 +157,11 @@ export const SettingsMCPPage = ({ projects }: { projects: Project[] }) => {
             {client.hint}
           </p>
           <div className="relative min-w-0">
-            <pre className="overflow-x-auto border border-border bg-secondary/30 p-3 pr-24 text-[10px] leading-5 text-foreground">
-              {snippet}
-            </pre>
+            <HighlightedSnippet
+              className="bg-secondary/30 p-3 pr-24"
+              language={client.language}
+              value={snippet}
+            />
             <div className="absolute top-2 right-2">
               <CopyButton
                 copied={copied === "snippet"}

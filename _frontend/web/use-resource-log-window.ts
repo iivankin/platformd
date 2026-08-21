@@ -261,26 +261,3 @@ export const useTelemetryLogWindow = ({
     window,
   };
 };
-
-export const useResourceLogWindow = (
-  options: Omit<Parameters<typeof useTelemetryLogWindow>[0], "source"> & {
-    kind: ResourceLogKind;
-    projectID: string;
-    resourceID: string;
-  }
-) => {
-  const { kind, projectID, resourceID, ...query } = options;
-  const source = useMemo<TelemetryLogSource>(
-    () => ({
-      kind: "resource",
-      projectID,
-      resourceID,
-      resourceKind: kind,
-    }),
-    [kind, projectID, resourceID]
-  );
-  return useTelemetryLogWindow({
-    ...query,
-    source,
-  });
-};
