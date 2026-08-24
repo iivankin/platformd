@@ -143,7 +143,7 @@ func TestRouterSharesServiceHostnameWithTelemetryOnReservedPaths(t *testing.T) {
 	}
 	router.Reload(map[string]Route{"app.example.com": {ServiceID: "service-a", TargetPort: 8080}})
 	router.ReloadServiceTelemetry(map[string]ServiceTelemetryRoute{
-		"app.example.com": {BrowserTunnelPath: "/client-report", OTLPTracePath: "/otel/v1/traces"},
+		"app.example.com": {BrowserTunnelPath: "/client-report", OTLPPathPrefix: "/otel"},
 	})
 
 	ingest := tlsRequest("app.example.com", "app.example.com")
@@ -194,6 +194,15 @@ func TestRouterSharesServiceHostnameWithTelemetryOnReservedPaths(t *testing.T) {
 	if response.Code != http.StatusAccepted || <-telemetryPaths != "/v1/traces" ||
 		response.Header().Get("Access-Control-Allow-Origin") != "*" {
 		t.Fatalf("shared OTLP trace ingest = %d", response.Code)
+	}
+
+	otlpLogs := tlsRequest("app.example.com", "app.example.com")
+	otlpLogs.Method = http.MethodPost
+	otlpLogs.URL.Path = "/otel/v1/logs"
+	response = httptest.NewRecorder()
+	router.ServeHTTP(response, otlpLogs)
+	if response.Code != http.StatusAccepted || <-telemetryPaths != "/v1/logs" {
+		t.Fatalf("shared OTLP log ingest = %d", response.Code)
 	}
 
 	for _, path := range []string{"/", "/client-report/", "/api/0/users/me/", "/api/1/envelope", "/_sentry/api/1/envelope/"} {

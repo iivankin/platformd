@@ -3,6 +3,7 @@ import { useQueryState, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Navigate, useLocation, useNavigate, useParams } from "react-router";
 
+import { AiOverviewView } from "@/ai-overview";
 import { fetchProjectCanvas } from "@/api";
 import type { MetricScope, ProjectCanvas, ScopedIssue } from "@/api";
 import { ScopedTelemetryLogs } from "@/resource-logs";
@@ -111,6 +112,7 @@ export const ProjectTelemetryPage = () => {
         <div className="min-h-0 flex-1">
           <TelemetryWorkspace
             views={{
+              ai: <AiOverviewView scope={scope} />,
               errors: (
                 <ScopedErrors
                   onOpenIssue={openIssue}

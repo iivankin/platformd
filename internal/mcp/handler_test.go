@@ -37,6 +37,7 @@ type repositoryStub struct {
 	telemetryCalls  int
 	telemetryMethod string
 	telemetryPath   string
+	otlpUpdate      state.UpdateServiceOTLPPublicAccess
 }
 
 func (repository *repositoryStub) CreateService(_ context.Context, input state.CreateService) (state.ServiceDesired, error) {
@@ -120,7 +121,9 @@ func (*repositoryStub) ServiceTelemetry(_ context.Context, _, serviceID string) 
 		ServiceID: serviceID, InternalHostname: "sentry-api.project.internal",
 		InternalDSN:          "http://service@sentry-api.project.internal:9001/1",
 		InternalOTLPEndpoint: "http://otel-api.project.internal:4318",
-		PublicHostname:       "errors.example.com", PublicDSN: "https://service@errors.example.com/1", UpdatedAt: 10,
+		PublicHostname:       "errors.example.com", PublicDSN: "https://service@errors.example.com/1",
+		PublicOTLPHostname: "otel.example.com", PublicOTLPPathPrefix: "/collector",
+		PublicOTLPEndpoint: "https://otel.example.com/collector", UpdatedAt: 10,
 	}, nil
 }
 
@@ -175,6 +178,16 @@ func (*repositoryStub) UpdateServiceTelemetryPublicAccess(_ context.Context, inp
 
 func (*repositoryStub) UpdateServiceTelemetryTunnel(_ context.Context, input state.UpdateServiceTelemetryTunnel) (telemetry.ServiceConfiguration, error) {
 	return telemetry.ServiceConfiguration{ServiceID: input.ID, BrowserTunnelPath: input.Path, UpdatedAt: input.UpdatedAtMillis}, nil
+}
+
+func (repository *repositoryStub) UpdateServiceOTLPPublicAccess(_ context.Context, input state.UpdateServiceOTLPPublicAccess) (telemetry.ServiceConfiguration, error) {
+	repository.otlpUpdate = input
+	return telemetry.ServiceConfiguration{
+		ServiceID: input.ID, PublicOTLPHostname: input.PublicHostname,
+		PublicOTLPPathPrefix: input.PathPrefix,
+		PublicOTLPEndpoint:   "https://" + input.PublicHostname + input.PathPrefix,
+		UpdatedAt:            input.UpdatedAtMillis,
+	}, nil
 }
 
 type mcpVolumeFilesystem struct{}
@@ -551,7 +564,8 @@ func TestMCPServiceTelemetryCoversConfigurationTracesMetricsAndMutations(t *test
 	call := withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_service_telemetry","arguments":{"projectId":"project-a","serviceId":"service"}}}`), read)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
-	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `internalOtlpEndpoint`) || strings.Contains(response.Body.String(), `must-not-leak`) {
+	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `internalOtlpEndpoint`) ||
+		!strings.Contains(response.Body.String(), `https://otel.example.com/collector`) || strings.Contains(response.Body.String(), `must-not-leak`) {
 		t.Fatalf("service telemetry config = %s", response.Body)
 	}
 
@@ -576,14 +590,29 @@ func TestMCPServiceTelemetryCoversConfigurationTracesMetricsAndMutations(t *test
 		t.Fatalf("metric SQL = %s", response.Body)
 	}
 
-	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"rotate_service_artifact_token","arguments":{"projectId":"project-a","serviceId":"service"}}}`), admin)
+	list = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":6,"method":"tools/list","params":{}}`), admin)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, list)
+	if !strings.Contains(response.Body.String(), `"name":"set_service_public_otlp"`) {
+		t.Fatalf("admin telemetry tools omit public OTLP mutation: %s", response.Body)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"set_service_public_otlp","arguments":{"projectId":"project-a","serviceId":"service","publicHostname":"browser.example.com","pathPrefix":"/otel","expectedUpdatedAt":10}}}`), admin)
+	response = httptest.NewRecorder()
+	handler.ServeHTTP(response, call)
+	if strings.Contains(response.Body.String(), `"isError":true`) || repository.otlpUpdate.PublicHostname != "browser.example.com" ||
+		repository.otlpUpdate.PathPrefix != "/otel" || repository.otlpUpdate.ExpectedUpdatedMillis != 10 {
+		t.Fatalf("public OTLP mutation = %s", response.Body)
+	}
+
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"rotate_service_artifact_token","arguments":{"projectId":"project-a","serviceId":"service"}}}`), admin)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
 	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `artifact-secret`) || !strings.Contains(response.Body.String(), `SENTRY_AUTH_TOKEN`) {
 		t.Fatalf("artifact credential = %s", response.Body)
 	}
 
-	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"create_service_telemetry_webhook","arguments":{"projectId":"project-a","serviceId":"service","url":"https://hooks.example.com/new","events":["issue_created"]}}}`), admin)
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"create_service_telemetry_webhook","arguments":{"projectId":"project-a","serviceId":"service","url":"https://hooks.example.com/new","events":["issue_created"]}}}`), admin)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
 	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `webhook-secret`) ||
@@ -591,7 +620,7 @@ func TestMCPServiceTelemetryCoversConfigurationTracesMetricsAndMutations(t *test
 		t.Fatalf("create webhook = %s", response.Body)
 	}
 
-	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"create_metric_chart","arguments":{"scope":"service","projectId":"project-a","serviceId":"service","title":"Latency","sql":"SELECT bucket AS time, avg(value) AS value FROM metrics GROUP BY bucket","visualization":"line","legend":"latency"}}}`), admin)
+	call = withMCPIdentity(mcpRequest(`{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"create_metric_chart","arguments":{"scope":"service","projectId":"project-a","serviceId":"service","title":"Latency","sql":"SELECT bucket AS time, avg(value) AS value FROM metrics GROUP BY bucket","visualization":"line","legend":"latency"}}}`), admin)
 	response = httptest.NewRecorder()
 	handler.ServeHTTP(response, call)
 	if strings.Contains(response.Body.String(), `"isError":true`) || !strings.Contains(response.Body.String(), `created-chart`) {

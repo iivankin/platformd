@@ -3,7 +3,6 @@
 @import "shadcn/tailwind.css";
 @import "@fontsource-variable/jetbrains-mono";
 @import "@xyflow/react/dist/style.css";
-@import "@sentry/rrweb/dist/style.css";
 
 @custom-variant dark (&:is(.dark *));
 

@@ -67,7 +67,7 @@ func TestServiceOTLPGatewayRejectsWrongSurface(t *testing.T) {
 	}
 }
 
-func TestPublicOTLPTraceProxyInjectsTrustedIdentity(t *testing.T) {
+func TestPublicOTLPProxyInjectsTrustedIdentity(t *testing.T) {
 	var receivedServiceID, receivedPath, receivedBody string
 	receiver := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		receivedServiceID = request.Header.Get("X-Platformd-Service-Id")
@@ -85,18 +85,20 @@ func TestPublicOTLPTraceProxyInjectsTrustedIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	manager := &ServiceManager{otlpProxy: httputil.NewSingleHostReverseProxy(target)}
-	request := httptest.NewRequest(http.MethodPost, "https://otel.example.com/v1/traces", strings.NewReader("trace-payload"))
-	request.Header.Set("X-Platformd-Service-Id", "spoofed")
-	response := httptest.NewRecorder()
-	manager.ServePublicOTLPTraces(response, request, "service-1")
-	if response.Code != http.StatusNoContent || receivedServiceID != "service-1" ||
-		receivedPath != "/v1/traces" || receivedBody != "trace-payload" {
-		t.Fatalf("public OTLP proxy = status %d, service %q, path %q, body %q",
-			response.Code, receivedServiceID, receivedPath, receivedBody)
+	for _, signal := range []string{"traces", "logs"} {
+		request := httptest.NewRequest(http.MethodPost, "https://otel.example.com/v1/"+signal, strings.NewReader(signal+"-payload"))
+		request.Header.Set("X-Platformd-Service-Id", "spoofed")
+		response := httptest.NewRecorder()
+		manager.ServePublicOTLP(response, request, "service-1")
+		if response.Code != http.StatusNoContent || receivedServiceID != "service-1" ||
+			receivedPath != "/v1/"+signal || receivedBody != signal+"-payload" {
+			t.Fatalf("public OTLP %s proxy = status %d, service %q, path %q, body %q",
+				signal, response.Code, receivedServiceID, receivedPath, receivedBody)
+		}
 	}
 }
 
-func TestPublicOTLPTraceProxyRejectsKnownOversizedBody(t *testing.T) {
+func TestPublicOTLPProxyRejectsKnownOversizedBody(t *testing.T) {
 	forwarded := false
 	receiver := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		forwarded = true
@@ -108,9 +110,9 @@ func TestPublicOTLPTraceProxyRejectsKnownOversizedBody(t *testing.T) {
 	}
 	manager := &ServiceManager{otlpProxy: httputil.NewSingleHostReverseProxy(target)}
 	request := httptest.NewRequest(http.MethodPost, "https://otel.example.com/v1/traces", strings.NewReader("trace"))
-	request.ContentLength = maximumPublicOTLPTraceBytes + 1
+	request.ContentLength = maximumPublicOTLPBytes + 1
 	response := httptest.NewRecorder()
-	manager.ServePublicOTLPTraces(response, request, "service-1")
+	manager.ServePublicOTLP(response, request, "service-1")
 	if response.Code != http.StatusRequestEntityTooLarge || forwarded {
 		t.Fatalf("oversized public OTLP proxy = status %d, forwarded %t", response.Code, forwarded)
 	}

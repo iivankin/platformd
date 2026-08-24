@@ -700,4 +700,4 @@ CREATE TABLE mail_metric_alerts (
 
 CREATE INDEX mail_metric_alerts_scope_idx ON mail_metric_alerts(scope_kind, project_id, service_id, created_at, id);
 
-PRAGMA user_version = 22;
+PRAGMA user_version = 23;

@@ -65,9 +65,8 @@ import {
   fetchServiceMetricCharts,
   fetchServiceMetricQuery,
   fetchServiceReplayRecording,
-  fetchServiceTrace,
-  fetchServiceTraces,
   fetchTelemetryLogs,
+  fetchTelemetryTrace,
   fetchTelemetryTraces,
   fetchVolumes,
   scanManagedRedisKeys,
@@ -76,7 +75,7 @@ import {
   setManagedPostgresExtension,
   uploadContainerFile,
   updateServiceMetricChart,
-  updateServiceOTLPTracePublicAccess,
+  updateServiceOTLPPublicAccess,
   updateServiceTelemetryBrowserTunnel,
   updateServiceTelemetryPublicAccess,
   queryManagedPostgres,
@@ -875,38 +874,54 @@ describe("mock API", () => {
     );
     expect(tunneled.browserTunnelPath).toBe("/client-report");
 
-    const publicOTLP = await updateServiceOTLPTracePublicAccess(
+    await expect(
+      updateServiceOTLPPublicAccess(
+        "project-demo",
+        "service-api",
+        {
+          expectedUpdatedAt: tunneled.updatedAt,
+          pathPrefix: "/otel/../invalid",
+          publicHostname: "shop.mock.local",
+        },
+        mockFetch
+      )
+    ).rejects.toThrow("Public OTLP fields are invalid");
+
+    const publicOTLP = await updateServiceOTLPPublicAccess(
       "project-demo",
       "service-api",
       {
         expectedUpdatedAt: tunneled.updatedAt,
+        pathPrefix: "/otel",
         publicHostname: "shop.mock.local",
-        tracePath: "/otel/v1/traces",
       },
       mockFetch
     );
-    expect(publicOTLP.publicOtlpTraceEndpoint).toBe(
-      "https://shop.mock.local/otel/v1/traces"
-    );
+    expect(publicOTLP.publicOtlpEndpoint).toBe("https://shop.mock.local/otel");
 
-    const disabledOTLP = await updateServiceOTLPTracePublicAccess(
+    const disabledOTLP = await updateServiceOTLPPublicAccess(
       "project-demo",
       "service-api",
       {
         expectedUpdatedAt: publicOTLP.updatedAt,
+        pathPrefix: "",
         publicHostname: "",
-        tracePath: "",
       },
       mockFetch
     );
-    expect(disabledOTLP.publicOtlpTraceEndpoint).toBeUndefined();
+    expect(disabledOTLP.publicOtlpEndpoint).toBeUndefined();
   });
 
   test("mock service exposes traces with context and custom metric graphs", async () => {
     const state = createMockState("demo");
     const mockFetch = fetcher(state);
+    const serviceScope = {
+      kind: "service" as const,
+      projectID: "project-demo",
+      serviceID: "service-api",
+    };
     const [traces, catalog] = await Promise.all([
-      fetchServiceTraces("project-demo", "service-api", undefined, mockFetch),
+      fetchTelemetryTraces(serviceScope, undefined, mockFetch),
       fetchServiceMetricCatalog(
         "project-demo",
         "service-api",
@@ -914,23 +929,20 @@ describe("mock API", () => {
         mockFetch
       ),
     ]);
-    const trace = await fetchServiceTrace(
-      "project-demo",
-      "service-api",
+    const trace = await fetchTelemetryTrace(
+      serviceScope,
       traces[0]?.traceId ?? "",
       undefined,
       mockFetch
     );
-    const aiTraces = await fetchServiceTraces(
-      "project-demo",
-      "service-api",
+    const aiTraces = await fetchTelemetryTraces(
+      serviceScope,
       undefined,
       mockFetch,
       { query: "invoice" }
     );
-    const aiTrace = await fetchServiceTrace(
-      "project-demo",
-      "service-api",
+    const aiTrace = await fetchTelemetryTrace(
+      serviceScope,
       aiTraces[0]?.traceId ?? "",
       undefined,
       mockFetch
@@ -995,10 +1007,12 @@ describe("mock API", () => {
       name: "POST /support/reply",
     });
     expect(aiTrace.spans).toHaveLength(6);
-    expect(trace.spans[0]?.span).toMatchObject({
-      replay_id: replay.replayId,
-      user: { id: "customer_1042" },
+    expect(trace.spans[0]).toMatchObject({
+      name: "POST /checkout/confirm",
+      source: "otlp",
+      traceId: trace.traceId,
     });
+    expect(trace.webVitals).toHaveLength(1);
     expect(replay.events.length).toBeGreaterThan(0);
     expect(charts).toEqual([updatedChart]);
     expect(series.length).toBeGreaterThan(3);

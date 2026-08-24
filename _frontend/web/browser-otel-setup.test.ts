@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  browserSentryInstall,
   browserSentrySetup,
   browserTelemetryInstall,
   browserTelemetrySetup,
@@ -10,7 +11,7 @@ import {
 describe("browser telemetry setup", () => {
   test("generates complete OTel instrumentation and the Sentry bridge", () => {
     const source = browserTelemetrySetup({
-      endpoint: "https://app.example.com/otel/v1/traces",
+      endpoint: "https://app.example.com/otel",
       sentryDsn: "https://service@app.example.com/1",
       sentryTunnel: "https://app.example.com/client-report",
       serviceName: "checkout-web",
@@ -23,6 +24,14 @@ describe("browser telemetry setup", () => {
       "XMLHttpRequestInstrumentation",
       "BatchSpanProcessor",
       "CompressedOTLPTraceExporter",
+      "CompressedOTLPLogExporter",
+      "WebVitalsInstrumentation",
+      "DocumentLoadContextProcessor",
+      "queueMicrotask(() => webVitalsInstrumentation?.enable())",
+      "enabled: false",
+      "webVitalsInstrumentation.setLoggerProvider(loggerProvider)",
+      "ProtobufLogsSerializer",
+      "BatchLogRecordProcessor",
       'new CompressionStream("gzip")',
       'headers["Content-Encoding"] = encoding',
       "keepalive: body.byteLength <= maximumKeepaliveBytes",
@@ -36,23 +45,32 @@ describe("browser telemetry setup", () => {
       expect(source).toContain(expected);
     }
     expect(source).toContain(
-      'const traceEndpoint = "https://app.example.com/otel/v1/traces"'
+      'const otlpEndpoint = "https://app.example.com/otel"'
     );
+    expect(source).toContain(
+      'const traceEndpoint = otlpEndpoint + "/v1/traces"'
+    );
+    expect(source).toContain('const logEndpoint = otlpEndpoint + "/v1/logs"');
     expect(source).toContain('tunnel: "https://app.example.com/client-report"');
     expect(source).toContain('[ATTR_SERVICE_NAME]: "checkout-web"');
   });
 
   test("keeps the OTel-only example independent from Sentry", () => {
     const source = browserTelemetrySetup({
-      endpoint: "https://otel.example.com/v1/traces",
+      endpoint: "https://otel.example.com/otel",
       serviceName: "web",
     });
 
     expect(source).not.toContain("Sentry.init");
+    expect(browserSentryInstall).toContain("@sentry/browser@10.70.0");
+    expect(browserSentryInstall).toContain("@opentelemetry/api@1.9.1");
     expect(browserTelemetryInstall(false)).not.toContain("@sentry/browser");
-    expect(browserTelemetryInstall(true)).toContain("@sentry/browser");
+    expect(browserTelemetryInstall(true)).toContain("@sentry/browser@10.70.0");
     expect(browserTelemetryInstall(false)).toContain(
-      "@opentelemetry/otlp-transformer"
+      "@opentelemetry/otlp-transformer@0.221.0"
+    );
+    expect(browserTelemetryInstall(false)).toContain(
+      "@opentelemetry/browser-instrumentation@0.7.0"
     );
     expect(browserTelemetryInstall(false)).not.toContain(
       "@opentelemetry/exporter-trace-otlp-http"

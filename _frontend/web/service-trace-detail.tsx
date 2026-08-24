@@ -34,103 +34,45 @@ import type {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { asRecord, eventTags, recordRows } from "@/errors/event-context";
-import {
-  EventEnvironmentSection,
-  EventRequestSection,
-} from "@/errors/event-context-sections";
-import {
-  BreadcrumbsSection,
-  ContextSection,
-  EventMessageSection,
-} from "@/errors/event-sections";
+import { asRecord, recordRows } from "@/errors/event-context";
 import { RelatedReplay } from "@/errors/related-replay";
 import { cn } from "@/lib/utils";
+import { otlpAttributeText, otlpTextAttributes } from "@/otlp";
 import {
+  collapsibleTraceSpanIDs,
   formatWebVital,
-  sentryTracePayload,
   traceRows,
+  traceRoot,
   traceWebVitals,
+  webVitalTimelineMarkers,
   webVitalKeys,
   webVitalName,
 } from "@/trace-details-model";
-import type { TraceRow, WebVitalMeasurement } from "@/trace-details-model";
+import type {
+  TraceRow,
+  WebVitalMeasurement,
+  WebVitalTimelineMarker,
+} from "@/trace-details-model";
+import {
+  formatTraceDuration as formatDuration,
+  traceInteger as integer,
+  traceNanosToDate as nanosToDate,
+} from "@/trace-format";
 import { TraceRelatedLogs } from "@/trace-related-logs";
 import { matchingTraceSpans } from "@/trace-search";
+import { traceServiceName } from "@/trace-service-name";
+import type { ServiceNameResolver } from "@/trace-service-name";
 import { traceSpanSelfTime } from "@/trace-span-context";
 import { TraceSpanContext } from "@/trace-span-context-view";
-import { buildTraceTimeline, traceViewport } from "@/trace-timeline";
+import {
+  buildTraceTimeline,
+  traceViewport,
+  zoomTraceViewport,
+} from "@/trace-timeline";
 import type { TraceViewport } from "@/trace-timeline";
-
-const integer = (value: string) => globalThis.BigInt(value);
-
-const nanosToDate = (value: string) =>
-  new Date(Number(integer(value) / 1_000_000n));
-
-const nanosToMilliseconds = (value: string) =>
-  Number(integer(value)) / 1_000_000;
-
-const formatDuration = (value: string) => {
-  const milliseconds = nanosToMilliseconds(value);
-  if (milliseconds < 1) {
-    return `${Math.round(milliseconds * 1000)} μs`;
-  }
-  if (milliseconds < 1000) {
-    return `${milliseconds.toFixed(milliseconds < 10 ? 2 : 1)} ms`;
-  }
-  return `${(milliseconds / 1000).toFixed(2)} s`;
-};
 
 const formatDurationNanos = (value: number) =>
   formatDuration(Math.max(0, Math.round(value)).toString());
-
-const otlpValue = (value: unknown): string => {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  if (typeof value !== "object") {
-    return String(value);
-  }
-  const record = value as Record<string, unknown>;
-  for (const candidate of [
-    "stringValue",
-    "intValue",
-    "doubleValue",
-    "boolValue",
-    "bytesValue",
-  ]) {
-    if (record[candidate] !== undefined) {
-      return String(record[candidate]);
-    }
-  }
-  if ("value" in record) {
-    return otlpValue(record.value);
-  }
-  return JSON.stringify(value);
-};
-
-const otlpAttributes = (value: unknown) => {
-  const attributes = asRecord(value)?.attributes;
-  const object = asRecord(attributes);
-  if (object) {
-    return Object.entries(object).map(([key, entry]) => ({
-      key,
-      value: otlpValue(entry),
-    }));
-  }
-  if (!Array.isArray(attributes)) {
-    return [];
-  }
-  return attributes.flatMap((item) => {
-    const record = asRecord(item);
-    return record && typeof record.key === "string"
-      ? [{ key: record.key, value: otlpValue(record.value) }]
-      : [];
-  });
-};
-
-const otlpAttribute = (value: unknown, key: string) =>
-  otlpAttributes(value).find((item) => item.key === key)?.value;
 
 const text = (value: unknown) =>
   typeof value === "string" && value !== "" ? value : undefined;
@@ -151,20 +93,7 @@ const spanStatus = (span: ServiceTraceSpan) => {
   if (span.statusCode === 1) {
     return "ok";
   }
-  return span.statusMessage || "unset";
-};
-
-const replayID = (payload: unknown) => {
-  const event = asRecord(payload);
-  const contexts = asRecord(event?.contexts);
-  const replay = asRecord(contexts?.replay);
-  const direct = text(event?.replay_id) ?? text(replay?.replay_id);
-  if (direct) {
-    return direct;
-  }
-  return eventTags(payload).find(([key]) =>
-    ["replayid", "replay_id"].includes(key.toLowerCase())
-  )?.[1];
+  return span.statusMessage || "no error reported";
 };
 
 const traceBounds = (spans: ServiceTraceSpan[]) => {
@@ -246,11 +175,11 @@ const traceAttributeGroups = (span: ServiceTraceSpan) => {
   }
   const payload = asRecord(span.span);
   return [
-    { label: "Span attributes", values: otlpAttributes(span.span) },
+    { label: "Span attributes", values: otlpTextAttributes(span.span) },
     { label: "Span data", values: rowValues(payload?.data) },
     { label: "Measurements", values: rowValues(payload?.measurements) },
-    { label: "Resource", values: otlpAttributes(span.resource) },
-    { label: "Instrumentation", values: otlpAttributes(span.scope) },
+    { label: "Resource", values: otlpTextAttributes(span.resource) },
+    { label: "Instrumentation", values: otlpTextAttributes(span.scope) },
   ].filter((group) => group.values.length > 0);
 };
 
@@ -291,6 +220,23 @@ const TraceSpanActions = ({
   </>
 );
 
+const TraceAiIdentity = ({ span }: { span: ServiceTraceSpan }) => (
+  <>
+    {span.aiUserId ? (
+      <>
+        <dt className="text-muted-foreground">AI user</dt>
+        <dd className="overflow-x-auto font-mono">{span.aiUserId}</dd>
+      </>
+    ) : null}
+    {span.aiSessionId ? (
+      <>
+        <dt className="text-muted-foreground">AI session</dt>
+        <dd className="overflow-x-auto font-mono">{span.aiSessionId}</dd>
+      </>
+    ) : null}
+  </>
+);
+
 const TraceSpanMetadata = ({
   onSelectSpan,
   operation,
@@ -309,6 +255,9 @@ const TraceSpanMetadata = ({
   const childCount = traceSpans.filter(
     (candidate) => candidate.parentSpanId === span.spanId
   ).length;
+  const parentSpanLoaded = traceSpans.some(
+    (candidate) => candidate.spanId === span.parentSpanId
+  );
   const selfTime = traceSpanSelfTime(span, traceSpans);
   const baseline = span.baselineDurationNano;
   const baselineDelta =
@@ -332,6 +281,7 @@ const TraceSpanMetadata = ({
       <dd>{service ?? "Current service"}</dd>
       <dt className="text-muted-foreground">Operation</dt>
       <dd>{operation ?? spanKind(span.kind)}</dd>
+      <TraceAiIdentity span={span} />
       <dt className="text-muted-foreground">Self time</dt>
       <dd>{formatDuration(selfTime.toString())}</dd>
       {showBaseline && baselineDelta !== undefined ? (
@@ -361,7 +311,7 @@ const TraceSpanMetadata = ({
       <dd className="overflow-x-auto font-mono">{span.spanId}</dd>
       <dt className="text-muted-foreground">Parent span</dt>
       <dd className="min-w-0 overflow-x-auto font-mono">
-        {span.parentSpanId ? (
+        {parentSpanLoaded ? (
           <button
             className="text-sky-600 hover:underline dark:text-sky-400"
             onClick={() => onSelectSpan(span.parentSpanId)}
@@ -370,7 +320,7 @@ const TraceSpanMetadata = ({
             {span.parentSpanId}
           </button>
         ) : (
-          "root"
+          span.parentSpanId || "root"
         )}
       </dd>
     </dl>
@@ -382,7 +332,7 @@ const TraceLinks = ({
   onOpenTrace,
 }: {
   links: ReturnType<typeof linkedTraces>;
-  onOpenTrace?: (traceID: string, segmentID?: string) => void;
+  onOpenTrace?: (traceID: string) => void;
 }) =>
   links.length > 0 ? (
     <div className="border-t border-border px-4 py-3">
@@ -440,22 +390,23 @@ const TraceAttributeDetails = ({
   onOpenLogs,
   onOpenTrace,
   onSelectSpan,
+  serviceName,
   span,
   traceSpans,
 }: {
   metrics: ServiceTraceMetricSample[];
   onOpenError?: (issueID: string, eventID?: string) => void;
   onOpenLogs?: (traceID: string, spanID?: string) => void;
-  onOpenTrace?: (traceID: string, segmentID?: string) => void;
+  onOpenTrace?: (traceID: string) => void;
   onSelectSpan: (spanID: string) => void;
+  serviceName?: ServiceNameResolver;
   span: ServiceTraceSpan;
   traceSpans: ServiceTraceSpan[];
 }) => {
   const spanPayload = asRecord(span.span);
   const groups = traceAttributeGroups(span);
   const scope = asRecord(span.scope);
-  const service =
-    otlpAttribute(span.resource, "service.name") ?? span.serviceId;
+  const service = traceServiceName(span, serviceName);
   const operation =
     text(spanPayload?.op) ??
     text(asRecord(asRecord(spanPayload?.contexts)?.trace)?.op);
@@ -518,6 +469,7 @@ const TraceSpanDialog = ({
   onOpenChange,
   onSelectSpan,
   open,
+  serviceName,
   span,
   traceSpans,
   traceStart,
@@ -525,10 +477,11 @@ const TraceSpanDialog = ({
   metrics: ServiceTraceMetricSample[];
   onOpenError?: (issueID: string, eventID?: string) => void;
   onOpenLogs?: (traceID: string, spanID?: string) => void;
-  onOpenTrace?: (traceID: string, segmentID?: string) => void;
+  onOpenTrace?: (traceID: string) => void;
   onOpenChange: (open: boolean) => void;
   onSelectSpan: (spanID: string) => void;
   open: boolean;
+  serviceName?: ServiceNameResolver;
   span: ServiceTraceSpan;
   traceSpans: ServiceTraceSpan[];
   traceStart: bigint;
@@ -536,6 +489,15 @@ const TraceSpanDialog = ({
   const [tab, setTab] = useState<"details" | "raw">("details");
   const raw = JSON.stringify(
     {
+      indexed: {
+        aiAgent: span.aiAgent,
+        aiKind: span.aiKind,
+        aiModel: span.aiModel,
+        aiOperation: span.aiOperation,
+        aiProvider: span.aiProvider,
+        aiSessionId: span.aiSessionId,
+        aiUserId: span.aiUserId,
+      },
       resource: span.resource,
       scope: span.scope,
       source: span.source,
@@ -545,6 +507,40 @@ const TraceSpanDialog = ({
     2
   );
   const offset = integer(span.startTimeUnixNano) - traceStart;
+  const spanNavigation = useMemo(() => {
+    const byID = new Map(traceSpans.map((item) => [item.spanId, item]));
+    const depth = (item: ServiceTraceSpan) => {
+      let current = item;
+      let value = 0;
+      const visited = new Set<string>();
+      while (current.parentSpanId && value < 12) {
+        if (visited.has(current.spanId)) {
+          break;
+        }
+        visited.add(current.spanId);
+        const parent = byID.get(current.parentSpanId);
+        if (!parent) {
+          break;
+        }
+        value += 1;
+        current = parent;
+      }
+      return value;
+    };
+    return traceSpans
+      .map((item) => ({ depth: depth(item), span: item }))
+      .toSorted((left, right) => {
+        const leftStart = integer(left.span.startTimeUnixNano);
+        const rightStart = integer(right.span.startTimeUnixNano);
+        if (leftStart < rightStart) {
+          return -1;
+        }
+        if (leftStart > rightStart) {
+          return 1;
+        }
+        return 0;
+      });
+  }, [traceSpans]);
 
   return (
     <Dialog.Root
@@ -559,7 +555,7 @@ const TraceSpanDialog = ({
       <Dialog.Portal>
         <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/55 backdrop-blur-[1px] data-open:animate-in data-open:fade-in data-closed:animate-out data-closed:fade-out" />
         <Dialog.Viewport className="fixed inset-0 z-50 grid place-items-center overflow-y-auto p-4">
-          <Dialog.Popup className="flex max-h-[calc(100dvh-2rem)] w-full max-w-5xl flex-col border border-border bg-background text-foreground shadow-2xl data-open:animate-in data-open:zoom-in-95 data-open:fade-in data-closed:animate-out data-closed:zoom-out-95 data-closed:fade-out">
+          <Dialog.Popup className="flex h-[calc(100dvh-2rem)] w-full max-w-[calc(100vw-2rem)] flex-col border border-border bg-background text-foreground shadow-2xl data-open:animate-in data-open:zoom-in-95 data-open:fade-in data-closed:animate-out data-closed:zoom-out-95 data-closed:fade-out">
             <header className="flex items-start justify-between gap-5 border-b border-border px-5 py-4">
               <div className="min-w-0">
                 <p className="text-[8px] tracking-[0.12em] text-muted-foreground uppercase">
@@ -598,21 +594,61 @@ const TraceSpanDialog = ({
                 </button>
               ))}
             </nav>
-            <div className="min-h-0 overflow-y-auto">
+            <div className="min-h-0 flex-1 overflow-hidden">
               {tab === "raw" ? (
-                <pre className="overflow-auto px-4 py-3 font-mono text-[9px] leading-relaxed whitespace-pre-wrap text-foreground/80">
+                <pre className="h-full overflow-auto px-4 py-3 font-mono text-[9px] leading-relaxed whitespace-pre-wrap text-foreground/80">
                   {raw}
                 </pre>
               ) : (
-                <TraceAttributeDetails
-                  metrics={metrics}
-                  onOpenError={onOpenError}
-                  onOpenLogs={onOpenLogs}
-                  onOpenTrace={onOpenTrace}
-                  onSelectSpan={onSelectSpan}
-                  span={span}
-                  traceSpans={traceSpans}
-                />
+                <div className="grid h-full min-h-0 md:grid-cols-[17rem_minmax(0,1fr)]">
+                  <aside className="hidden min-h-0 overflow-y-auto border-r border-border md:block">
+                    <p className="sticky top-0 z-10 border-b border-border bg-background px-3 py-2 text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
+                      Trace spans · {traceSpans.length.toLocaleString()}
+                    </p>
+                    {spanNavigation.map((item) => (
+                      <button
+                        className={cn(
+                          "flex w-full items-center gap-2 border-b border-border/50 px-2 py-2 text-left text-[9px] hover:bg-muted/40",
+                          item.span.spanId === span.spanId && "bg-muted/60"
+                        )}
+                        key={item.span.spanId}
+                        onClick={() => onSelectSpan(item.span.spanId)}
+                        style={{
+                          paddingLeft: `${8 + Math.min(item.depth, 8) * 10}px`,
+                        }}
+                        type="button"
+                      >
+                        <span
+                          className={cn(
+                            "size-1.5 shrink-0 bg-muted-foreground/45",
+                            item.span.aiKind && "bg-violet-500",
+                            item.span.statusCode === 2 && "bg-destructive"
+                          )}
+                        />
+                        <span className="min-w-0 flex-1 truncate">
+                          {item.span.aiKind
+                            ? aiSpanLabel(item.span)
+                            : item.span.name}
+                        </span>
+                        <span className="shrink-0 text-[8px] text-muted-foreground tabular-nums">
+                          {formatDuration(item.span.durationNano)}
+                        </span>
+                      </button>
+                    ))}
+                  </aside>
+                  <div className="min-h-0 overflow-y-auto">
+                    <TraceAttributeDetails
+                      metrics={metrics}
+                      onOpenError={onOpenError}
+                      onOpenLogs={onOpenLogs}
+                      onOpenTrace={onOpenTrace}
+                      onSelectSpan={onSelectSpan}
+                      serviceName={serviceName}
+                      span={span}
+                      traceSpans={traceSpans}
+                    />
+                  </div>
+                </div>
               )}
             </div>
           </Dialog.Popup>
@@ -633,7 +669,7 @@ const vitalStatusClass = (status: WebVitalMeasurement["status"]) => {
 };
 
 const TraceVitals = ({ detail }: { detail: ServiceTraceDetail }) => {
-  const values = traceWebVitals(detail.spans);
+  const values = traceWebVitals(detail.webVitals);
   if (values.length === 0) {
     return null;
   }
@@ -673,29 +709,15 @@ const TraceVitals = ({ detail }: { detail: ServiceTraceDetail }) => {
 
 const TimelineIndicators = ({
   timeline,
-  traceStart,
-  vitals,
+  markers,
 }: {
   timeline: ReturnType<typeof buildTraceTimeline>;
-  traceStart: bigint;
-  vitals: WebVitalMeasurement[];
+  markers: WebVitalTimelineMarker[];
 }) => (
   <>
-    {vitals.flatMap((vital) => {
-      if (
-        !(vital.key === "ttfb" || vital.key === "fcp" || vital.key === "lcp")
-      ) {
-        return [];
-      }
-      const measurement = vital.valueMilliseconds;
-      const timestamp =
-        measurement === undefined
-          ? undefined
-          : traceStart + BigInt(Math.round(measurement * 1_000_000));
+    {markers.flatMap(({ timestampUnixNano: timestamp, vital }) => {
       const left =
-        timestamp === undefined ||
-        timestamp < timeline.viewport.start ||
-        timestamp > timeline.viewport.end
+        timestamp < timeline.viewport.start || timestamp > timeline.viewport.end
           ? undefined
           : timeline.position(timestamp);
       return left === undefined
@@ -717,20 +739,6 @@ const TimelineIndicators = ({
     })}
   </>
 );
-
-const longestMeasurementDuration = (vitals: WebVitalMeasurement[]) => {
-  let longest = 0n;
-  for (const vital of vitals) {
-    if (vital.valueMilliseconds === undefined) {
-      continue;
-    }
-    const duration = BigInt(Math.round(vital.valueMilliseconds * 1_000_000));
-    if (duration > longest) {
-      longest = duration;
-    }
-  }
-  return longest;
-};
 
 const traceRowTitle = (row: TraceRow) => {
   if (row.kind !== "span") {
@@ -764,33 +772,33 @@ const traceRowBarClass = (row: TraceRow) => {
 };
 
 const TraceWaterfallRow = ({
-  baseViewportStart,
   collapsed,
   expandedGroups,
   onSelect,
   onToggleCollapsed,
   onToggleGroup,
   row,
+  serviceName,
   selectedID,
   timeline,
-  vitals,
+  vitalMarkers,
 }: {
-  baseViewportStart: bigint;
   collapsed: ReadonlySet<string>;
   expandedGroups: ReadonlySet<string>;
   onSelect: (spanID: string) => void;
   onToggleCollapsed: (spanID: string) => void;
   onToggleGroup: (groupID: string) => void;
   row: TraceRow;
+  serviceName?: ServiceNameResolver;
   selectedID?: string;
   timeline: ReturnType<typeof buildTraceTimeline>;
-  vitals: WebVitalMeasurement[];
+  vitalMarkers: WebVitalTimelineMarker[];
 }) => {
   const { childCount, depth, span } = row;
   const left = timeline.position(integer(row.startTimeUnixNano));
   const right = timeline.position(integer(row.endTimeUnixNano));
   const width = Math.min(100 - left, Math.max(0.35, right - left));
-  const service = otlpAttribute(span.resource, "service.name");
+  const service = traceServiceName(span, serviceName);
   const operation = text(asRecord(span.span)?.op);
   const isPoint = integer(row.durationNano) === 0n;
   const groupExpanded = expandedGroups.has(row.id);
@@ -875,11 +883,7 @@ const TraceWaterfallRow = ({
         onClick={() => onSelect(span.spanId)}
         type="button"
       >
-        <TimelineIndicators
-          timeline={timeline}
-          traceStart={baseViewportStart}
-          vitals={vitals}
-        />
+        <TimelineIndicators markers={vitalMarkers} timeline={timeline} />
         <span
           className={cn(
             "absolute z-20",
@@ -910,13 +914,17 @@ const TraceWaterfall = ({
   onOpenError,
   onOpenLogs,
   onOpenTrace,
+  serviceName,
 }: {
   detail: ServiceTraceDetail;
   onOpenError?: (issueID: string, eventID?: string) => void;
   onOpenLogs?: (traceID: string, spanID?: string) => void;
-  onOpenTrace?: (traceID: string, segmentID?: string) => void;
+  onOpenTrace?: (traceID: string) => void;
+  serviceName?: ServiceNameResolver;
 }) => {
-  const [selectedID, setSelectedID] = useState(detail.spans[0]?.spanId ?? "");
+  const [selectedID, setSelectedID] = useState(
+    () => traceRoot(detail.spans)?.spanId ?? ""
+  );
   const [spanDialogOpen, setSpanDialogOpen] = useState(false);
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(
@@ -926,27 +934,61 @@ const TraceWaterfall = ({
   const [showGaps, setShowGaps] = useState(true);
   const [compressGaps, setCompressGaps] = useState(true);
   const [query, setQuery] = useState("");
-  const vitals = useMemo(() => traceWebVitals(detail.spans), [detail.spans]);
+  const vitals = useMemo(
+    () => traceWebVitals(detail.webVitals),
+    [detail.webVitals]
+  );
+  const traceSpanViewport = useMemo(
+    () => traceViewport(detail.spans),
+    [detail.spans]
+  );
+  const vitalMarkers = useMemo(
+    () =>
+      webVitalTimelineMarkers(vitals, detail.spans, traceSpanViewport.start),
+    [detail.spans, traceSpanViewport.start, vitals]
+  );
   const baseViewport = useMemo(() => {
-    const bounds = traceViewport(detail.spans);
-    const measurementDuration = longestMeasurementDuration(vitals);
-    return measurementDuration > bounds.end - bounds.start
-      ? { ...bounds, end: bounds.start + measurementDuration }
-      : bounds;
-  }, [detail.spans, vitals]);
+    const { end: spanEnd } = traceSpanViewport;
+    let end = spanEnd;
+    for (const { timestampUnixNano } of vitalMarkers) {
+      if (timestampUnixNano > end) {
+        end = timestampUnixNano;
+      }
+    }
+    return { ...traceSpanViewport, end };
+  }, [traceSpanViewport, vitalMarkers]);
   const [viewport, setViewport] = useState<TraceViewport>(baseViewport);
   const timeline = useMemo(
     () => buildTraceTimeline(detail.spans, viewport, compressGaps),
     [compressGaps, detail.spans, viewport]
+  );
+  const matches = useMemo(
+    () => matchingTraceSpans(detail.spans, query, serviceName),
+    [detail.spans, query, serviceName]
+  );
+  const matchingSpanIDs = useMemo(
+    () => new Set(matches.map((span) => span.spanId)),
+    [matches]
   );
   const rows = useMemo(
     () =>
       traceRows(detail.spans, collapsed, query, {
         autoGroup,
         expandedGroups,
+        matchingSpanIDs,
+        serviceName,
         showGaps,
       }),
-    [autoGroup, collapsed, detail.spans, expandedGroups, query, showGaps]
+    [
+      autoGroup,
+      collapsed,
+      detail.spans,
+      expandedGroups,
+      matchingSpanIDs,
+      query,
+      serviceName,
+      showGaps,
+    ]
   );
   const visibleRows = useMemo(
     () =>
@@ -957,19 +999,10 @@ const TraceWaterfall = ({
       ),
     [rows, viewport.end, viewport.start]
   );
-  const matches = useMemo(
-    () => matchingTraceSpans(detail.spans, query),
-    [detail.spans, query]
-  );
   const selected =
     detail.spans.find((span) => span.spanId === selectedID) ?? detail.spans[0];
   const collapsibleIDs = useMemo(
-    () =>
-      new Set(
-        traceRows(detail.spans, new Set(), "")
-          .filter((row) => row.kind === "span" && row.childCount > 0)
-          .map((row) => row.span.spanId)
-      ),
+    () => collapsibleTraceSpanIDs(detail.spans),
     [detail.spans]
   );
   const toggleCollapsed = (spanID: string) => {
@@ -1014,33 +1047,12 @@ const TraceWaterfall = ({
   };
   const zoom = (direction: "in" | "out") => {
     setViewport((current) => {
-      const { end: baseEnd, start: baseStart } = baseViewport;
-      const baseDuration = baseEnd - baseStart;
-      const currentDuration = current.end - current.start;
-      const desired =
-        direction === "in" ? currentDuration / 2n : currentDuration * 2n;
-      let duration = desired;
-      if (duration < 1_000_000n) {
-        duration = 1_000_000n;
-      } else if (duration > baseDuration) {
-        duration = baseDuration;
-      }
       const center = selected
         ? (BigInt(selected.startTimeUnixNano) +
             BigInt(selected.endTimeUnixNano)) /
           2n
         : (current.start + current.end) / 2n;
-      let start = center - duration / 2n;
-      let end = start + duration;
-      if (start < baseStart) {
-        start = baseStart;
-        end = start + duration;
-      }
-      if (end > baseEnd) {
-        end = baseEnd;
-        start = end - duration;
-      }
-      return { end, start };
+      return zoomTraceViewport(current, baseViewport, center, direction);
     });
   };
   const resetZoom = () => setViewport(baseViewport);
@@ -1167,9 +1179,8 @@ const TraceWaterfall = ({
               <span>Service / span</span>
               <span className="relative grid h-full grid-cols-5 items-center text-center tracking-normal normal-case">
                 <TimelineIndicators
+                  markers={vitalMarkers}
                   timeline={timeline}
-                  traceStart={baseViewport.start}
-                  vitals={vitals}
                 />
                 {[0, 25, 50, 75, 100].map((percent) => (
                   <span key={percent}>
@@ -1184,7 +1195,6 @@ const TraceWaterfall = ({
             </div>
             {visibleRows.map((row) => (
               <TraceWaterfallRow
-                baseViewportStart={baseViewport.start}
                 collapsed={collapsed}
                 expandedGroups={expandedGroups}
                 key={row.id}
@@ -1192,9 +1202,10 @@ const TraceWaterfall = ({
                 onToggleCollapsed={toggleCollapsed}
                 onToggleGroup={toggleGroup}
                 row={row}
+                serviceName={serviceName}
                 selectedID={selected?.spanId}
                 timeline={timeline}
-                vitals={vitals}
+                vitalMarkers={vitalMarkers}
               />
             ))}
           </div>
@@ -1209,6 +1220,7 @@ const TraceWaterfall = ({
           onOpenChange={setSpanDialogOpen}
           onSelectSpan={selectSpan}
           open={spanDialogOpen}
+          serviceName={serviceName}
           span={selected}
           traceSpans={detail.spans}
           traceStart={baseViewport.start}
@@ -1220,17 +1232,11 @@ const TraceWaterfall = ({
 
 const TraceOverview = ({ detail }: { detail: ServiceTraceDetail }) => {
   const bounds = traceBounds(detail.spans);
-  const root =
-    detail.spans.find((span) => span.isSegment) ??
-    detail.spans.find((span) => !span.parentSpanId) ??
-    detail.spans[0];
-  const payload = sentryTracePayload(detail.spans);
+  const root = traceRoot(detail.spans);
   const environment =
-    text(payload?.environment) ??
-    otlpAttribute(root?.resource, "deployment.environment.name") ??
-    otlpAttribute(root?.resource, "deployment.environment");
-  const release =
-    text(payload?.release) ?? otlpAttribute(root?.resource, "service.version");
+    otlpAttributeText(root?.resource, "deployment.environment.name") ??
+    otlpAttributeText(root?.resource, "deployment.environment");
+  const release = otlpAttributeText(root?.resource, "service.version");
   const errors = detail.spans.filter((span) => span.statusCode === 2).length;
   const entries = [
     [
@@ -1268,45 +1274,6 @@ const TraceOverview = ({ detail }: { detail: ServiceTraceDetail }) => {
   );
 };
 
-const RelatedTraceSegments = ({
-  detail,
-  onOpenTrace,
-}: {
-  detail: ServiceTraceDetail;
-  onOpenTrace?: (traceID: string, segmentID?: string) => void;
-}) =>
-  detail.relatedSegments.length > 0 ? (
-    <section className="border-b border-border">
-      <header className="flex items-center justify-between gap-3 px-4 py-2 lg:px-6">
-        <p className="text-[8px] tracking-[0.1em] text-muted-foreground uppercase">
-          Transactions in this trace
-        </p>
-        <span className="text-[8px] text-muted-foreground tabular-nums">
-          {detail.relatedSegments.length.toLocaleString()}
-        </span>
-      </header>
-      <div className="flex overflow-x-auto border-t border-border/70">
-        {detail.relatedSegments.map((segment) => (
-          <button
-            className="min-w-56 border-r border-border px-4 py-2.5 text-left transition-colors last:border-r-0 hover:bg-muted/30 disabled:cursor-default"
-            disabled={!onOpenTrace}
-            key={segment.segmentId}
-            onClick={() => onOpenTrace?.(detail.traceId, segment.segmentId)}
-            type="button"
-          >
-            <span className="block truncate text-[9px] font-medium">
-              {segment.name || "Unnamed transaction"}
-            </span>
-            <span className="mt-1 block truncate text-[8px] text-muted-foreground">
-              {segment.serviceId} · {formatDuration(segment.durationNano)} ·{" "}
-              {segment.spanCount.toLocaleString()} spans
-            </span>
-          </button>
-        ))}
-      </div>
-    </section>
-  ) : null;
-
 export const ServiceTraceDetailView = ({
   detail,
   onBack,
@@ -1314,28 +1281,28 @@ export const ServiceTraceDetailView = ({
   onOpenLogs,
   onOpenTrace,
   scope,
+  serviceName,
 }: {
   detail: ServiceTraceDetail;
   onBack: () => void;
   onOpenError?: (issueID: string, eventID?: string) => void;
   onOpenLogs?: (traceID: string, spanID?: string) => void;
-  onOpenTrace?: (traceID: string, segmentID?: string) => void;
+  onOpenTrace?: (traceID: string) => void;
   scope: MetricScope;
+  serviceName?: ServiceNameResolver;
 }) => {
-  const root =
-    detail.spans.find((span) => span.isSegment) ??
-    detail.spans.find((span) => !span.parentSpanId) ??
-    detail.spans[0];
-  const payload = sentryTracePayload(detail.spans);
-  const payloadServiceID = detail.spans.find(
+  const root = traceRoot(detail.spans);
+  const replaySpan = detail.spans.find((span) => span.replayId);
+  const errorServiceID = detail.spans.find(
     (span) => span.source === "sentry_error"
   )?.serviceId;
   const serviceID =
-    payloadServiceID ??
+    replaySpan?.serviceId ??
+    errorServiceID ??
     root?.serviceId ??
     (scope.kind === "service" ? scope.serviceID : undefined);
   const projectID = scope.kind === "installation" ? undefined : scope.projectID;
-  const relatedReplayID = replayID(payload);
+  const relatedReplayID = replaySpan?.replayId;
   const loadRecording = useCallback(
     (id: string, signal: AbortSignal) => {
       if (!(projectID && serviceID)) {
@@ -1364,13 +1331,13 @@ export const ServiceTraceDetailView = ({
         </div>
       </header>
       <TraceOverview detail={detail} />
-      <RelatedTraceSegments detail={detail} onOpenTrace={onOpenTrace} />
       <TraceVitals detail={detail} />
       <TraceWaterfall
         detail={detail}
         onOpenError={onOpenError}
         onOpenLogs={onOpenLogs}
         onOpenTrace={onOpenTrace}
+        serviceName={serviceName}
       />
       {onOpenLogs ? (
         <TraceRelatedLogs
@@ -1379,21 +1346,14 @@ export const ServiceTraceDetailView = ({
           traceID={detail.traceId}
         />
       ) : null}
-      {payload ? (
+      {relatedReplayID && projectID && serviceID ? (
         <div className="px-5 lg:px-7">
-          {relatedReplayID && projectID && serviceID ? (
-            <RelatedReplay
-              appId={serviceID}
-              loadRecording={loadRecording}
-              onOpenTrace={onOpenTrace}
-              replayId={relatedReplayID}
-            />
-          ) : null}
-          <BreadcrumbsSection payload={payload} />
-          <EventMessageSection payload={payload} />
-          <EventEnvironmentSection payload={payload} />
-          <EventRequestSection payload={payload} />
-          <ContextSection payload={payload} />
+          <RelatedReplay
+            appId={serviceID}
+            loadRecording={loadRecording}
+            onOpenTrace={onOpenTrace}
+            replayId={relatedReplayID}
+          />
         </div>
       ) : null}
     </div>

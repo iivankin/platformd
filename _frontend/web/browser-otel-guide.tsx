@@ -45,10 +45,11 @@ export const BrowserOTELGuide = ({
       <div className="mt-3 max-w-3xl space-y-2 text-[9px] leading-4 text-muted-foreground">
         <p>
           Import telemetry.ts before the application entry point. It captures
-          the initial document load, user interactions, fetch and XHR requests,
-          batches exports, sends OTLP HTTP/protobuf with gzip when compression
-          reduces the payload, and keeps async span context available to Sentry.
-          Browsers without CompressionStream fall back to uncompressed protobuf.
+          the initial document load, Web Vitals, user interactions, fetch and
+          XHR requests, batches exports, sends OTLP HTTP/protobuf with gzip when
+          compression reduces the payload, and keeps async span context
+          available to Sentry. Browsers without CompressionStream fall back to
+          uncompressed protobuf.
         </p>
         <p>
           Replace api.example.com with each API origin that should receive W3C

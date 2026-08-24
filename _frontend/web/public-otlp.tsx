@@ -1,7 +1,7 @@
 import { Globe2, LoaderCircle } from "lucide-react";
 import { useState } from "react";
 
-import { updateServiceOTLPTracePublicAccess } from "@/api";
+import { updateServiceOTLPPublicAccess } from "@/api";
 import type { ServiceDomain, ServiceTelemetry } from "@/api";
 import { BrowserOTELGuide } from "@/browser-otel-guide";
 import { publicSentryTunnel } from "@/browser-otel-setup";
@@ -16,38 +16,33 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { CopyButton, SettingsSection } from "@/errors/settings-common";
+import {
+  dedicatedTelemetryEndpoint,
+  disabledTelemetryEndpoint,
+  telemetryEndpointSelection,
+  validTelemetryPublicPath,
+} from "@/public-telemetry-endpoint";
 
-const disabledEndpoint = "__disabled__";
-const dedicatedEndpoint = "__dedicated__";
-const defaultTracePath = "/otel/v1/traces";
-
-const endpointSelection = (
-  hostname: string | undefined,
-  domains: ServiceDomain[]
-) => {
-  if (!hostname) {
-    return disabledEndpoint;
-  }
-  if (domains.some((domain) => domain.hostname === hostname)) {
-    return hostname;
-  }
-  return dedicatedEndpoint;
-};
+const defaultPathPrefix = "/otel";
 
 const updateUnavailable = (
   busy: boolean,
   changed: boolean,
   disabled: boolean,
   hostname: string,
-  tracePath: string
-) => busy || !changed || (!disabled && (!hostname || !tracePath));
+  pathPrefix: string
+) =>
+  busy ||
+  !changed ||
+  (!disabled &&
+    (!hostname || !pathPrefix || !validTelemetryPublicPath(pathPrefix)));
 
 const PublicEndpointValue = ({ endpoint }: { endpoint?: string }) => {
   if (!endpoint) {
     return (
       <p className="col-span-2 text-[9px] leading-4 text-muted-foreground">
-        Disabled. Browser exporters cannot send traces from outside the project
-        network.
+        Disabled. Browser exporters cannot send telemetry from outside the
+        project network.
       </p>
     );
   }
@@ -74,10 +69,10 @@ const PublicHostnameInput = ({
   onChange: (value: string) => void;
   selection: string;
 }) => {
-  if (selection === dedicatedEndpoint) {
+  if (selection === dedicatedTelemetryEndpoint) {
     return (
       <CertificateHostnameCombobox
-        ariaLabel="Dedicated public OTLP trace hostname"
+        ariaLabel="Dedicated public OTLP hostname"
         disabled={busy}
         onChange={onChange}
         placeholder="otel.example.com"
@@ -87,12 +82,12 @@ const PublicHostnameInput = ({
   }
   return (
     <div className="flex h-8 items-center border border-border px-2.5 text-[9px] text-muted-foreground">
-      {disabled ? "No public trace ingress" : "Uses an existing service domain"}
+      {disabled ? "No public OTLP ingress" : "Uses an existing service domain"}
     </div>
   );
 };
 
-export const PublicOTLPTraces = ({
+export const PublicOTLP = ({
   configuration,
   domains,
   onChanged,
@@ -107,37 +102,38 @@ export const PublicOTLPTraces = ({
   serviceID: string;
   serviceName: string;
 }) => {
-  const initialSelection = endpointSelection(
-    configuration.publicOtlpTraceHostname,
+  const initialSelection = telemetryEndpointSelection(
+    configuration.publicOtlpHostname,
     domains
   );
   const [selection, setSelection] = useState(initialSelection);
   const [dedicatedHostname, setDedicatedHostname] = useState(
-    initialSelection === dedicatedEndpoint
-      ? (configuration.publicOtlpTraceHostname ?? "")
+    initialSelection === dedicatedTelemetryEndpoint
+      ? (configuration.publicOtlpHostname ?? "")
       : ""
   );
   const [path, setPath] = useState(
-    configuration.publicOtlpTracePath ?? defaultTracePath
+    configuration.publicOtlpPathPrefix ?? defaultPathPrefix
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  const disabled = selection === disabledEndpoint;
+  const disabled = selection === disabledTelemetryEndpoint;
   const hostname =
-    selection === dedicatedEndpoint ? dedicatedHostname.trim() : selection;
-  const tracePath = disabled ? "" : path.trim();
+    selection === dedicatedTelemetryEndpoint
+      ? dedicatedHostname.trim()
+      : selection;
+  const pathPrefix = disabled ? "" : path.trim();
   const changed =
-    (disabled ? "" : hostname) !==
-      (configuration.publicOtlpTraceHostname ?? "") ||
-    tracePath !== (configuration.publicOtlpTracePath ?? "");
+    (disabled ? "" : hostname) !== (configuration.publicOtlpHostname ?? "") ||
+    pathPrefix !== (configuration.publicOtlpPathPrefix ?? "");
 
   const saveUnavailable = updateUnavailable(
     busy,
     changed,
     disabled,
     hostname,
-    tracePath
+    pathPrefix
   );
 
   const save = async () => {
@@ -148,17 +144,17 @@ export const PublicOTLPTraces = ({
     setError("");
     try {
       onChanged(
-        await updateServiceOTLPTracePublicAccess(projectID, serviceID, {
+        await updateServiceOTLPPublicAccess(projectID, serviceID, {
           expectedUpdatedAt: configuration.updatedAt,
+          pathPrefix,
           publicHostname: disabled ? "" : hostname,
-          tracePath,
         })
       );
     } catch (saveError) {
       setError(
         saveError instanceof Error
           ? saveError.message
-          : "Unable to update public OTLP traces"
+          : "Unable to update public OTLP endpoint"
       );
     } finally {
       setBusy(false);
@@ -167,17 +163,15 @@ export const PublicOTLPTraces = ({
 
   return (
     <SettingsSection
-      copy="Expose one exact OTLP HTTP/protobuf traces route for browser applications. The route supports CORS, gzip request bodies, and can share an existing application or Sentry domain."
-      title="Browser OTLP traces"
+      copy="Expose OTLP HTTP/protobuf traces and logs for browser applications. The routes support CORS, gzip request bodies, and can share an existing application or Sentry domain."
+      title="Browser OTLP"
     >
       <div className="mb-4 max-w-4xl divide-y divide-border border-y border-border">
         <div className="grid min-h-12 grid-cols-[8rem_minmax(0,1fr)_auto] items-center gap-3 py-2 max-sm:grid-cols-[minmax(0,1fr)_auto]">
           <span className="text-[8px] tracking-[0.1em] text-muted-foreground uppercase max-sm:hidden">
             Public endpoint
           </span>
-          <PublicEndpointValue
-            endpoint={configuration.publicOtlpTraceEndpoint}
-          />
+          <PublicEndpointValue endpoint={configuration.publicOtlpEndpoint} />
         </div>
       </div>
 
@@ -185,29 +179,31 @@ export const PublicOTLPTraces = ({
         <Select
           disabled={busy}
           items={{
-            [disabledEndpoint]: "Disabled",
+            [disabledTelemetryEndpoint]: "Disabled",
             ...Object.fromEntries(
               domains.map((domain) => [domain.hostname, domain.hostname])
             ),
-            [dedicatedEndpoint]: "Dedicated domain…",
+            [dedicatedTelemetryEndpoint]: "Dedicated domain…",
           }}
           onValueChange={(value) => setSelection(String(value))}
           value={selection}
         >
           <SelectTrigger
-            aria-label="Public OTLP trace endpoint type"
+            aria-label="Public OTLP endpoint type"
             className="w-full"
           >
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
-            <SelectItem value={disabledEndpoint}>Disabled</SelectItem>
+            <SelectItem value={disabledTelemetryEndpoint}>Disabled</SelectItem>
             {domains.map((domain) => (
               <SelectItem key={domain.hostname} value={domain.hostname}>
                 {domain.hostname}
               </SelectItem>
             ))}
-            <SelectItem value={dedicatedEndpoint}>Dedicated domain…</SelectItem>
+            <SelectItem value={dedicatedTelemetryEndpoint}>
+              Dedicated domain…
+            </SelectItem>
           </SelectContent>
         </Select>
         <PublicHostnameInput
@@ -220,12 +216,12 @@ export const PublicOTLPTraces = ({
       </div>
       <div className="mt-2 grid max-w-3xl grid-cols-[minmax(0,1fr)_auto] gap-2 max-sm:grid-cols-1">
         <Input
-          aria-label="Public OTLP trace path"
+          aria-label="Public OTLP path prefix"
           autoCapitalize="none"
           autoComplete="off"
           disabled={busy || disabled}
           onChange={(event) => setPath(event.target.value)}
-          placeholder={defaultTracePath}
+          placeholder={defaultPathPrefix}
           spellCheck={false}
           value={path}
         />
@@ -240,13 +236,12 @@ export const PublicOTLPTraces = ({
         </p>
       ) : null}
       <p className="mt-3 max-w-3xl text-[9px] leading-4 text-muted-foreground">
-        The exact path accepts POST and browser preflight requests, then
-        forwards payloads to /v1/traces. It takes priority over an application
-        route with the same path.
+        The prefix exposes exact /v1/traces and /v1/logs routes for POST and
+        browser preflight requests. They take priority over application routes.
       </p>
-      {configuration.publicOtlpTraceEndpoint ? (
+      {configuration.publicOtlpEndpoint ? (
         <BrowserOTELGuide
-          endpoint={configuration.publicOtlpTraceEndpoint}
+          endpoint={configuration.publicOtlpEndpoint}
           sentryDsn={configuration.publicDsn}
           sentryTunnel={publicSentryTunnel(
             configuration.publicDsn,

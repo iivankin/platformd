@@ -2,18 +2,14 @@ import { useQueryState } from "nuqs";
 import type { ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
-import { telemetryViewParser } from "@/telemetry-query-state";
+import {
+  telemetryViewParser,
+  telemetryViewValues,
+} from "@/telemetry-query-state";
 import type { TelemetryView } from "@/telemetry-query-state";
 
-const telemetryViewOrder: readonly TelemetryView[] = [
-  "metrics",
-  "logs",
-  "errors",
-  "traces",
-  "settings",
-];
-
 const telemetryViewLabels: Record<TelemetryView, string> = {
+  ai: "AI",
   errors: "Errors",
   logs: "Logs",
   metrics: "Metrics",
@@ -30,7 +26,7 @@ export const TelemetryWorkspace = ({
     "telemetry",
     telemetryViewParser
   );
-  const availableViews = telemetryViewOrder.filter(
+  const availableViews = telemetryViewValues.filter(
     (view) => views[view] !== undefined
   );
   const activeView = Object.hasOwn(views, requestedView)

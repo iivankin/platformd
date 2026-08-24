@@ -9,7 +9,9 @@ import { useQueryState, useQueryStates } from "nuqs";
 import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { AiOverviewView } from "@/ai-overview";
 import {
+  fetchProjectCanvas,
   fetchService,
   fetchServiceDomains,
   fetchServiceTelemetry,
@@ -36,7 +38,12 @@ import {
   projectNameFromInternalHostname,
 } from "@/github-action-example-dialog";
 import { ServiceAnalyticsSnippet } from "@/project-analytics";
-import { PublicOTLPTraces } from "@/public-otlp-traces";
+import { PublicOTLP } from "@/public-otlp";
+import {
+  dedicatedTelemetryEndpoint,
+  disabledTelemetryEndpoint,
+  telemetryEndpointSelection,
+} from "@/public-telemetry-endpoint";
 import { ResourceLogs } from "@/resource-logs";
 import { SentryCloudflareGeoIpHint } from "@/sentry-cloudflare-geoip-hint";
 import { ServiceMetrics } from "@/service-metrics";
@@ -55,24 +62,6 @@ const publicBase = (dsn: string) => {
   return `${parsed.protocol}//${parsed.host}`;
 };
 
-const disabledPublicEndpoint = "__disabled__";
-const dedicatedPublicEndpoint = "__dedicated__";
-
-const publicEndpointSelection = (
-  configuration: ServiceTelemetry,
-  domains: ServiceDomain[]
-) => {
-  if (!configuration.publicHostname) {
-    return disabledPublicEndpoint;
-  }
-  if (
-    domains.some((domain) => domain.hostname === configuration.publicHostname)
-  ) {
-    return configuration.publicHostname;
-  }
-  return dedicatedPublicEndpoint;
-};
-
 const PublicSentryEndpoint = ({
   configuration,
   domains,
@@ -88,10 +77,13 @@ const PublicSentryEndpoint = ({
   serviceID: string;
   tunnelSettings?: ReactNode;
 }) => {
-  const initialSelection = publicEndpointSelection(configuration, domains);
+  const initialSelection = telemetryEndpointSelection(
+    configuration.publicHostname,
+    domains
+  );
   const [selection, setSelection] = useState(initialSelection);
   const [dedicatedHostname, setDedicatedHostname] = useState(
-    initialSelection === dedicatedPublicEndpoint
+    initialSelection === dedicatedTelemetryEndpoint
       ? (configuration.publicHostname ?? "")
       : ""
   );
@@ -99,14 +91,15 @@ const PublicSentryEndpoint = ({
   const [error, setError] = useState("");
 
   let hostname = selection;
-  if (selection === disabledPublicEndpoint) {
+  if (selection === disabledTelemetryEndpoint) {
     hostname = "";
-  } else if (selection === dedicatedPublicEndpoint) {
+  } else if (selection === dedicatedTelemetryEndpoint) {
     hostname = dedicatedHostname.trim();
   }
+  const changed = hostname !== (configuration.publicHostname ?? "");
 
   const save = async () => {
-    if (busy) {
+    if (busy || !changed) {
       return;
     }
     setBusy(true);
@@ -167,11 +160,11 @@ const PublicSentryEndpoint = ({
         <Select
           disabled={busy}
           items={{
-            [disabledPublicEndpoint]: "Disabled",
+            [disabledTelemetryEndpoint]: "Disabled",
             ...Object.fromEntries(
               domains.map((domain) => [domain.hostname, domain.hostname])
             ),
-            [dedicatedPublicEndpoint]: "Dedicated domain…",
+            [dedicatedTelemetryEndpoint]: "Dedicated domain…",
           }}
           onValueChange={(value) => setSelection(String(value))}
           value={selection}
@@ -183,19 +176,19 @@ const PublicSentryEndpoint = ({
             <SelectValue />
           </SelectTrigger>
           <SelectContent align="start">
-            <SelectItem value={disabledPublicEndpoint}>Disabled</SelectItem>
+            <SelectItem value={disabledTelemetryEndpoint}>Disabled</SelectItem>
             {domains.map((domain) => (
               <SelectItem key={domain.hostname} value={domain.hostname}>
                 {domain.hostname}
               </SelectItem>
             ))}
-            <SelectItem value={dedicatedPublicEndpoint}>
+            <SelectItem value={dedicatedTelemetryEndpoint}>
               Dedicated domain…
             </SelectItem>
           </SelectContent>
         </Select>
         <div className="min-w-0">
-          {selection === dedicatedPublicEndpoint ? (
+          {selection === dedicatedTelemetryEndpoint ? (
             <CertificateHostnameCombobox
               ariaLabel="Dedicated public telemetry hostname"
               disabled={busy}
@@ -205,7 +198,7 @@ const PublicSentryEndpoint = ({
             />
           ) : (
             <div className="flex h-8 items-center border border-border px-2.5 text-[9px] text-muted-foreground">
-              {selection === disabledPublicEndpoint
+              {selection === disabledTelemetryEndpoint
                 ? "No public Sentry ingress"
                 : "Uses an existing service domain"}
             </div>
@@ -219,7 +212,8 @@ const PublicSentryEndpoint = ({
         <Button
           disabled={
             busy ||
-            (selection === dedicatedPublicEndpoint && hostname.length === 0)
+            !changed ||
+            (selection === dedicatedTelemetryEndpoint && hostname.length === 0)
           }
           onClick={() => void save()}
         >
@@ -401,6 +395,9 @@ export const ServiceTelemetryWorkspace = ({
   const [configuration, setConfiguration] = useState<ServiceTelemetry>();
   const [domains, setDomains] = useState<ServiceDomain[]>([]);
   const [service, setService] = useState<Service>();
+  const [serviceNames, setServiceNames] = useState<Map<string, string>>(
+    () => new Map()
+  );
   const [error, setError] = useState("");
   const [toast, setToast] = useState("");
   const [, setTelemetryView] = useQueryState("telemetry", telemetryViewParser);
@@ -408,12 +405,9 @@ export const ServiceTelemetryWorkspace = ({
   const [, setTraceState] = useQueryStates(traceQueryParsers);
   const [, setErrorState] = useQueryStates(errorDetailQueryParsers);
   const openTrace = useCallback(
-    (traceID: string, segmentID?: string) => {
+    (traceID: string) => {
       void Promise.all([
-        setTraceState(
-          { trace: traceID, traceSegment: segmentID ?? null },
-          { history: "push" }
-        ),
+        setTraceState({ trace: traceID }, { history: "push" }),
         setTelemetryView("traces", { history: "push" }),
       ]);
     },
@@ -470,7 +464,28 @@ export const ServiceTelemetryWorkspace = ({
         }
       }
     };
+    const loadServiceNames = async () => {
+      try {
+        const canvas = await fetchProjectCanvas(projectID, controller.signal);
+        setServiceNames(
+          new Map(
+            canvas.resources
+              .filter((resource) => resource.kind === "service")
+              .map((resource) => [resource.id, resource.name])
+          )
+        );
+      } catch (loadError) {
+        if (
+          !(
+            loadError instanceof DOMException && loadError.name === "AbortError"
+          )
+        ) {
+          setServiceNames(new Map());
+        }
+      }
+    };
     void load();
+    void loadServiceNames();
     return () => controller.abort();
   }, [projectID, serviceID]);
 
@@ -485,6 +500,10 @@ export const ServiceTelemetryWorkspace = ({
   const refresh = async () => {
     setConfiguration(await fetchServiceTelemetry(projectID, serviceID));
   };
+  const serviceName = useCallback(
+    (candidate: string) => serviceNames.get(candidate),
+    [serviceNames]
+  );
   const app = useMemo<App | undefined>(
     () =>
       configuration && service
@@ -534,6 +553,9 @@ export const ServiceTelemetryWorkspace = ({
     <>
       <TelemetryWorkspace
         views={{
+          ai: (
+            <AiOverviewView scope={{ kind: "service", projectID, serviceID }} />
+          ),
           errors: (
             <ErrorsApp
               apiBasePath={`/api/v1/projects/${encodeURIComponent(projectID)}/services/${encodeURIComponent(serviceID)}`}
@@ -589,7 +611,7 @@ export const ServiceTelemetryWorkspace = ({
                   <TelemetryIngestionEndpoint
                     endpoint={configuration.internalOtlpEndpoint}
                   />
-                  <PublicOTLPTraces
+                  <PublicOTLP
                     configuration={configuration}
                     domains={domains}
                     key={`otlp:${configuration.updatedAt}:${domains.map((domain) => domain.hostname).join(",")}`}
@@ -609,6 +631,7 @@ export const ServiceTelemetryWorkspace = ({
               onOpenLogs={openTraceLogs}
               projectID={projectID}
               serviceID={serviceID}
+              serviceName={serviceName}
             />
           ),
         }}

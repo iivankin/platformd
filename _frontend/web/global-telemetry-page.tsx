@@ -2,6 +2,7 @@ import { useQueryState, useQueryStates } from "nuqs";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 
+import { AiOverviewView } from "@/ai-overview";
 import { fetchProjectCanvas } from "@/api";
 import type { MetricScope, Project, ScopedIssue } from "@/api";
 import { ScopedTelemetryLogs } from "@/resource-logs";
@@ -89,6 +90,7 @@ export const GlobalTelemetryPage = ({ projects }: { projects: Project[] }) => {
     <div className="h-full min-h-0 animate-in duration-200 fade-in slide-in-from-bottom-1">
       <TelemetryWorkspace
         views={{
+          ai: <AiOverviewView scope={scope} />,
           errors: (
             <ScopedErrors
               onOpenIssue={openIssue}

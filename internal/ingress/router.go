@@ -38,7 +38,7 @@ type Route struct {
 
 type ServiceTelemetryRoute struct {
 	BrowserTunnelPath string
-	OTLPTracePath     string
+	OTLPPathPrefix    string
 }
 
 type Config struct {
@@ -176,10 +176,12 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 		return
 	}
 	telemetryRoute, hasTelemetryRoute := routes.serviceTelemetry[hostname]
-	if hasTelemetryRoute && telemetryRoute.OTLPTracePath != "" && request.URL.Path == telemetryRoute.OTLPTracePath &&
+	if hasTelemetryRoute && telemetryRoute.OTLPPathPrefix != "" &&
 		(request.Method == http.MethodPost || request.Method == http.MethodOptions) {
-		router.servePublicOTLPTraces(response, request)
-		return
+		if signalPath, ok := publicOTLPSignalPath(telemetryRoute.OTLPPathPrefix, request.URL.Path); ok {
+			router.servePublicOTLP(response, request, signalPath)
+			return
+		}
 	}
 	if analytics.Reserved(request.Method, request.URL.Path) {
 		if router.analyticsHandler == nil {
@@ -250,7 +252,16 @@ func (router *Router) ServeHTTP(response http.ResponseWriter, request *http.Requ
 	}).ServeHTTP(response, request)
 }
 
-func (router *Router) servePublicOTLPTraces(response http.ResponseWriter, request *http.Request) {
+func publicOTLPSignalPath(prefix, path string) (string, bool) {
+	for _, signalPath := range []string{"/v1/traces", "/v1/logs"} {
+		if path == prefix+signalPath {
+			return signalPath, true
+		}
+	}
+	return "", false
+}
+
+func (router *Router) servePublicOTLP(response http.ResponseWriter, request *http.Request, signalPath string) {
 	response.Header().Set("Access-Control-Allow-Origin", "*")
 	response.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
 	response.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Encoding")
@@ -264,7 +275,7 @@ func (router *Router) servePublicOTLPTraces(response http.ResponseWriter, reques
 		return
 	}
 	forwarded := request.Clone(request.Context())
-	forwarded.URL.Path = "/v1/traces"
+	forwarded.URL.Path = signalPath
 	forwarded.URL.RawPath = ""
 	router.serviceTelemetryHandler.ServeHTTP(response, forwarded)
 }

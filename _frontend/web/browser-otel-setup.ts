@@ -1,30 +1,36 @@
 interface BrowserTelemetrySetup {
+  conformance?: boolean;
   endpoint: string;
   sentryDsn?: string;
   sentryTunnel?: string;
   serviceName: string;
 }
 
+const sentryBrowserPackage = ["@sentry/browser", "10.70.0"] as const;
 const otelPackages = [
-  "@opentelemetry/api",
-  "@opentelemetry/context-zone",
-  "@opentelemetry/core",
-  "@opentelemetry/instrumentation",
-  "@opentelemetry/instrumentation-document-load",
-  "@opentelemetry/instrumentation-fetch",
-  "@opentelemetry/instrumentation-user-interaction",
-  "@opentelemetry/instrumentation-xml-http-request",
-  "@opentelemetry/otlp-transformer",
-  "@opentelemetry/resources",
-  "@opentelemetry/sdk-trace-base",
-  "@opentelemetry/sdk-trace-web",
-  "@opentelemetry/semantic-conventions",
-];
+  ["@opentelemetry/api", "1.9.1"],
+  ["@opentelemetry/api-logs", "0.221.0"],
+  ["@opentelemetry/browser-instrumentation", "0.7.0"],
+  ["@opentelemetry/context-zone", "2.10.0"],
+  ["@opentelemetry/core", "2.10.0"],
+  ["@opentelemetry/instrumentation", "0.221.0"],
+  ["@opentelemetry/instrumentation-document-load", "0.66.0"],
+  ["@opentelemetry/instrumentation-fetch", "0.221.0"],
+  ["@opentelemetry/instrumentation-user-interaction", "0.65.0"],
+  ["@opentelemetry/instrumentation-xml-http-request", "0.221.0"],
+  ["@opentelemetry/otlp-transformer", "0.221.0"],
+  ["@opentelemetry/resources", "2.10.0"],
+  ["@opentelemetry/sdk-logs", "0.221.0"],
+  ["@opentelemetry/sdk-trace-base", "2.10.0"],
+  ["@opentelemetry/sdk-trace-web", "2.10.0"],
+  ["@opentelemetry/semantic-conventions", "1.43.0"],
+] as const;
 
 const quoted = (value: string) => JSON.stringify(value);
+const packageSpec = ([name, version]: readonly [string, string]) =>
+  `${name}@${version}`;
 
-export const browserSentryInstall =
-  "npm install @sentry/browser @opentelemetry/api";
+export const browserSentryInstall = `npm install ${packageSpec(sentryBrowserPackage)} ${packageSpec(otelPackages[0])}`;
 
 export const browserSentrySetup = (
   dsn: string,
@@ -68,13 +74,26 @@ ${tunnel ? `  tunnel: ${quoted(tunnel)},\n` : ""}  integrations: [
 });`;
 
 export const browserTelemetryInstall = (includeSentry: boolean) =>
-  `npm install ${includeSentry ? ["@sentry/browser", ...otelPackages].join(" ") : otelPackages.join(" ")}`;
+  `npm install ${[
+    ...(includeSentry ? [sentryBrowserPackage] : []),
+    ...otelPackages,
+  ]
+    .map(packageSpec)
+    .join(" ")}`;
 
 const otelSetup = (
   endpoint: string,
-  serviceName: string
+  serviceName: string,
+  conformance: boolean
 ) => `// telemetry.ts — import this before rendering the application.
-import { SpanStatusCode, trace } from "@opentelemetry/api";
+import {
+  ROOT_CONTEXT,
+  SpanStatusCode,
+  trace,
+  type Context,
+} from "@opentelemetry/api";
+import { logs, type LogRecord } from "@opentelemetry/api-logs";
+import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
 import { ZoneContextManager } from "@opentelemetry/context-zone";
 import {
   ExportResultCode,
@@ -85,19 +104,34 @@ import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-docu
 import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
 import { UserInteractionInstrumentation } from "@opentelemetry/instrumentation-user-interaction";
 import { XMLHttpRequestInstrumentation } from "@opentelemetry/instrumentation-xml-http-request";
-import { ProtobufTraceSerializer } from "@opentelemetry/otlp-transformer";
+import {
+  ProtobufLogsSerializer,
+  ProtobufTraceSerializer,
+} from "@opentelemetry/otlp-transformer";
 import { defaultResource, resourceFromAttributes } from "@opentelemetry/resources";
+import {
+  BatchLogRecordProcessor,
+  LoggerProvider,
+  type LogRecordProcessor,
+  type LogRecordExporter,
+  type ReadableLogRecord,
+  type SdkLogRecord,
+} from "@opentelemetry/sdk-logs";
 import {
   AlwaysOnSampler,
   BatchSpanProcessor,
   ParentBasedSampler,
   type ReadableSpan,
+  type Span,
   type SpanExporter,
+  type SpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
 
-const traceEndpoint = ${quoted(endpoint)};
+const otlpEndpoint = ${quoted(endpoint)};
+const traceEndpoint = otlpEndpoint + "/v1/traces";
+const logEndpoint = otlpEndpoint + "/v1/logs";
 const maximumKeepaliveBytes = 60 * 1024;
 
 const gzipPayload = async (payload: Uint8Array) => {
@@ -111,6 +145,50 @@ const gzipPayload = async (payload: Uint8Array) => {
   return compressed.byteLength < body.byteLength
     ? { body: compressed, encoding: "gzip" }
     : { body };
+};
+
+const exportPayload = (
+  endpoint: string,
+  payload: Uint8Array | undefined,
+  resultCallback: (result: ExportResult) => void
+) => {
+  if (!payload) {
+    resultCallback({
+      code: ExportResultCode.FAILED,
+      error: new Error("Unable to encode OTLP payload"),
+    });
+    return;
+  }
+  void gzipPayload(payload)
+    .then(({ body, encoding }) => {
+      const headers: Record<string, string> = {
+        "Content-Type": "application/x-protobuf",
+      };
+      if (encoding) {
+        headers["Content-Encoding"] = encoding;
+      }
+      return fetch(endpoint, {
+        method: "POST",
+        headers,
+        body,
+        // Fetch caps all in-flight keepalive bodies at 64 KiB. Leave room for
+        // other unload requests and send larger batches normally.
+        keepalive: body.byteLength <= maximumKeepaliveBytes,
+        credentials: "omit",
+      });
+    })
+    .then((response) => {
+      if (!response.ok) {
+        throw new Error("OTLP export failed with HTTP " + response.status);
+      }
+      resultCallback({ code: ExportResultCode.SUCCESS });
+    })
+    .catch((error: unknown) => {
+      resultCallback({
+        code: ExportResultCode.FAILED,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+    });
 };
 
 class CompressedOTLPTraceExporter implements SpanExporter {
@@ -128,47 +206,93 @@ class CompressedOTLPTraceExporter implements SpanExporter {
       return;
     }
     const payload = ProtobufTraceSerializer.serializeRequest(spans);
-    if (!payload) {
-      resultCallback({
-        code: ExportResultCode.FAILED,
-        error: new Error("Unable to encode OTLP traces"),
-      });
-      return;
-    }
-    void gzipPayload(payload)
-      .then(({ body, encoding }) => {
-        const headers: Record<string, string> = {
-          "Content-Type": "application/x-protobuf",
-        };
-        if (encoding) {
-          headers["Content-Encoding"] = encoding;
-        }
-        return fetch(traceEndpoint, {
-          method: "POST",
-          headers,
-          body,
-          // Fetch caps all in-flight keepalive bodies at 64 KiB. Leave room for
-          // other unload requests and send larger trace batches normally.
-          keepalive: body.byteLength <= maximumKeepaliveBytes,
-          credentials: "omit",
-        });
-      })
-      .then((response) => {
-        if (!response.ok) {
-          throw new Error(\`OTLP export failed with HTTP \${response.status}\`);
-        }
-        resultCallback({ code: ExportResultCode.SUCCESS });
-      })
-      .catch((error: unknown) => {
-        resultCallback({
-          code: ExportResultCode.FAILED,
-          error: error instanceof Error ? error : new Error(String(error)),
-        });
-      });
+    exportPayload(traceEndpoint, payload, resultCallback);
   }
 
   shutdown(): Promise<void> {
     this.stopped = true;
+    return Promise.resolve();
+  }
+}
+
+class CompressedOTLPLogExporter implements LogRecordExporter {
+  private stopped = false;
+
+  export(
+    records: ReadableLogRecord[],
+    resultCallback: (result: ExportResult) => void
+  ): void {
+    if (this.stopped) {
+      resultCallback({
+        code: ExportResultCode.FAILED,
+        error: new Error("OTLP exporter is shut down"),
+      });
+      return;
+    }
+    const payload = ProtobufLogsSerializer.serializeRequest(records);
+    exportPayload(logEndpoint, payload, resultCallback);
+  }
+
+  forceFlush(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  shutdown(): Promise<void> {
+    this.stopped = true;
+    return Promise.resolve();
+  }
+}
+${
+  conformance
+    ? `
+let resolveWebVitalEmitted!: () => void;
+const webVitalEmitted = new Promise<void>((resolve) => {
+  resolveWebVitalEmitted = resolve;
+});
+
+class WebVitalConformanceProcessor implements LogRecordProcessor {
+  onEmit(record: SdkLogRecord): void {
+    if (record.eventName === "browser.web_vital") {
+      resolveWebVitalEmitted();
+    }
+  }
+
+  forceFlush(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  shutdown(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+`
+    : ""
+}
+
+let documentLoadContext: Context | undefined;
+let webVitalsInstrumentation: WebVitalsInstrumentation | undefined;
+
+class DocumentLoadContextProcessor implements SpanProcessor {
+  onStart(span: Span): void {
+    if (
+      span.name === "documentLoad" &&
+      span.instrumentationScope.name ===
+        "@opentelemetry/instrumentation-document-load"
+    ) {
+      documentLoadContext = trace.setSpan(ROOT_CONTEXT, span);
+      // registerInstrumentations is still assigning providers while this span
+      // starts. Defer Web Vitals until its logger provider is attached.
+      queueMicrotask(() => webVitalsInstrumentation?.enable());
+    }
+  }
+
+  onEnd(): void {}
+
+  forceFlush(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  shutdown(): Promise<void> {
     return Promise.resolve();
   }
 }
@@ -179,17 +303,38 @@ const apiTracePropagationTargets = [
   new RegExp("^https://api[.]example[.]com/"),
 ];
 
+const resource = defaultResource().merge(
+  resourceFromAttributes({ [ATTR_SERVICE_NAME]: ${quoted(serviceName)} })
+);
 const provider = new WebTracerProvider({
-  resource: defaultResource().merge(
-    resourceFromAttributes({ [ATTR_SERVICE_NAME]: ${quoted(serviceName)} })
-  ),
+  resource,
   sampler: new ParentBasedSampler({ root: new AlwaysOnSampler() }),
   spanProcessors: [
+    new DocumentLoadContextProcessor(),
     new BatchSpanProcessor(new CompressedOTLPTraceExporter()),
+  ],
+});
+const loggerProvider = new LoggerProvider({
+  resource,
+  processors: [
+${conformance ? "    new WebVitalConformanceProcessor(),\n" : ""}    new BatchLogRecordProcessor({
+      exporter: new CompressedOTLPLogExporter(),
+    }),
   ],
 });
 
 provider.register({ contextManager: new ZoneContextManager() });
+logs.setGlobalLoggerProvider(loggerProvider);
+webVitalsInstrumentation = new WebVitalsInstrumentation({
+  enabled: false,
+  applyCustomLogRecordData(logRecord: LogRecord) {
+    if (documentLoadContext) {
+      logRecord.context = documentLoadContext;
+    }
+  },
+});
+webVitalsInstrumentation.setTracerProvider(provider);
+webVitalsInstrumentation.setLoggerProvider(loggerProvider);
 registerInstrumentations({
   tracerProvider: provider,
   instrumentations: [
@@ -197,12 +342,12 @@ registerInstrumentations({
     new UserInteractionInstrumentation(),
     new FetchInstrumentation({
       clearTimingResources: true,
-      ignoreUrls: [traceEndpoint],
+      ignoreUrls: [traceEndpoint, logEndpoint],
       propagateTraceHeaderCorsUrls: apiTracePropagationTargets,
     }),
     new XMLHttpRequestInstrumentation({
       clearTimingResources: true,
-      ignoreUrls: [traceEndpoint],
+      ignoreUrls: [traceEndpoint, logEndpoint],
       propagateTraceHeaderCorsUrls: apiTracePropagationTargets,
     }),
   ],
@@ -227,12 +372,13 @@ export const traced = <T>(name: string, operation: () => Promise<T>) =>
   });`;
 
 export const browserTelemetrySetup = ({
+  conformance = false,
   endpoint,
   sentryDsn,
   sentryTunnel,
   serviceName,
 }: BrowserTelemetrySetup) => {
-  const telemetry = otelSetup(endpoint, serviceName);
+  const telemetry = otelSetup(endpoint, serviceName, conformance);
   if (!sentryDsn) {
     return telemetry;
   }

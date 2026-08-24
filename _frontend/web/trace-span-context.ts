@@ -1,4 +1,5 @@
 import type { ServiceTraceSpan } from "@/api";
+import { otlpTextAttributes, otlpValueText } from "@/otlp";
 
 export interface TraceContextValue {
   label: string;
@@ -27,55 +28,16 @@ const record = (value: unknown): Record<string, unknown> | undefined =>
     ? (value as Record<string, unknown>)
     : undefined;
 
-export const otlpValue = (value: unknown): string => {
-  if (value === null || value === undefined) {
-    return "null";
-  }
-  if (typeof value !== "object") {
-    return String(value);
-  }
-  const wrapped = value as Record<string, unknown>;
-  for (const candidate of [
-    "stringValue",
-    "intValue",
-    "doubleValue",
-    "boolValue",
-    "bytesValue",
-  ]) {
-    if (wrapped[candidate] !== undefined) {
-      return String(wrapped[candidate]);
-    }
-  }
-  if ("value" in wrapped) {
-    return otlpValue(wrapped.value);
-  }
-  return JSON.stringify(value);
-};
-
-export const otlpAttributes = (value: unknown): TraceContextValue[] => {
-  const attributes = record(value)?.attributes;
-  const object = record(attributes);
-  if (object) {
-    return Object.entries(object).map(([label, entry]) => ({
-      label,
-      value: otlpValue(entry),
-    }));
-  }
-  if (!Array.isArray(attributes)) {
-    return [];
-  }
-  return attributes.flatMap((item) => {
-    const attribute = record(item);
-    return attribute && typeof attribute.key === "string"
-      ? [{ label: attribute.key, value: otlpValue(attribute.value) }]
-      : [];
-  });
-};
+export const otlpAttributes = (value: unknown): TraceContextValue[] =>
+  otlpTextAttributes(value).map(({ key, value: entry }) => ({
+    label: key,
+    value: entry,
+  }));
 
 const objectValues = (value: unknown): TraceContextValue[] =>
   Object.entries(record(value) ?? {}).map(([label, entry]) => ({
     label,
-    value: otlpValue(entry),
+    value: otlpValueText(entry),
   }));
 
 const attributeMap = (value: unknown) =>
@@ -258,14 +220,13 @@ export const traceSpanLinks = (span: ServiceTraceSpan): TraceSpanLink[] => {
   });
 };
 
-export const traceSpanSelfTime = (
+const selfTimeFromChildren = (
   span: ServiceTraceSpan,
-  spans: ServiceTraceSpan[]
+  children: ServiceTraceSpan[]
 ) => {
   const start = BigInt(span.startTimeUnixNano);
   const end = BigInt(span.endTimeUnixNano);
-  const intervals = spans
-    .filter((candidate) => candidate.parentSpanId === span.spanId)
+  const intervals = children
     .map((candidate) => ({
       end:
         BigInt(candidate.endTimeUnixNano) < end
@@ -300,4 +261,34 @@ export const traceSpanSelfTime = (
   }
   const duration = end > start ? end - start : 0n;
   return duration > covered ? duration - covered : 0n;
+};
+
+export const traceSpanSelfTime = (
+  span: ServiceTraceSpan,
+  spans: ServiceTraceSpan[]
+) =>
+  selfTimeFromChildren(
+    span,
+    spans.filter((candidate) => candidate.parentSpanId === span.spanId)
+  );
+
+export const traceSpanSelfTimes = (spans: ServiceTraceSpan[]) => {
+  const children = new Map<string, ServiceTraceSpan[]>();
+  for (const span of spans) {
+    if (!span.parentSpanId) {
+      continue;
+    }
+    const siblings = children.get(span.parentSpanId);
+    if (siblings) {
+      siblings.push(span);
+    } else {
+      children.set(span.parentSpanId, [span]);
+    }
+  }
+  return new Map(
+    spans.map((span) => [
+      span.spanId,
+      selfTimeFromChildren(span, children.get(span.spanId) ?? []),
+    ])
+  );
 };

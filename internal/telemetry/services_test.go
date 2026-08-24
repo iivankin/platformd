@@ -147,3 +147,42 @@ func TestServeTraceListScopeSendsAnchorProjectServicesAndQuery(t *testing.T) {
 		t.Fatalf("response = %d %q", recorder.Code, recorder.Header().Get("Content-Type"))
 	}
 }
+
+func TestServeAIOverviewScopeSendsServicesAndQuery(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodPost || request.URL.Path != "/internal/ai-scopes/overview" {
+			t.Errorf("request = %s %s", request.Method, request.URL.Path)
+		}
+		if request.URL.RawQuery != "from=1000&to=2000&step=1000" {
+			t.Errorf("query = %q", request.URL.RawQuery)
+		}
+		var body struct {
+			AnchorServiceID *string  `json:"anchorServiceId"`
+			ServiceIDs      []string `json:"serviceIds"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+		}
+		if !reflect.DeepEqual(body.ServiceIDs, []string{"api", "worker"}) {
+			t.Errorf("AI overview services = %#v", body.ServiceIDs)
+		}
+		if body.AnchorServiceID == nil || *body.AnchorServiceID != "api" {
+			t.Errorf("AI overview anchor = %#v", body.AnchorServiceID)
+		}
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"summary":{},"activity":[],"usage":[],"models":[],"agents":[],"users":[],"latency":[]}`))
+	}))
+	defer server.Close()
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := &ServiceManager{process: &Process{client: server.Client(), target: target}}
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/ai/overview?from=1000&to=2000&step=1000", nil)
+	manager.ServeAIOverviewScope(recorder, request, "api", []string{"api", "worker"})
+	if recorder.Code != http.StatusOK || recorder.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("response = %d %q", recorder.Code, recorder.Header().Get("Content-Type"))
+	}
+}

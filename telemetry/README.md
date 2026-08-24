@@ -14,9 +14,12 @@ Quickwit, Symbolicator, collector, or sidecar is required.
 Generative AI spans using current OpenTelemetry `gen_ai.*` conventions or AI
 SDK telemetry are normalized during ingest. Agent/model/tool roles, token and
 prompt-cache usage, reported cost, time to first output, throughput, and a
-bounded prompt/response/tool search document stay queryable in chDB. The web UI
-uses reported `operation.cost` when present and labels catalog-derived model
-pricing as an estimate.
+bounded prompt/response/tool search document stay queryable in chDB. When a
+model span has no reported cost, telemetry stores an estimate at ingestion
+using the span timestamp and Pydantic's live pricing catalog. The catalog is
+refreshed hourly in memory; a failed refresh keeps the previous version and
+never blocks OTLP ingestion. Reported and estimated costs remain separate in
+storage and the web UI.
 
 An AI span does not replace the enclosing distributed trace. Trace summaries
 keep the real root span and report how many agent runs occurred inside it. The

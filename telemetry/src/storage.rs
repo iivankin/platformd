@@ -12,17 +12,23 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use chdb_rust::arg::Arg;
 use chdb_rust::format::OutputFormat;
 use chdb_rust::session::{Session, SessionBuilder};
+#[cfg(test)]
+use opentelemetry_proto::tonic::common::v1::AnyValue;
+use opentelemetry_proto::tonic::common::v1::KeyValue;
+use opentelemetry_proto::tonic::common::v1::any_value::Value as OtlpValue;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::ai_overview::{ai_overview_query, decode_ai_overview};
 use crate::error::{Error, Result};
 use crate::metric_sql::{MetricSqlQuery, MetricSqlRow, decode_rows, service_filter};
 use crate::model::{Document, SearchClause, SearchQuery, SearchRequest, SearchResponse};
 
 const MAX_CONTENT_CHUNKS: usize = 128;
 const ANALYTICS_DATABASE: &str = "telemetry";
+const OTEL_CONTEXT_IS_REMOTE_MASK: u32 = 1 << 9;
 const RECORDING_DOC_KINDS: &str = "'replay_event', 'replay_recording', 'replay_video'";
 const RECORDING_RETENTION: &str = "INTERVAL 14 DAY";
 
@@ -179,10 +185,6 @@ pub(crate) struct LogPage {
 #[serde(rename_all(serialize = "camelCase"))]
 pub(crate) struct TraceSummary {
     pub trace_id: String,
-    // ClickHouse SELECT aliases collide with WHERE column names if both are
-    // `segment_id`; the query emits primary_segment_id instead.
-    #[serde(alias = "primary_segment_id")]
-    pub segment_id: String,
     #[serde(alias = "root_service_id")]
     pub service_id: String,
     pub name: String,
@@ -204,9 +206,11 @@ pub(crate) struct TraceSummary {
     pub ai_cache_write_tokens: Option<u64>,
     pub ai_reasoning_tokens: Option<u64>,
     pub ai_cost_usd: Option<f64>,
+    pub ai_estimated_cost_usd: Option<f64>,
     pub ai_ttft_seconds: Option<f64>,
     pub ai_tokens_per_second: Option<f64>,
     pub ai_model_call_count: u64,
+    pub ai_unpriced_model_call_count: u64,
     pub ai_tool_call_count: u64,
 }
 
@@ -236,29 +240,137 @@ pub(crate) struct TraceSummaryQuery {
     pub offset: usize,
 }
 
+pub(crate) struct AiOverviewQuery {
+    pub anchor_service_id: Option<String>,
+    pub service_ids: Vec<String>,
+    pub from_unix_nano: u64,
+    pub to_unix_nano: u64,
+    pub step_nano: u64,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct TraceDetail {
-    pub trace_id: String,
-    pub segment_id: String,
-    pub spans: Vec<TraceSpan>,
-    pub related_segments: Vec<RelatedTraceSegment>,
-    pub metrics: Vec<TraceMetricSample>,
+pub(crate) struct AiOverview {
+    pub summary: AiOverviewSummary,
+    pub activity: Vec<AiActivityPoint>,
+    pub usage: Vec<AiUsagePoint>,
+    pub model_usage: Vec<AiModelUsage>,
+    pub models: Vec<AiModelOverview>,
+    pub agents: Vec<AiAgentOverview>,
+    pub users: Vec<AiUserOverview>,
+    pub latency: Vec<AiLatencyOverview>,
+}
+
+#[derive(Default, Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiOverviewSummary {
+    pub agent_run_count: u64,
+    pub agent_count: u64,
+    pub identified_agent_run_count: u64,
+    pub generation_count: u64,
+    pub tool_call_count: u64,
+    pub error_count: u64,
+    pub user_count: u64,
+    pub session_count: u64,
+    pub model_count: u64,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(rename_all(serialize = "camelCase"))]
-pub(crate) struct RelatedTraceSegment {
-    pub segment_id: String,
-    #[serde(alias = "segment_service_id")]
-    pub service_id: String,
+pub(crate) struct AiActivityPoint {
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub time_unix_nano: u64,
+    pub agent_run_count: u64,
+    pub generation_count: u64,
+    pub tool_call_count: u64,
+    pub error_count: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiUsagePoint {
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub time_unix_nano: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub reported_cost_usd: Option<f64>,
+    pub estimated_cost_usd: Option<f64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiModelUsage {
+    pub provider: String,
+    pub model: String,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reasoning_tokens: u64,
+    pub reported_cost_usd: Option<f64>,
+    pub estimated_cost_usd: Option<f64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiModelOverview {
+    pub provider: String,
+    pub model: String,
+    pub generation_count: u64,
+    pub p50_latency_seconds: f64,
+    pub p95_latency_seconds: f64,
+    pub p99_latency_seconds: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiAgentOverview {
+    pub agent: String,
+    pub run_count: u64,
+    pub error_count: u64,
+    pub user_count: u64,
+    pub p50_latency_seconds: f64,
+    pub p95_latency_seconds: f64,
+    pub p99_latency_seconds: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiUserOverview {
+    pub user_id: String,
+    pub run_count: u64,
+    pub session_count: u64,
+    pub generation_count: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_read_tokens: u64,
+    pub cache_write_tokens: u64,
+    pub reported_cost_usd: Option<f64>,
+    pub estimated_cost_usd: Option<f64>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all(serialize = "camelCase"))]
+pub(crate) struct AiLatencyOverview {
+    pub kind: String,
     pub name: String,
-    #[serde(serialize_with = "serialize_u64_string")]
-    pub started_at_unix_nano: u64,
-    #[serde(serialize_with = "serialize_u64_string")]
-    pub duration_nano: u64,
-    pub span_count: u64,
-    pub error_span_count: u64,
+    pub count: u64,
+    pub p50_latency_seconds: f64,
+    pub p90_latency_seconds: f64,
+    pub p95_latency_seconds: f64,
+    pub p99_latency_seconds: f64,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TraceDetail {
+    pub trace_id: String,
+    pub spans: Vec<TraceSpan>,
+    pub metrics: Vec<TraceMetricSample>,
+    pub web_vitals: Vec<TraceWebVital>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -266,8 +378,6 @@ pub(crate) struct RelatedTraceSegment {
 pub(crate) struct TraceSpan {
     pub service_id: String,
     pub trace_id: String,
-    pub segment_id: String,
-    pub is_segment: bool,
     pub span_id: String,
     pub parent_span_id: String,
     pub trace_state: String,
@@ -288,21 +398,55 @@ pub(crate) struct TraceSpan {
     #[serde(serialize_with = "serialize_u64_string")]
     pub received_at_unix_nano: u64,
     pub source: String,
+    pub replay_id: String,
     pub ai_kind: String,
     pub ai_operation: String,
     pub ai_provider: String,
     pub ai_model: String,
     pub ai_agent: String,
+    pub ai_user_id: String,
+    pub ai_session_id: String,
     pub ai_input_tokens: Option<u64>,
     pub ai_output_tokens: Option<u64>,
     pub ai_cache_read_tokens: Option<u64>,
     pub ai_cache_write_tokens: Option<u64>,
     pub ai_reasoning_tokens: Option<u64>,
     pub ai_cost_usd: Option<f64>,
+    pub ai_estimated_cost_usd: Option<f64>,
     pub ai_ttft_seconds: Option<f64>,
     pub ai_tokens_per_second: Option<f64>,
     #[serde(default)]
     pub baseline_duration_nano: Option<f64>,
+}
+
+fn unambiguous_identity<'a>(values: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut identity = None;
+    for value in values.filter(|value| !value.is_empty()) {
+        match identity {
+            None => identity = Some(value),
+            Some(current) if current == value => {}
+            Some(_) => return None,
+        }
+    }
+    identity.map(str::to_owned)
+}
+
+fn fill_unambiguous_trace_ai_identity(spans: &mut [TraceSpan]) {
+    let user_id = unambiguous_identity(spans.iter().map(|span| span.ai_user_id.as_str()));
+    let session_id = unambiguous_identity(spans.iter().map(|span| span.ai_session_id.as_str()));
+
+    for span in spans {
+        if span.ai_user_id.is_empty()
+            && let Some(user_id) = user_id.as_ref()
+        {
+            span.ai_user_id.clone_from(user_id);
+        }
+        if span.ai_session_id.is_empty()
+            && let Some(session_id) = session_id.as_ref()
+        {
+            span.ai_session_id.clone_from(session_id);
+        }
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -313,6 +457,20 @@ pub(crate) struct TraceMetricSample {
     #[serde(serialize_with = "serialize_u64_string")]
     pub time_unix_nano: u64,
     pub value: Option<f64>,
+    pub span_id: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TraceWebVital {
+    pub name: String,
+    pub value: f64,
+    pub rating: String,
+    pub delta: f64,
+    pub id: String,
+    pub navigation_type: String,
+    #[serde(serialize_with = "serialize_u64_string")]
+    pub time_unix_nano: u64,
     pub span_id: String,
 }
 
@@ -350,6 +508,7 @@ struct IssueUserCount {
 
 #[derive(Deserialize)]
 struct TraceBaselineRow {
+    service_id: String,
     name: String,
     kind: i32,
     baseline_duration_nano: f64,
@@ -365,13 +524,50 @@ struct TraceMetricRow {
 }
 
 #[derive(Deserialize)]
+struct TraceWebVitalRow {
+    time_unix_nano: u64,
+    span_id: String,
+    attributes: String,
+}
+
+#[derive(Deserialize)]
 struct TraceIdRow {
     trace_id: String,
 }
 
-#[derive(Deserialize)]
-struct TraceSegmentIdRow {
-    segment_id: String,
+fn span_identity(row: &Value) -> Option<(String, String, String)> {
+    Some((
+        row["service_id"].as_str()?.to_owned(),
+        row["trace_id"].as_str()?.to_owned(),
+        row["span_id"].as_str()?.to_owned(),
+    ))
+}
+
+fn has_current_ai_sdk_scope(row: &Value) -> bool {
+    row["scope"]
+        .as_str()
+        .and_then(|scope| serde_json::from_str::<Value>(scope).ok())
+        .is_some_and(|scope| scope["name"] == "gen_ai")
+}
+
+fn ai_sdk_operation_wrapper(parent: &Value, child: &Value) -> bool {
+    let parent_kind = parent["ai_kind"].as_str().unwrap_or_default();
+    let child_kind = child["ai_kind"].as_str().unwrap_or_default();
+    let parent_operation = parent["ai_operation"].as_str().unwrap_or_default();
+    let child_operation = child["ai_operation"].as_str().unwrap_or_default();
+    let same_model =
+        parent["ai_provider"] == child["ai_provider"] && parent["ai_model"] == child["ai_model"];
+    let current_sdk_wrapper = has_current_ai_sdk_scope(parent)
+        && has_current_ai_sdk_scope(child)
+        && parent["name"] == child["name"]
+        && parent["kind"] == child["kind"];
+
+    same_model
+        && match (parent_kind, parent_operation, child_kind, child_operation) {
+            ("embedding", "embeddings", "embedding", "embeddings")
+            | ("rerank", "rerank", "rerank", "rerank") => current_sdk_wrapper,
+            _ => false,
+        }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -391,6 +587,50 @@ where
     S: serde::Serializer,
 {
     serializer.serialize_str(&value.to_string())
+}
+
+fn trace_web_vital(row: TraceWebVitalRow) -> Result<Option<TraceWebVital>> {
+    let attributes = serde_json::from_str::<Vec<Value>>(&row.attributes)
+        .map_err(|error| Error::Storage(format!("decode Web Vital attributes: {error}")))?;
+    let attributes = attributes
+        .into_iter()
+        .filter_map(|attribute| serde_json::from_value::<KeyValue>(attribute).ok())
+        .collect::<Vec<_>>();
+    let value = |key: &str| {
+        attributes
+            .iter()
+            .find(|attribute| attribute.key == key)
+            .and_then(|attribute| attribute.value.as_ref())
+            .and_then(|value| value.value.as_ref())
+    };
+    let text = |key: &str| match value(key) {
+        Some(OtlpValue::StringValue(value)) => Some(value.clone()),
+        _ => None,
+    };
+    let number = |key: &str| {
+        match value(key) {
+            Some(OtlpValue::DoubleValue(value)) => Some(*value),
+            Some(OtlpValue::IntValue(value)) => Some(*value as f64),
+            _ => None,
+        }
+        .filter(|value| value.is_finite())
+    };
+    let Some(name) = text("browser.web_vital.name") else {
+        return Ok(None);
+    };
+    let Some(metric_value) = number("browser.web_vital.value") else {
+        return Ok(None);
+    };
+    Ok(Some(TraceWebVital {
+        name,
+        value: metric_value,
+        rating: text("browser.web_vital.rating").unwrap_or_default(),
+        delta: number("browser.web_vital.delta").unwrap_or_default(),
+        id: text("browser.web_vital.id").unwrap_or_default(),
+        navigation_type: text("browser.web_vital.navigation_type").unwrap_or_default(),
+        time_unix_nano: row.time_unix_nano,
+        span_id: row.span_id,
+    }))
 }
 
 impl Store {
@@ -473,7 +713,108 @@ impl Store {
             .map_err(|error| Error::Storage(format!("store OTLP batch task: {error}")))?
     }
 
+    pub(crate) async fn normalize_ai_operation_wrappers(
+        &self,
+        span_identities: Vec<(String, String, String)>,
+    ) -> Result<()> {
+        if span_identities.is_empty() {
+            return Ok(());
+        }
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let span_identities = span_identities
+                .iter()
+                .map(|(service_id, trace_id, span_id)| {
+                    format!(
+                        "({}, {}, {})",
+                        chdb_string(service_id),
+                        chdb_string(trace_id),
+                        chdb_string(span_id)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            let query = format!(
+                "SELECT * \
+                 FROM {ANALYTICS_DATABASE}.spans FINAL \
+                 WHERE ai_kind IN ('embedding', 'rerank') \
+                 AND ((service_id, trace_id, span_id) IN ({span_identities}) \
+                   OR (service_id, trace_id, parent_span_id) IN ({span_identities}))"
+            );
+            let mut rows = store.with_analytics(|analytics| {
+                let output = analytics
+                    .execute(
+                        &query,
+                        Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
+                    )
+                    .map_err(|error| {
+                        Error::Storage(format!("query AI operation wrappers: {error}"))
+                    })?;
+                output
+                    .data_utf8_lossy()
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|line| {
+                        serde_json::from_str(line).map_err(|error| {
+                            Error::Storage(format!("decode AI operation wrapper: {error}"))
+                        })
+                    })
+                    .collect::<Result<Vec<Value>>>()
+            })?;
+            let by_identity = rows
+                .iter()
+                .enumerate()
+                .filter_map(|(index, row)| span_identity(row).map(|identity| (identity, index)))
+                .collect::<HashMap<_, _>>();
+            let wrappers = rows
+                .iter()
+                .filter_map(|child| {
+                    let service_id = child["service_id"].as_str()?;
+                    let trace_id = child["trace_id"].as_str()?;
+                    let parent_span_id = child["parent_span_id"].as_str()?;
+                    if parent_span_id.is_empty() {
+                        return None;
+                    }
+                    let parent_identity = (
+                        service_id.to_owned(),
+                        trace_id.to_owned(),
+                        parent_span_id.to_owned(),
+                    );
+                    let parent = &rows[*by_identity.get(&parent_identity)?];
+                    ai_sdk_operation_wrapper(parent, child).then_some(parent_identity)
+                })
+                .collect::<HashSet<_>>();
+            rows.retain_mut(|row| {
+                if !span_identity(row).is_some_and(|identity| wrappers.contains(&identity)) {
+                    return false;
+                }
+                let Some(object) = row.as_object_mut() else {
+                    return false;
+                };
+                let version = object
+                    .get("version")
+                    .and_then(|value| {
+                        value
+                            .as_u64()
+                            .or_else(|| value.as_str()?.parse::<u64>().ok())
+                    })
+                    .unwrap_or_default();
+                object.insert("ai_kind".into(), Value::String("ai".into()));
+                object.insert("ai_cost_usd".into(), Value::Null);
+                object.insert("ai_estimated_cost_usd".into(), Value::Null);
+                object.insert("version".into(), Value::from(version.saturating_add(1)));
+                true
+            });
+            store.ingest_signal_rows_blocking(SignalTable::Spans, rows)
+        })
+        .await
+        .map_err(|error| Error::Storage(format!("normalize AI wrappers task: {error}")))?
+    }
+
     fn ingest_signal_rows_blocking(&self, table: SignalTable, rows: Vec<Value>) -> Result<()> {
+        if rows.is_empty() {
+            return Ok(());
+        }
         let _maintenance = self
             .inner
             .maintenance
@@ -486,16 +827,6 @@ impl Store {
             {
                 row.entry("replay_id")
                     .or_insert_with(|| Value::String(String::new()));
-                if !row
-                    .get("segment_id")
-                    .and_then(Value::as_str)
-                    .is_some_and(|value| !value.is_empty())
-                    || !row.get("is_segment").is_some_and(Value::is_boolean)
-                {
-                    return Err(Error::InvalidRequest(
-                        "telemetry span has no segment identity".into(),
-                    ));
-                }
             }
             serde_json::to_writer(StringWriter(&mut body), &row)
                 .map_err(|error| Error::Storage(format!("encode OTLP row: {error}")))?;
@@ -925,14 +1256,11 @@ impl Store {
                 format!(" HAVING {}", having_clauses.join(" AND "))
             };
             let services = service_filter(&request.service_ids);
-            // Product traces are OTEL-shaped: one list row per distributed trace_id.
-            // Sentry transactions stay as segment_id within that trace; primary segment
-            // is the earliest root for deep links / summary naming.
             let anchor_filter = request.anchor_service_id.as_deref().map_or_else(
                 String::new,
                 |anchor| {
                     format!(
-                        " AND trace_id IN (SELECT DISTINCT trace_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {} AND notEmpty(segment_id))",
+                        " AND trace_id IN (SELECT DISTINCT trace_id FROM {ANALYTICS_DATABASE}.spans FINAL WHERE service_id = {})",
                         chdb_string(anchor)
                     )
                 },
@@ -950,15 +1278,16 @@ impl Store {
             };
             let query = format!(
                 "SELECT trace_id, \
-                 if(empty(argMinIf(segment_id, start_time_unix_nano, is_segment)), \
-                    argMin(segment_id, start_time_unix_nano), \
-                    argMinIf(segment_id, start_time_unix_nano, is_segment)) AS primary_segment_id, \
-                 if(empty(argMinIf(service_id, start_time_unix_nano, is_segment)), \
-                    argMin(service_id, start_time_unix_nano), \
-                    argMinIf(service_id, start_time_unix_nano, is_segment)) AS root_service_id, \
-                 if(empty(argMinIf(name, start_time_unix_nano, is_segment)), \
-                    argMin(name, start_time_unix_nano), \
-                    argMinIf(name, start_time_unix_nano, is_segment)) AS name, \
+                 multiIf(countIf(empty(parent_span_id)) > 0, \
+                    argMinIf(service_id, start_time_unix_nano, empty(parent_span_id)), \
+                    countIf(bitAnd(flags, {remote_mask}) != 0) > 0, \
+                    argMinIf(service_id, start_time_unix_nano, bitAnd(flags, {remote_mask}) != 0), \
+                    argMin(service_id, start_time_unix_nano)) AS root_service_id, \
+                 multiIf(countIf(empty(parent_span_id)) > 0, \
+                    argMinIf(name, start_time_unix_nano, empty(parent_span_id)), \
+                    countIf(bitAnd(flags, {remote_mask}) != 0) > 0, \
+                    argMinIf(name, start_time_unix_nano, bitAnd(flags, {remote_mask}) != 0), \
+                    argMin(name, start_time_unix_nano)) AS name, \
                  min(start_time_unix_nano) AS started_at_unix_nano, \
                  greatest(max(end_time_unix_nano), min(start_time_unix_nano)) - min(start_time_unix_nano) AS duration_nano, \
                  count() AS span_count, countIf(status_code = 2) AS error_span_count, \
@@ -986,17 +1315,26 @@ impl Store {
                  if(countIf(ai_kind IN ('model', 'embedding', 'rerank') AND isNotNull(ai_cost_usd)) > 0, \
                     sumIf(ifNull(ai_cost_usd, 0), ai_kind IN ('model', 'embedding', 'rerank')), \
                     if(ai_agent_run_count = 1, maxIf(ai_cost_usd, ai_kind = 'agent'), NULL)) AS ai_cost_usd, \
+                 if(countIf(ai_kind IN ('model', 'embedding', 'rerank') AND isNotNull(source.ai_cost_usd)) = 0 \
+                       AND ai_agent_run_count = 1 AND isNotNull(maxIf(source.ai_cost_usd, ai_kind = 'agent')), NULL, \
+                    if(countIf(ai_kind IN ('model', 'embedding', 'rerank') AND isNotNull(source.ai_estimated_cost_usd)) > 0, \
+                       sumIf(ifNull(source.ai_estimated_cost_usd, 0), ai_kind IN ('model', 'embedding', 'rerank')), NULL)) AS ai_estimated_cost_usd, \
                  if(countIf(isNotNull(ai_ttft_seconds)) > 0, \
                     minIf(ifNull(ai_ttft_seconds, 0), isNotNull(ai_ttft_seconds)), NULL) AS ai_ttft_seconds, \
                  if(countIf(isNotNull(ai_tokens_per_second)) > 0, \
                     avgIf(ifNull(ai_tokens_per_second, 0), isNotNull(ai_tokens_per_second)), NULL) AS ai_tokens_per_second, \
                  countIf(ai_kind IN ('model', 'embedding', 'rerank')) AS ai_model_call_count, \
+                 if(countIf(ai_kind IN ('model', 'embedding', 'rerank') AND isNotNull(source.ai_cost_usd)) = 0 \
+                       AND ai_agent_run_count = 1 AND isNotNull(maxIf(source.ai_cost_usd, ai_kind = 'agent')), 0, \
+                    countIf(ai_kind IN ('model', 'embedding', 'rerank') \
+                       AND isNull(source.ai_cost_usd) AND isNull(source.ai_estimated_cost_usd))) AS ai_unpriced_model_call_count, \
                  countIf(ai_kind = 'tool') AS ai_tool_call_count \
-                 FROM {ANALYTICS_DATABASE}.spans FINAL \
-                 WHERE {services} AND notEmpty(segment_id){anchor_filter}{search_filter} \
+                 FROM {ANALYTICS_DATABASE}.spans AS source FINAL \
+                 WHERE {services}{anchor_filter}{search_filter} \
                  GROUP BY trace_id{having} ORDER BY {order} LIMIT {limit} OFFSET {offset}",
                 limit = request.limit,
                 offset = request.offset,
+                remote_mask = OTEL_CONTEXT_IS_REMOTE_MASK,
             );
             store.with_analytics(|analytics| {
                 let output = analytics
@@ -1023,61 +1361,22 @@ impl Store {
 
     pub(crate) async fn trace(
         &self,
-        anchor_service_id: Option<String>,
         service_ids: Vec<String>,
+        anchor_service_id: Option<String>,
         trace_id: String,
-        requested_segment_id: Option<String>,
     ) -> Result<TraceDetail> {
         let store = self.clone();
         tokio::task::spawn_blocking(move || {
             let services = service_filter(&service_ids);
-            let segment_id = if let Some(segment_id) = requested_segment_id {
-                segment_id
-            } else {
-                let anchor = anchor_service_id
-                    .as_deref()
-                    .map_or_else(|| services.clone(), |service_id| {
-                        format!("service_id = {}", chdb_string(service_id))
-                    });
-                let segment_query = format!(
-                    "SELECT segment_id FROM {ANALYTICS_DATABASE}.spans FINAL \
-                     WHERE {anchor} AND trace_id = {} AND notEmpty(segment_id) \
-                     ORDER BY is_segment DESC, start_time_unix_nano ASC, span_id ASC LIMIT 1",
-                    chdb_string(&trace_id)
-                );
-                store.with_analytics(|analytics| {
-                    let output = analytics
-                        .execute(
-                            &segment_query,
-                            Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
-                        )
-                        .map_err(|error| {
-                            Error::Storage(format!("query chDB trace segment: {error}"))
-                        })?;
-                    output
-                        .data_utf8_lossy()
-                        .lines()
-                        .find(|line| !line.is_empty())
-                        .map(serde_json::from_str::<TraceSegmentIdRow>)
-                        .transpose()
-                        .map_err(|error| {
-                            Error::Storage(format!("decode chDB trace segment: {error}"))
-                        })?
-                        .map(|row| row.segment_id)
-                        .ok_or(Error::NotFound)
-                })?
-            };
-            // OTEL-first detail: every Sentry/OTLP segment that shares this
-            // distributed trace_id is loaded so parent_span_id forms one waterfall.
             let query = format!(
-                "SELECT service_id, trace_id, segment_id, is_segment, span_id, parent_span_id, trace_state, name, kind, \
+                "SELECT service_id, trace_id, span_id, parent_span_id, trace_state, name, kind, \
                  start_time_unix_nano, end_time_unix_nano, duration_nano, status_code, \
                  status_message, flags, resource, scope, span, received_at_unix_nano, source, \
-                 ai_kind, ai_operation, ai_provider, ai_model, ai_agent, ai_input_tokens, \
+                 replay_id, ai_kind, ai_operation, ai_provider, ai_model, ai_agent, ai_user_id, ai_session_id, ai_input_tokens, \
                  ai_output_tokens, ai_cache_read_tokens, ai_cache_write_tokens, ai_reasoning_tokens, \
-                 ai_cost_usd, ai_ttft_seconds, ai_tokens_per_second \
+                 ai_cost_usd, ai_estimated_cost_usd, ai_ttft_seconds, ai_tokens_per_second \
                  FROM {ANALYTICS_DATABASE}.spans FINAL \
-                 WHERE {services} AND trace_id = {} AND notEmpty(segment_id) \
+                 WHERE {services} AND trace_id = {} \
                  ORDER BY start_time_unix_nano, span_id",
                 chdb_string(&trace_id)
             );
@@ -1120,12 +1419,37 @@ impl Store {
                 if spans.is_empty() {
                     return Err(Error::NotFound);
                 }
+                if anchor_service_id.as_ref().is_some_and(|anchor| {
+                    spans.iter().all(|span| span.service_id != *anchor)
+                }) {
+                    return Err(Error::NotFound);
+                }
+                fill_unambiguous_trace_ai_identity(&mut spans);
+                let mut baseline_identities = spans
+                    .iter()
+                    .map(|span| (span.service_id.clone(), span.name.clone(), span.kind))
+                    .collect::<HashSet<_>>()
+                    .into_iter()
+                    .collect::<Vec<_>>();
+                baseline_identities.sort_unstable();
+                let baseline_identities = baseline_identities
+                    .iter()
+                    .map(|(service_id, name, kind)| {
+                        format!(
+                            "({}, {}, {kind})",
+                            chdb_string(service_id),
+                            chdb_string(name)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let baseline_query = format!(
-                    "SELECT name, kind, avg(duration_nano) AS baseline_duration_nano \
+                    "SELECT service_id, name, kind, avg(duration_nano) AS baseline_duration_nano \
                      FROM {ANALYTICS_DATABASE}.spans FINAL \
                      WHERE {services} AND duration_nano > 0 \
+                     AND (service_id, name, kind) IN ({baseline_identities}) \
                      AND start_time_unix_nano >= toUnixTimestamp64Nano(now64(9) - INTERVAL 24 HOUR) \
-                     GROUP BY name, kind",
+                     GROUP BY service_id, name, kind",
                 );
                 let baseline_output = analytics
                     .execute(
@@ -1144,11 +1468,14 @@ impl Store {
                     let row: TraceBaselineRow = serde_json::from_str(line).map_err(|error| {
                         Error::Storage(format!("decode chDB trace baseline: {error}"))
                     })?;
-                    baselines.insert((row.name, row.kind), row.baseline_duration_nano);
+                    baselines.insert(
+                        (row.service_id, row.name, row.kind),
+                        row.baseline_duration_nano,
+                    );
                 }
                 for span in &mut spans {
                     span.baseline_duration_nano = baselines
-                        .get(&(span.name.clone(), span.kind))
+                        .get(&(span.service_id.clone(), span.name.clone(), span.kind))
                         .copied();
                 }
 
@@ -1193,47 +1520,44 @@ impl Store {
                     .into_iter()
                     .filter(|metric| span_ids.contains(metric.span_id.as_str()))
                     .collect();
-                let related_query = format!(
-                    "SELECT segment_id, \
-                     if(empty(argMinIf(service_id, start_time_unix_nano, is_segment)), \
-                        argMin(service_id, start_time_unix_nano), \
-                        argMinIf(service_id, start_time_unix_nano, is_segment)) AS segment_service_id, \
-                     if(empty(argMinIf(name, start_time_unix_nano, is_segment)), \
-                        argMin(name, start_time_unix_nano), \
-                        argMinIf(name, start_time_unix_nano, is_segment)) AS name, \
-                     min(start_time_unix_nano) AS started_at_unix_nano, \
-                     greatest(max(end_time_unix_nano), min(start_time_unix_nano)) - min(start_time_unix_nano) AS duration_nano, \
-                     count() AS span_count, countIf(status_code = 2) AS error_span_count \
-                     FROM {ANALYTICS_DATABASE}.spans FINAL \
-                     WHERE {services} AND trace_id = {} AND notEmpty(segment_id) AND segment_id != {} \
-                     GROUP BY segment_id ORDER BY started_at_unix_nano LIMIT 100",
-                    chdb_string(&trace_id),
-                    chdb_string(&segment_id)
+                let web_vital_query = format!(
+                    "SELECT time_unix_nano, span_id, attributes \
+                     FROM {ANALYTICS_DATABASE}.logs \
+                     WHERE {services} AND trace_id = {} \
+                     AND event_name = 'browser.web_vital' \
+                     ORDER BY time_unix_nano DESC LIMIT 100",
+                    chdb_string(&trace_id)
                 );
-                let related_output = analytics
+                let web_vital_output = analytics
                     .execute(
-                        &related_query,
+                        &web_vital_query,
                         Some(&[Arg::OutputFormat(OutputFormat::JSONEachRow)]),
                     )
                     .map_err(|error| {
-                        Error::Storage(format!("query chDB related trace segments: {error}"))
+                        Error::Storage(format!("query chDB trace Web Vitals: {error}"))
                     })?;
-                let related_segments = related_output
+                let mut latest_web_vitals = HashMap::new();
+                for line in web_vital_output
                     .data_utf8_lossy()
                     .lines()
                     .filter(|line| !line.is_empty())
-                    .map(|line| {
-                        serde_json::from_str(line).map_err(|error| {
-                            Error::Storage(format!("decode chDB related trace segment: {error}"))
-                        })
-                    })
-                    .collect::<Result<Vec<_>>>()?;
+                {
+                    let row = serde_json::from_str(line).map_err(|error| {
+                        Error::Storage(format!("decode chDB trace Web Vital: {error}"))
+                    })?;
+                    if let Some(vital) = trace_web_vital(row)? {
+                        latest_web_vitals
+                            .entry((vital.id.clone(), vital.name.clone()))
+                            .or_insert(vital);
+                    }
+                }
+                let mut web_vitals = latest_web_vitals.into_values().collect::<Vec<_>>();
+                web_vitals.sort_by_key(|vital| vital.time_unix_nano);
                 Ok(TraceDetail {
                     trace_id,
-                    segment_id,
                     spans,
-                    related_segments,
                     metrics,
+                    web_vitals,
                 })
             })
         })
@@ -1493,6 +1817,28 @@ impl Store {
         })
         .await
         .map_err(|error| Error::Storage(format!("query telemetry metric SQL task: {error}")))?
+    }
+
+    pub(crate) async fn ai_overview(&self, request: AiOverviewQuery) -> Result<AiOverview> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || {
+            let identity_services = service_filter(&request.service_ids);
+            let aggregate_service_ids = request
+                .anchor_service_id
+                .as_ref()
+                .map_or(request.service_ids.as_slice(), std::slice::from_ref);
+            let aggregate_services = service_filter(aggregate_service_ids);
+            let query = ai_overview_query(
+                &aggregate_services,
+                &identity_services,
+                request.from_unix_nano,
+                request.to_unix_nano,
+                request.step_nano,
+            );
+            decode_ai_overview(store.query_json_rows(&query)?)
+        })
+        .await
+        .map_err(|error| Error::Storage(format!("query AI overview task: {error}")))?
     }
 
     fn search_blocking(&self, request: SearchRequest) -> Result<SearchResponse> {
@@ -1880,14 +2226,15 @@ fn initialize_analytics(session: &Session) -> Result<()> {
         format!(
             "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.spans (\n\
              service_id String, trace_id FixedString(32), span_id FixedString(16), parent_span_id String,\n\
-             segment_id String, is_segment Bool,\n\
              trace_state String, name String, kind Int32, start_time_unix_nano UInt64, end_time_unix_nano UInt64,\n\
              duration_nano UInt64, status_code Int32, status_message String, flags UInt32,\n\
              resource String, scope String, span String, received_at_unix_nano UInt64, version UInt64, source LowCardinality(String), replay_id String,\n\
              ai_kind LowCardinality(String), ai_operation String, ai_provider LowCardinality(String), ai_model String, ai_agent String,\n\
+             ai_tool String, ai_user_id String, ai_session_id String,\n\
              ai_input_tokens Nullable(UInt64), ai_output_tokens Nullable(UInt64), ai_cache_read_tokens Nullable(UInt64),\n\
              ai_cache_write_tokens Nullable(UInt64), ai_reasoning_tokens Nullable(UInt64), ai_cost_usd Nullable(Float64),\n\
-             ai_ttft_seconds Nullable(Float64), ai_tokens_per_second Nullable(Float64), search_text String,\n\
+             ai_estimated_cost_usd Nullable(Float64), ai_ttft_seconds Nullable(Float64),\n\
+             ai_tokens_per_second Nullable(Float64), search_text String,\n\
              INDEX spans_search_text_idx search_text TYPE text(tokenizer = 'splitByNonAlpha') GRANULARITY 1\n\
              ) ENGINE=ReplacingMergeTree(version) ORDER BY (service_id, trace_id, span_id) \
              TTL toDateTime(start_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
@@ -1897,7 +2244,7 @@ fn initialize_analytics(session: &Session) -> Result<()> {
             "CREATE TABLE IF NOT EXISTS {ANALYTICS_DATABASE}.logs (\n\
              id UUID, service_id String, deployment_id String, attempt_id String, stream LowCardinality(String), partial Bool,\n\
              time_unix_nano UInt64, observed_time_unix_nano UInt64,\n\
-             trace_id String, span_id String, severity_number Int32, severity_text String, flags UInt32,\n\
+             trace_id String, span_id String, severity_number Int32, severity_text String, event_name String, flags UInt32,\n\
              message String, body String, body_json Nullable(String), attributes String,\n\
              resource String, scope String, record String, received_at_unix_nano UInt64\n\
              ) ENGINE=MergeTree ORDER BY (service_id, time_unix_nano, id) \
@@ -1952,12 +2299,8 @@ fn initialize_analytics(session: &Session) -> Result<()> {
     }
     for statement in [
         format!("DROP TABLE IF EXISTS {ANALYTICS_DATABASE}.analytics_aliases"),
-        format!(
-            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS segment_id String AFTER parent_span_id"
-        ),
-        format!(
-            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS is_segment Bool AFTER segment_id"
-        ),
+        format!("ALTER TABLE {ANALYTICS_DATABASE}.spans DROP COLUMN IF EXISTS segment_id"),
+        format!("ALTER TABLE {ANALYTICS_DATABASE}.spans DROP COLUMN IF EXISTS is_segment"),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS replay_id String AFTER source"
         ),
@@ -1977,7 +2320,16 @@ fn initialize_analytics(session: &Session) -> Result<()> {
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_agent String AFTER ai_model"
         ),
         format!(
-            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_input_tokens Nullable(UInt64) AFTER ai_agent"
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_tool String AFTER ai_agent"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_user_id String AFTER ai_tool"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_session_id String AFTER ai_user_id"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_input_tokens Nullable(UInt64) AFTER ai_session_id"
         ),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_output_tokens Nullable(UInt64) AFTER ai_input_tokens"
@@ -1995,7 +2347,10 @@ fn initialize_analytics(session: &Session) -> Result<()> {
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_cost_usd Nullable(Float64) AFTER ai_reasoning_tokens"
         ),
         format!(
-            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_ttft_seconds Nullable(Float64) AFTER ai_cost_usd"
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_estimated_cost_usd Nullable(Float64) AFTER ai_cost_usd"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_ttft_seconds Nullable(Float64) AFTER ai_estimated_cost_usd"
         ),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.spans ADD COLUMN IF NOT EXISTS ai_tokens_per_second Nullable(Float64) AFTER ai_ttft_seconds"
@@ -2008,6 +2363,9 @@ fn initialize_analytics(session: &Session) -> Result<()> {
         ),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.spans MODIFY TTL toDateTime(start_time_unix_nano / 1000000000) + INTERVAL 30 DAY DELETE"
+        ),
+        format!(
+            "ALTER TABLE {ANALYTICS_DATABASE}.logs ADD COLUMN IF NOT EXISTS event_name String AFTER severity_text"
         ),
         format!(
             "ALTER TABLE {ANALYTICS_DATABASE}.metrics ADD COLUMN IF NOT EXISTS attribute_keys Array(String) AFTER flags"
@@ -2877,6 +3235,304 @@ mod tests {
             .unwrap()
     }
 
+    fn ai_operation_row(
+        service_id: &str,
+        trace_id: &str,
+        span_id: &str,
+        parent_span_id: &str,
+        version: u64,
+    ) -> Value {
+        let started = now_unix_nanos();
+        json!({
+            "service_id": service_id,
+            "trace_id": trace_id,
+            "span_id": span_id,
+            "parent_span_id": parent_span_id,
+            "name": "rerank test",
+            "start_time_unix_nano": started,
+            "end_time_unix_nano": started + 1,
+            "duration_nano": 1,
+            "resource": "{}",
+            "scope": "{\"name\":\"gen_ai\"}",
+            "span": "{}",
+            "received_at_unix_nano": version,
+            "version": version,
+            "source": "otlp",
+            "ai_kind": "rerank",
+            "ai_operation": "rerank",
+            "ai_cost_usd": 0.25,
+            "ai_estimated_cost_usd": 0.5,
+        })
+    }
+
+    #[tokio::test]
+    async fn normalizes_ai_operation_wrappers_in_both_export_orders() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        for (trace_id, wrapper_first) in [
+            ("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", true),
+            ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", false),
+        ] {
+            let wrapper = ai_operation_row("service-1", trace_id, "1111111111111111", "", 1);
+            let child = ai_operation_row(
+                "service-1",
+                trace_id,
+                "2222222222222222",
+                "1111111111111111",
+                2,
+            );
+            let ordered = if wrapper_first {
+                [wrapper, child]
+            } else {
+                [child, wrapper]
+            };
+            for row in ordered {
+                store
+                    .ingest_signal_rows(SignalTable::Spans, vec![row])
+                    .await
+                    .unwrap();
+                store
+                    .normalize_ai_operation_wrappers(vec![
+                        (
+                            "service-1".into(),
+                            trace_id.into(),
+                            "1111111111111111".into(),
+                        ),
+                        (
+                            "service-1".into(),
+                            trace_id.into(),
+                            "2222222222222222".into(),
+                        ),
+                    ])
+                    .await
+                    .unwrap();
+            }
+            let detail = store
+                .trace(vec!["service-1".into()], None, trace_id.into())
+                .await
+                .unwrap();
+            assert_eq!(detail.spans[0].ai_kind, "ai");
+            assert_eq!(detail.spans[0].ai_cost_usd, None);
+            assert_eq!(detail.spans[0].ai_estimated_cost_usd, None);
+            assert_eq!(detail.spans[1].ai_kind, "rerank");
+            assert_eq!(detail.spans[1].ai_cost_usd, Some(0.25));
+            assert_eq!(detail.spans[1].ai_estimated_cost_usd, Some(0.5));
+        }
+    }
+
+    #[tokio::test]
+    async fn normalizes_ai_operation_wrappers_only_inside_the_affected_service() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let trace_id = "abababababababababababababababab";
+        let span_id = "1111111111111111";
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![
+                    ai_operation_row("service-1", trace_id, span_id, "", 1),
+                    ai_operation_row("service-2", trace_id, span_id, "", 1),
+                    ai_operation_row("service-2", trace_id, "2222222222222222", span_id, 2),
+                ],
+            )
+            .await
+            .unwrap();
+
+        store
+            .normalize_ai_operation_wrappers(vec![
+                ("service-2".into(), trace_id.into(), span_id.into()),
+                (
+                    "service-2".into(),
+                    trace_id.into(),
+                    "2222222222222222".into(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let first = store
+            .trace(vec!["service-1".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        let second = store
+            .trace(vec!["service-2".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        assert_eq!(first.spans[0].ai_kind, "rerank");
+        assert_eq!(second.spans[0].ai_kind, "ai");
+        assert_eq!(second.spans[1].ai_kind, "rerank");
+    }
+
+    #[tokio::test]
+    async fn preserves_distinct_nested_ai_operations() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let trace_id = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
+        let parent_span_id = "1111111111111111";
+        let parent = ai_operation_row("service-1", trace_id, parent_span_id, "", 1);
+        let mut child =
+            ai_operation_row("service-1", trace_id, "2222222222222222", parent_span_id, 2);
+        child["name"] = json!("embeddings test");
+        child["ai_kind"] = json!("embedding");
+        child["ai_operation"] = json!("embeddings");
+
+        store
+            .ingest_signal_rows(SignalTable::Spans, vec![parent, child])
+            .await
+            .unwrap();
+        store
+            .normalize_ai_operation_wrappers(vec![
+                ("service-1".into(), trace_id.into(), parent_span_id.into()),
+                (
+                    "service-1".into(),
+                    trace_id.into(),
+                    "2222222222222222".into(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let detail = store
+            .trace(vec!["service-1".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        assert_eq!(detail.spans[0].ai_kind, "rerank");
+        assert_eq!(detail.spans[0].ai_cost_usd, Some(0.25));
+        assert_eq!(detail.spans[1].ai_kind, "embedding");
+    }
+
+    #[tokio::test]
+    async fn preserves_nested_ai_operations_without_the_ai_sdk_scope() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let trace_id = "dededededededededededededededede";
+        let parent_span_id = "1111111111111111";
+        let mut parent = ai_operation_row("service-1", trace_id, parent_span_id, "", 1);
+        let mut child =
+            ai_operation_row("service-1", trace_id, "2222222222222222", parent_span_id, 2);
+        parent["scope"] = json!("{\"name\":\"custom-instrumentation\"}");
+        child["scope"] = json!("{\"name\":\"custom-instrumentation\"}");
+
+        store
+            .ingest_signal_rows(SignalTable::Spans, vec![parent, child])
+            .await
+            .unwrap();
+        store
+            .normalize_ai_operation_wrappers(vec![
+                ("service-1".into(), trace_id.into(), parent_span_id.into()),
+                (
+                    "service-1".into(),
+                    trace_id.into(),
+                    "2222222222222222".into(),
+                ),
+            ])
+            .await
+            .unwrap();
+
+        let detail = store
+            .trace(vec!["service-1".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        assert_eq!(detail.spans[0].ai_kind, "rerank");
+        assert_eq!(detail.spans[0].ai_cost_usd, Some(0.25));
+        assert_eq!(detail.spans[1].ai_kind, "rerank");
+    }
+
+    #[test]
+    fn ignores_non_finite_web_vital_values() {
+        let attribute = |key: &str, value: OtlpValue| KeyValue {
+            key: key.into(),
+            value: Some(AnyValue { value: Some(value) }),
+            ..Default::default()
+        };
+        let attributes = vec![
+            attribute(
+                "browser.web_vital.name",
+                OtlpValue::StringValue("lcp".into()),
+            ),
+            attribute("browser.web_vital.value", OtlpValue::DoubleValue(f64::NAN)),
+        ];
+        let row = TraceWebVitalRow {
+            time_unix_nano: 1,
+            span_id: "1111111111111111".into(),
+            attributes: serde_json::to_string(&attributes).unwrap(),
+        };
+
+        assert!(trace_web_vital(row).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn trace_returns_latest_correlated_web_vital() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let trace_id = "cccccccccccccccccccccccccccccccc";
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![ai_operation_row(
+                    "service-1",
+                    trace_id,
+                    "1111111111111111",
+                    "",
+                    1,
+                )],
+            )
+            .await
+            .unwrap();
+        let attribute = |key: &str, value: OtlpValue| KeyValue {
+            key: key.into(),
+            value: Some(AnyValue { value: Some(value) }),
+            ..Default::default()
+        };
+        let now = now_unix_nanos();
+        let mut rows = Vec::new();
+        for index in 0..=100_u64 {
+            let time = now.saturating_add(index);
+            let value = index as f64;
+            let rating = if index == 100 { "poor" } else { "good" };
+            let attributes = vec![
+                attribute(
+                    "browser.web_vital.name",
+                    OtlpValue::StringValue("lcp".into()),
+                ),
+                attribute("browser.web_vital.value", OtlpValue::DoubleValue(value)),
+                attribute("browser.web_vital.delta", OtlpValue::DoubleValue(value)),
+                attribute(
+                    "browser.web_vital.rating",
+                    OtlpValue::StringValue(rating.into()),
+                ),
+                attribute(
+                    "browser.web_vital.id",
+                    OtlpValue::StringValue("vital-lcp".into()),
+                ),
+                attribute(
+                    "browser.web_vital.navigation_type",
+                    OtlpValue::StringValue("navigate".into()),
+                ),
+            ];
+            rows.push(json!({
+                "id": Uuid::new_v4().to_string(),
+                "service_id": "service-1",
+                "time_unix_nano": time,
+                "trace_id": trace_id,
+                "span_id": "1111111111111111",
+                "event_name": "browser.web_vital",
+                "attributes": serde_json::to_string(&attributes).unwrap(),
+            }));
+        }
+        store
+            .ingest_signal_rows(SignalTable::Logs, rows)
+            .await
+            .unwrap();
+        let detail = store
+            .trace(vec!["service-1".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        assert_eq!(detail.web_vitals.len(), 1);
+        assert_eq!(detail.web_vitals[0].value, 100.0);
+        assert_eq!(detail.web_vitals[0].rating, "poor");
+    }
+
     #[tokio::test]
     async fn stores_content_by_digest_and_reassembles_chunks() {
         let volume = TempDir::new().unwrap();
@@ -3479,6 +4135,414 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ai_overview_does_not_guess_ambiguous_trace_identity() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let trace_id = "11111111111111111111111111111111";
+        let model_started = started + 2_000_000;
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![
+                    json!({
+                        "service_id": "service-1", "trace_id": trace_id,
+                        "span_id": "0000000000000001", "parent_span_id": "",
+                        "trace_state": "",
+                        "name": "root", "kind": 1,
+                        "start_time_unix_nano": started, "end_time_unix_nano": started + 4_000_000,
+                        "duration_nano": 4_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 4_000_000, "version": 1, "source": "otlp",
+                        "ai_user_id": "root-user", "ai_session_id": "root-session"
+                    }),
+                    json!({
+                        "service_id": "service-1", "trace_id": trace_id,
+                        "span_id": "0000000000000002", "parent_span_id": "0000000000000001",
+                        "trace_state": "",
+                        "name": "branch", "kind": 1,
+                        "start_time_unix_nano": started + 1_000_000, "end_time_unix_nano": started + 4_000_000,
+                        "duration_nano": 3_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 4_000_000, "version": 1, "source": "otlp",
+                        "ai_user_id": "nearest-user", "ai_session_id": "nearest-session"
+                    }),
+                    json!({
+                        "service_id": "service-1", "trace_id": trace_id,
+                        "span_id": "0000000000000003", "parent_span_id": "0000000000000002",
+                        "trace_state": "",
+                        "name": "chat gpt-5-mini", "kind": 3,
+                        "start_time_unix_nano": model_started, "end_time_unix_nano": started + 3_000_000,
+                        "duration_nano": 1_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 4_000_000, "version": 1, "source": "otlp",
+                        "ai_kind": "model", "ai_operation": "chat", "ai_provider": "openai",
+                        "ai_model": "gpt-5-mini", "ai_input_tokens": 12, "ai_output_tokens": 3
+                    }),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let overview = store
+            .ai_overview(AiOverviewQuery {
+                anchor_service_id: None,
+                service_ids: vec!["service-1".into()],
+                from_unix_nano: model_started,
+                to_unix_nano: started + 3_000_000,
+                step_nano: 1_000_000,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(overview.summary.agent_run_count, 0);
+        assert_eq!(overview.summary.agent_count, 0);
+        assert_eq!(overview.summary.identified_agent_run_count, 0);
+        assert_eq!(overview.summary.generation_count, 1);
+        assert_eq!(overview.summary.model_count, 1);
+        assert_eq!(overview.summary.user_count, 0);
+        assert_eq!(overview.summary.session_count, 0);
+        assert!(overview.users.is_empty());
+
+        let detail = store
+            .trace(vec!["service-1".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        let model = detail
+            .spans
+            .iter()
+            .find(|span| span.ai_kind == "model")
+            .unwrap();
+        assert!(model.ai_user_id.is_empty());
+        assert!(model.ai_session_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn service_ai_overview_resolves_identity_from_project_trace() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let trace_id = "22222222222222222222222222222222";
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![
+                    json!({
+                        "service_id": "frontend", "trace_id": trace_id,
+                        "span_id": "0000000000000011", "parent_span_id": "",
+                        "trace_state": "",
+                        "name": "request", "kind": 2,
+                        "start_time_unix_nano": started, "end_time_unix_nano": started + 3_000_000,
+                        "duration_nano": 3_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 3_000_000, "version": 1, "source": "otlp",
+                        "ai_user_id": "user-42", "ai_session_id": "session-17"
+                    }),
+                    json!({
+                        "service_id": "agent", "trace_id": trace_id,
+                        "span_id": "0000000000000012", "parent_span_id": "0000000000000011",
+                        "trace_state": "",
+                        "name": "chat gpt-5-mini", "kind": 3,
+                        "start_time_unix_nano": started + 1_000_000, "end_time_unix_nano": started + 2_000_000,
+                        "duration_nano": 1_000_000, "status_code": 1, "status_message": "", "flags": 1,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 3_000_000, "version": 1, "source": "otlp",
+                        "ai_kind": "model", "ai_operation": "chat", "ai_provider": "openai",
+                        "ai_model": "gpt-5-mini", "ai_input_tokens": 12, "ai_output_tokens": 3
+                    }),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let overview = store
+            .ai_overview(AiOverviewQuery {
+                anchor_service_id: Some("agent".into()),
+                service_ids: vec!["frontend".into(), "agent".into()],
+                from_unix_nano: started,
+                to_unix_nano: started + 3_000_000,
+                step_nano: 3_000_000,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(overview.summary.generation_count, 1);
+        assert_eq!(overview.summary.user_count, 1);
+        assert_eq!(overview.summary.session_count, 1);
+        assert_eq!(overview.users[0].user_id, "user-42");
+        assert_eq!(overview.users[0].session_count, 1);
+    }
+
+    #[tokio::test]
+    async fn ai_overview_preserves_cost_provenance_and_tool_names() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let trace_id = "33333333333333333333333333333333";
+        let span = |span_id: &str, name: &str, offset: u64| {
+            json!({
+                "service_id": "service-1", "trace_id": trace_id,
+                "span_id": span_id, "parent_span_id": "", "trace_state": "",
+                "name": name, "kind": 1,
+                "start_time_unix_nano": started + offset,
+                "end_time_unix_nano": started + offset + 1_000_000,
+                "duration_nano": 1_000_000, "status_code": 1, "status_message": "",
+                "flags": 1, "resource": "{}", "scope": "{}", "span": "{}",
+                "received_at_unix_nano": started + offset + 1_000_000,
+                "version": started + offset + 1, "source": "otlp"
+            })
+        };
+        let mut reported = span("0000000000000031", "chat gpt-test", 1_000_000);
+        reported["ai_kind"] = json!("model");
+        reported["ai_operation"] = json!("chat");
+        reported["ai_provider"] = json!("test-provider");
+        reported["ai_model"] = json!("test-model");
+        reported["ai_user_id"] = json!("user-1");
+        reported["ai_session_id"] = json!("session-1");
+        reported["ai_input_tokens"] = json!(10);
+        reported["ai_cost_usd"] = json!(0.25);
+
+        let mut unreported = span("0000000000000032", "chat gpt-test", 2_000_000);
+        unreported["ai_kind"] = json!("model");
+        unreported["ai_operation"] = json!("chat");
+        unreported["ai_provider"] = json!("test-provider");
+        unreported["ai_model"] = json!("test-model");
+        unreported["ai_user_id"] = json!("user-1");
+        unreported["ai_session_id"] = json!("session-1");
+        unreported["ai_input_tokens"] = json!(20);
+        unreported["ai_estimated_cost_usd"] = json!(0.05);
+
+        let mut unknown = span("0000000000000035", "chat unknown", 2_500_000);
+        unknown["ai_kind"] = json!("model");
+        unknown["ai_operation"] = json!("chat");
+        unknown["ai_provider"] = json!("test-provider");
+        unknown["ai_model"] = json!("unknown-model");
+        unknown["ai_user_id"] = json!("user-1");
+        unknown["ai_session_id"] = json!("session-1");
+        unknown["ai_input_tokens"] = json!(30);
+
+        let mut run_sql = span("0000000000000033", "execute_tool run_sql", 3_000_000);
+        run_sql["ai_kind"] = json!("tool");
+        run_sql["ai_operation"] = json!("execute_tool");
+        run_sql["ai_tool"] = json!("run_sql");
+
+        let mut report_progress =
+            span("0000000000000034", "execute_tool reportProgress", 4_000_000);
+        report_progress["ai_kind"] = json!("tool");
+        report_progress["ai_operation"] = json!("execute_tool");
+        report_progress["ai_tool"] = json!("reportProgress");
+
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![reported, unreported, unknown, run_sql, report_progress],
+            )
+            .await
+            .unwrap();
+
+        let overview = store
+            .ai_overview(AiOverviewQuery {
+                anchor_service_id: None,
+                service_ids: vec!["service-1".into()],
+                from_unix_nano: started,
+                to_unix_nano: started + 10_000_000,
+                step_nano: 10_000_000,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(overview.usage.len(), 3);
+        assert_eq!(overview.model_usage.len(), 3);
+        let reported = overview
+            .usage
+            .iter()
+            .find(|usage| usage.reported_cost_usd.is_some())
+            .unwrap();
+        assert_eq!(reported.input_tokens, 10);
+        assert_eq!(reported.reported_cost_usd, Some(0.25));
+        let estimated = overview
+            .usage
+            .iter()
+            .find(|usage| usage.estimated_cost_usd.is_some())
+            .unwrap();
+        assert_eq!(estimated.input_tokens, 20);
+        assert_eq!(estimated.estimated_cost_usd, Some(0.05));
+        let unknown = overview
+            .usage
+            .iter()
+            .find(|usage| usage.reported_cost_usd.is_none() && usage.estimated_cost_usd.is_none())
+            .unwrap();
+        assert_eq!(unknown.input_tokens, 30);
+
+        assert_eq!(overview.users.len(), 3);
+        assert!(
+            overview
+                .users
+                .iter()
+                .any(|usage| usage.reported_cost_usd == Some(0.25) && usage.input_tokens == 10)
+        );
+        assert!(
+            overview
+                .users
+                .iter()
+                .any(|usage| usage.estimated_cost_usd == Some(0.05) && usage.input_tokens == 20)
+        );
+        assert!(overview.users.iter().any(|usage| {
+            usage.reported_cost_usd.is_none()
+                && usage.estimated_cost_usd.is_none()
+                && usage.input_tokens == 30
+        }));
+
+        let tool_names = overview
+            .latency
+            .iter()
+            .filter(|row| row.kind == "tool")
+            .map(|row| row.name.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(tool_names, HashSet::from(["reportProgress", "run_sql"]));
+    }
+
+    #[tokio::test]
+    async fn ai_overview_bounds_model_cardinality_without_splitting_timeline_buckets() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let rows = (0_u64..300)
+            .map(|index| {
+                json!({
+                    "service_id": "service-1",
+                    "trace_id": "34343434343434343434343434343434",
+                    "span_id": format!("{index:016x}"),
+                    "parent_span_id": "",
+                    "trace_state": "",
+                    "name": format!("chat model-{index}"),
+                    "kind": 1,
+                    "start_time_unix_nano": started + index,
+                    "end_time_unix_nano": started + index + 1,
+                    "duration_nano": 1,
+                    "status_code": 1,
+                    "status_message": "",
+                    "flags": 1,
+                    "resource": "{}",
+                    "scope": "{}",
+                    "span": "{}",
+                    "received_at_unix_nano": started + index + 1,
+                    "version": started + index + 1,
+                    "source": "otlp",
+                    "ai_kind": "model",
+                    "ai_operation": "chat",
+                    "ai_provider": "test-provider",
+                    "ai_model": format!("model-{index}"),
+                    "ai_input_tokens": 1
+                })
+            })
+            .collect();
+        store
+            .ingest_signal_rows(SignalTable::Spans, rows)
+            .await
+            .unwrap();
+
+        let overview = store
+            .ai_overview(AiOverviewQuery {
+                anchor_service_id: None,
+                service_ids: vec!["service-1".into()],
+                from_unix_nano: started,
+                to_unix_nano: started + 3_000,
+                step_nano: 1_000,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(overview.activity.len(), 3);
+        assert_eq!(overview.activity[0].generation_count, 300);
+        assert_eq!(overview.activity[1].generation_count, 0);
+        assert_eq!(overview.activity[2].generation_count, 0);
+        assert_eq!(overview.usage.len(), 1);
+        assert_eq!(overview.usage[0].input_tokens, 300);
+        assert_eq!(overview.summary.model_count, 300);
+        assert_eq!(overview.models.len(), 256);
+        assert_eq!(overview.model_usage.len(), 256);
+    }
+
+    #[tokio::test]
+    async fn trace_baselines_are_isolated_by_service() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let target_trace_id = "45454545454545454545454545454545";
+        let row =
+            |service_id: &str, trace_id: &str, span_id: &str, duration_nano: u64, offset: u64| {
+                json!({
+                    "service_id": service_id,
+                    "trace_id": trace_id,
+                    "span_id": span_id,
+                    "parent_span_id": "",
+                    "trace_state": "",
+                    "name": "shared operation",
+                    "kind": 3,
+                    "start_time_unix_nano": started + offset,
+                    "end_time_unix_nano": started + offset + duration_nano,
+                    "duration_nano": duration_nano,
+                    "status_code": 1,
+                    "status_message": "",
+                    "flags": 1,
+                    "resource": "{}",
+                    "scope": "{}",
+                    "span": "{}",
+                    "received_at_unix_nano": started + offset + duration_nano,
+                    "version": started + offset + duration_nano,
+                    "source": "otlp"
+                })
+            };
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![
+                    row("service-1", target_trace_id, "1111111111111111", 10, 1),
+                    row("service-2", target_trace_id, "2222222222222222", 100, 2),
+                    row(
+                        "service-1",
+                        "56565656565656565656565656565656",
+                        "3333333333333333",
+                        30,
+                        3,
+                    ),
+                    row(
+                        "service-2",
+                        "67676767676767676767676767676767",
+                        "4444444444444444",
+                        300,
+                        4,
+                    ),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let detail = store
+            .trace(
+                vec!["service-1".into(), "service-2".into()],
+                None,
+                target_trace_id.into(),
+            )
+            .await
+            .unwrap();
+        let baselines = detail
+            .spans
+            .iter()
+            .map(|span| {
+                (
+                    span.service_id.as_str(),
+                    span.baseline_duration_nano.unwrap(),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+
+        assert_eq!(baselines["service-1"], 20.0);
+        assert_eq!(baselines["service-2"], 200.0);
+    }
+
+    #[tokio::test]
     async fn queries_trace_waterfall_and_service_metric_sql() {
         let volume = TempDir::new().unwrap();
         let store = Store::open(volume.path().to_owned()).await.unwrap();
@@ -3491,17 +4555,19 @@ mod tests {
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
                         "span_id": "0123456789abcdef", "parent_span_id": "",
-                        "segment_id": "0123456789abcdef", "is_segment": true, "trace_state": "",
+                        "trace_state": "",
                         "name": "GET /checkout", "kind": 2,
                         "start_time_unix_nano": started, "end_time_unix_nano": started + 10_000_000,
                         "duration_nano": 10_000_000, "status_code": 0, "status_message": "", "flags": 1,
                         "resource": "{\"attributes\":[]}", "scope": "{}", "span": "{}",
-                        "received_at_unix_nano": started + 10_000_000, "version": 1, "source": "otlp"
+                        "received_at_unix_nano": started + 10_000_000, "version": 1, "source": "otlp",
+                        "replay_id": "cccccccccccccccccccccccccccccccc",
+                        "ai_user_id": "user-42", "ai_session_id": "chat-17"
                     }),
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
                         "span_id": "fedcba9876543210", "parent_span_id": "0123456789abcdef",
-                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
+                        "trace_state": "",
                         "name": "SELECT cart", "kind": 3,
                         "start_time_unix_nano": started + 1_000_000, "end_time_unix_nano": started + 8_000_000,
                         "duration_nano": 7_000_000, "status_code": 0, "status_message": "", "flags": 1,
@@ -3511,7 +4577,7 @@ mod tests {
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
                         "span_id": "1111222233334444", "parent_span_id": "0123456789abcdef",
-                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
+                        "trace_state": "",
                         "name": "invoke_agent checkout-agent", "kind": 1,
                         "start_time_unix_nano": started + 1_500_000, "end_time_unix_nano": started + 6_500_000,
                         "duration_nano": 5_000_000, "status_code": 1, "status_message": "", "flags": 1,
@@ -3523,7 +4589,7 @@ mod tests {
                     json!({
                         "service_id": "service-1", "trace_id": trace_id,
                         "span_id": "aabbccdd11223344", "parent_span_id": "1111222233334444",
-                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
+                        "trace_state": "",
                         "name": "chat gpt-5-mini", "kind": 3,
                         "start_time_unix_nano": started + 2_000_000, "end_time_unix_nano": started + 6_000_000,
                         "duration_nano": 4_000_000, "status_code": 1, "status_message": "", "flags": 1,
@@ -3538,7 +4604,7 @@ mod tests {
                     json!({
                         "service_id": "service-2", "trace_id": trace_id,
                         "span_id": "9999aaaa5555bbbb", "parent_span_id": "0123456789abcdef",
-                        "segment_id": "0123456789abcdef", "is_segment": false, "trace_state": "",
+                        "trace_state": "",
                         "name": "POST inventory", "kind": 2,
                         "start_time_unix_nano": started + 3_000_000, "end_time_unix_nano": started + 20_000_000,
                         "duration_nano": 17_000_000, "status_code": 2, "status_message": "out of stock", "flags": 1,
@@ -3549,7 +4615,7 @@ mod tests {
                     json!({
                         "service_id": "service-1", "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         "span_id": "aaaaaaaaaaaaaaaa", "parent_span_id": "",
-                        "segment_id": "aaaaaaaaaaaaaaaa", "is_segment": true, "trace_state": "",
+                        "trace_state": "",
                         "name": "GET /slow", "kind": 2,
                         "start_time_unix_nano": started - 1_000_000, "end_time_unix_nano": started + 4_000_000,
                         "duration_nano": 5_000_000, "status_code": 1, "status_message": "", "flags": 1,
@@ -3559,7 +4625,7 @@ mod tests {
                     json!({
                         "service_id": "service-2", "trace_id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         "span_id": "bbbbbbbbbbbbbbbb", "parent_span_id": "aaaaaaaaaaaaaaaa",
-                        "segment_id": "aaaaaaaaaaaaaaaa", "is_segment": false, "trace_state": "",
+                        "trace_state": "",
                         "name": "slow worker", "kind": 2,
                         "start_time_unix_nano": started, "end_time_unix_nano": started + 99_000_000,
                         "duration_nano": 99_000_000, "status_code": 1, "status_message": "", "flags": 1,
@@ -3569,7 +4635,7 @@ mod tests {
                     json!({
                         "service_id": "service-2", "trace_id": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
                         "span_id": "cccccccccccccccc", "parent_span_id": "",
-                        "segment_id": "cccccccccccccccc", "is_segment": true, "trace_state": "",
+                        "trace_state": "",
                         "name": "foreign only", "kind": 2,
                         "start_time_unix_nano": started + 1_000_000, "end_time_unix_nano": started + 500_000_000,
                         "duration_nano": 499_000_000, "status_code": 2, "status_message": "", "flags": 1,
@@ -3616,6 +4682,40 @@ mod tests {
         assert_eq!(summaries[0].ai_reasoning_tokens, Some(0));
         assert_eq!(summaries[0].ai_tool_call_count, 0);
         assert_eq!(summaries[0].ai_cost_usd, Some(0.002));
+        assert_eq!(summaries[0].ai_estimated_cost_usd, None);
+        assert_eq!(summaries[0].ai_unpriced_model_call_count, 0);
+        let overview = store
+            .ai_overview(AiOverviewQuery {
+                anchor_service_id: None,
+                service_ids: vec!["service-1".into()],
+                from_unix_nano: started,
+                to_unix_nano: started + 10_000_000,
+                step_nano: 10_000_000,
+            })
+            .await
+            .unwrap();
+        assert_eq!(overview.summary.agent_run_count, 1);
+        assert_eq!(overview.summary.agent_count, 1);
+        assert_eq!(overview.summary.generation_count, 1);
+        assert_eq!(overview.summary.identified_agent_run_count, 1);
+        assert_eq!(overview.summary.user_count, 1);
+        assert_eq!(overview.summary.session_count, 1);
+        assert_eq!(overview.activity.len(), 1);
+        assert_eq!(overview.models.len(), 1);
+        assert_eq!(overview.models[0].model, "gpt-5-mini");
+        assert_eq!(overview.model_usage.len(), 1);
+        assert_eq!(overview.model_usage[0].model, "gpt-5-mini");
+        assert_eq!(overview.usage[0].input_tokens, 120);
+        assert_eq!(overview.agents[0].agent, "checkout-agent");
+        assert_eq!(overview.agents[0].user_count, 1);
+        assert_eq!(overview.users.len(), 1);
+        assert!(overview.users.iter().any(|user| {
+            user.user_id == "user-42"
+                && user.run_count == 1
+                && user.session_count == 1
+                && user.generation_count == 1
+        }));
+        assert_eq!(overview.latency.len(), 1);
         assert_eq!(
             store
                 .trace_summaries(summary_query(
@@ -3682,22 +4782,27 @@ mod tests {
                 .is_empty()
         );
         let detail = store
-            .trace(
-                Some("service-1".into()),
-                vec!["service-1".into()],
-                trace_id.into(),
-                None,
-            )
+            .trace(vec!["service-1".into()], None, trace_id.into())
             .await
             .unwrap();
         assert_eq!(detail.spans.len(), 4);
         assert!(detail.spans[0].resource.is_object());
+        assert_eq!(
+            detail.spans[0].replay_id,
+            "cccccccccccccccccccccccccccccccc"
+        );
+        let model_span = detail
+            .spans
+            .iter()
+            .find(|span| span.ai_kind == "model")
+            .unwrap();
+        assert_eq!(model_span.ai_user_id, "user-42");
+        assert_eq!(model_span.ai_session_id, "chat-17");
         let project_detail = store
             .trace(
-                Some("service-1".into()),
                 vec!["service-1".into(), "service-2".into()],
-                trace_id.into(),
                 None,
+                trace_id.into(),
             )
             .await
             .unwrap();
@@ -3708,6 +4813,16 @@ mod tests {
                 .iter()
                 .any(|span| span.service_id == "service-2")
         );
+        assert!(matches!(
+            store
+                .trace(
+                    vec!["service-1".into(), "service-2".into()],
+                    Some("service-without-this-trace".into()),
+                    trace_id.into(),
+                )
+                .await,
+            Err(Error::NotFound)
+        ));
 
         store
             .ingest_signal_rows(
@@ -3734,12 +4849,7 @@ mod tests {
             .await
             .unwrap();
         let detail_with_metric = store
-            .trace(
-                Some("service-1".into()),
-                vec!["service-1".into()],
-                trace_id.into(),
-                None,
-            )
+            .trace(vec!["service-1".into()], None, trace_id.into())
             .await
             .unwrap();
         assert_eq!(detail_with_metric.metrics.len(), 1);
@@ -3888,23 +4998,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sentry_transactions_sharing_a_trace_id_merge_like_otlp() {
+    async fn distributed_trace_is_grouped_only_by_trace_id() {
         let volume = TempDir::new().unwrap();
         let store = Store::open(volume.path().to_owned()).await.unwrap();
         let started = now_unix_nanos();
         let trace_id = "0123456789abcdef0123456789abcdef";
-        let span = |segment_id: &str, parent: &str, name: &str, offset: u64| {
+        let span = |span_id: &str, parent: &str, name: &str, offset: u64| {
             json!({
                 "service_id": "service-1", "trace_id": trace_id,
-                "span_id": segment_id, "parent_span_id": parent,
-                "segment_id": segment_id, "is_segment": true, "trace_state": "",
+                "span_id": span_id, "parent_span_id": parent, "trace_state": "",
                 "name": name, "kind": 2,
                 "start_time_unix_nano": started + offset,
                 "end_time_unix_nano": started + offset + 1_000_000_000,
                 "duration_nano": 1_000_000_000, "status_code": 1,
                 "status_message": "", "flags": 0, "resource": "{}", "scope": "{}",
                 "span": "{}", "received_at_unix_nano": started + offset,
-                "version": started + offset, "source": "sentry"
+                "version": started + offset, "source": "otlp"
             })
         };
         store
@@ -3939,25 +5048,74 @@ mod tests {
             .unwrap();
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].trace_id, trace_id);
-        assert_eq!(summaries[0].segment_id, "1111111111111111");
         assert_eq!(summaries[0].name, "GET /checkout");
         assert_eq!(summaries[0].span_count, 2);
         assert_eq!(summaries[0].duration_nano, 1_500_000_000);
 
         let detail = store
-            .trace(
-                Some("service-1".into()),
-                vec!["service-1".into()],
-                trace_id.into(),
-                Some("1111111111111111".into()),
+            .trace(vec!["service-1".into()], None, trace_id.into())
+            .await
+            .unwrap();
+        assert_eq!(detail.spans.len(), 2);
+        assert_eq!(detail.spans[1].name, "POST /api/pay");
+    }
+
+    #[tokio::test]
+    async fn trace_summary_prefers_parentless_root_over_earlier_remote_entry() {
+        let volume = TempDir::new().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let started = now_unix_nanos();
+        let trace_id = "44444444444444444444444444444444";
+        store
+            .ingest_signal_rows(
+                SignalTable::Spans,
+                vec![
+                    json!({
+                        "service_id": "remote-service", "trace_id": trace_id,
+                        "span_id": "0000000000000041", "parent_span_id": "ffffffffffffffff",
+                        "trace_state": "", "name": "remote entry", "kind": 2,
+                        "start_time_unix_nano": started,
+                        "end_time_unix_nano": started + 2_000_000,
+                        "duration_nano": 2_000_000, "status_code": 1,
+                        "status_message": "", "flags": OTEL_CONTEXT_IS_REMOTE_MASK,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 2_000_000,
+                        "version": 1, "source": "otlp"
+                    }),
+                    json!({
+                        "service_id": "root-service", "trace_id": trace_id,
+                        "span_id": "0000000000000042", "parent_span_id": "",
+                        "trace_state": "", "name": "real root", "kind": 2,
+                        "start_time_unix_nano": started + 1_000_000,
+                        "end_time_unix_nano": started + 3_000_000,
+                        "duration_nano": 2_000_000, "status_code": 1,
+                        "status_message": "", "flags": 0,
+                        "resource": "{}", "scope": "{}", "span": "{}",
+                        "received_at_unix_nano": started + 3_000_000,
+                        "version": 1, "source": "otlp"
+                    }),
+                ],
             )
             .await
             .unwrap();
-        assert_eq!(detail.segment_id, "1111111111111111");
-        assert_eq!(detail.spans.len(), 2);
-        assert_eq!(detail.related_segments.len(), 1);
-        assert_eq!(detail.related_segments[0].segment_id, "2222222222222222");
-        assert_eq!(detail.related_segments[0].name, "POST /api/pay");
+
+        let summaries = store
+            .trace_summaries(TraceSummaryQuery {
+                anchor_service_id: None,
+                service_ids: vec!["remote-service".into(), "root-service".into()],
+                from_unix_nano: None,
+                to_unix_nano: None,
+                search: None,
+                status: TraceSummaryStatus::All,
+                order: TraceSummaryOrder::Latest,
+                limit: 10,
+                offset: 0,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(summaries[0].service_id, "root-service");
+        assert_eq!(summaries[0].name, "real root");
     }
 
     #[tokio::test]

@@ -27,8 +27,9 @@ type UpdateServiceSentryPublicAccess struct {
 }
 
 var (
-	ErrServiceTelemetryTunnelPathInvalid = errors.New("browser tunnel path is invalid")
-	ErrServiceTelemetryTunnelNeedsDomain = errors.New("browser tunnel requires a public telemetry domain")
+	ErrServiceTelemetryTunnelPathInvalid  = errors.New("browser tunnel path is invalid")
+	ErrServiceTelemetryTunnelNeedsDomain  = errors.New("browser tunnel requires a public telemetry domain")
+	ErrServiceTelemetryPublicPathConflict = errors.New("browser tunnel conflicts with public OTLP endpoint")
 )
 
 type UpdateServiceTelemetryTunnel struct {
@@ -65,6 +66,20 @@ func (store *Store) UpdateServiceSentryPublicAccess(ctx context.Context, input U
 			if inUse {
 				return ErrHostnameInUse
 			}
+		}
+		routes, err := loadServiceTelemetryPublicRoutes(ctx, transaction, input.ProjectID, input.ID)
+		if err != nil {
+			return err
+		}
+		if routes.updatedAtMillis != input.ExpectedUpdatedMillis {
+			return ErrServiceChanged
+		}
+		routes.sentryHostname = input.PublicHostname
+		if input.PublicHostname == "" {
+			routes.sentryTunnelPath = ""
+		}
+		if routes.pathsConflict() {
+			return ErrServiceTelemetryPublicPathConflict
 		}
 		updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
 		hostname := nullableString(input.PublicHostname)
@@ -131,23 +146,19 @@ func (store *Store) UpdateServiceTelemetryTunnel(ctx context.Context, input Upda
 	}
 	input.Path = normalized
 	err = store.WriteControl(ctx, func(transaction *sql.Tx) error {
-		var publicHostname sql.NullString
-		var currentUpdatedAt int64
-		err := transaction.QueryRowContext(ctx, `
-SELECT sentry_public_hostname, updated_at
-FROM services
-WHERE id = ? AND project_id = ?`, input.ID, input.ProjectID).Scan(&publicHostname, &currentUpdatedAt)
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrServiceNotFound
-		}
+		routes, err := loadServiceTelemetryPublicRoutes(ctx, transaction, input.ProjectID, input.ID)
 		if err != nil {
-			return fmt.Errorf("load service telemetry tunnel state: %w", err)
+			return err
 		}
-		if currentUpdatedAt != input.ExpectedUpdatedMillis {
+		if routes.updatedAtMillis != input.ExpectedUpdatedMillis {
 			return ErrServiceChanged
 		}
-		if !publicHostname.Valid {
+		if routes.sentryHostname == "" {
 			return ErrServiceTelemetryTunnelNeedsDomain
+		}
+		routes.sentryTunnelPath = input.Path
+		if routes.pathsConflict() {
+			return ErrServiceTelemetryPublicPathConflict
 		}
 		updatedAt := monotonicTimestamp(input.ExpectedUpdatedMillis, input.UpdatedAtMillis)
 		result, err := transaction.ExecContext(ctx, `
@@ -202,6 +213,54 @@ func normalizeServiceTelemetryPublicPath(value string, invalid error) (string, e
 		return "", invalid
 	}
 	return value, nil
+}
+
+type serviceTelemetryPublicRoutes struct {
+	sentryHostname   string
+	sentryTunnelPath string
+	otlpHostname     string
+	otlpPathPrefix   string
+	updatedAtMillis  int64
+}
+
+func loadServiceTelemetryPublicRoutes(
+	ctx context.Context,
+	transaction *sql.Tx,
+	projectID string,
+	serviceID string,
+) (serviceTelemetryPublicRoutes, error) {
+	var routes serviceTelemetryPublicRoutes
+	var sentryHostname, sentryTunnelPath, otlpHostname, otlpPathPrefix sql.NullString
+	err := transaction.QueryRowContext(ctx, `
+SELECT sentry_public_hostname, sentry_tunnel_path,
+       otlp_trace_public_hostname, otlp_trace_path, updated_at
+FROM services
+WHERE id = ? AND project_id = ?`, serviceID, projectID).Scan(
+		&sentryHostname,
+		&sentryTunnelPath,
+		&otlpHostname,
+		&otlpPathPrefix,
+		&routes.updatedAtMillis,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return serviceTelemetryPublicRoutes{}, ErrServiceNotFound
+	}
+	if err != nil {
+		return serviceTelemetryPublicRoutes{}, fmt.Errorf("load service telemetry public routes: %w", err)
+	}
+	routes.sentryHostname = sentryHostname.String
+	routes.sentryTunnelPath = sentryTunnelPath.String
+	routes.otlpHostname = otlpHostname.String
+	routes.otlpPathPrefix = otlpPathPrefix.String
+	return routes, nil
+}
+
+func (routes serviceTelemetryPublicRoutes) pathsConflict() bool {
+	if routes.sentryHostname == "" || routes.sentryHostname != routes.otlpHostname {
+		return false
+	}
+	return routes.sentryTunnelPath == routes.otlpPathPrefix+"/v1/traces" ||
+		routes.sentryTunnelPath == routes.otlpPathPrefix+"/v1/logs"
 }
 
 func publicHostnameRoleExistsExceptServiceTelemetry(ctx context.Context, transaction *sql.Tx, hostname, serviceID string) (bool, error) {

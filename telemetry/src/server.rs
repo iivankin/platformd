@@ -28,6 +28,7 @@ use tower_http::trace::TraceLayer;
 use url::Url;
 
 use crate::MAX_STORED_ITEM_BYTES;
+use crate::ai_price::AiPriceEstimator;
 use crate::artifact::{self, ArtifactMetadata};
 use crate::auth::sentry_public_key;
 use crate::envelope::{Envelope, Item, parse};
@@ -67,6 +68,7 @@ pub struct TelemetryServer {
     listen: SocketAddr,
     otlp_grpc_listen: SocketAddr,
     otlp_http_listen: SocketAddr,
+    ai_prices: Arc<AiPriceEstimator>,
     state: Arc<ServerState>,
 }
 
@@ -140,6 +142,14 @@ struct TraceListQuery {
     sort: TraceListSort,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AiOverviewQuery {
+    from: u64,
+    to: u64,
+    step: u64,
+}
+
 #[derive(Clone, Copy, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 enum TraceListStatus {
@@ -183,20 +193,7 @@ struct MetricScopeRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TraceScopeRequest {
-    anchor_service_id: Option<String>,
-    service_ids: Vec<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TraceDetailQuery {
-    segment: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TraceListScopeRequest {
+struct AnchoredServiceScopeRequest {
     anchor_service_id: Option<String>,
     service_ids: Vec<String>,
 }
@@ -305,6 +302,8 @@ impl TelemetryServer {
             return Err(Error::Configuration("volume path must not be empty".into()));
         }
         let store = Store::open(options.volume.clone()).await?;
+        let ai_prices =
+            Arc::new(AiPriceEstimator::new(&options.volume).map_err(Error::Configuration)?);
         let geoip = GeoIpLookup::from_volume(&options.volume, options.geoip_source).await;
         let symbolicator = Symbolicator::new(store.clone());
         let symbolication = SymbolicationDispatcher::new(symbolicator.clone(), store.clone());
@@ -312,6 +311,7 @@ impl TelemetryServer {
             listen: options.listen,
             otlp_grpc_listen: options.otlp_grpc_listen,
             otlp_http_listen: options.otlp_http_listen,
+            ai_prices,
             state: Arc::new(ServerState {
                 store,
                 symbolicator,
@@ -355,6 +355,7 @@ impl TelemetryServer {
             .route("/internal/issue-scopes", post(internal_issues))
             .route("/internal/trace-scopes", post(internal_traces))
             .route("/internal/trace-scopes/{trace_id}", post(internal_trace))
+            .route("/internal/ai-scopes/overview", post(internal_ai_overview))
             .route(
                 "/internal/metric-scopes/catalog",
                 post(internal_metric_catalog),
@@ -386,6 +387,7 @@ impl TelemetryServer {
     }
 
     pub async fn serve(self) -> anyhow::Result<()> {
+        self.ai_prices.initialize().await;
         let listener = tokio::net::TcpListener::bind(self.listen).await?;
         let listen = listener.local_addr()?;
         tracing::info!(listen = %listen, "Sentry-compatible receiver is listening");
@@ -404,15 +406,21 @@ impl TelemetryServer {
                 }
             }
         });
+        let ai_prices = self.ai_prices.clone();
+        let price_refresh = tokio::spawn(async move {
+            ai_prices.refresh_forever().await;
+        });
         let result = tokio::try_join!(
             async move { http.await.map_err(anyhow::Error::from) },
             crate::telemetry::serve(
                 self.state.store.clone(),
                 self.otlp_grpc_listen,
                 self.otlp_http_listen,
+                self.ai_prices,
             ),
         );
         reclaim.abort();
+        price_refresh.abort();
         result?;
         Ok(())
     }
@@ -440,6 +448,7 @@ fn service_routes() -> Router<Arc<ServerState>> {
         .route("/content/{content_id}", get(content))
         .route("/traces", get(traces))
         .route("/traces/{trace_id}", get(trace))
+        .route("/ai/overview", get(ai_overview))
         .route("/metrics/catalog", get(metric_catalog))
         .route("/metrics/query", post(metric_sql))
 }
@@ -453,26 +462,71 @@ async fn traces(
     trace_summaries(state, Some(service_id.clone()), vec![service_id], query).await
 }
 
+async fn ai_overview(
+    State(state): State<Arc<ServerState>>,
+    Path(service_id): Path<String>,
+    Query(query): Query<AiOverviewQuery>,
+) -> Result<Json<crate::storage::AiOverview>> {
+    ServiceContext::parse(&service_id)?;
+    ai_overview_for_scope(state, Some(service_id.clone()), vec![service_id], query).await
+}
+
+async fn internal_ai_overview(
+    State(state): State<Arc<ServerState>>,
+    peer: Option<Extension<ConnectInfo<SocketAddr>>>,
+    Query(query): Query<AiOverviewQuery>,
+    Json(scope): Json<AnchoredServiceScopeRequest>,
+) -> Result<Json<crate::storage::AiOverview>> {
+    require_loopback(peer)?;
+    validate_service_ids(&scope.service_ids)?;
+    validate_scope_anchor(scope.anchor_service_id.as_deref(), &scope.service_ids)?;
+    ai_overview_for_scope(state, scope.anchor_service_id, scope.service_ids, query).await
+}
+
+async fn ai_overview_for_scope(
+    state: Arc<ServerState>,
+    anchor_service_id: Option<String>,
+    service_ids: Vec<String>,
+    query: AiOverviewQuery,
+) -> Result<Json<crate::storage::AiOverview>> {
+    if query.to <= query.from || query.step < 1_000 {
+        return Err(Error::InvalidRequest(
+            "invalid AI overview time range".into(),
+        ));
+    }
+    let duration = query.to - query.from;
+    if duration / query.step + u64::from(!duration.is_multiple_of(query.step)) > 2_000 {
+        return Err(Error::InvalidRequest(
+            "AI overview contains too many time buckets".into(),
+        ));
+    }
+    let nanos = |value: u64, field: &str| {
+        value
+            .checked_mul(1_000_000)
+            .ok_or_else(|| Error::InvalidRequest(format!("AI overview {field} overflows")))
+    };
+    state
+        .store
+        .ai_overview(crate::storage::AiOverviewQuery {
+            anchor_service_id,
+            service_ids,
+            from_unix_nano: nanos(query.from, "start")?,
+            to_unix_nano: nanos(query.to, "end")?,
+            step_nano: nanos(query.step, "step")?,
+        })
+        .await
+        .map(Json)
+}
+
 async fn internal_traces(
     State(state): State<Arc<ServerState>>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     Query(query): Query<TraceListQuery>,
-    Json(scope): Json<TraceListScopeRequest>,
+    Json(scope): Json<AnchoredServiceScopeRequest>,
 ) -> Result<Json<Vec<crate::storage::TraceSummary>>> {
     require_loopback(peer)?;
     validate_service_ids(&scope.service_ids)?;
-    if let Some(anchor) = scope.anchor_service_id.as_deref() {
-        ServiceContext::parse(anchor)?;
-        if !scope
-            .service_ids
-            .iter()
-            .any(|service_id| service_id == anchor)
-        {
-            return Err(Error::InvalidRequest(
-                "trace anchor is outside the service scope".into(),
-            ));
-        }
-    }
+    validate_scope_anchor(scope.anchor_service_id.as_deref(), &scope.service_ids)?;
     trace_summaries(state, scope.anchor_service_id, scope.service_ids, query).await
 }
 
@@ -532,20 +586,17 @@ async fn trace_summaries(
 async fn trace(
     State(state): State<Arc<ServerState>>,
     Path((service_id, trace_id)): Path<(String, String)>,
-    Query(query): Query<TraceDetailQuery>,
 ) -> Result<Json<crate::storage::TraceDetail>> {
     ServiceContext::parse(&service_id)?;
     if trace_id.len() != 32 || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::InvalidRequest("invalid trace identifier".into()));
     }
-    validate_trace_segment(query.segment.as_deref())?;
     state
         .store
         .trace(
-            Some(service_id.clone()),
-            vec![service_id],
+            vec![service_id.clone()],
+            Some(service_id),
             trace_id.to_ascii_lowercase(),
-            query.segment,
         )
         .await
         .map(Json)
@@ -555,52 +606,37 @@ async fn internal_trace(
     State(state): State<Arc<ServerState>>,
     peer: Option<Extension<ConnectInfo<SocketAddr>>>,
     Path(trace_id): Path<String>,
-    Query(query): Query<TraceDetailQuery>,
-    Json(scope): Json<TraceScopeRequest>,
+    Json(scope): Json<AnchoredServiceScopeRequest>,
 ) -> Result<Json<crate::storage::TraceDetail>> {
     require_loopback(peer)?;
     validate_service_ids(&scope.service_ids)?;
-    if let Some(anchor) = scope.anchor_service_id.as_deref() {
-        ServiceContext::parse(anchor)?;
-        if !scope
-            .service_ids
-            .iter()
-            .any(|service_id| service_id == anchor)
-        {
-            return Err(Error::InvalidRequest(
-                "trace anchor is outside the service scope".into(),
-            ));
-        }
-    }
+    validate_scope_anchor(scope.anchor_service_id.as_deref(), &scope.service_ids)?;
     if trace_id.len() != 32 || !trace_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::InvalidRequest("invalid trace identifier".into()));
     }
-    validate_trace_segment(query.segment.as_deref())?;
     state
         .store
         .trace(
-            scope.anchor_service_id,
             scope.service_ids,
+            scope.anchor_service_id,
             trace_id.to_ascii_lowercase(),
-            query.segment,
         )
         .await
         .map(Json)
 }
 
-fn validate_trace_segment(segment_id: Option<&str>) -> Result<()> {
-    if segment_id.is_some_and(|value| {
-        value.is_empty()
-            || value.len() > 64
-            || !value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    }) {
-        return Err(Error::InvalidRequest(
-            "invalid trace segment identifier".into(),
-        ));
+fn validate_scope_anchor(anchor: Option<&str>, service_ids: &[String]) -> Result<()> {
+    let Some(anchor) = anchor else {
+        return Ok(());
+    };
+    ServiceContext::parse(anchor)?;
+    if service_ids.iter().any(|service_id| service_id == anchor) {
+        Ok(())
+    } else {
+        Err(Error::InvalidRequest(
+            "anchor is outside the service scope".into(),
+        ))
     }
-    Ok(())
 }
 
 async fn metric_catalog(

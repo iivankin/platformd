@@ -401,3 +401,50 @@ PRAGMA user_version = 21;`); err != nil {
 		t.Fatalf("schema version/mode columns/rows = %d/%d/%d", version, modeColumns, rows)
 	}
 }
+
+func TestMigrateSchemaVersionTwentyTwoStoresPublicOTLPBasePath(t *testing.T) {
+	t.Parallel()
+	database, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(`
+CREATE TABLE services (
+  id TEXT PRIMARY KEY,
+  otlp_trace_path TEXT
+) STRICT;
+INSERT INTO services(id, otlp_trace_path) VALUES
+  ('default', '/otel/v1/traces'),
+  ('root', '/v1/traces'),
+  ('custom', '/telemetry');
+PRAGMA user_version = 22;`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateSchemaVersionTwentyTwo(context.Background(), database); err != nil {
+		t.Fatal(err)
+	}
+	var version int
+	if err := database.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := database.Query(`SELECT id, otlp_trace_path FROM services ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	paths := make(map[string]string)
+	for rows.Next() {
+		var id, path string
+		if err := rows.Scan(&id, &path); err != nil {
+			t.Fatal(err)
+		}
+		paths[id] = path
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if version != 23 || paths["default"] != "/otel" || paths["root"] != "/otel" || paths["custom"] != "/telemetry" {
+		t.Fatalf("schema version/OTLP paths = %d/%v", version, paths)
+	}
+}

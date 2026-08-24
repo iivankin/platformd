@@ -1,14 +1,12 @@
 import { Link2 } from "lucide-react";
 
 import type { ServiceTraceSpan } from "@/api";
+import { traceNanosToDate as nanosToDate } from "@/trace-format";
 import {
   traceSemanticContext,
   traceSpanEvents,
   traceSpanLinks,
 } from "@/trace-span-context";
-
-const nanosToDate = (value: string) =>
-  new Date(Number(BigInt(value) / 1_000_000n));
 
 export const TraceSpanContext = ({ span }: { span: ServiceTraceSpan }) => {
   const semanticContext = traceSemanticContext(span);

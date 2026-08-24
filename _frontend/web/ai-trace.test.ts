@@ -1,12 +1,14 @@
 import { describe, expect, test } from "bun:test";
 
-import { calculateAiPrice } from "@/ai-price";
+import { storedAiPrice } from "@/ai-price";
 import {
   aiMessages,
   aiRequestSettings,
   aiRuns,
   aiTool,
   aiToolDefinitions,
+  isSensitiveAiAttributeKey,
+  redactSensitiveAiValue,
 } from "@/ai-trace";
 import type { ServiceTraceSpan } from "@/api";
 
@@ -15,6 +17,7 @@ const span = (attributes: unknown[]): ServiceTraceSpan => ({
   aiCacheReadTokens: 800,
   aiCacheWriteTokens: 0,
   aiCostUsd: null,
+  aiEstimatedCostUsd: 0.001,
   aiInputTokens: 1000,
   aiKind: "model",
   aiModel: "gpt-5-mini",
@@ -22,19 +25,20 @@ const span = (attributes: unknown[]): ServiceTraceSpan => ({
   aiOutputTokens: 100,
   aiProvider: "openai",
   aiReasoningTokens: 20,
+  aiSessionId: "",
   aiTokensPerSecond: 50,
   aiTtftSeconds: 0.3,
+  aiUserId: "",
   durationNano: "2000000000",
   endTimeUnixNano: "3000000000",
   flags: 1,
-  isSegment: true,
   kind: 3,
   name: "chat gpt-5-mini",
   parentSpanId: "",
   receivedAtUnixNano: "4000000000",
+  replayId: "",
   resource: {},
   scope: {},
-  segmentId: "0123456789abcdef",
   serviceId: "service-test",
   source: "otlp",
   span: { attributes },
@@ -52,6 +56,63 @@ const attribute = (key: string, value: string) => ({
 });
 
 describe("AI trace normalization", () => {
+  test("recognizes credential-like AI context keys", () => {
+    expect(isSensitiveAiAttributeKey("ai.settings.context.secret")).toBe(true);
+    expect(isSensitiveAiAttributeKey("ai.settings.context.password")).toBe(
+      true
+    );
+    expect(isSensitiveAiAttributeKey("ai.settings.runtimeContext.apiKey")).toBe(
+      true
+    );
+    expect(isSensitiveAiAttributeKey("ai.settings.context.authorization")).toBe(
+      true
+    );
+    expect(
+      isSensitiveAiAttributeKey("ai.settings.runtimeContext.accessToken")
+    ).toBe(true);
+    for (const key of [
+      "authToken",
+      "bearerToken",
+      "refreshToken",
+      "sessionToken",
+    ]) {
+      expect(
+        isSensitiveAiAttributeKey(`ai.settings.runtimeContext.${key}`)
+      ).toBe(true);
+    }
+    expect(
+      isSensitiveAiAttributeKey("ai.settings.runtimeContext.private_key")
+    ).toBe(true);
+    expect(isSensitiveAiAttributeKey("ai.settings.runtimeContext.token")).toBe(
+      true
+    );
+    expect(
+      isSensitiveAiAttributeKey("ai.settings.runtimeContext.idToken")
+    ).toBe(true);
+    expect(isSensitiveAiAttributeKey("ai.settings.context.jwt")).toBe(true);
+    expect(isSensitiveAiAttributeKey("ai.settings.context.passphrase")).toBe(
+      true
+    );
+    expect(isSensitiveAiAttributeKey("ai.settings.context.userId")).toBe(false);
+  });
+
+  test("redacts nested credentials from AI context values", () => {
+    expect(
+      redactSensitiveAiValue(
+        JSON.stringify({
+          auth: { jwt: "hidden-jwt", region: "eu" },
+          idToken: "hidden-token",
+          organization: "acme",
+          profiles: [{ passphrase: "hidden-passphrase", role: "admin" }],
+        })
+      )
+    ).toEqual({
+      auth: { region: "eu" },
+      organization: "acme",
+      profiles: [{ role: "admin" }],
+    });
+  });
+
   test("renders standard messages and tool calls as semantic content", () => {
     const value = span([
       attribute(
@@ -242,27 +303,49 @@ describe("AI trace normalization", () => {
     });
   });
 
-  test("prefers reported cost and otherwise estimates cache-aware model cost", () => {
-    const reported = calculateAiPrice({
+  test("skips empty standard attributes when reading AI SDK fallbacks", () => {
+    const value = {
+      ...span([
+        attribute("gen_ai.tool.name", ""),
+        attribute("ai.toolCall.name", "lookup_invoice"),
+        attribute("gen_ai.tool.call.arguments", " "),
+        attribute("ai.toolCall.args", '{"invoiceId":"42"}'),
+        attribute("gen_ai.tool.call.result", "null"),
+        attribute("ai.toolCall.result", '{"status":"pending"}'),
+        attribute("gen_ai.request.max_tokens", ""),
+        attribute("ai.settings.maxOutputTokens", "800"),
+      ]),
+      aiKind: "tool",
+    };
+
+    expect(aiTool(value)).toMatchObject({
+      input: { invoiceId: "42" },
+      name: "lookup_invoice",
+      output: { status: "pending" },
+    });
+    expect(aiRequestSettings(value)).toContainEqual({
+      label: "Max tokens",
+      value: 800,
+    });
+  });
+
+  test("combines stored reported and estimated cost with provenance", () => {
+    const reported = storedAiPrice({
       actual: 0.0042,
+      estimated: null,
       model: "unknown",
       provider: "unknown",
-      usage: {},
     });
     expect(reported).toMatchObject({ estimated: false, value: 0.0042 });
 
-    const estimated = calculateAiPrice({
+    const estimated = storedAiPrice({
+      actual: 0.0042,
+      estimated: 0.001,
       model: "gpt-5-mini",
       provider: "openai",
-      timestamp: new Date("2026-08-09T00:00:00Z"),
-      usage: {
-        cacheReadTokens: 800,
-        inputTokens: 1000,
-        outputTokens: 100,
-      },
     });
     expect(estimated?.estimated).toBe(true);
-    expect(estimated?.value).toBeGreaterThan(0);
+    expect(estimated?.value).toBe(0.0052);
   });
 
   test("scopes nested agent runs without absorbing the enclosing trace", () => {

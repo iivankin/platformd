@@ -1,7 +1,12 @@
-import { readFile, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, readFile, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import tailwindcss from "tailwindcss-bun-plugin";
+
+import {
+  replayFrameSourcePath,
+  replayPlayerStyleSourcePath,
+} from "./replay-assets";
 
 const build = async ({
   entrypoint,
@@ -72,6 +77,11 @@ const build = async ({
     process.exit(1);
   }
   await writeFile(htmlOutput.path, rewritten);
+  await copyFile(replayFrameSourcePath, path.join(outdir, "replay-frame.html"));
+  await copyFile(
+    replayPlayerStyleSourcePath,
+    path.join(outdir, "replay-player.css")
+  );
 
   await Promise.all(
     result.outputs.map(async (output) => {

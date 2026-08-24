@@ -364,9 +364,9 @@ const serviceTelemetrySchema = z.object({
   internalOtlpEndpoint: z.string().url(),
   publicDsn: z.string().url().optional(),
   publicHostname: z.string().min(1).optional(),
-  publicOtlpTraceEndpoint: z.string().url().optional(),
-  publicOtlpTraceHostname: z.string().min(1).optional(),
-  publicOtlpTracePath: z.string().min(2).max(256).optional(),
+  publicOtlpEndpoint: z.string().url().optional(),
+  publicOtlpHostname: z.string().min(1).optional(),
+  publicOtlpPathPrefix: z.string().min(2).max(256).optional(),
   serviceId: z.string().min(1),
   trackedBy: z
     .array(
@@ -405,6 +405,7 @@ const serviceTraceSummarySchema = z.object({
   aiCacheReadTokens: z.number().int().nonnegative().nullable(),
   aiCacheWriteTokens: z.number().int().nonnegative().nullable(),
   aiCostUsd: z.number().nonnegative().nullable(),
+  aiEstimatedCostUsd: z.number().nonnegative().nullable(),
   aiInputTokens: z.number().int().nonnegative().nullable(),
   aiModel: z.string(),
   aiModelCallCount: z.number().int().nonnegative(),
@@ -414,11 +415,11 @@ const serviceTraceSummarySchema = z.object({
   aiTokensPerSecond: z.number().nonnegative().nullable(),
   aiToolCallCount: z.number().int().nonnegative(),
   aiTtftSeconds: z.number().nonnegative().nullable(),
+  aiUnpricedModelCallCount: z.number().int().nonnegative(),
   durationNano: z.string().regex(/^\d+$/u),
   errorSpanCount: z.number().int().nonnegative(),
   isAi: z.boolean(),
   name: z.string(),
-  segmentId: z.string().min(1),
   serviceId: z.string().min(1),
   sources: z.array(z.string()),
   spanCount: z.number().int().nonnegative(),
@@ -431,6 +432,7 @@ const serviceTraceSpanSchema = z.object({
   aiCacheReadTokens: z.number().int().nonnegative().nullable(),
   aiCacheWriteTokens: z.number().int().nonnegative().nullable(),
   aiCostUsd: z.number().nonnegative().nullable(),
+  aiEstimatedCostUsd: z.number().nonnegative().nullable(),
   aiInputTokens: z.number().int().nonnegative().nullable(),
   aiKind: z.string(),
   aiModel: z.string(),
@@ -438,20 +440,21 @@ const serviceTraceSpanSchema = z.object({
   aiOutputTokens: z.number().int().nonnegative().nullable(),
   aiProvider: z.string(),
   aiReasoningTokens: z.number().int().nonnegative().nullable(),
+  aiSessionId: z.string(),
   aiTokensPerSecond: z.number().nonnegative().nullable(),
   aiTtftSeconds: z.number().nonnegative().nullable(),
+  aiUserId: z.string(),
   baselineDurationNano: z.number().nonnegative().nullable().optional(),
   durationNano: z.string().regex(/^\d+$/u),
   endTimeUnixNano: z.string().regex(/^\d+$/u),
   flags: z.number().int().nonnegative(),
-  isSegment: z.boolean(),
   kind: z.number().int(),
   name: z.string(),
   parentSpanId: z.string(),
   receivedAtUnixNano: z.string().regex(/^\d+$/u),
+  replayId: z.string(),
   resource: z.unknown(),
   scope: z.unknown(),
-  segmentId: z.string().min(1),
   serviceId: z.string().min(1),
   source: z.string(),
   span: z.unknown(),
@@ -471,24 +474,110 @@ const serviceTraceMetricSampleSchema = z.object({
   value: z.number().nullable(),
 });
 
+const serviceTraceWebVitalSchema = z.object({
+  delta: z.number(),
+  id: z.string(),
+  name: z.string(),
+  navigationType: z.string(),
+  rating: z.string(),
+  spanId: z.string(),
+  timeUnixNano: z.string().regex(/^\d+$/u),
+  value: z.number(),
+});
+
 const serviceTraceDetailSchema = z.object({
   metrics: z.array(serviceTraceMetricSampleSchema).default([]),
-  relatedSegments: z
-    .array(
-      z.object({
-        durationNano: z.string().regex(/^\d+$/u),
-        errorSpanCount: z.number().int().nonnegative(),
-        name: z.string(),
-        segmentId: z.string().min(1),
-        serviceId: z.string().min(1),
-        spanCount: z.number().int().nonnegative(),
-        startedAtUnixNano: z.string().regex(/^\d+$/u),
-      })
-    )
-    .default([]),
-  segmentId: z.string().min(1),
   spans: z.array(serviceTraceSpanSchema),
   traceId: z.string().length(32),
+  webVitals: z.array(serviceTraceWebVitalSchema).default([]),
+});
+
+const aiUsageFields = {
+  cacheReadTokens: z.number().int().nonnegative(),
+  cacheWriteTokens: z.number().int().nonnegative(),
+  estimatedCostUsd: z.number().nonnegative().nullable(),
+  inputTokens: z.number().int().nonnegative(),
+  outputTokens: z.number().int().nonnegative(),
+  reportedCostUsd: z.number().nonnegative().nullable(),
+};
+
+const aiOverviewSchema = z.object({
+  activity: z.array(
+    z.object({
+      agentRunCount: z.number().int().nonnegative(),
+      errorCount: z.number().int().nonnegative(),
+      generationCount: z.number().int().nonnegative(),
+      timeUnixNano: z.string().regex(/^\d+$/u),
+      toolCallCount: z.number().int().nonnegative(),
+    })
+  ),
+  agents: z.array(
+    z.object({
+      agent: z.string(),
+      errorCount: z.number().int().nonnegative(),
+      p50LatencySeconds: z.number().nonnegative(),
+      p95LatencySeconds: z.number().nonnegative(),
+      p99LatencySeconds: z.number().nonnegative(),
+      runCount: z.number().int().nonnegative(),
+      userCount: z.number().int().nonnegative(),
+    })
+  ),
+  latency: z.array(
+    z.object({
+      count: z.number().int().nonnegative(),
+      kind: z.string(),
+      name: z.string(),
+      p50LatencySeconds: z.number().nonnegative(),
+      p90LatencySeconds: z.number().nonnegative(),
+      p95LatencySeconds: z.number().nonnegative(),
+      p99LatencySeconds: z.number().nonnegative(),
+    })
+  ),
+  modelUsage: z.array(
+    z.object({
+      model: z.string(),
+      provider: z.string(),
+      reasoningTokens: z.number().int().nonnegative(),
+      ...aiUsageFields,
+    })
+  ),
+  models: z.array(
+    z.object({
+      generationCount: z.number().int().nonnegative(),
+      model: z.string(),
+      p50LatencySeconds: z.number().nonnegative(),
+      p95LatencySeconds: z.number().nonnegative(),
+      p99LatencySeconds: z.number().nonnegative(),
+      provider: z.string(),
+    })
+  ),
+  summary: z.object({
+    agentCount: z.number().int().nonnegative(),
+    agentRunCount: z.number().int().nonnegative(),
+    errorCount: z.number().int().nonnegative(),
+    generationCount: z.number().int().nonnegative(),
+    identifiedAgentRunCount: z.number().int().nonnegative(),
+    modelCount: z.number().int().nonnegative(),
+    sessionCount: z.number().int().nonnegative(),
+    toolCallCount: z.number().int().nonnegative(),
+    userCount: z.number().int().nonnegative(),
+  }),
+  usage: z.array(
+    z.object({
+      reasoningTokens: z.number().int().nonnegative(),
+      timeUnixNano: z.string().regex(/^\d+$/u),
+      ...aiUsageFields,
+    })
+  ),
+  users: z.array(
+    z.object({
+      generationCount: z.number().int().nonnegative(),
+      runCount: z.number().int().nonnegative(),
+      sessionCount: z.number().int().nonnegative(),
+      userId: z.string(),
+      ...aiUsageFields,
+    })
+  ),
 });
 
 const serviceMetricDescriptorSchema = z.object({
@@ -525,7 +614,9 @@ export type ServiceTraceSpan = z.infer<typeof serviceTraceSpanSchema>;
 export type ServiceTraceMetricSample = z.infer<
   typeof serviceTraceMetricSampleSchema
 >;
+export type ServiceTraceWebVital = z.infer<typeof serviceTraceWebVitalSchema>;
 export type ServiceTraceDetail = z.infer<typeof serviceTraceDetailSchema>;
+export type AiOverview = z.infer<typeof aiOverviewSchema>;
 export type ServiceMetricDescriptor = z.infer<
   typeof serviceMetricDescriptorSchema
 >;
@@ -2120,18 +2211,18 @@ export const updateServiceTelemetryBrowserTunnel = async (
   return serviceTelemetrySchema.parse(await response.json());
 };
 
-export const updateServiceOTLPTracePublicAccess = async (
+export const updateServiceOTLPPublicAccess = async (
   projectID: string,
   serviceID: string,
   input: {
     expectedUpdatedAt: number;
     publicHostname: string;
-    tracePath: string;
+    pathPrefix: string;
   },
   fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceTelemetry> => {
   const response = await fetcher(
-    `${serviceTelemetryPath(projectID, serviceID)}/public-otlp-traces`,
+    `${serviceTelemetryPath(projectID, serviceID)}/public-otlp`,
     {
       body: JSON.stringify(input),
       headers: {
@@ -2142,7 +2233,7 @@ export const updateServiceOTLPTracePublicAccess = async (
     }
   );
   if (!response.ok) {
-    throw await apiError(response, "public OTLP trace update failed");
+    throw await apiError(response, "public OTLP update failed");
   }
   return serviceTelemetrySchema.parse(await response.json());
 };
@@ -2185,39 +2276,14 @@ export const fetchTelemetryTraces = async (
   return z.array(serviceTraceSummarySchema).parse(await response.json());
 };
 
-export const fetchServiceTraces = (
-  projectID: string,
-  serviceID: string,
-  signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch,
-  options: {
-    from?: number;
-    query?: string;
-    sort?: "latest" | "slowest" | "spans";
-    status?: "all" | "error" | "ok";
-    to?: number;
-  } = {}
-): Promise<ServiceTraceSummary[]> =>
-  fetchTelemetryTraces(
-    { kind: "service", projectID, serviceID },
-    signal,
-    fetcher,
-    options
-  );
-
 export const fetchTelemetryTrace = async (
   scope: MetricScope,
   traceID: string,
   signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch,
-  segmentID?: string
+  fetcher: Fetcher = globalThis.fetch
 ): Promise<ServiceTraceDetail> => {
-  const query = new URLSearchParams();
-  if (segmentID) {
-    query.set("segment", segmentID);
-  }
   const response = await fetcher(
-    `${telemetryScopePath(scope)}/traces/${encodeURIComponent(traceID)}${query.size > 0 ? `?${query.toString()}` : ""}`,
+    `${telemetryScopePath(scope)}/traces/${encodeURIComponent(traceID)}`,
     { headers: { Accept: "application/json" }, signal }
   );
   if (!response.ok) {
@@ -2226,21 +2292,26 @@ export const fetchTelemetryTrace = async (
   return serviceTraceDetailSchema.parse(await response.json());
 };
 
-export const fetchServiceTrace = (
-  projectID: string,
-  serviceID: string,
-  traceID: string,
+export const fetchAiOverview = async (
+  scope: MetricScope,
+  input: { from: number; step: number; to: number },
   signal?: AbortSignal,
-  fetcher: Fetcher = globalThis.fetch,
-  segmentID?: string
-): Promise<ServiceTraceDetail> =>
-  fetchTelemetryTrace(
-    { kind: "service", projectID, serviceID },
-    traceID,
-    signal,
-    fetcher,
-    segmentID
+  fetcher: Fetcher = globalThis.fetch
+): Promise<AiOverview> => {
+  const query = new URLSearchParams({
+    from: String(Math.floor(input.from)),
+    step: String(Math.floor(input.step)),
+    to: String(Math.floor(input.to)),
+  });
+  const response = await fetcher(
+    `${telemetryScopePath(scope)}/ai/overview?${query.toString()}`,
+    { headers: { Accept: "application/json" }, signal }
   );
+  if (!response.ok) {
+    throw await apiError(response, "AI overview request failed");
+  }
+  return aiOverviewSchema.parse(await response.json());
+};
 
 export const fetchScopedIssues = async (
   scope: Exclude<MetricScope, { kind: "service" }>,

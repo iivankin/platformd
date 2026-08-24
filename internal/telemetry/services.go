@@ -21,7 +21,7 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
-const maximumPublicOTLPTraceBytes = 20 << 20
+const maximumPublicOTLPBytes = 20 << 20
 
 type ServiceRuntime interface {
 	ServiceTelemetryGateway(string) (netip.Addr, error)
@@ -54,17 +54,17 @@ type serviceHostnames struct {
 }
 
 type ServiceConfiguration struct {
-	ServiceID               string
-	InternalHostname        string
-	InternalDSN             string
-	InternalOTLPEndpoint    string
-	PublicHostname          string
-	PublicDSN               string
-	BrowserTunnelPath       string
-	PublicOTLPTraceHostname string
-	PublicOTLPTracePath     string
-	PublicOTLPTraceEndpoint string
-	UpdatedAt               int64
+	ServiceID            string
+	InternalHostname     string
+	InternalDSN          string
+	InternalOTLPEndpoint string
+	PublicHostname       string
+	PublicDSN            string
+	BrowserTunnelPath    string
+	PublicOTLPHostname   string
+	PublicOTLPPathPrefix string
+	PublicOTLPEndpoint   string
+	UpdatedAt            int64
 }
 
 type MetricScopeResponse struct {
@@ -147,6 +147,17 @@ func (manager *ServiceManager) ServeTraceListScope(response http.ResponseWriter,
 		anchor = &anchorServiceID
 	}
 	manager.serveJSONScope(response, request, "/internal/trace-scopes", struct {
+		AnchorServiceID *string  `json:"anchorServiceId"`
+		ServiceIDs      []string `json:"serviceIds"`
+	}{AnchorServiceID: anchor, ServiceIDs: serviceIDs})
+}
+
+func (manager *ServiceManager) ServeAIOverviewScope(response http.ResponseWriter, request *http.Request, anchorServiceID string, serviceIDs []string) {
+	var anchor *string
+	if anchorServiceID != "" {
+		anchor = &anchorServiceID
+	}
+	manager.serveJSONScope(response, request, "/internal/ai-scopes/overview", struct {
 		AnchorServiceID *string  `json:"anchorServiceId"`
 		ServiceIDs      []string `json:"serviceIds"`
 	}{AnchorServiceID: anchor, ServiceIDs: serviceIDs})
@@ -407,15 +418,15 @@ func (manager *ServiceManager) Forget(service state.ServiceDesired) error {
 func (manager *ServiceManager) Configuration(service state.ServiceDesired) (ServiceConfiguration, error) {
 	return ServiceConfiguration{
 		ServiceID: service.ID, InternalHostname: InternalSentryHostname(service),
-		InternalDSN:             manager.InternalDSN(service),
-		InternalOTLPEndpoint:    manager.InternalOTLPEndpoint(service),
-		PublicHostname:          service.SentryPublicHostname,
-		PublicDSN:               manager.PublicDSN(service),
-		BrowserTunnelPath:       service.SentryTunnelPath,
-		PublicOTLPTraceHostname: service.OTLPTracePublicHostname,
-		PublicOTLPTracePath:     service.OTLPTracePath,
-		PublicOTLPTraceEndpoint: PublicOTLPTraceEndpoint(service),
-		UpdatedAt:               service.UpdatedAtMillis,
+		InternalDSN:          manager.InternalDSN(service),
+		InternalOTLPEndpoint: manager.InternalOTLPEndpoint(service),
+		PublicHostname:       service.SentryPublicHostname,
+		PublicDSN:            manager.PublicDSN(service),
+		BrowserTunnelPath:    service.SentryTunnelPath,
+		PublicOTLPHostname:   service.OTLPPublicHostname,
+		PublicOTLPPathPrefix: service.OTLPPathPrefix,
+		PublicOTLPEndpoint:   PublicOTLPEndpoint(service),
+		UpdatedAt:            service.UpdatedAtMillis,
 	}, nil
 }
 
@@ -423,18 +434,19 @@ func (manager *ServiceManager) ServePublic(response http.ResponseWriter, request
 	manager.proxy.ServePublic(response, request, serviceID)
 }
 
-func (manager *ServiceManager) ServePublicOTLPTraces(response http.ResponseWriter, request *http.Request, serviceID string) {
-	if manager == nil || manager.otlpProxy == nil || request.Method != http.MethodPost || request.URL.Path != "/v1/traces" {
+func (manager *ServiceManager) ServePublicOTLP(response http.ResponseWriter, request *http.Request, serviceID string) {
+	if manager == nil || manager.otlpProxy == nil || request.Method != http.MethodPost ||
+		(request.URL.Path != "/v1/traces" && request.URL.Path != "/v1/logs") {
 		http.NotFound(response, request)
 		return
 	}
-	if request.ContentLength > maximumPublicOTLPTraceBytes {
+	if request.ContentLength > maximumPublicOTLPBytes {
 		http.Error(response, http.StatusText(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge)
 		return
 	}
 	request.Header.Del("X-Platformd-Service-Id")
 	request.Header.Set("X-Platformd-Service-Id", serviceID)
-	request.Body = http.MaxBytesReader(response, request.Body, maximumPublicOTLPTraceBytes)
+	request.Body = http.MaxBytesReader(response, request.Body, maximumPublicOTLPBytes)
 	manager.otlpProxy.ServeHTTP(response, request)
 }
 
@@ -565,11 +577,11 @@ func InternalOTLPEndpoint(service state.ServiceDesired) string {
 	return "http://" + InternalOTLPHostname(service) + ":" + strconv.Itoa(firewall.OTLPHTTPPort)
 }
 
-func PublicOTLPTraceEndpoint(service state.ServiceDesired) string {
-	if service.OTLPTracePublicHostname == "" || service.OTLPTracePath == "" {
+func PublicOTLPEndpoint(service state.ServiceDesired) string {
+	if service.OTLPPublicHostname == "" || service.OTLPPathPrefix == "" {
 		return ""
 	}
-	return "https://" + service.OTLPTracePublicHostname + service.OTLPTracePath
+	return "https://" + service.OTLPPublicHostname + service.OTLPPathPrefix
 }
 
 func (manager *ServiceManager) unpublish(projectID string, hostnames serviceHostnames) error {

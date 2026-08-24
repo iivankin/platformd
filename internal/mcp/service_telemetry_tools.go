@@ -28,6 +28,7 @@ type ServiceTelemetry interface {
 	QueryMetricScope(context.Context, state.MetricScope, string, json.RawMessage) (telemetry.MetricScopeResponse, error)
 	UpdateServiceTelemetryPublicAccess(context.Context, state.UpdateServiceSentryPublicAccess) (telemetry.ServiceConfiguration, error)
 	UpdateServiceTelemetryTunnel(context.Context, state.UpdateServiceTelemetryTunnel) (telemetry.ServiceConfiguration, error)
+	UpdateServiceOTLPPublicAccess(context.Context, state.UpdateServiceOTLPPublicAccess) (telemetry.ServiceConfiguration, error)
 }
 
 func serviceTelemetryReadTools() []Tool {
@@ -50,7 +51,7 @@ func serviceTelemetryReadTools() []Tool {
 		}, []string{"projectId", "serviceId", id})
 	}
 	return append([]Tool{
-		{Name: "get_service_telemetry", Description: "Call before configuring a service SDK or artifact upload. Returns the project-network Sentry DSN and OTLP endpoint, an optional public DSN for browsers/external workloads, public-domain revision, webhooks, and sentry-cli environments.", InputSchema: detailSchema()},
+		{Name: "get_service_telemetry", Description: "Call before configuring a service SDK or artifact upload. Returns the project-network Sentry DSN and OTLP endpoint, optional public Sentry and OTLP endpoints for browsers/external workloads, public-domain revision, webhooks, and sentry-cli environments.", InputSchema: detailSchema()},
 		{Name: "list_service_issues", Description: "Primary error inbox: list errors grouped by fingerprint, with status and occurrence counts. Start here unless you already have an exact event, trace, or replay ID.", InputSchema: objectSchema(list, []string{"projectId", "serviceId"})},
 		{Name: "get_service_issue", Description: "Read one grouped issue plus its recent occurrences and debugging context. Use returned event, trace, or replay IDs with their detail tools.", InputSchema: detail("issueId")},
 		{Name: "list_service_error_events", Description: "Search individual Sentry error occurrences. Prefer list_service_issues for normal triage; use this when occurrence-level ordering or free-text search is required.", InputSchema: objectSchema(list, []string{"projectId", "serviceId"})},
@@ -93,6 +94,14 @@ func serviceTelemetryAdminTools() []Tool {
 			"publicHostname":    map[string]any{"type": "string", "maxLength": 253, "description": "Hostname only, without scheme or path; may be an existing domain of this service; empty removes public access"},
 			"expectedUpdatedAt": map[string]any{"type": "integer", "minimum": 1, "description": "Exact updatedAt from get_service_telemetry"},
 		}, []string{"projectId", "serviceId", "publicHostname", "expectedUpdatedAt"}),
+	}, {
+		Name: "set_service_public_otlp", Description: "Set the public OTLP HTTP/protobuf base endpoint for browser or external traces and logs. The hostname may be a domain already attached to this service; pathPrefix exposes exact pathPrefix/v1/traces and pathPrefix/v1/logs routes. Pass empty hostname and pathPrefix values to disable it. Copy expectedUpdatedAt from get_service_telemetry. Requires an admin token.",
+		InputSchema: objectSchema(map[string]any{
+			"projectId": map[string]any{"type": "string"}, "serviceId": map[string]any{"type": "string"},
+			"publicHostname":    map[string]any{"type": "string", "maxLength": 253, "description": "Hostname only, without scheme or path; may be an existing domain of this service; empty disables public OTLP"},
+			"pathPrefix":        map[string]any{"type": "string", "maxLength": 256, "description": "Base path such as /otel; empty disables public OTLP together with publicHostname"},
+			"expectedUpdatedAt": map[string]any{"type": "integer", "minimum": 1, "description": "Exact updatedAt from get_service_telemetry"},
+		}, []string{"projectId", "serviceId", "publicHostname", "pathPrefix", "expectedUpdatedAt"}),
 	}, {
 		Name: "set_service_browser_tunnel", Description: "Set an optional same-origin Browser SDK tunnel path. Platformd accepts the Sentry envelope directly at this exact POST path; no forwarding hop is added. Configure the returned path as the SDK tunnel option. Empty disables the alias. Copy expectedUpdatedAt from get_service_telemetry. Requires an admin token.",
 		InputSchema: objectSchema(map[string]any{
@@ -241,6 +250,7 @@ type serviceTelemetryControlArguments struct {
 	ProjectID         string   `json:"projectId"`
 	ServiceID         string   `json:"serviceId"`
 	PublicHostname    string   `json:"publicHostname"`
+	PathPrefix        string   `json:"pathPrefix"`
 	BrowserTunnelPath string   `json:"browserTunnelPath"`
 	ExpectedUpdatedAt int64    `json:"expectedUpdatedAt"`
 	URL               string   `json:"url"`
@@ -306,6 +316,28 @@ func (handler *Handler) callServiceTelemetryControl(ctx context.Context, name st
 			return nil, err
 		}
 		return handler.serviceTelemetryConfiguration(ctx, input.ProjectID, input.ServiceID)
+	case "set_service_public_otlp":
+		if input.ExpectedUpdatedAt <= 0 || len(input.PublicHostname) > 253 || len(input.PathPrefix) > 256 {
+			return nil, fmt.Errorf("%w: expectedUpdatedAt, publicHostname, or pathPrefix is invalid", errInvalidArguments)
+		}
+		auditID, err := id.New()
+		if err != nil {
+			return nil, err
+		}
+		requestID, err := id.New()
+		if err != nil {
+			return nil, err
+		}
+		_, err = handler.telemetry.UpdateServiceOTLPPublicAccess(ctx, state.UpdateServiceOTLPPublicAccess{
+			ID: input.ServiceID, ProjectID: input.ProjectID, PublicHostname: input.PublicHostname,
+			PathPrefix: input.PathPrefix, ExpectedUpdatedMillis: input.ExpectedUpdatedAt,
+			AuditEventID: auditID, ActorKind: "token", ActorID: identity.TokenID,
+			RequestCorrelationID: requestID, UpdatedAtMillis: time.Now().UnixMilli(),
+		})
+		if err != nil {
+			return nil, err
+		}
+		return handler.serviceTelemetryConfiguration(ctx, input.ProjectID, input.ServiceID)
 	case "rotate_service_artifact_token":
 		token, err := handler.telemetry.RotateServiceArtifactToken(ctx, input.ProjectID, input.ServiceID)
 		if err != nil {
@@ -362,8 +394,11 @@ func (handler *Handler) serviceTelemetryConfiguration(ctx context.Context, proje
 		"serviceId": configuration.ServiceID, "internalHostname": configuration.InternalHostname,
 		"internalDsn": configuration.InternalDSN, "internalOtlpEndpoint": configuration.InternalOTLPEndpoint,
 		"publicHostname": configuration.PublicHostname, "publicDsn": configuration.PublicDSN,
-		"browserTunnelPath": configuration.BrowserTunnelPath,
-		"updatedAt":         configuration.UpdatedAt, "webhooks": items,
+		"browserTunnelPath":    configuration.BrowserTunnelPath,
+		"publicOtlpHostname":   configuration.PublicOTLPHostname,
+		"publicOtlpPathPrefix": configuration.PublicOTLPPathPrefix,
+		"publicOtlpEndpoint":   configuration.PublicOTLPEndpoint,
+		"updatedAt":            configuration.UpdatedAt, "webhooks": items,
 		"artifactUploads": artifactUploadConfiguration(configuration),
 	}, nil
 }

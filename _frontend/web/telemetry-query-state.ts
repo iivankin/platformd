@@ -16,6 +16,7 @@ export const telemetryViewValues = [
   "errors",
   "traces",
   "settings",
+  "ai",
 ] as const;
 
 export type TelemetryView = (typeof telemetryViewValues)[number];
@@ -55,6 +56,14 @@ export const timeRangeQueryParsers = {
   timeTo: parseAsInteger,
 };
 
+export const aiTimeRangeQueryParsers = {
+  aiTimeFrom: parseAsInteger,
+  aiTimeRange: parseAsStringLiteral(telemetryTimeRangeValues).withDefault(
+    "28d"
+  ),
+  aiTimeTo: parseAsInteger,
+};
+
 export const logQueryParsers = {
   deployment: parseAsString,
   logFields: parseAsJson((value) => {
@@ -75,7 +84,6 @@ export const traceQueryParsers = {
   traceQuery: parseAsString
     .withDefault("")
     .withOptions({ limitUrlUpdates: debounce(250) }),
-  traceSegment: parseAsString,
   traceSort: parseAsStringLiteral([
     "latest",
     "slowest",

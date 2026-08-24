@@ -2141,6 +2141,7 @@ dependencies = [
  "opentelemetry-proto",
  "proguard",
  "prost 0.14.4",
+ "regex",
  "reqwest 0.13.4",
  "rmp-serde",
  "serde",

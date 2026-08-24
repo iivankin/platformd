@@ -62,4 +62,17 @@ func TestSecurityHeaders(t *testing.T) {
 	if got := response.Header().Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Fatalf("X-Content-Type-Options = %q", got)
 	}
+
+	replayResponse := httptest.NewRecorder()
+	server.Handler(server.DefaultMeta("bootstrapping")).ServeHTTP(replayResponse, httptest.NewRequest(http.MethodGet, "/replay-frame.html", nil))
+
+	if replayResponse.Code != http.StatusOK || !strings.Contains(replayResponse.Body.String(), `<div id="root"></div>`) {
+		t.Fatalf("replay frame status/body = %d/%q", replayResponse.Code, replayResponse.Body.String())
+	}
+	if got := replayResponse.Header().Get("Cache-Control"); got != "private, no-store" {
+		t.Fatalf("replay frame Cache-Control = %q", got)
+	}
+	if got := replayResponse.Header().Get("Content-Security-Policy"); !strings.Contains(got, "frame-ancestors 'self'") || !strings.Contains(got, "script-src 'none'") || !strings.Contains(got, "style-src 'self' 'unsafe-inline'") {
+		t.Fatalf("unexpected replay CSP: %q", got)
+	}
 }

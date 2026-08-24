@@ -2,13 +2,14 @@ import { describe, expect, test } from "bun:test";
 
 import type { ServiceTraceSpan } from "@/api";
 
-import { buildTraceTimeline } from "./trace-timeline";
+import { buildTraceTimeline, zoomTraceViewport } from "./trace-timeline";
 
 const span = (start: bigint, end: bigint): ServiceTraceSpan => ({
   aiAgent: "",
   aiCacheReadTokens: null,
   aiCacheWriteTokens: null,
   aiCostUsd: null,
+  aiEstimatedCostUsd: null,
   aiInputTokens: null,
   aiKind: "",
   aiModel: "",
@@ -16,19 +17,20 @@ const span = (start: bigint, end: bigint): ServiceTraceSpan => ({
   aiOutputTokens: null,
   aiProvider: "",
   aiReasoningTokens: null,
+  aiSessionId: "",
   aiTokensPerSecond: null,
   aiTtftSeconds: null,
+  aiUserId: "",
   durationNano: (end - start).toString(),
   endTimeUnixNano: end.toString(),
   flags: 0,
-  isSegment: false,
   kind: 1,
   name: "work",
   parentSpanId: "root",
   receivedAtUnixNano: end.toString(),
+  replayId: "",
   resource: {},
   scope: {},
-  segmentId: "root",
   serviceId: "service-test",
   source: "otlp",
   span: {},
@@ -53,5 +55,13 @@ describe("trace timeline", () => {
     expect(timeline.compressedGapCount).toBe(1);
     expect(secondStart).toBeLessThan(70);
     expect(timeline.timeAt(secondStart)).toBe(900n);
+  });
+
+  test("does not expand a sub-millisecond trace when zooming in", () => {
+    const baseViewport = { end: 500_000n, start: 0n };
+
+    expect(
+      zoomTraceViewport(baseViewport, baseViewport, 250_000n, "in")
+    ).toEqual(baseViewport);
   });
 });

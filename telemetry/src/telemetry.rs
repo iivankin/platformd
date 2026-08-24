@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::future::Future;
 use std::io::Read;
 use std::net::SocketAddr;
@@ -36,7 +37,7 @@ use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::logs::v1::ResourceLogs;
 use opentelemetry_proto::tonic::metrics::v1::{ResourceMetrics, metric};
 use opentelemetry_proto::tonic::resource::v1::Resource;
-use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, SpanFlags};
+use opentelemetry_proto::tonic::trace::v1::ResourceSpans;
 use prost::Message;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -45,13 +46,14 @@ use tokio::sync::{mpsc, oneshot};
 use tonic::{Code, Request, Response as GrpcResponse, Status};
 use uuid::Uuid;
 
+use crate::ai_price::{AiPriceEstimator, TokenUsage};
 use crate::error::{Error, Result};
 use crate::gen_ai;
+use crate::service::SERVICE_ID_HEADER;
 use crate::storage::{SignalTable, Store};
 
 const QUEUE_BATCHES: usize = 256;
 const OTLP_MAX_MESSAGE_BYTES: usize = 20 << 20;
-const SERVICE_ID_HEADER: &str = "x-platformd-service-id";
 
 struct OtlpIdentity {
     service_id: String,
@@ -87,6 +89,7 @@ pub(crate) async fn serve(
     store: Store,
     grpc_endpoint: SocketAddr,
     http_endpoint: SocketAddr,
+    ai_prices: std::sync::Arc<AiPriceEstimator>,
 ) -> anyhow::Result<()> {
     let (traces_tx, traces_rx) = mpsc::channel(QUEUE_BATCHES);
     let (metrics_tx, metrics_rx) = mpsc::channel(QUEUE_BATCHES);
@@ -119,7 +122,7 @@ pub(crate) async fn serve(
     tokio::try_join!(
         async move { grpc.await.map_err(anyhow::Error::from) },
         async move { http.await.map_err(anyhow::Error::from) },
-        consume_traces(trace_store, traces_rx),
+        consume_traces(trace_store, ai_prices, traces_rx),
         consume_metrics(metric_store, metrics_rx),
         consume_logs(store, logs_rx),
     )?;
@@ -368,18 +371,48 @@ fn decode_http_body(headers: &HeaderMap, body: &[u8]) -> std::result::Result<Vec
 
 async fn consume_traces(
     store: Store,
+    ai_prices: std::sync::Arc<AiPriceEstimator>,
     mut receiver: mpsc::Receiver<SignalBatch<ResourceSpans>>,
 ) -> anyhow::Result<()> {
     while let Some(batch) = receiver.recv().await {
         let SignalBatch { items, persisted } = batch;
         persist_batch(persisted, async {
+            let rows = trace_rows(items, Some(&ai_prices))?;
+            let affected_span_identities = ai_operation_span_identities(&rows);
+            store.ingest_signal_rows(SignalTable::Spans, rows).await?;
             store
-                .ingest_signal_rows(SignalTable::Spans, trace_rows(items)?)
+                .normalize_ai_operation_wrappers(affected_span_identities)
                 .await
         })
         .await?;
     }
     Err(anyhow::anyhow!("OTLP traces channel closed"))
+}
+
+fn ai_operation_span_identities(rows: &[Value]) -> Vec<(String, String, String)> {
+    rows.iter()
+        .filter(|row| matches!(row["ai_kind"].as_str(), Some("embedding" | "rerank")))
+        .flat_map(|row| {
+            let service_id = row["service_id"].as_str().unwrap_or_default();
+            let trace_id = row["trace_id"].as_str().unwrap_or_default();
+            let span_id = row["span_id"].as_str().unwrap_or_default();
+            let parent_span_id = row["parent_span_id"].as_str().unwrap_or_default();
+            [span_id, parent_span_id]
+                .into_iter()
+                .filter(|candidate| {
+                    !service_id.is_empty() && !trace_id.is_empty() && !candidate.is_empty()
+                })
+                .map(move |candidate| {
+                    (
+                        service_id.to_owned(),
+                        trace_id.to_owned(),
+                        candidate.to_owned(),
+                    )
+                })
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 async fn consume_logs(
@@ -436,7 +469,10 @@ async fn persist_batch(
     }
 }
 
-fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
+fn trace_rows(
+    resources: Vec<ResourceSpans>,
+    ai_prices: Option<&AiPriceEstimator>,
+) -> Result<Vec<Value>> {
     let received_at = unix_nanos()?;
     let mut rows = Vec::new();
     for resource_spans in resources {
@@ -453,6 +489,23 @@ fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
             let scope = json_string(&scope_spans.scope, "trace scope")?;
             for span in scope_spans.spans {
                 let ai = gen_ai::index_span(&span);
+                let ai_estimated_cost_usd = (ai.cost_usd.is_none()
+                    && matches!(ai.kind.as_str(), "model" | "embedding" | "rerank"))
+                .then(|| {
+                    ai_prices?.estimate(
+                        &ai.provider,
+                        &ai.model,
+                        span.start_time_unix_nano,
+                        TokenUsage {
+                            input_tokens: ai.input_tokens.unwrap_or_default(),
+                            output_tokens: ai.output_tokens.unwrap_or_default(),
+                            cache_read_tokens: ai.cache_read_tokens.unwrap_or_default(),
+                            cache_write_tokens: ai.cache_write_tokens.unwrap_or_default(),
+                            reasoning_tokens: ai.reasoning_tokens.unwrap_or_default(),
+                        },
+                    )
+                })
+                .flatten();
                 let replay_id = span
                     .attributes
                     .iter()
@@ -481,15 +534,11 @@ fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
                     .status
                     .as_ref()
                     .map_or("", |status| status.message.as_str());
-                let is_segment = parent_span_id.is_empty()
-                    || span.flags & SpanFlags::ContextIsRemoteMask as u32 != 0;
                 rows.push(json!({
                     "service_id": service_id,
                     "trace_id": trace_id,
                     "span_id": span_id,
                     "parent_span_id": parent_span_id,
-                    "segment_id": trace_id,
-                    "is_segment": is_segment,
                     "trace_state": span.trace_state,
                     "name": span.name,
                     "kind": span.kind,
@@ -511,12 +560,16 @@ fn trace_rows(resources: Vec<ResourceSpans>) -> Result<Vec<Value>> {
                     "ai_provider": ai.provider,
                     "ai_model": ai.model,
                     "ai_agent": ai.agent,
+                    "ai_tool": ai.tool,
+                    "ai_user_id": ai.user_id,
+                    "ai_session_id": ai.session_id,
                     "ai_input_tokens": ai.input_tokens,
                     "ai_output_tokens": ai.output_tokens,
                     "ai_cache_read_tokens": ai.cache_read_tokens,
                     "ai_cache_write_tokens": ai.cache_write_tokens,
                     "ai_reasoning_tokens": ai.reasoning_tokens,
                     "ai_cost_usd": ai.cost_usd,
+                    "ai_estimated_cost_usd": ai_estimated_cost_usd,
                     "ai_ttft_seconds": ai.ttft_seconds,
                     "ai_tokens_per_second": ai.tokens_per_second,
                     "search_text": ai.search_text,
@@ -550,11 +603,6 @@ pub(crate) fn sentry_error_trace_row(
         .and_then(Value::as_str)
         .and_then(|value| normalize_hex_id(value, 16))
         .unwrap_or_default();
-    let Some(segment_id) = sentry_trace_segment_id(trace)
-        .or_else(|| (!parent_span_id.is_empty()).then(|| parent_span_id.clone()))
-    else {
-        return Ok(None);
-    };
     let timestamp = Timestamp::from_str(&event.timestamp)
         .ok()
         .and_then(|value| u64::try_from(value.as_nanosecond()).ok())
@@ -579,8 +627,6 @@ pub(crate) fn sentry_error_trace_row(
         "trace_id": trace_id,
         "span_id": span_id,
         "parent_span_id": parent_span_id,
-        "segment_id": segment_id,
-        "is_segment": false,
         "trace_state": "",
         "name": event.title,
         "kind": 1,
@@ -600,23 +646,6 @@ pub(crate) fn sentry_error_trace_row(
         "replay_id": sentry_replay_id(&event.payload).unwrap_or_default(),
         "search_text": format!("{} {} {}", event.title, event.event_id, event.issue_id),
     })))
-}
-
-fn sentry_trace_segment_id(trace: &serde_json::Map<String, Value>) -> Option<String> {
-    trace
-        .get("segment_id")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            trace
-                .get("data")
-                .and_then(Value::as_object)
-                .and_then(|data| {
-                    data.get("sentry.segment.id")
-                        .or_else(|| data.get("sentry.segment_id"))
-                })
-                .and_then(Value::as_str)
-        })
-        .and_then(|value| normalize_hex_id(value, 16))
 }
 
 fn replay_attribute_key(key: &str) -> bool {
@@ -753,6 +782,14 @@ fn log_rows(resources: Vec<ResourceLogs>) -> Result<Vec<Value>> {
                 let stream = attribute(&record.attributes, "log.iostream").unwrap_or_default();
                 let partial = attribute(&record.attributes, "platformd.log.partial")
                     .is_some_and(|value| value == "true");
+                let time_unix_nano = [
+                    record.time_unix_nano,
+                    record.observed_time_unix_nano,
+                    received_at,
+                ]
+                .into_iter()
+                .find(|timestamp| *timestamp != 0)
+                .expect("received timestamp is non-zero");
                 rows.push(json!({
                     "id": Uuid::new_v4().to_string(),
                     "service_id": service_id,
@@ -760,12 +797,13 @@ fn log_rows(resources: Vec<ResourceLogs>) -> Result<Vec<Value>> {
                     "attempt_id": attempt_id,
                     "stream": stream,
                     "partial": partial,
-                    "time_unix_nano": record.time_unix_nano,
+                    "time_unix_nano": time_unix_nano,
                     "observed_time_unix_nano": record.observed_time_unix_nano,
                     "trace_id": trace_id,
                     "span_id": span_id,
                     "severity_number": severity_number,
                     "severity_text": severity_text,
+                    "event_name": record.event_name,
                     "message": message,
                     "body": body_text,
                     "body_json": body_json,
@@ -1112,12 +1150,56 @@ fn unix_nanos() -> Result<u64> {
 
 #[cfg(test)]
 mod tests {
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue};
     use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
 
     use super::*;
+
+    fn otlp_attribute(key: &str, value: impl Into<String>) -> KeyValue {
+        KeyValue {
+            key: key.into(),
+            value: Some(AnyValue {
+                value: Some(AttributeValue::StringValue(value.into())),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn otlp_integer_attribute(key: &str, value: i64) -> KeyValue {
+        KeyValue {
+            key: key.into(),
+            value: Some(AnyValue {
+                value: Some(AttributeValue::IntValue(value)),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn service_resource(service_id: &str) -> Option<Resource> {
+        Some(Resource {
+            attributes: vec![otlp_attribute("service.id", service_id)],
+            ..Default::default()
+        })
+    }
+
+    async fn persist_trace_resources(
+        store: &Store,
+        resources: Vec<ResourceSpans>,
+        ai_prices: Option<&AiPriceEstimator>,
+    ) {
+        let rows = trace_rows(resources, ai_prices).unwrap();
+        let affected_span_identities = ai_operation_span_identities(&rows);
+        store
+            .ingest_signal_rows(SignalTable::Spans, rows)
+            .await
+            .unwrap();
+        store
+            .normalize_ai_operation_wrappers(affected_span_identities)
+            .await
+            .unwrap();
+    }
 
     #[test]
     fn service_identity_prefers_platformd_service_id() {
@@ -1221,46 +1303,15 @@ mod tests {
     }
 
     #[test]
-    fn invalid_otlp_span_ids_are_rejected_before_storage() {
-        let result = trace_rows(vec![ResourceSpans {
-            scope_spans: vec![ScopeSpans {
-                spans: vec![Span {
-                    trace_id: vec![1; 15],
-                    span_id: vec![1; 8],
-                    ..Default::default()
-                }],
-                ..Default::default()
-            }],
-            ..Default::default()
-        }]);
-
-        assert!(matches!(result, Err(Error::InvalidRequest(_))));
-    }
-
-    #[test]
-    fn otlp_spans_keep_one_distributed_trace_across_remote_parents() {
-        let trace_id = vec![1; 16];
-        let rows = trace_rows(vec![ResourceSpans {
-            scope_spans: vec![ScopeSpans {
-                spans: vec![
-                    Span {
-                        trace_id: trace_id.clone(),
-                        span_id: vec![1; 8],
+    fn log_timestamp_falls_back_to_observed_then_received_time() {
+        let rows = log_rows(vec![ResourceLogs {
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![
+                    LogRecord {
+                        observed_time_unix_nano: 42,
                         ..Default::default()
                     },
-                    Span {
-                        trace_id: trace_id.clone(),
-                        span_id: vec![2; 8],
-                        parent_span_id: vec![1; 8],
-                        flags: (1 << 8) | (1 << 9),
-                        ..Default::default()
-                    },
-                    Span {
-                        trace_id,
-                        span_id: vec![3; 8],
-                        parent_span_id: vec![2; 8],
-                        ..Default::default()
-                    },
+                    LogRecord::default(),
                 ],
                 ..Default::default()
             }],
@@ -1268,12 +1319,659 @@ mod tests {
         }])
         .unwrap();
 
-        assert_eq!(rows[0]["segment_id"], "01010101010101010101010101010101");
-        assert_eq!(rows[0]["is_segment"], true);
-        assert_eq!(rows[1]["segment_id"], rows[0]["segment_id"]);
-        assert_eq!(rows[1]["is_segment"], true);
-        assert_eq!(rows[2]["segment_id"], rows[0]["segment_id"]);
-        assert_eq!(rows[2]["is_segment"], false);
+        assert_eq!(rows[0]["time_unix_nano"], 42);
+        assert_eq!(rows[0]["observed_time_unix_nano"], 42);
+        assert_eq!(rows[1]["time_unix_nano"], rows[1]["received_at_unix_nano"]);
+        assert_ne!(rows[1]["time_unix_nano"], 0);
+    }
+
+    #[test]
+    fn invalid_otlp_span_ids_are_rejected_before_storage() {
+        let result = trace_rows(
+            vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![Span {
+                        trace_id: vec![1; 15],
+                        span_id: vec![1; 8],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            None,
+        );
+
+        assert!(matches!(result, Err(Error::InvalidRequest(_))));
+    }
+
+    #[test]
+    fn otlp_model_spans_store_catalog_cost_at_ingestion() {
+        let estimator = AiPriceEstimator::from_catalog(
+            br#"[{"id":"openai","models":[{"id":"gpt-test","match":{"equals":"gpt-test"},"prices":{"input_mtok":1,"output_mtok":2}}]}]"#,
+        )
+        .unwrap();
+        let attribute = |key: &str, value: AttributeValue| KeyValue {
+            key: key.into(),
+            value: Some(AnyValue { value: Some(value) }),
+            ..Default::default()
+        };
+        let rows = trace_rows(
+            vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![Span {
+                        trace_id: vec![1; 16],
+                        span_id: vec![2; 8],
+                        name: "chat gpt-test".into(),
+                        start_time_unix_nano: 1_787_097_600_000_000_000,
+                        end_time_unix_nano: 1_787_097_601_000_000_000,
+                        attributes: vec![
+                            attribute(
+                                "gen_ai.operation.name",
+                                AttributeValue::StringValue("chat".into()),
+                            ),
+                            attribute(
+                                "gen_ai.provider.name",
+                                AttributeValue::StringValue("openai".into()),
+                            ),
+                            attribute(
+                                "gen_ai.request.model",
+                                AttributeValue::StringValue("gpt-test".into()),
+                            ),
+                            attribute(
+                                "gen_ai.usage.input_tokens",
+                                AttributeValue::IntValue(1_000_000),
+                            ),
+                            attribute(
+                                "gen_ai.usage.output_tokens",
+                                AttributeValue::IntValue(100_000),
+                            ),
+                        ],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            Some(&estimator),
+        )
+        .unwrap();
+
+        assert_eq!(rows[0]["ai_cost_usd"], Value::Null);
+        let estimated = rows[0]["ai_estimated_cost_usd"].as_f64().unwrap();
+        assert!((estimated - 1.2).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn indexes_current_ai_sdk_embedding_and_rerank_fixture_at_ingestion() {
+        let volume = tempfile::tempdir().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let estimator = AiPriceEstimator::from_catalog(
+            br#"[{
+              "id":"azure",
+              "models":[{"id":"embed-test","match":{"equals":"embed-test"},"prices":{"input_mtok":2}}]
+            },{
+              "id":"cohere",
+              "models":[{"id":"rerank-test","match":{"equals":"rerank-test"},"prices":{"requests_kcount":1}}]
+            }]"#,
+        )
+        .unwrap();
+        let trace_id = vec![7; 16];
+        let current_attributes = |operation: &str, provider: &str, model: &str| {
+            vec![
+                otlp_attribute("gen_ai.operation.name", operation),
+                otlp_attribute("gen_ai.provider.name", provider),
+                otlp_attribute("gen_ai.request.model", model),
+            ]
+        };
+        let mut embedding_child_attributes =
+            current_attributes("embeddings", "azure.ai.openai", "embed-test");
+        embedding_child_attributes.push(otlp_integer_attribute("gen_ai.usage.input_tokens", 1_000));
+        let mut rerank_child_attributes = current_attributes("rerank", "cohere", "rerank-test");
+        rerank_child_attributes.push(otlp_attribute("ai.ranking.type", "text"));
+
+        persist_trace_resources(
+            &store,
+            vec![ResourceSpans {
+                resource: service_resource("service-1"),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "gen_ai".into(),
+                        ..Default::default()
+                    }),
+                    spans: vec![
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![1; 8],
+                            name: "embeddings embed-test".into(),
+                            start_time_unix_nano: 1_787_097_600_000_000_000,
+                            end_time_unix_nano: 1_787_097_601_000_000_000,
+                            attributes: current_attributes(
+                                "embeddings",
+                                "azure.ai.openai",
+                                "embed-test",
+                            ),
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![2; 8],
+                            parent_span_id: vec![1; 8],
+                            name: "embeddings embed-test".into(),
+                            start_time_unix_nano: 1_787_097_600_100_000_000,
+                            end_time_unix_nano: 1_787_097_600_900_000_000,
+                            attributes: embedding_child_attributes,
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![3; 8],
+                            name: "rerank rerank-test".into(),
+                            start_time_unix_nano: 1_787_097_601_000_000_000,
+                            end_time_unix_nano: 1_787_097_602_000_000_000,
+                            attributes: current_attributes("rerank", "cohere", "rerank-test"),
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id,
+                            span_id: vec![4; 8],
+                            parent_span_id: vec![3; 8],
+                            name: "rerank rerank-test".into(),
+                            start_time_unix_nano: 1_787_097_601_100_000_000,
+                            end_time_unix_nano: 1_787_097_601_900_000_000,
+                            attributes: rerank_child_attributes,
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            Some(&estimator),
+        )
+        .await;
+        let detail = store
+            .trace(
+                vec!["service-1".into()],
+                None,
+                "07070707070707070707070707070707".into(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            detail
+                .spans
+                .iter()
+                .filter(|span| span.ai_kind == "embedding")
+                .count(),
+            1
+        );
+        assert_eq!(
+            detail
+                .spans
+                .iter()
+                .filter(|span| span.ai_kind == "rerank")
+                .count(),
+            1
+        );
+        assert_eq!(detail.spans[0].ai_kind, "ai");
+        assert_eq!(detail.spans[2].ai_kind, "ai");
+        assert_eq!(detail.spans[1].ai_input_tokens, Some(1_000));
+        assert_eq!(detail.spans[1].ai_estimated_cost_usd, Some(0.002));
+        assert_eq!(detail.spans[3].ai_estimated_cost_usd, Some(0.001));
+        assert_eq!(detail.spans[0].ai_estimated_cost_usd, None);
+        assert_eq!(detail.spans[2].ai_estimated_cost_usd, None);
+    }
+
+    #[tokio::test]
+    async fn deduplicates_ai_sdk_operation_wrappers_across_export_requests() {
+        let volume = tempfile::tempdir().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let estimator = AiPriceEstimator::from_catalog(
+            br#"[{"id":"cohere","models":[{"id":"rerank-test","match":{"equals":"rerank-test"},"prices":{"requests_kcount":1}}]}]"#,
+        )
+        .unwrap();
+        let attributes = vec![
+            otlp_attribute("gen_ai.operation.name", "rerank"),
+            otlp_attribute("gen_ai.provider.name", "cohere"),
+            otlp_attribute("gen_ai.request.model", "rerank-test"),
+        ];
+        let trace_id = vec![9; 16];
+        let resource = |span: Span| {
+            vec![ResourceSpans {
+                resource: service_resource("service-1"),
+                scope_spans: vec![ScopeSpans {
+                    scope: Some(InstrumentationScope {
+                        name: "gen_ai".into(),
+                        ..Default::default()
+                    }),
+                    spans: vec![span],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]
+        };
+
+        persist_trace_resources(
+            &store,
+            resource(Span {
+                trace_id: trace_id.clone(),
+                span_id: vec![2; 8],
+                parent_span_id: vec![1; 8],
+                name: "rerank rerank-test".into(),
+                start_time_unix_nano: 1_787_097_600_000_000_000,
+                attributes: attributes.clone(),
+                ..Default::default()
+            }),
+            Some(&estimator),
+        )
+        .await;
+        persist_trace_resources(
+            &store,
+            resource(Span {
+                trace_id,
+                span_id: vec![1; 8],
+                name: "rerank rerank-test".into(),
+                start_time_unix_nano: 1_787_097_600_000_000_000,
+                attributes,
+                ..Default::default()
+            }),
+            Some(&estimator),
+        )
+        .await;
+        let detail = store
+            .trace(
+                vec!["service-1".into()],
+                None,
+                "09090909090909090909090909090909".into(),
+            )
+            .await
+            .unwrap();
+
+        let child = detail
+            .spans
+            .iter()
+            .find(|span| span.span_id == "0202020202020202")
+            .unwrap();
+        let wrapper = detail
+            .spans
+            .iter()
+            .find(|span| span.span_id == "0101010101010101")
+            .unwrap();
+        assert_eq!(child.ai_kind, "rerank");
+        assert_eq!(child.ai_estimated_cost_usd, Some(0.001));
+        assert_eq!(wrapper.ai_kind, "ai");
+        assert_eq!(wrapper.ai_cost_usd, None);
+        assert_eq!(wrapper.ai_estimated_cost_usd, None);
+    }
+
+    #[test]
+    fn indexes_legacy_ai_sdk_embedding_and_rerank_fixture_at_ingestion() {
+        let trace_id = vec![8; 16];
+        let legacy_attributes = |operation: &str| {
+            vec![
+                otlp_attribute("ai.operationId", operation),
+                otlp_attribute("ai.model.provider", "openai"),
+                otlp_attribute("ai.model.id", "legacy-model"),
+            ]
+        };
+        let mut operation_attributes = legacy_attributes("ai.embedMany");
+        operation_attributes.push(otlp_integer_attribute("ai.usage.tokens", 42));
+        let mut provider_attributes = legacy_attributes("ai.embedMany.doEmbed");
+        provider_attributes.push(otlp_integer_attribute("ai.usage.tokens", 42));
+
+        let rows = trace_rows(
+            vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![1; 8],
+                            name: "ai.embedMany".into(),
+                            attributes: operation_attributes,
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![2; 8],
+                            parent_span_id: vec![1; 8],
+                            name: "ai.embedMany.doEmbed".into(),
+                            attributes: provider_attributes,
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![3; 8],
+                            name: "ai.rerank".into(),
+                            attributes: legacy_attributes("ai.rerank"),
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id,
+                            span_id: vec![4; 8],
+                            parent_span_id: vec![3; 8],
+                            name: "ai.rerank.doRerank".into(),
+                            attributes: legacy_attributes("ai.rerank.doRerank"),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(rows[0]["ai_kind"], "ai");
+        assert_eq!(rows[1]["ai_kind"], "embedding");
+        assert_eq!(rows[1]["ai_input_tokens"], 42);
+        assert_eq!(rows[2]["ai_kind"], "ai");
+        assert_eq!(rows[3]["ai_kind"], "rerank");
+    }
+
+    #[tokio::test]
+    #[ignore = "run through bun --cwd=_frontend run test:telemetry-conformance"]
+    async fn ai_sdk_otlp_conformance() {
+        let fixture_path = std::env::var("PLATFORMD_AI_SDK_OTLP_FIXTURE")
+            .expect("conformance runner must provide an OTLP fixture");
+        let mut fixture_files = std::fs::read_dir(fixture_path)
+            .expect("read AI SDK OTLP fixture directory")
+            .map(|entry| entry.expect("read AI SDK OTLP fixture entry").path())
+            .filter(|path| path.extension().is_some_and(|extension| extension == "pb"))
+            .collect::<Vec<_>>();
+        fixture_files.sort_by_key(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .and_then(|stem| stem.parse::<usize>().ok())
+                .expect("AI SDK OTLP fixture filename must be numeric")
+        });
+        let estimator = std::sync::Arc::new(AiPriceEstimator::from_catalog(
+            br#"[{
+              "id":"azure",
+              "models":[{"id":"embed-test","match":{"equals":"embed-test"},"prices":{"input_mtok":2}}]
+            },{
+              "id":"cohere",
+              "models":[{"id":"rerank-test","match":{"equals":"rerank-test"},"prices":{"requests_kcount":0.5}}]
+            },{
+              "id":"openai",
+              "provider_match":{"contains":"openai"},
+              "models":[{"id":"gpt-conformance","match":{"starts_with":"gpt-"},"prices":{"input_mtok":2,"cache_read_mtok":0.5,"output_mtok":4,"output_reasoning_mtok":8}}]
+            },{
+              "id":"anthropic",
+              "provider_match":{"contains":"anthropic"},
+              "models":[{"id":"gpt-stream-conformance","match":{"equals":"gpt-stream-conformance"},"prices":{"input_mtok":1,"output_mtok":3}}]
+            }]"#,
+        )
+        .unwrap());
+        let volume = tempfile::tempdir().unwrap();
+        let store = Store::open(volume.path().to_owned()).await.unwrap();
+        let (traces, trace_receiver) = mpsc::channel(QUEUE_BATCHES);
+        let (metrics, _metric_receiver) = mpsc::channel(1);
+        let (logs, _log_receiver) = mpsc::channel(1);
+        let receivers = Receivers {
+            traces,
+            metrics,
+            logs,
+        };
+        let consumer = tokio::spawn(consume_traces(store.clone(), estimator, trace_receiver));
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            "application/x-protobuf".parse().unwrap(),
+        );
+        headers.insert(SERVICE_ID_HEADER, "conformance".parse().unwrap());
+        let mut trace_ids = HashSet::new();
+        for fixture_file in fixture_files {
+            let payload = std::fs::read(fixture_file).expect("read AI SDK OTLP fixture");
+            let request = ExportTraceServiceRequest::decode(payload.as_slice())
+                .expect("decode AI SDK OTLP fixture");
+            trace_ids.extend(
+                request
+                    .resource_spans
+                    .iter()
+                    .flat_map(|resource| &resource.scope_spans)
+                    .flat_map(|scope| &scope.spans)
+                    .filter_map(|span| valid_binary_id(&span.trace_id, 16)),
+            );
+            let response = http_traces(
+                State(receivers.clone()),
+                headers.clone(),
+                Bytes::from(payload),
+            )
+            .await;
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let mut spans = Vec::new();
+        for trace_id in trace_ids {
+            spans.extend(
+                store
+                    .trace(vec!["conformance".into()], None, trace_id)
+                    .await
+                    .unwrap()
+                    .spans,
+            );
+        }
+        consumer.abort();
+
+        let select = |operation: &str, kind: &str| {
+            spans
+                .iter()
+                .filter(|span| span.ai_operation == operation && span.ai_kind == kind)
+                .collect::<Vec<_>>()
+        };
+        let current_embeddings = select("embeddings", "embedding");
+        let legacy_embeddings = select("ai.embed.doEmbed", "embedding");
+        let current_reranks = select("rerank", "rerank");
+        let legacy_reranks = select("ai.rerank.doRerank", "rerank");
+        let model_rows = |model: &str| {
+            spans
+                .iter()
+                .filter(|span| span.ai_kind == "model" && span.ai_model == model)
+                .collect::<Vec<_>>()
+        };
+        let agent_rows = |agent: &str| {
+            spans
+                .iter()
+                .filter(|span| span.ai_kind == "agent" && span.ai_agent == agent)
+                .collect::<Vec<_>>()
+        };
+        let assert_estimated_cost = |span: &crate::storage::TraceSpan, expected: f64| {
+            let actual = span
+                .ai_estimated_cost_usd
+                .expect("model call should have an estimated cost");
+            assert!((actual - expected).abs() < 1e-12, "{actual} != {expected}");
+        };
+
+        assert_eq!(current_embeddings.len(), 1);
+        assert_eq!(legacy_embeddings.len(), 1);
+        assert_eq!(current_reranks.len(), 1);
+        assert_eq!(legacy_reranks.len(), 1);
+        assert_eq!(current_embeddings[0].ai_provider, "azure.ai.openai");
+        assert_eq!(legacy_embeddings[0].ai_provider, "azure-openai.chat");
+        for embedding in [current_embeddings[0], legacy_embeddings[0]] {
+            assert_eq!(embedding.ai_input_tokens, Some(1_000));
+            assert_eq!(embedding.ai_estimated_cost_usd, Some(0.002));
+        }
+        for rerank in [current_reranks[0], legacy_reranks[0]] {
+            assert_eq!(rerank.ai_provider, "cohere");
+            assert_eq!(rerank.ai_estimated_cost_usd, Some(0.0005));
+        }
+
+        let generated_models = model_rows("gpt-conformance");
+        assert_eq!(generated_models.len(), 2);
+        assert_eq!(
+            generated_models
+                .iter()
+                .map(|span| span.ai_provider.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["openai", "openai.chat"])
+        );
+        for model in generated_models {
+            assert_eq!(model.ai_input_tokens, Some(1_000));
+            assert_eq!(model.ai_output_tokens, Some(100));
+            assert_eq!(model.ai_cache_read_tokens, Some(200));
+            assert_eq!(model.ai_reasoning_tokens, Some(20));
+            assert_estimated_cost(model, 0.00218);
+        }
+
+        let streamed_models = model_rows("gpt-stream-conformance");
+        assert_eq!(streamed_models.len(), 2);
+        assert_eq!(
+            streamed_models
+                .iter()
+                .map(|span| span.ai_provider.as_str())
+                .collect::<HashSet<_>>(),
+            HashSet::from(["anthropic", "anthropic.messages"])
+        );
+        for model in streamed_models {
+            assert_eq!(model.ai_input_tokens, Some(300));
+            assert_eq!(model.ai_output_tokens, Some(30));
+            assert!(model.ai_ttft_seconds.is_some_and(|value| value > 0.0));
+            assert!(model.ai_tokens_per_second.is_some_and(|value| value > 0.0));
+            assert_estimated_cost(model, 0.00039);
+        }
+
+        let tool_models = model_rows("gpt-tool-conformance");
+        assert_eq!(tool_models.len(), 2);
+        for model in tool_models {
+            assert_eq!(model.ai_input_tokens, Some(500));
+            assert_eq!(model.ai_output_tokens, Some(50));
+            assert_estimated_cost(model, 0.0012);
+        }
+
+        for (agent, session) in [
+            ("conformance.generate", "session-generate"),
+            ("conformance.stream", "session-stream"),
+            ("conformance.tool", "session-tool"),
+        ] {
+            let agents = agent_rows(agent);
+            assert_eq!(agents.len(), 2);
+            assert!(
+                agents
+                    .iter()
+                    .all(|row| { row.ai_user_id == "user-42" && row.ai_session_id == session })
+            );
+        }
+
+        let tool_spans = spans
+            .iter()
+            .filter(|span| span.ai_kind == "tool")
+            .collect::<Vec<_>>();
+        assert_eq!(tool_spans.len(), 2);
+        let database_span = spans
+            .iter()
+            .find(|span| span.name == "SELECT conformance_child")
+            .expect("tool must emit its instrumented database child span");
+        assert!(tool_spans.iter().any(|tool_span| {
+            tool_span.trace_id == database_span.trace_id
+                && tool_span.span_id == database_span.parent_span_id
+        }));
+    }
+
+    #[test]
+    fn otlp_spans_keep_one_distributed_trace_across_remote_parents() {
+        let trace_id = vec![1; 16];
+        let rows = trace_rows(
+            vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![1; 8],
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![2; 8],
+                            parent_span_id: vec![1; 8],
+                            flags: (1 << 8) | (1 << 9),
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id,
+                            span_id: vec![3; 8],
+                            parent_span_id: vec![2; 8],
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            None,
+        )
+        .unwrap();
+
+        assert!(rows.iter().all(|row| {
+            row["trace_id"] == "01010101010101010101010101010101"
+                && row.get("segment_id").is_none()
+                && row.get("is_segment").is_none()
+        }));
+    }
+
+    #[test]
+    fn otlp_spans_store_only_explicit_ai_identity() {
+        let trace_id = vec![4; 16];
+        let rows = trace_rows(
+            vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    // Deliberately export descendants first: OTLP does not guarantee span order.
+                    spans: vec![
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![3; 8],
+                            parent_span_id: vec![2; 8],
+                            name: "SELECT products".into(),
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id: trace_id.clone(),
+                            span_id: vec![2; 8],
+                            parent_span_id: vec![1; 8],
+                            name: "ai.toolCall".into(),
+                            ..Default::default()
+                        },
+                        Span {
+                            trace_id,
+                            span_id: vec![1; 8],
+                            name: "ai.streamText".into(),
+                            attributes: vec![
+                                KeyValue {
+                                    key: "ai.settings.context.userId".into(),
+                                    value: Some(AnyValue {
+                                        value: Some(AttributeValue::StringValue("user-42".into())),
+                                    }),
+                                    ..Default::default()
+                                },
+                                KeyValue {
+                                    key: "ai.settings.context.chatId".into(),
+                                    value: Some(AnyValue {
+                                        value: Some(AttributeValue::StringValue(
+                                            "session-17".into(),
+                                        )),
+                                    }),
+                                    ..Default::default()
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(rows[0]["ai_user_id"], "");
+        assert_eq!(rows[0]["ai_session_id"], "");
+        assert_eq!(rows[1]["ai_user_id"], "");
+        assert_eq!(rows[1]["ai_session_id"], "");
+        assert_eq!(rows[2]["ai_user_id"], "user-42");
+        assert_eq!(rows[2]["ai_session_id"], "session-17");
     }
 
     #[tokio::test]

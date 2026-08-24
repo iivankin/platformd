@@ -34,7 +34,7 @@ export const ReplayPlayer = ({
   recording: ReplayRecording;
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
-  const mountRef = useRef<HTMLDivElement>(null);
+  const frameRef = useRef<HTMLIFrameElement>(null);
   const playerRef = useRef<ReplayerInstance>(null);
   const [availableWidth, setAvailableWidth] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
@@ -42,6 +42,7 @@ export const ReplayPlayer = ({
   const [playerError, setPlayerError] = useState("");
   const [playing, setPlaying] = useState(false);
   const [ready, setReady] = useState(false);
+  const [replayFrameReady, setReplayFrameReady] = useState(false);
   const [speed, setSpeed] = useState(1);
   const [startTime, setStartTime] = useState(0);
   const prepared = useMemo(
@@ -76,7 +77,9 @@ export const ReplayPlayer = ({
 
   useEffect(() => {
     let active = true;
-    const mount = mountRef.current;
+    const mount = replayFrameReady
+      ? frameRef.current?.contentDocument?.getElementById("root")
+      : null;
     if (!mount || prepared.events.length === 0 || videoSegments.length > 0) {
       return;
     }
@@ -128,7 +131,7 @@ export const ReplayPlayer = ({
       playerRef.current = null;
       mount.replaceChildren();
     };
-  }, [prepared, videoSegments.length]);
+  }, [prepared, replayFrameReady, videoSegments.length]);
 
   useEffect(() => {
     if (!playing) {
@@ -225,14 +228,18 @@ export const ReplayPlayer = ({
               width: viewport.width * scale,
             }}
           >
-            <div
-              className="absolute top-0 left-0 origin-top-left [&_.replayer-wrapper]:overflow-hidden [&_iframe]:border-0 [&_iframe]:bg-white"
-              ref={mountRef}
+            <iframe
+              className="absolute top-0 left-0 origin-top-left border-0 bg-white"
+              onLoad={() => setReplayFrameReady(true)}
+              ref={frameRef}
+              sandbox="allow-same-origin"
+              src="/replay-frame.html"
               style={{
                 height: viewport.height,
                 transform: `scale(${scale})`,
                 width: viewport.width,
               }}
+              title="Session replay"
             />
           </div>
         </div>

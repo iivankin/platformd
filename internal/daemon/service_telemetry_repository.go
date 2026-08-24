@@ -243,7 +243,7 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryPublicAc
 	deletedPrevious := false
 	_, previousUsesApplicationDNS := applicationHostnames[service.SentryPublicHostname]
 	if service.SentryPublicHostname != input.PublicHostname && !previousUsesApplicationDNS &&
-		service.SentryPublicHostname != service.OTLPTracePublicHostname {
+		service.SentryPublicHostname != service.OTLPPublicHostname {
 		deletedPrevious, err = repository.deleteDNS(ctx, service.SentryPublicHostname)
 		if err != nil {
 			if createdNew {
@@ -302,9 +302,9 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceTelemetryTunnel(
 	return repository.manager.Configuration(updated)
 }
 
-func (repository *liveServiceTelemetryRepository) UpdateServiceOTLPTracePublicAccess(
+func (repository *liveServiceTelemetryRepository) UpdateServiceOTLPPublicAccess(
 	ctx context.Context,
-	input state.UpdateServiceOTLPTracePublicAccess,
+	input state.UpdateServiceOTLPPublicAccess,
 ) (telemetry.ServiceConfiguration, error) {
 	repository.publicMu.Lock()
 	defer repository.publicMu.Unlock()
@@ -341,10 +341,10 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceOTLPTracePublicAc
 		return telemetry.ServiceConfiguration{}, err
 	}
 	deletedPrevious := false
-	_, previousUsesApplicationDNS := applicationHostnames[service.OTLPTracePublicHostname]
-	if service.OTLPTracePublicHostname != input.PublicHostname && !previousUsesApplicationDNS &&
-		service.OTLPTracePublicHostname != service.SentryPublicHostname {
-		deletedPrevious, err = repository.deleteDNS(ctx, service.OTLPTracePublicHostname)
+	_, previousUsesApplicationDNS := applicationHostnames[service.OTLPPublicHostname]
+	if service.OTLPPublicHostname != input.PublicHostname && !previousUsesApplicationDNS &&
+		service.OTLPPublicHostname != service.SentryPublicHostname {
+		deletedPrevious, err = repository.deleteDNS(ctx, service.OTLPPublicHostname)
 		if err != nil {
 			if createdNew {
 				_, cleanupErr := repository.deleteDNS(ctx, input.PublicHostname)
@@ -353,10 +353,10 @@ func (repository *liveServiceTelemetryRepository) UpdateServiceOTLPTracePublicAc
 			return telemetry.ServiceConfiguration{}, err
 		}
 	}
-	updated, err := repository.store.UpdateServiceOTLPTracePublicAccess(ctx, input)
+	updated, err := repository.store.UpdateServiceOTLPPublicAccess(ctx, input)
 	if err != nil {
 		if deletedPrevious {
-			_, restoreErr := repository.ensureDNS(ctx, service.OTLPTracePublicHostname)
+			_, restoreErr := repository.ensureDNS(ctx, service.OTLPPublicHostname)
 			err = errors.Join(err, restoreErr)
 		}
 		if createdNew {
@@ -386,9 +386,10 @@ func (repository *liveServiceTelemetryRepository) ServeServiceTelemetry(
 	}
 	if request.Method == http.MethodGet {
 		traceID, isTrace := strings.CutPrefix(request.URL.Path, "/traces/")
+		isAIOverview := request.URL.Path == "/ai/overview"
 		isTraceList := request.URL.Path == "/traces"
 		isTraceDetail := isTrace && traceID != "" && !strings.Contains(traceID, "/")
-		if isTraceList || isTraceDetail {
+		if isAIOverview || isTraceList || isTraceDetail {
 			services, listErr := repository.store.Services(request.Context())
 			if listErr != nil {
 				http.Error(response, "Unable to load project telemetry scope", http.StatusInternalServerError)
@@ -400,7 +401,9 @@ func (repository *liveServiceTelemetryRepository) ServeServiceTelemetry(
 					serviceIDs = append(serviceIDs, candidate.ID)
 				}
 			}
-			if isTraceList {
+			if isAIOverview {
+				repository.manager.ServeAIOverviewScope(response, request, service.ID, serviceIDs)
+			} else if isTraceList {
 				repository.manager.ServeTraceListScope(response, request, service.ID, serviceIDs)
 			} else {
 				repository.manager.ServeTraceScope(response, request, traceID, service.ID, serviceIDs)
@@ -431,6 +434,8 @@ func (repository *liveServiceTelemetryRepository) ServeTelemetryScope(
 	}
 	traceID, isTrace := strings.CutPrefix(request.URL.Path, "/traces/")
 	switch {
+	case request.URL.Path == "/ai/overview":
+		repository.manager.ServeAIOverviewScope(response, request, "", serviceIDs)
 	case request.URL.Path == "/traces":
 		repository.manager.ServeTraceListScope(response, request, "", serviceIDs)
 	case isTrace && traceID != "" && !strings.Contains(traceID, "/"):
@@ -517,10 +522,10 @@ func (repository *liveServiceTelemetryRepository) reloadPublicRoutes(ctx context
 			route.BrowserTunnelPath = service.SentryTunnelPath
 			routes[service.SentryPublicHostname] = route
 		}
-		if service.OTLPTracePublicHostname != "" {
-			route := routes[service.OTLPTracePublicHostname]
-			route.OTLPTracePath = service.OTLPTracePath
-			routes[service.OTLPTracePublicHostname] = route
+		if service.OTLPPublicHostname != "" {
+			route := routes[service.OTLPPublicHostname]
+			route.OTLPPathPrefix = service.OTLPPathPrefix
+			routes[service.OTLPPublicHostname] = route
 		}
 	}
 	repository.router.ReloadServiceTelemetry(routes)
@@ -538,7 +543,7 @@ func (repository *liveServiceTelemetryRepository) reconcileDNS(ctx context.Conte
 	var result error
 	reconciled := make(map[string]struct{}, len(services)*2)
 	for _, service := range services {
-		for _, hostname := range []string{service.SentryPublicHostname, service.OTLPTracePublicHostname} {
+		for _, hostname := range []string{service.SentryPublicHostname, service.OTLPPublicHostname} {
 			if hostname == "" {
 				continue
 			}
@@ -583,7 +588,7 @@ func (repository *liveServiceTelemetryRepository) deleteProjectDNS(
 	deleted := make([]string, 0, len(services)*2)
 	seen := make(map[string]struct{}, len(services)*2)
 	for _, service := range services {
-		for _, hostname := range []string{service.SentryPublicHostname, service.OTLPTracePublicHostname} {
+		for _, hostname := range []string{service.SentryPublicHostname, service.OTLPPublicHostname} {
 			if hostname == "" {
 				continue
 			}

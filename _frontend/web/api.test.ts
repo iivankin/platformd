@@ -25,6 +25,7 @@ import {
   deleteService,
   deleteVolume,
   fetchAPITokens,
+  fetchAiOverview,
   fetchAuditEvents,
   fetchBackupHistory,
   fetchBackupPolicy,
@@ -37,7 +38,7 @@ import {
   fetchServiceDomainDNSStatus,
   fetchServiceDomains,
   fetchServiceListeners,
-  fetchServiceTraces,
+  fetchTelemetryTraces,
   fetchResourceTerminalShells,
   issueServerTerminalToken,
   fetchVolumes,
@@ -662,9 +663,8 @@ test("reads logs from the selected managed resource route", async () => {
 test("sends distributed trace filters and ordering to telemetry", async () => {
   let requested = "";
   await expect(
-    fetchServiceTraces(
-      "project",
-      "service",
+    fetchTelemetryTraces(
+      { kind: "service", projectID: "project", serviceID: "service" },
       undefined,
       (input) => {
         requested = input.toString();
@@ -681,6 +681,45 @@ test("sends distributed trace filters and ordering to telemetry", async () => {
   ).resolves.toEqual([]);
   expect(requested).toBe(
     "/api/v1/projects/project/services/service/telemetry/traces?limit=200&from=1000&to=2000&query=checkout+status%3Aerror+duration%3A%3E500ms&status=error&sort=slowest"
+  );
+});
+
+test("requests the fixed AI overview for a telemetry scope", async () => {
+  let requested = "";
+  await expect(
+    fetchAiOverview(
+      { kind: "project", projectID: "project" },
+      { from: 1000.8, step: 60_000.9, to: 200_000.2 },
+      undefined,
+      (input) => {
+        requested = input.toString();
+        return Promise.resolve(
+          Response.json({
+            activity: [],
+            agents: [],
+            latency: [],
+            modelUsage: [],
+            models: [],
+            summary: {
+              agentCount: 0,
+              agentRunCount: 0,
+              errorCount: 0,
+              generationCount: 0,
+              identifiedAgentRunCount: 0,
+              modelCount: 0,
+              sessionCount: 0,
+              toolCallCount: 0,
+              userCount: 0,
+            },
+            usage: [],
+            users: [],
+          })
+        );
+      }
+    )
+  ).resolves.toMatchObject({ summary: { agentRunCount: 0 } });
+  expect(requested).toBe(
+    "/api/v1/projects/project/telemetry/ai/overview?from=1000&step=60000&to=200000"
   );
 });
 

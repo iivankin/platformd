@@ -1,9 +1,4 @@
-import type {
-  ProjectCanvas,
-  Service,
-  ServiceDomain,
-  ServiceSource,
-} from "@/api";
+import type { ProjectCanvas, Service, ServiceDomain } from "@/api";
 import { newID } from "@/id";
 import type { PendingResourceCreation } from "@/pending-resource-creation";
 import type { PendingServiceSettings } from "@/service-settings-model";
@@ -229,7 +224,6 @@ const suggestionsForService = (
   resource: ProjectCanvas["resources"][number],
   environment: Record<string, string>,
   resourceDomains: ServiceDomain[],
-  source: ServiceSource | undefined,
   currentServiceID: string
 ): VariableSuggestion[] => {
   const suggestions: VariableSuggestion[] = [];
@@ -299,16 +293,11 @@ export const variableSuggestions = (
         change?.environment ??
         service?.environment ??
         {};
-      const source =
-        draftService?.settings.configuration.source ??
-        change?.draft.configuration.source ??
-        service?.source;
       suggestions.push(
         ...suggestionsForService(
           resource,
           environment,
           domains.get(resource.id) ?? [],
-          source,
           currentServiceID
         ).map((suggestion) => ({ sourceOrder: 1, suggestion }))
       );

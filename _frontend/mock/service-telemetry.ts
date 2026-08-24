@@ -6,6 +6,7 @@ import type {
   ServiceTraceSummary,
 } from "../web/api";
 import type { CreatedWebhook, WebhookEvent } from "../web/errors/types";
+import { validTelemetryPublicPath } from "../web/public-telemetry-endpoint";
 import { handleErrorsMock } from "./errors-router";
 import { createErrorsMockState } from "./errors-state";
 import { json, mockError, numberField, readObject, stringField } from "./http";
@@ -220,7 +221,10 @@ const updateBrowserTunnel = async (
       400
     );
   }
-  if (typeof input.browserTunnelPath !== "string") {
+  if (
+    typeof input.browserTunnelPath !== "string" ||
+    !validTelemetryPublicPath(input.browserTunnelPath)
+  ) {
     return mockError("invalid_browser_tunnel", "Tunnel path is invalid", 400);
   }
   configuration.browserTunnelPath = input.browserTunnelPath.trim() || undefined;
@@ -228,7 +232,7 @@ const updateBrowserTunnel = async (
   return json(configuration);
 };
 
-const updatePublicOTLPTraces = async (
+const updatePublicOTLP = async (
   request: Request,
   configuration: ServiceTelemetry
 ) => {
@@ -237,24 +241,19 @@ const updatePublicOTLPTraces = async (
     return mockError("service_telemetry_conflict", "Service changed", 409);
   }
   const publicHostname = stringField(input, "publicHostname").trim();
-  const tracePath = stringField(input, "tracePath").trim();
-  const invalidPath =
-    tracePath.length > 256 ||
-    tracePath === "/" ||
-    (tracePath !== "" && !tracePath.startsWith("/")) ||
-    tracePath.includes("?") ||
-    tracePath.includes("#");
-  if (Boolean(publicHostname) !== Boolean(tracePath) || invalidPath) {
+  const pathPrefix = stringField(input, "pathPrefix").trim();
+  const invalidPath = !validTelemetryPublicPath(pathPrefix);
+  if (Boolean(publicHostname) !== Boolean(pathPrefix) || invalidPath) {
     return mockError(
-      "invalid_public_otlp_traces",
-      "Public OTLP trace fields are invalid",
+      "invalid_public_otlp",
+      "Public OTLP fields are invalid",
       400
     );
   }
-  configuration.publicOtlpTraceHostname = publicHostname || undefined;
-  configuration.publicOtlpTracePath = tracePath || undefined;
-  configuration.publicOtlpTraceEndpoint = publicHostname
-    ? `https://${publicHostname}${tracePath}`
+  configuration.publicOtlpHostname = publicHostname || undefined;
+  configuration.publicOtlpPathPrefix = pathPrefix || undefined;
+  configuration.publicOtlpEndpoint = publicHostname
+    ? `https://${publicHostname}${pathPrefix}`
     : undefined;
   configuration.updatedAt = mockNow();
   return json(configuration);
@@ -299,11 +298,11 @@ const handleTelemetryResource = async (
     return updateBrowserTunnel(request, configuration);
   }
   if (
-    action === "public-otlp-traces" &&
+    action === "public-otlp" &&
     tail.length === 0 &&
     request.method === "PUT"
   ) {
-    return updatePublicOTLPTraces(request, configuration);
+    return updatePublicOTLP(request, configuration);
   }
   if (
     action === "artifact-token" &&
@@ -322,8 +321,6 @@ const handleTelemetryResource = async (
 
 const mockTraceID = "4c79f60c11214eb38604f4ae0781bfb2";
 const mockAITraceID = "6d79f60c11214eb38604f4ae0781bfa9";
-const mockTraceSegmentID = "8f3a0f34b17c9d20";
-const mockAITraceSegmentID = "8f3a0f34b17c9aa0";
 const mockTraceStarted =
   BigInt(Date.parse("2026-08-09T10:45:03Z")) * 1_000_000n;
 const nonAISummary = {
@@ -332,6 +329,7 @@ const nonAISummary = {
   aiCacheReadTokens: null,
   aiCacheWriteTokens: null,
   aiCostUsd: null,
+  aiEstimatedCostUsd: null,
   aiInputTokens: null,
   aiModel: "",
   aiModelCallCount: 0,
@@ -341,6 +339,7 @@ const nonAISummary = {
   aiTokensPerSecond: null,
   aiToolCallCount: 0,
   aiTtftSeconds: null,
+  aiUnpricedModelCallCount: 0,
   isAi: false,
 } as const;
 const nonAISpan = {
@@ -348,6 +347,7 @@ const nonAISpan = {
   aiCacheReadTokens: null,
   aiCacheWriteTokens: null,
   aiCostUsd: null,
+  aiEstimatedCostUsd: null,
   aiInputTokens: null,
   aiKind: "",
   aiModel: "",
@@ -355,9 +355,12 @@ const nonAISpan = {
   aiOutputTokens: null,
   aiProvider: "",
   aiReasoningTokens: null,
+  aiSessionId: "",
   aiTokensPerSecond: null,
   aiTtftSeconds: null,
+  aiUserId: "",
   baselineDurationNano: null,
+  replayId: "",
 } as const;
 const mockTraceSummaries = (): ServiceTraceSummary[] => [
   {
@@ -365,9 +368,8 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
     durationNano: "1380000000",
     errorSpanCount: 1,
     name: "POST /checkout/confirm",
-    segmentId: mockTraceSegmentID,
     serviceId: "service-storefront",
-    sources: ["otlp", "sentry"],
+    sources: ["otlp"],
     spanCount: 3,
     startedAtUnixNano: mockTraceStarted.toString(),
     traceId: mockTraceID,
@@ -378,6 +380,7 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
     aiCacheReadTokens: 3180,
     aiCacheWriteTokens: 420,
     aiCostUsd: 0.0214,
+    aiEstimatedCostUsd: null,
     aiInputTokens: 4260,
     aiModel: "gpt-5-mini",
     aiModelCallCount: 2,
@@ -387,11 +390,11 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
     aiTokensPerSecond: 94.7,
     aiToolCallCount: 1,
     aiTtftSeconds: 0.38,
+    aiUnpricedModelCallCount: 0,
     durationNano: "4900000000",
     errorSpanCount: 0,
     isAi: true,
     name: "POST /support/reply",
-    segmentId: mockAITraceSegmentID,
     serviceId: "service-storefront",
     sources: ["otlp"],
     spanCount: 6,
@@ -400,7 +403,7 @@ const mockTraceSummaries = (): ServiceTraceSummary[] => [
   },
 ];
 
-const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
+const mockTraceDetail = (): ServiceTraceDetail => ({
   metrics: [
     {
       name: "http.server.duration",
@@ -410,15 +413,12 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
       value: 1.38,
     },
   ],
-  relatedSegments: [],
-  segmentId: mockTraceSegmentID,
   spans: [
     {
       ...nonAISpan,
       durationNano: "1380000000",
       endTimeUnixNano: (mockTraceStarted + 1_380_000_000n).toString(),
       flags: 1,
-      isSegment: true,
       kind: 2,
       name: "POST /checkout/confirm",
       parentSpanId: "",
@@ -432,11 +432,14 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
           },
         ],
       },
-      scope: { attributes: [], name: "sentry", version: "1" },
-      segmentId: mockTraceSegmentID,
+      scope: {
+        attributes: [],
+        name: "@opentelemetry/instrumentation-http",
+        version: "0.203.0",
+      },
       serviceId: "service-storefront",
-      source: "sentry",
-      span: transactionPayload ?? {
+      source: "otlp",
+      span: {
         attributes: [
           { key: "http.request.method", value: { stringValue: "POST" } },
           { key: "http.response.status_code", value: { intValue: "500" } },
@@ -454,14 +457,12 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
       durationNano: "740000000",
       endTimeUnixNano: (mockTraceStarted + 910_000_000n).toString(),
       flags: 1,
-      isSegment: false,
       kind: 3,
       name: "POST inventory/reserve",
       parentSpanId: "8f3a0f34b17c9d20",
       receivedAtUnixNano: (mockTraceStarted + 1_500_000_000n).toString(),
       resource: { attributes: [] },
       scope: { attributes: [], name: "@opentelemetry/instrumentation-fetch" },
-      segmentId: mockTraceSegmentID,
       serviceId: "service-storefront",
       source: "otlp",
       span: {
@@ -484,14 +485,12 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
       durationNano: "310000000",
       endTimeUnixNano: (mockTraceStarted + 1_280_000_000n).toString(),
       flags: 1,
-      isSegment: false,
       kind: 3,
       name: "SELECT cart_items",
       parentSpanId: "8f3a0f34b17c9d20",
       receivedAtUnixNano: (mockTraceStarted + 1_500_000_000n).toString(),
       resource: { attributes: [] },
       scope: { attributes: [], name: "@opentelemetry/instrumentation-pg" },
-      segmentId: mockTraceSegmentID,
       serviceId: "service-storefront",
       source: "otlp",
       span: {
@@ -508,6 +507,18 @@ const mockTraceDetail = (transactionPayload?: unknown): ServiceTraceDetail => ({
     },
   ],
   traceId: mockTraceID,
+  webVitals: [
+    {
+      delta: 1240,
+      id: "v4-otlp-lcp",
+      name: "lcp",
+      navigationType: "navigate",
+      rating: "good",
+      spanId: "8f3a0f34b17c9d20",
+      timeUnixNano: (mockTraceStarted + 1_240_000_000n).toString(),
+      value: 1240,
+    },
+  ],
 });
 
 const mockAITraceDetail = (): ServiceTraceDetail => {
@@ -524,25 +535,22 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
   const scope = { name: "@ai-sdk/otel", version: "1.0.58" };
   return {
     metrics: [],
-    relatedSegments: [],
-    segmentId: mockAITraceSegmentID,
     spans: [
       {
         ...nonAISpan,
         durationNano: "4900000000",
         endTimeUnixNano: (started + 4_400_000_000n).toString(),
         flags: 1,
-        isSegment: true,
         kind: 2,
         name: "POST /support/reply",
         parentSpanId: "",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
+        replayId: "",
         resource,
         scope: {
           name: "@opentelemetry/instrumentation-http",
           version: "0.203.0",
         },
-        segmentId: mockAITraceSegmentID,
         serviceId: "service-storefront",
         source: "otlp",
         span: {
@@ -566,6 +574,7 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiCacheReadTokens: 3180,
         aiCacheWriteTokens: 420,
         aiCostUsd: 0.0214,
+        aiEstimatedCostUsd: null,
         aiInputTokens: 4260,
         aiKind: "agent",
         aiModel: "gpt-5-mini",
@@ -573,19 +582,20 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiOutputTokens: 690,
         aiProvider: "openai",
         aiReasoningTokens: 184,
+        aiSessionId: "chat-17",
         aiTokensPerSecond: 94.7,
         aiTtftSeconds: 0.38,
+        aiUserId: "user-42",
         durationNano: "4280000000",
         endTimeUnixNano: (started + 4_280_000_000n).toString(),
         flags: 1,
-        isSegment: false,
         kind: 1,
         name: "invoke_agent support-agent",
         parentSpanId: "8f3a0f34b17c9aa0",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
+        replayId: "",
         resource,
         scope,
-        segmentId: mockAITraceSegmentID,
         serviceId: "service-storefront",
         source: "otlp",
         span: {
@@ -636,6 +646,7 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiCacheReadTokens: null,
         aiCacheWriteTokens: null,
         aiCostUsd: null,
+        aiEstimatedCostUsd: null,
         aiInputTokens: null,
         aiKind: "step",
         aiModel: "",
@@ -643,19 +654,20 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiOutputTokens: null,
         aiProvider: "",
         aiReasoningTokens: null,
+        aiSessionId: "chat-17",
         aiTokensPerSecond: null,
         aiTtftSeconds: null,
+        aiUserId: "user-42",
         durationNano: "3860000000",
         endTimeUnixNano: (started + 4_050_000_000n).toString(),
         flags: 1,
-        isSegment: false,
         kind: 1,
         name: "agent_step 1",
         parentSpanId: "8f3a0f34b17c9aa1",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
+        replayId: "",
         resource,
         scope,
-        segmentId: mockAITraceSegmentID,
         serviceId: "service-storefront",
         source: "otlp",
         span: {
@@ -678,6 +690,7 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiCacheReadTokens: 2060,
         aiCacheWriteTokens: 420,
         aiCostUsd: null,
+        aiEstimatedCostUsd: 0.0124,
         aiInputTokens: 2740,
         aiKind: "model",
         aiModel: "gpt-5-mini",
@@ -685,19 +698,20 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiOutputTokens: 186,
         aiProvider: "openai",
         aiReasoningTokens: 72,
+        aiSessionId: "chat-17",
         aiTokensPerSecond: 103.3,
         aiTtftSeconds: 0.38,
+        aiUserId: "user-42",
         durationNano: "1800000000",
         endTimeUnixNano: (started + 2_080_000_000n).toString(),
         flags: 1,
-        isSegment: false,
         kind: 3,
         name: "chat gpt-5-mini",
         parentSpanId: "8f3a0f34b17c9aa2",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
+        replayId: "",
         resource,
         scope,
-        segmentId: mockAITraceSegmentID,
         serviceId: "service-storefront",
         source: "otlp",
         span: {
@@ -793,6 +807,7 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiCacheReadTokens: null,
         aiCacheWriteTokens: null,
         aiCostUsd: null,
+        aiEstimatedCostUsd: null,
         aiInputTokens: null,
         aiKind: "tool",
         aiModel: "",
@@ -800,19 +815,20 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiOutputTokens: null,
         aiProvider: "",
         aiReasoningTokens: null,
+        aiSessionId: "chat-17",
         aiTokensPerSecond: null,
         aiTtftSeconds: null,
+        aiUserId: "user-42",
         durationNano: "410000000",
         endTimeUnixNano: (started + 2_610_000_000n).toString(),
         flags: 1,
-        isSegment: false,
         kind: 1,
         name: "execute_tool lookup_invoice",
         parentSpanId: "8f3a0f34b17c9aa2",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
+        replayId: "",
         resource,
         scope,
-        segmentId: mockAITraceSegmentID,
         serviceId: "service-storefront",
         source: "otlp",
         span: {
@@ -846,6 +862,7 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiCacheReadTokens: 1120,
         aiCacheWriteTokens: null,
         aiCostUsd: null,
+        aiEstimatedCostUsd: 0.009,
         aiInputTokens: 1520,
         aiKind: "model",
         aiModel: "gpt-5-mini",
@@ -853,19 +870,20 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
         aiOutputTokens: 504,
         aiProvider: "openai",
         aiReasoningTokens: 112,
+        aiSessionId: "chat-17",
         aiTokensPerSecond: 88.4,
         aiTtftSeconds: 0.31,
+        aiUserId: "user-42",
         durationNano: "1210000000",
         endTimeUnixNano: (started + 3_980_000_000n).toString(),
         flags: 1,
-        isSegment: false,
         kind: 3,
         name: "chat gpt-5-mini",
         parentSpanId: "8f3a0f34b17c9aa2",
         receivedAtUnixNano: (started + 4_400_000_000n).toString(),
+        replayId: "",
         resource,
         scope,
-        segmentId: mockAITraceSegmentID,
         serviceId: "service-storefront",
         source: "otlp",
         span: {
@@ -898,6 +916,7 @@ const mockAITraceDetail = (): ServiceTraceDetail => {
       },
     ],
     traceId: mockAITraceID,
+    webVitals: [],
   };
 };
 
@@ -984,25 +1003,142 @@ const mockTraceList = (request: Request) => {
   });
 };
 
+const mockAIOverview = (request: Request) => {
+  const parameters = new URL(request.url).searchParams;
+  const to = Number(parameters.get("to")) || Date.now();
+  const timeUnixNano = (BigInt(to) * 1_000_000n).toString();
+  return {
+    activity: [
+      {
+        agentRunCount: 12,
+        errorCount: 1,
+        generationCount: 23,
+        timeUnixNano,
+        toolCallCount: 9,
+      },
+    ],
+    agents: [
+      {
+        agent: "support-agent",
+        errorCount: 1,
+        p50LatencySeconds: 3.8,
+        p95LatencySeconds: 6.4,
+        p99LatencySeconds: 7.1,
+        runCount: 12,
+        userCount: 7,
+      },
+    ],
+    latency: [
+      {
+        count: 23,
+        kind: "model",
+        name: "openai / gpt-5-mini",
+        p50LatencySeconds: 1.2,
+        p90LatencySeconds: 2.4,
+        p95LatencySeconds: 2.8,
+        p99LatencySeconds: 3.1,
+      },
+      {
+        count: 9,
+        kind: "tool",
+        name: "lookup_invoice",
+        p50LatencySeconds: 0.34,
+        p90LatencySeconds: 0.61,
+        p95LatencySeconds: 0.72,
+        p99LatencySeconds: 0.8,
+      },
+    ],
+    modelUsage: [
+      {
+        cacheReadTokens: 31_800,
+        cacheWriteTokens: 4200,
+        estimatedCostUsd: null,
+        inputTokens: 42_600,
+        model: "gpt-5-mini",
+        outputTokens: 6900,
+        provider: "openai",
+        reasoningTokens: 1840,
+        reportedCostUsd: 0.214,
+      },
+    ],
+    models: [
+      {
+        generationCount: 23,
+        model: "gpt-5-mini",
+        p50LatencySeconds: 1.2,
+        p95LatencySeconds: 2.8,
+        p99LatencySeconds: 3.1,
+        provider: "openai",
+      },
+    ],
+    summary: {
+      agentCount: 1,
+      agentRunCount: 12,
+      errorCount: 1,
+      generationCount: 23,
+      identifiedAgentRunCount: 11,
+      modelCount: 1,
+      sessionCount: 8,
+      toolCallCount: 9,
+      userCount: 7,
+    },
+    usage: [
+      {
+        cacheReadTokens: 31_800,
+        cacheWriteTokens: 4200,
+        estimatedCostUsd: null,
+        generationCount: 23,
+        inputTokens: 42_600,
+        outputTokens: 6900,
+        reasoningTokens: 1840,
+        reportedCostUsd: 0.214,
+        timeUnixNano,
+      },
+    ],
+    users: [
+      {
+        cacheReadTokens: 12_400,
+        cacheWriteTokens: 1800,
+        estimatedCostUsd: null,
+        generationCount: 9,
+        inputTokens: 17_200,
+        outputTokens: 2800,
+        reportedCostUsd: 0.086,
+        runCount: 5,
+        sessionCount: 4,
+        userId: "user-42",
+      },
+    ],
+  };
+};
+
+const handleTraceTelemetry = (request: Request, tail: string[]) => {
+  if (request.method !== "GET") {
+    return mockError("method_not_allowed", "Method not allowed", 405);
+  }
+  if (tail.length === 0) {
+    return json(mockTraceList(request));
+  }
+  if (tail[0] === mockTraceID) {
+    return json(mockTraceDetail());
+  }
+  return tail[0] === mockAITraceID
+    ? json(mockAITraceDetail())
+    : mockError("not_found", "Trace not found", 404);
+};
+
 const handleTelemetryQuery = async (
   request: Request,
   action: string,
-  tail: string[],
-  transactionPayload?: unknown
+  tail: string[]
 ) => {
+  if (action === "ai" && tail[0] === "overview") {
+    return request.method === "GET"
+      ? json(mockAIOverview(request))
+      : mockError("method_not_allowed", "Method not allowed", 405);
+  }
   if (action === "traces") {
-    if (request.method !== "GET") {
-      return mockError("method_not_allowed", "Method not allowed", 405);
-    }
-    if (tail.length === 0) {
-      return json(mockTraceList(request));
-    }
-    if (tail[0] === mockTraceID) {
-      return json(mockTraceDetail(transactionPayload));
-    }
-    return tail[0] === mockAITraceID
-      ? json(mockAITraceDetail())
-      : mockError("not_found", "Trace not found", 404);
+    return handleTraceTelemetry(request, tail);
   }
   if (action === "metrics" && tail[0] === "catalog") {
     if (request.method !== "GET") {
@@ -1013,7 +1149,7 @@ const handleTelemetryQuery = async (
         attributeKeys: ["deployment.environment", "queue.name", "region"],
         description: "Pending checkout jobs",
         kind: "gauge",
-        lastSeenUnixNano: (BigInt(Date.now()) * 1_000_000n).toString(),
+        lastSeenUnixNano: mockTraceStarted.toString(),
         name: "checkout.queue.depth",
         unit: "{job}",
       },
@@ -1021,7 +1157,7 @@ const handleTelemetryQuery = async (
         attributeKeys: ["deployment.environment", "http.route", "region"],
         description: "Checkout processing latency",
         kind: "histogram",
-        lastSeenUnixNano: (BigInt(Date.now()) * 1_000_000n).toString(),
+        lastSeenUnixNano: mockTraceStarted.toString(),
         name: "checkout.duration",
         unit: "ms",
       },
@@ -1073,7 +1209,7 @@ export const handleMetricScopeTelemetry = (
   rest: string[]
 ): Promise<Response | undefined> | Response | undefined => {
   const [action, ...tail] = rest;
-  if (action === "metrics" || action === "traces") {
+  if (action === "ai" || action === "metrics" || action === "traces") {
     return handleTelemetryQuery(request, action, tail);
   }
   const serviceIDs = Object.values(state.services)
@@ -1173,13 +1309,8 @@ export const handleServiceTelemetry = (
   const configuration = ensureServiceTelemetryMock(state, service);
   const [resource, action, ...tail] = rest;
   if (resource === "telemetry") {
-    if (action === "traces" || action === "metrics") {
-      return handleTelemetryQuery(
-        request,
-        action,
-        tail,
-        state.serviceErrors[serviceID]?.events[0]?.payload
-      );
+    if (action === "ai" || action === "traces" || action === "metrics") {
+      return handleTelemetryQuery(request, action, tail);
     }
     return handleTelemetryResource(
       request,

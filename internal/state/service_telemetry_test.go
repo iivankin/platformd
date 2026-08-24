@@ -166,24 +166,24 @@ func TestServiceTelemetryCanShareAnOwnedApplicationDomain(t *testing.T) {
 	if err != nil || resolved.ID != "service-a" {
 		t.Fatalf("service telemetry public domain = %q, %v", resolved.ID, err)
 	}
-	updated, err = store.UpdateServiceOTLPTracePublicAccess(ctx, UpdateServiceOTLPTracePublicAccess{
-		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com", Path: " /otel/v1/traces ",
+	updated, err = store.UpdateServiceOTLPPublicAccess(ctx, UpdateServiceOTLPPublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com", PathPrefix: " /otel ",
 		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "otlp-traces-audit", ActorKind: "access",
 		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 8,
 	})
-	if err != nil || updated.OTLPTracePublicHostname != "api.example.com" || updated.OTLPTracePath != "/otel/v1/traces" {
-		t.Fatalf("public OTLP trace endpoint = %q%s, %v", updated.OTLPTracePublicHostname, updated.OTLPTracePath, err)
+	if err != nil || updated.OTLPPublicHostname != "api.example.com" || updated.OTLPPathPrefix != "/otel" {
+		t.Fatalf("public OTLP endpoint = %q%s, %v", updated.OTLPPublicHostname, updated.OTLPPathPrefix, err)
 	}
-	resolved, err = store.ServiceByOTLPTraceHostname(ctx, "api.example.com")
+	resolved, err = store.ServiceByOTLPHostname(ctx, "api.example.com")
 	if err != nil || resolved.ID != "service-a" {
-		t.Fatalf("service OTLP trace public domain = %q, %v", resolved.ID, err)
+		t.Fatalf("service OTLP public domain = %q, %v", resolved.ID, err)
 	}
-	if _, err := store.UpdateServiceOTLPTracePublicAccess(ctx, UpdateServiceOTLPTracePublicAccess{
-		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com", Path: "/otel/../traces",
+	if _, err := store.UpdateServiceOTLPPublicAccess(ctx, UpdateServiceOTLPPublicAccess{
+		ID: "service-a", ProjectID: "project", PublicHostname: "api.example.com", PathPrefix: "/otel/../traces",
 		ExpectedUpdatedMillis: updated.UpdatedAtMillis, AuditEventID: "invalid-otlp-traces-audit", ActorKind: "access",
 		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 9,
-	}); !errors.Is(err, ErrServiceOTLPTracePublicAccessInvalid) {
-		t.Fatalf("invalid public OTLP trace endpoint = %v", err)
+	}); !errors.Is(err, ErrServiceOTLPPublicAccessInvalid) {
+		t.Fatalf("invalid public OTLP endpoint = %v", err)
 	}
 	if _, err := store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
 		ID: "service-a", ProjectID: "project", Path: "/client/../report",
@@ -220,5 +220,83 @@ func TestServiceTelemetryCanShareAnOwnedApplicationDomain(t *testing.T) {
 	})
 	if err != nil || cleared.SentryPublicHostname != "" || cleared.SentryTunnelPath != "" {
 		t.Fatalf("cleared telemetry endpoint = hostname %q, tunnel %q, %v", cleared.SentryPublicHostname, cleared.SentryTunnelPath, err)
+	}
+}
+
+func TestServiceTelemetryRejectsConflictingPublicPaths(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "platformd.db"), os.Geteuid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err := store.CreateProject(ctx, CreateProject{
+		ID: "project", Name: "shop", AuditEventID: "project-audit", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := store.CreateService(ctx, CreateService{
+		ID: "service", ProjectID: "project", Name: "web", Enabled: true,
+		Snapshot:     serviceconfig.Snapshot{Source: serviceconfig.PublicImageSource("alpine")},
+		AuditEventID: "service-audit", ActorKind: "access", ActorID: "actor",
+		ActorEmail: "admin@example.com", CreatedAtMillis: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err = store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
+		ID: "service", ProjectID: "project", PublicHostname: "shared.example.com",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "sentry-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 3,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err = store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
+		ID: "service", ProjectID: "project", Path: "/collector/v1/logs",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "tunnel-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 4,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateServiceOTLPPublicAccess(ctx, UpdateServiceOTLPPublicAccess{
+		ID: "service", ProjectID: "project", PublicHostname: "shared.example.com", PathPrefix: "/collector",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "conflicting-otlp-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 5,
+	}); !errors.Is(err, ErrServiceTelemetryPublicPathConflict) {
+		t.Fatalf("conflicting public OTLP endpoint = %v", err)
+	}
+	service, err = store.UpdateServiceOTLPPublicAccess(ctx, UpdateServiceOTLPPublicAccess{
+		ID: "service", ProjectID: "project", PublicHostname: "otel.example.com", PathPrefix: "/collector",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "otlp-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 6,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateServiceSentryPublicAccess(ctx, UpdateServiceSentryPublicAccess{
+		ID: "service", ProjectID: "project", PublicHostname: "otel.example.com",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "conflicting-sentry-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 7,
+	}); !errors.Is(err, ErrServiceTelemetryPublicPathConflict) {
+		t.Fatalf("conflicting Sentry hostname = %v", err)
+	}
+	service, err = store.UpdateServiceOTLPPublicAccess(ctx, UpdateServiceOTLPPublicAccess{
+		ID: "service", ProjectID: "project", PublicHostname: "shared.example.com", PathPrefix: "/otel",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "shared-otlp-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 8,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpdateServiceTelemetryTunnel(ctx, UpdateServiceTelemetryTunnel{
+		ID: "service", ProjectID: "project", Path: "/otel/v1/traces",
+		ExpectedUpdatedMillis: service.UpdatedAtMillis, AuditEventID: "conflicting-tunnel-audit", ActorKind: "access",
+		ActorID: "actor", ActorEmail: "admin@example.com", UpdatedAtMillis: 9,
+	}); !errors.Is(err, ErrServiceTelemetryPublicPathConflict) {
+		t.Fatalf("conflicting browser tunnel = %v", err)
 	}
 }

@@ -37,7 +37,12 @@ const clippedIntervals = (
           : BigInt(span.startTimeUnixNano),
     }))
     .filter((interval) => interval.end > interval.start)
-    .toSorted((left, right) => (left.start < right.start ? -1 : 1));
+    .toSorted((left, right) => {
+      if (left.start === right.start) {
+        return 0;
+      }
+      return left.start < right.start ? -1 : 1;
+    });
   const merged: { end: bigint; start: bigint }[] = [];
   for (const interval of intervals) {
     const previous = merged.at(-1);
@@ -66,6 +71,34 @@ export const traceViewport = (spans: ServiceTraceSpan[]): TraceViewport => {
     }
   }
   return { end: end > start ? end : start + 1n, start };
+};
+
+export const zoomTraceViewport = (
+  viewport: TraceViewport,
+  baseViewport: TraceViewport,
+  center: bigint,
+  direction: "in" | "out"
+): TraceViewport => {
+  const { end: baseEnd, start: baseStart } = baseViewport;
+  const baseDuration = baseEnd - baseStart;
+  const currentDuration = viewport.end - viewport.start;
+  const desired =
+    direction === "in" ? currentDuration / 2n : currentDuration * 2n;
+  let duration = desired < 1_000_000n ? 1_000_000n : desired;
+  if (duration > baseDuration) {
+    duration = baseDuration;
+  }
+  let start = center - duration / 2n;
+  let end = start + duration;
+  if (start < baseStart) {
+    start = baseStart;
+    end = start + duration;
+  }
+  if (end > baseEnd) {
+    end = baseEnd;
+    start = end - duration;
+  }
+  return { end, start };
 };
 
 export const buildTraceTimeline = (

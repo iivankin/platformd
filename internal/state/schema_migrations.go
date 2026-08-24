@@ -932,3 +932,28 @@ func migrateSchemaVersionTwentyOne(ctx context.Context, database *sql.DB) error 
 	}
 	return nil
 }
+
+func migrateSchemaVersionTwentyTwo(ctx context.Context, database *sql.DB) error {
+	transaction, err := database.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin SQLite schema migration 22 to 23: %w", err)
+	}
+	for _, statement := range []string{
+		`UPDATE services
+SET otlp_trace_path = CASE
+  WHEN otlp_trace_path = '/v1/traces' THEN '/otel'
+  WHEN otlp_trace_path LIKE '%/v1/traces' THEN substr(otlp_trace_path, 1, length(otlp_trace_path) - 10)
+  ELSE otlp_trace_path
+END
+WHERE otlp_trace_path IS NOT NULL`,
+		`PRAGMA user_version = 23`,
+	} {
+		if _, err := transaction.ExecContext(ctx, statement); err != nil {
+			return errors.Join(fmt.Errorf("migrate SQLite schema 22 to 23: %w", err), transaction.Rollback())
+		}
+	}
+	if err := transaction.Commit(); err != nil {
+		return fmt.Errorf("commit SQLite schema migration 22 to 23: %w", err)
+	}
+	return nil
+}

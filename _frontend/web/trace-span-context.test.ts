@@ -6,6 +6,7 @@ import {
   traceSpanEvents,
   traceSpanLinks,
   traceSpanSelfTime,
+  traceSpanSelfTimes,
 } from "@/trace-span-context";
 
 const span = (overrides: Partial<ServiceTraceSpan> = {}): ServiceTraceSpan =>
@@ -13,6 +14,7 @@ const span = (overrides: Partial<ServiceTraceSpan> = {}): ServiceTraceSpan =>
     durationNano: "100",
     endTimeUnixNano: "200",
     parentSpanId: "",
+    replayId: "",
     resource: { attributes: [] },
     span: { attributes: [] },
     spanId: "0000000000000001",
@@ -98,6 +100,7 @@ describe("trace span context", () => {
       },
     ]);
     expect(traceSpanSelfTime(root, [root, ...children])).toBe(100n);
+    expect(traceSpanSelfTimes([root, ...children]).get(root.spanId)).toBe(100n);
   });
 
   test("reads Sentry v2 typed attributes and snake-case span links", () => {

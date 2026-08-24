@@ -1,19 +1,21 @@
 import { Wrench } from "lucide-react";
 import { useMemo } from "react";
 
-import { calculateAiPrice, formatAiPrice } from "@/ai-price";
+import { formatAiPrice, storedAiPrice } from "@/ai-price";
 import type { AiPrice } from "@/ai-price";
 import {
   aiMessages,
   aiRuns,
   aiSpanLabel,
   aiTool,
+  isSensitiveAiAttributeKey,
   mergedAiRequestSettings,
-  otlpAttributeMap,
+  redactSensitiveAiValue,
   uniqueAiToolDefinitions,
 } from "@/ai-trace";
 import type { AiMessage, AiSettingRow, AiToolDefinition } from "@/ai-trace";
 import type { ServiceTraceSpan } from "@/api";
+import { otlpAttributeMap } from "@/otlp";
 
 const integer = (value: string) => globalThis.BigInt(value);
 
@@ -23,17 +25,11 @@ const durationSeconds = (value: string) =>
 const formatTokens = (value: number) => new Intl.NumberFormat().format(value);
 
 const priceForSpan = (span: ServiceTraceSpan) =>
-  calculateAiPrice({
+  storedAiPrice({
     actual: span.aiCostUsd,
+    estimated: span.aiEstimatedCostUsd,
     model: span.aiModel,
     provider: span.aiProvider,
-    timestamp: new Date(Number(integer(span.startTimeUnixNano) / 1_000_000n)),
-    usage: {
-      cacheReadTokens: span.aiCacheReadTokens,
-      cacheWriteTokens: span.aiCacheWriteTokens,
-      inputTokens: span.aiInputTokens,
-      outputTokens: span.aiOutputTokens,
-    },
   });
 
 const sumMetric = (
@@ -54,7 +50,7 @@ const runPrice = (
   root: ServiceTraceSpan,
   models: ServiceTraceSpan[]
 ): AiPrice | undefined => {
-  if (root.aiCostUsd !== null) {
+  if (root.aiCostUsd !== null || root.aiEstimatedCostUsd !== null) {
     return priceForSpan(root);
   }
   const prices = models
@@ -67,6 +63,7 @@ const runPrice = (
   return {
     estimated: prices.some((price) => price.estimated),
     model: only?.model ?? "multiple models",
+    partial: prices.length < models.length,
     provider: only?.provider ?? "multiple providers",
     value: prices.reduce((total, price) => total + price.value, 0),
   };
@@ -166,11 +163,12 @@ const Conversation = ({ spans }: { spans: ServiceTraceSpan[] }) => {
 };
 
 const agentContext = (span: ServiceTraceSpan) =>
-  [...otlpAttributeMap(span.span).entries()].filter(
-    ([key]) =>
-      (key.startsWith("ai.settings.context.") ||
-        key.startsWith("ai.settings.runtimeContext.")) &&
-      !key.toLowerCase().includes("secret")
+  [...otlpAttributeMap(span.span).entries()].flatMap(([key, value]) =>
+    (key.startsWith("ai.settings.context.") ||
+      key.startsWith("ai.settings.runtimeContext.")) &&
+    !isSensitiveAiAttributeKey(key)
+      ? [[key, redactSensitiveAiValue(value)] as const]
+      : []
   );
 
 const uniqueLabel = (values: string[]) => {
@@ -468,9 +466,14 @@ export const AiSpanDetails = ({
             </div>
           ))}
         </dl>
-        {summary.price?.estimated ? (
+        {summary.price && (summary.price.estimated || summary.price.partial) ? (
           <p className="px-4 py-2 text-[8px] text-muted-foreground">
-            Cost estimated for {summary.price.provider} · {summary.price.model}.
+            {summary.price.estimated
+              ? `Cost estimated for ${summary.price.provider} · ${summary.price.model}.`
+              : "Cost is reported by the provider."}
+            {summary.price.partial
+              ? " Some model calls could not be priced."
+              : ""}
           </p>
         ) : null}
       </div>

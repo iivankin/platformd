@@ -12,6 +12,9 @@ pub(crate) struct SpanIndex {
     pub provider: String,
     pub model: String,
     pub agent: String,
+    pub tool: String,
+    pub user_id: String,
+    pub session_id: String,
     pub input_tokens: Option<u64>,
     pub output_tokens: Option<u64>,
     pub cache_read_tokens: Option<u64>,
@@ -47,10 +50,34 @@ pub(crate) fn index_span(span: &Span) -> SpanIndex {
         &["gen_ai.agent.name", "ai.telemetry.functionId"],
     )
     .unwrap_or_default();
+    let tool = text(attributes, &["gen_ai.tool.name", "ai.toolCall.name"]).unwrap_or_default();
+    let user_id = text(
+        attributes,
+        &[
+            "ai.settings.context.userId",
+            "ai.settings.runtimeContext.userId",
+            "user.id",
+            "enduser.id",
+        ],
+    )
+    .unwrap_or_default();
+    let session_id = text(
+        attributes,
+        &[
+            "ai.settings.context.sessionId",
+            "ai.settings.context.chatId",
+            "ai.settings.runtimeContext.sessionId",
+            "ai.settings.runtimeContext.chatId",
+            "gen_ai.conversation.id",
+            "chat.id",
+        ],
+    )
+    .unwrap_or_default();
     let input_tokens = unsigned(
         attributes,
         &[
             "gen_ai.usage.input_tokens",
+            "ai.usage.tokens",
             "ai.usage.inputTokens",
             "ai.usage.promptTokens",
         ],
@@ -114,7 +141,7 @@ pub(crate) fn index_span(span: &Span) -> SpanIndex {
                     / 1_000_000_000.0,
             )
         });
-    let tokens_per_second = number(attributes, &["ai.response.avgCompletionTokensPerSecond"])
+    let tokens_per_second = number(attributes, &["ai.response.avgOutputTokensPerSecond"])
         .filter(|value| *value >= 0.0)
         .or_else(|| {
             output_tokens
@@ -130,6 +157,9 @@ pub(crate) fn index_span(span: &Span) -> SpanIndex {
         provider,
         model,
         agent,
+        tool,
+        user_id,
+        session_id,
         input_tokens,
         output_tokens,
         cache_read_tokens,
@@ -157,6 +187,8 @@ fn classify<'a>(operation: &'a str, name: &'a str, attributes: &[KeyValue]) -> &
         {
             "agent"
         }
+        _ if name.ends_with(".doEmbed") => "embedding",
+        _ if name.ends_with(".doRerank") => "rerank",
         _ if name.ends_with(".doGenerate") || name.ends_with(".doStream") => "model",
         _ if name == "ai.toolCall" || has(attributes, "gen_ai.tool.name") => "tool",
         _ if attributes.iter().any(|attribute| {
@@ -187,6 +219,11 @@ fn search_text(span: &Span) -> String {
 }
 
 fn is_searchable(key: &str) -> bool {
+    let is_context =
+        key.starts_with("ai.settings.context.") || key.starts_with("ai.settings.runtimeContext.");
+    if is_context && is_sensitive_key(key) {
+        return false;
+    }
     matches!(
         key,
         "gen_ai.operation.name"
@@ -218,8 +255,25 @@ fn is_searchable(key: &str) -> bool {
             | "ai.toolCall.id"
             | "ai.toolCall.args"
             | "ai.toolCall.result"
-    ) || key.starts_with("ai.settings.context.")
-        || key.starts_with("ai.settings.runtimeContext.")
+    ) || is_context
+}
+
+fn is_sensitive_key(key: &str) -> bool {
+    let key = key
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    key.contains("secret")
+        || key.contains("password")
+        || key.contains("passphrase")
+        || key.contains("authorization")
+        || key.contains("token")
+        || key.contains("jwt")
+        || key.contains("apikey")
+        || key.contains("privatekey")
+        || key.contains("credential")
+        || key.contains("cookie")
 }
 
 #[derive(Default)]
@@ -254,7 +308,7 @@ impl SearchText {
     }
 
     fn push_value(&mut self, value: &AnyValue, key: Option<&str>) {
-        if self.full() || key.is_some_and(is_binary_field) {
+        if self.full() || key.is_some_and(|key| is_binary_field(key) || is_sensitive_key(key)) {
             return;
         }
         match value.value.as_ref() {
@@ -275,6 +329,9 @@ impl SearchText {
             }
             Some(AttributeValue::KvlistValue(value)) => {
                 for entry in &value.values {
+                    if is_binary_field(&entry.key) || is_sensitive_key(&entry.key) {
+                        continue;
+                    }
                     self.push(&entry.key);
                     if let Some(value) = entry.value.as_ref() {
                         self.push_value(value, Some(&entry.key));
@@ -288,7 +345,7 @@ impl SearchText {
     }
 
     fn push_json(&mut self, value: &Value, key: Option<&str>) {
-        if self.full() || key.is_some_and(is_binary_field) {
+        if self.full() || key.is_some_and(|key| is_binary_field(key) || is_sensitive_key(key)) {
             return;
         }
         match value {
@@ -307,6 +364,9 @@ impl SearchText {
                     .and_then(Value::as_str)
                     .is_some_and(|value| matches!(value, "blob" | "image" | "file"));
                 for (key, value) in values {
+                    if is_binary_field(key) || is_sensitive_key(key) {
+                        continue;
+                    }
                     self.push(key);
                     if !(is_blob && matches!(key.as_str(), "content" | "data" | "blob")) {
                         self.push_json(value, Some(key));
@@ -332,7 +392,7 @@ fn text(attributes: &[KeyValue], keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|key| {
         let value = value(attributes, key)?;
         match value.value.as_ref()? {
-            AttributeValue::StringValue(value) => Some(value.clone()),
+            AttributeValue::StringValue(value) if !value.trim().is_empty() => Some(value.clone()),
             AttributeValue::IntValue(value) => Some(value.to_string()),
             AttributeValue::BoolValue(value) => Some(value.to_string()),
             AttributeValue::DoubleValue(value) => Some(value.to_string()),
@@ -435,6 +495,59 @@ mod tests {
     }
 
     #[test]
+    fn empty_text_attributes_do_not_block_fallbacks() {
+        let span = Span {
+            attributes: vec![
+                attribute(
+                    "gen_ai.provider.name",
+                    AttributeValue::StringValue(" ".into()),
+                ),
+                attribute(
+                    "gen_ai.system",
+                    AttributeValue::StringValue("openai".into()),
+                ),
+                attribute(
+                    "gen_ai.response.model",
+                    AttributeValue::StringValue("".into()),
+                ),
+                attribute(
+                    "gen_ai.request.model",
+                    AttributeValue::StringValue("gpt-fallback".into()),
+                ),
+                attribute("gen_ai.tool.name", AttributeValue::StringValue("".into())),
+                attribute(
+                    "ai.toolCall.name",
+                    AttributeValue::StringValue("lookup_invoice".into()),
+                ),
+                attribute(
+                    "ai.settings.context.userId",
+                    AttributeValue::StringValue("".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.userId",
+                    AttributeValue::StringValue("user-42".into()),
+                ),
+                attribute(
+                    "ai.settings.context.sessionId",
+                    AttributeValue::StringValue("".into()),
+                ),
+                attribute(
+                    "ai.settings.context.chatId",
+                    AttributeValue::StringValue("session-17".into()),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let index = index_span(&span);
+        assert_eq!(index.provider, "openai");
+        assert_eq!(index.model, "gpt-fallback");
+        assert_eq!(index.tool, "lookup_invoice");
+        assert_eq!(index.user_id, "user-42");
+        assert_eq!(index.session_id, "session-17");
+    }
+
+    #[test]
     fn recognizes_legacy_ai_sdk_tool_spans() {
         let span = Span {
             name: "ai.toolCall".into(),
@@ -453,8 +566,113 @@ mod tests {
 
         let index = index_span(&span);
         assert_eq!(index.kind, "tool");
+        assert_eq!(index.tool, "lookupWeather");
         assert!(index.search_text.contains("lookupWeather"));
         assert!(index.search_text.contains("Belgrade"));
+    }
+
+    #[test]
+    fn indexes_standard_tool_name_separately_from_operation() {
+        let span = Span {
+            name: "execute_tool run_sql".into(),
+            attributes: vec![
+                attribute(
+                    "gen_ai.operation.name",
+                    AttributeValue::StringValue("execute_tool".into()),
+                ),
+                attribute(
+                    "gen_ai.tool.name",
+                    AttributeValue::StringValue("run_sql".into()),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let index = index_span(&span);
+        assert_eq!(index.kind, "tool");
+        assert_eq!(index.operation, "execute_tool");
+        assert_eq!(index.tool, "run_sql");
+    }
+
+    #[test]
+    fn indexes_ai_sdk_runtime_context_as_user_and_session() {
+        let span = Span {
+            name: "ai.streamText".into(),
+            attributes: vec![
+                attribute(
+                    "ai.settings.context.userId",
+                    AttributeValue::StringValue("user_42".into()),
+                ),
+                attribute(
+                    "ai.settings.context.chatId",
+                    AttributeValue::StringValue("chat_17".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.apiKey",
+                    AttributeValue::StringValue("must-not-be-indexed".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.authToken",
+                    AttributeValue::StringValue("hidden-auth-token".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.bearerToken",
+                    AttributeValue::StringValue("hidden-bearer-token".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.refreshToken",
+                    AttributeValue::StringValue("hidden-refresh-token".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.sessionToken",
+                    AttributeValue::StringValue("hidden-session-token".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.idToken",
+                    AttributeValue::StringValue("hidden-id-token".into()),
+                ),
+                attribute(
+                    "ai.settings.runtimeContext.jwt",
+                    AttributeValue::StringValue("hidden-jwt".into()),
+                ),
+                attribute(
+                    "ai.settings.context.profile",
+                    AttributeValue::StringValue(
+                        r#"{"organization":"acme","token":"hidden-nested-token","auth":{"passphrase":"hidden-passphrase"}}"#.into(),
+                    ),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        let index = index_span(&span);
+        assert_eq!(index.user_id, "user_42");
+        assert_eq!(index.session_id, "chat_17");
+        assert!(index.search_text.contains("user_42"));
+        assert!(index.search_text.contains("chat_17"));
+        assert!(!index.search_text.contains("must-not-be-indexed"));
+        assert!(!index.search_text.contains("hidden-auth-token"));
+        assert!(!index.search_text.contains("hidden-bearer-token"));
+        assert!(!index.search_text.contains("hidden-refresh-token"));
+        assert!(!index.search_text.contains("hidden-session-token"));
+        assert!(!index.search_text.contains("hidden-id-token"));
+        assert!(!index.search_text.contains("hidden-jwt"));
+        assert!(!index.search_text.contains("hidden-nested-token"));
+        assert!(!index.search_text.contains("hidden-passphrase"));
+        assert!(index.search_text.contains("acme"));
+    }
+
+    #[test]
+    fn indexes_sentry_chat_attribute_as_session() {
+        let span = Span {
+            attributes: vec![attribute(
+                "chat.id",
+                AttributeValue::StringValue("chat_17".into()),
+            )],
+            ..Default::default()
+        };
+
+        assert_eq!(index_span(&span).session_id, "chat_17");
     }
 
     #[test]
@@ -469,7 +687,7 @@ mod tests {
                     AttributeValue::DoubleValue(-1.0),
                 ),
                 attribute(
-                    "ai.response.avgCompletionTokensPerSecond",
+                    "ai.response.avgOutputTokensPerSecond",
                     AttributeValue::DoubleValue(-10.0),
                 ),
                 attribute(
@@ -483,5 +701,47 @@ mod tests {
         let index = index_span(&span);
         assert_eq!(index.ttft_seconds, None);
         assert_eq!(index.tokens_per_second, Some(10.0));
+    }
+
+    #[test]
+    fn indexes_legacy_ai_sdk_embedding_and_rerank_provider_spans() {
+        let embedding = Span {
+            name: "ai.embedMany.doEmbed".into(),
+            attributes: vec![attribute("ai.usage.tokens", AttributeValue::IntValue(42))],
+            ..Default::default()
+        };
+        let embedding_operation = Span {
+            name: "ai.embedMany".into(),
+            attributes: vec![attribute("ai.usage.tokens", AttributeValue::IntValue(42))],
+            ..Default::default()
+        };
+        let rerank = Span {
+            name: "ai.rerank.doRerank".into(),
+            ..Default::default()
+        };
+
+        let embedding = index_span(&embedding);
+        assert_eq!(embedding.kind, "embedding");
+        assert_eq!(embedding.input_tokens, Some(42));
+        assert_eq!(index_span(&embedding_operation).kind, "ai");
+        assert_eq!(index_span(&rerank).kind, "rerank");
+    }
+
+    #[test]
+    fn prefers_ai_sdk_reported_output_throughput() {
+        let span = Span {
+            start_time_unix_nano: 1_000_000_000,
+            end_time_unix_nano: 3_000_000_000,
+            attributes: vec![
+                attribute("gen_ai.usage.output_tokens", AttributeValue::IntValue(20)),
+                attribute(
+                    "ai.response.avgOutputTokensPerSecond",
+                    AttributeValue::DoubleValue(37.5),
+                ),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(index_span(&span).tokens_per_second, Some(37.5));
     }
 }

@@ -1,5 +1,6 @@
 import type { ServiceTraceSpan } from "@/api";
 import { asRecord } from "@/errors/event-context";
+import { otlpAttributeMap } from "@/otlp";
 
 export interface AiMessagePart {
   content?: string;
@@ -34,63 +35,6 @@ export interface AiRun {
   spans: ServiceTraceSpan[];
 }
 
-export const otlpNativeValue = (value: unknown): unknown => {
-  if (value === null || value === undefined || typeof value !== "object") {
-    return value;
-  }
-  const record = value as Record<string, unknown>;
-  for (const candidate of [
-    "stringValue",
-    "intValue",
-    "doubleValue",
-    "boolValue",
-  ]) {
-    if (record[candidate] !== undefined) {
-      return record[candidate];
-    }
-  }
-  const array = asRecord(record.arrayValue)?.values;
-  if (Array.isArray(array)) {
-    return array.map(otlpNativeValue);
-  }
-  const pairs = asRecord(record.kvlistValue)?.values;
-  if (Array.isArray(pairs)) {
-    return Object.fromEntries(
-      pairs.flatMap((pair) => {
-        const entry = asRecord(pair);
-        return entry && typeof entry.key === "string"
-          ? [[entry.key, otlpNativeValue(entry.value)] as const]
-          : [];
-      })
-    );
-  }
-  if (record.bytesValue !== undefined) {
-    return "[binary]";
-  }
-  return value;
-};
-
-export const otlpAttributes = (value: unknown) => {
-  const attributes = asRecord(value)?.attributes;
-  if (!Array.isArray(attributes)) {
-    return [];
-  }
-  return attributes.flatMap((item) => {
-    const record = asRecord(item);
-    return record && typeof record.key === "string"
-      ? [{ key: record.key, value: otlpNativeValue(record.value) }]
-      : [];
-  });
-};
-
-export const otlpAttributeMap = (value: unknown) =>
-  new Map(
-    otlpAttributes(value).map((attribute) => [attribute.key, attribute.value])
-  );
-
-export const otlpAttribute = (value: unknown, key: string) =>
-  otlpAttributes(value).find((item) => item.key === key)?.value;
-
 const parsed = (value: unknown) => {
   if (typeof value !== "string") {
     return value;
@@ -102,10 +46,18 @@ const parsed = (value: unknown) => {
   }
 };
 
+const hasFallbackValue = (value: unknown) =>
+  value !== undefined &&
+  value !== null &&
+  (typeof value !== "string" || value.trim() !== "");
+
 const firstValue = (values: Map<string, unknown>, keys: string[]) => {
   for (const key of keys) {
     if (values.has(key)) {
-      return parsed(values.get(key));
+      const value = parsed(values.get(key));
+      if (hasFallbackValue(value)) {
+        return value;
+      }
     }
   }
 };
@@ -126,8 +78,33 @@ const asList = (value: unknown): unknown[] => {
   return Array.isArray(input) ? input : [input];
 };
 
-const isSecretKey = (key: string) =>
-  /secret|password|authorization|api[_-]?key/iu.test(key);
+export const isSensitiveAiAttributeKey = (key: string) =>
+  /secret|password|passphrase|authorization|token|jwt|api[_-]?key|private[_-]?key|credential|cookie/iu.test(
+    key
+  );
+
+export const redactSensitiveAiValue = (value: unknown): unknown => {
+  const parsedValue = parsed(value);
+  const input =
+    typeof value === "string" &&
+    (parsedValue === null || typeof parsedValue !== "object")
+      ? value
+      : parsedValue;
+  if (Array.isArray(input)) {
+    return input.map(redactSensitiveAiValue);
+  }
+  const record = asRecord(input);
+  if (!record) {
+    return input;
+  }
+  return Object.fromEntries(
+    Object.entries(record).flatMap(([key, entry]) =>
+      isSensitiveAiAttributeKey(key)
+        ? []
+        : [[key, redactSensitiveAiValue(entry)]]
+    )
+  );
+};
 
 const partType = (part: Record<string, unknown>) =>
   (stringValue(part, ["type", "part_kind", "kind"]) ?? "")
@@ -513,7 +490,7 @@ export const aiRequestSettings = (span: ServiceTraceSpan): AiSettingRow[] => {
       !key.startsWith("ai.settings.") ||
       key.startsWith("ai.settings.context.") ||
       key.startsWith("ai.settings.runtimeContext.") ||
-      isSecretKey(key)
+      isSensitiveAiAttributeKey(key)
     ) {
       continue;
     }

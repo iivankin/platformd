@@ -27,25 +27,25 @@ type ServiceTelemetryRepository interface {
 	QueryMetricScope(context.Context, state.MetricScope, string, json.RawMessage) (telemetry.MetricScopeResponse, error)
 	UpdateServiceTelemetryPublicAccess(context.Context, state.UpdateServiceSentryPublicAccess) (telemetry.ServiceConfiguration, error)
 	UpdateServiceTelemetryTunnel(context.Context, state.UpdateServiceTelemetryTunnel) (telemetry.ServiceConfiguration, error)
-	UpdateServiceOTLPTracePublicAccess(context.Context, state.UpdateServiceOTLPTracePublicAccess) (telemetry.ServiceConfiguration, error)
+	UpdateServiceOTLPPublicAccess(context.Context, state.UpdateServiceOTLPPublicAccess) (telemetry.ServiceConfiguration, error)
 	ServeServiceTelemetry(http.ResponseWriter, *http.Request, string, string)
 	ServeTelemetryScope(http.ResponseWriter, *http.Request, state.MetricScope)
 }
 
 type serviceTelemetryResponse struct {
-	ServiceID               string                            `json:"serviceId"`
-	InternalHostname        string                            `json:"internalHostname"`
-	InternalDSN             string                            `json:"internalDsn"`
-	InternalOTLPEndpoint    string                            `json:"internalOtlpEndpoint"`
-	PublicHostname          string                            `json:"publicHostname,omitempty"`
-	PublicDSN               string                            `json:"publicDsn,omitempty"`
-	BrowserTunnelPath       string                            `json:"browserTunnelPath,omitempty"`
-	PublicOTLPTraceHostname string                            `json:"publicOtlpTraceHostname,omitempty"`
-	PublicOTLPTracePath     string                            `json:"publicOtlpTracePath,omitempty"`
-	PublicOTLPTraceEndpoint string                            `json:"publicOtlpTraceEndpoint,omitempty"`
-	UpdatedAt               int64                             `json:"updatedAt"`
-	Webhooks                []serviceTelemetryWebhookResponse `json:"webhooks"`
-	TrackedBy               []analyticsTrackerMatch           `json:"trackedBy,omitempty"`
+	ServiceID            string                            `json:"serviceId"`
+	InternalHostname     string                            `json:"internalHostname"`
+	InternalDSN          string                            `json:"internalDsn"`
+	InternalOTLPEndpoint string                            `json:"internalOtlpEndpoint"`
+	PublicHostname       string                            `json:"publicHostname,omitempty"`
+	PublicDSN            string                            `json:"publicDsn,omitempty"`
+	BrowserTunnelPath    string                            `json:"browserTunnelPath,omitempty"`
+	PublicOTLPHostname   string                            `json:"publicOtlpHostname,omitempty"`
+	PublicOTLPPathPrefix string                            `json:"publicOtlpPathPrefix,omitempty"`
+	PublicOTLPEndpoint   string                            `json:"publicOtlpEndpoint,omitempty"`
+	UpdatedAt            int64                             `json:"updatedAt"`
+	Webhooks             []serviceTelemetryWebhookResponse `json:"webhooks"`
+	TrackedBy            []analyticsTrackerMatch           `json:"trackedBy,omitempty"`
 }
 
 type analyticsTrackerMatch struct {
@@ -68,7 +68,7 @@ func registerServiceTelemetryRoutes(mux *http.ServeMux, config handlerConfig) {
 	mux.HandleFunc("GET "+pattern, getServiceTelemetry(config))
 	mux.HandleFunc("PUT "+pattern+"/public-access", updateServiceTelemetryPublicAccess(config))
 	mux.HandleFunc("PUT "+pattern+"/browser-tunnel", updateServiceTelemetryTunnel(config))
-	mux.HandleFunc("PUT "+pattern+"/public-otlp-traces", updateServiceOTLPTracePublicAccess(config))
+	mux.HandleFunc("PUT "+pattern+"/public-otlp", updateServiceOTLPPublicAccess(config))
 	mux.HandleFunc("POST "+pattern+"/artifact-token", rotateServiceArtifactToken(config.serviceTelemetry))
 	mux.HandleFunc("POST "+pattern+"/webhooks", createServiceTelemetryWebhook(config.serviceTelemetry))
 	mux.HandleFunc("DELETE "+pattern+"/webhooks/{webhookID}", deleteServiceTelemetryWebhook(config.serviceTelemetry))
@@ -146,11 +146,11 @@ func updateServiceTelemetryTunnel(config handlerConfig) http.HandlerFunc {
 	}
 }
 
-func updateServiceOTLPTracePublicAccess(config handlerConfig) http.HandlerFunc {
+func updateServiceOTLPPublicAccess(config handlerConfig) http.HandlerFunc {
 	type requestBody struct {
 		ExpectedUpdatedAt int64  `json:"expectedUpdatedAt"`
 		PublicHostname    string `json:"publicHostname"`
-		TracePath         string `json:"tracePath"`
+		PathPrefix        string `json:"pathPrefix"`
 	}
 	return func(response http.ResponseWriter, request *http.Request) {
 		identity, ok := access.IdentityFromContext(request.Context())
@@ -166,7 +166,7 @@ func updateServiceOTLPTracePublicAccess(config handlerConfig) http.HandlerFunc {
 		decoder.DisallowUnknownFields()
 		var body requestBody
 		if err := decoder.Decode(&body); err != nil || requireJSONEnd(decoder) != nil || body.ExpectedUpdatedAt <= 0 {
-			writeAPIError(response, http.StatusBadRequest, "invalid_service_telemetry", "Public OTLP trace fields are invalid")
+			writeAPIError(response, http.StatusBadRequest, "invalid_service_telemetry", "Public OTLP fields are invalid")
 			return
 		}
 		if body.PublicHostname != "" {
@@ -182,11 +182,11 @@ func updateServiceOTLPTracePublicAccess(config handlerConfig) http.HandlerFunc {
 			writeAPIError(response, http.StatusInternalServerError, "internal_error", "Unable to allocate telemetry mutation identifiers")
 			return
 		}
-		configuration, err := config.serviceTelemetry.UpdateServiceOTLPTracePublicAccess(
+		configuration, err := config.serviceTelemetry.UpdateServiceOTLPPublicAccess(
 			request.Context(),
-			state.UpdateServiceOTLPTracePublicAccess{
+			state.UpdateServiceOTLPPublicAccess{
 				ID: request.PathValue("serviceID"), ProjectID: request.PathValue("projectID"),
-				PublicHostname: body.PublicHostname, Path: body.TracePath,
+				PublicHostname: body.PublicHostname, PathPrefix: body.PathPrefix,
 				ExpectedUpdatedMillis: body.ExpectedUpdatedAt, AuditEventID: auditID,
 				ActorKind: "access", ActorID: identity.Subject, ActorEmail: identity.Email,
 				RequestCorrelationID: correlationID, UpdatedAtMillis: config.now().UnixMilli(),
@@ -380,12 +380,12 @@ func publicServiceTelemetry(configuration telemetry.ServiceConfiguration, webhoo
 		ServiceID: configuration.ServiceID, InternalHostname: configuration.InternalHostname,
 		InternalDSN: configuration.InternalDSN, InternalOTLPEndpoint: configuration.InternalOTLPEndpoint,
 		PublicHostname: configuration.PublicHostname, PublicDSN: configuration.PublicDSN,
-		BrowserTunnelPath:       configuration.BrowserTunnelPath,
-		PublicOTLPTraceHostname: configuration.PublicOTLPTraceHostname,
-		PublicOTLPTracePath:     configuration.PublicOTLPTracePath,
-		PublicOTLPTraceEndpoint: configuration.PublicOTLPTraceEndpoint,
-		UpdatedAt:               configuration.UpdatedAt,
-		Webhooks:                items,
+		BrowserTunnelPath:    configuration.BrowserTunnelPath,
+		PublicOTLPHostname:   configuration.PublicOTLPHostname,
+		PublicOTLPPathPrefix: configuration.PublicOTLPPathPrefix,
+		PublicOTLPEndpoint:   configuration.PublicOTLPEndpoint,
+		UpdatedAt:            configuration.UpdatedAt,
+		Webhooks:             items,
 	}
 }
 
@@ -413,8 +413,10 @@ func writeServiceTelemetryError(response http.ResponseWriter, err error) {
 		writeAPIError(response, http.StatusBadRequest, "invalid_browser_tunnel", err.Error())
 	case errors.Is(err, state.ErrServiceTelemetryTunnelNeedsDomain):
 		writeAPIError(response, http.StatusBadRequest, "public_telemetry_required", err.Error())
-	case errors.Is(err, state.ErrServiceOTLPTracePublicAccessInvalid):
-		writeAPIError(response, http.StatusBadRequest, "invalid_public_otlp_traces", err.Error())
+	case errors.Is(err, state.ErrServiceTelemetryPublicPathConflict):
+		writeAPIError(response, http.StatusBadRequest, "telemetry_path_conflict", err.Error())
+	case errors.Is(err, state.ErrServiceOTLPPublicAccessInvalid):
+		writeAPIError(response, http.StatusBadRequest, "invalid_public_otlp", err.Error())
 	case errors.Is(err, state.ErrServiceTelemetryWebhookNotFound):
 		writeAPIError(response, http.StatusNotFound, "webhook_not_found", err.Error())
 	default:

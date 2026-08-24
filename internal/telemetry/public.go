@@ -10,7 +10,7 @@ import (
 
 type PublicRepository interface {
 	ServiceBySentryHostname(context.Context, string) (state.ServiceDesired, error)
-	ServiceByOTLPTraceHostname(context.Context, string) (state.ServiceDesired, error)
+	ServiceByOTLPHostname(context.Context, string) (state.ServiceDesired, error)
 }
 
 type PublicHandler struct {
@@ -32,13 +32,13 @@ func (handler *PublicHandler) ServeHTTP(response http.ResponseWriter, request *h
 		http.NotFound(response, request)
 		return
 	}
-	if request.Method == http.MethodPost && request.URL.Path == "/v1/traces" {
-		service, err := handler.repository.ServiceByOTLPTraceHostname(request.Context(), hostname)
+	if request.Method == http.MethodPost && (request.URL.Path == "/v1/traces" || request.URL.Path == "/v1/logs") {
+		service, err := handler.repository.ServiceByOTLPHostname(request.Context(), hostname)
 		if err != nil {
 			http.NotFound(response, request)
 			return
 		}
-		handler.manager.ServePublicOTLPTraces(response, request, service.ID)
+		handler.manager.ServePublicOTLP(response, request, service.ID)
 		return
 	}
 	if !sentry.DataPlanePathAllowed(request.URL.Path) {

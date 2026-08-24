@@ -1,6 +1,8 @@
-import type { ServiceTraceSpan } from "@/api";
+import { aiTool } from "@/ai-trace";
+import type { ServiceTraceSpan, ServiceTraceWebVital } from "@/api";
 import { asRecord } from "@/errors/event-context";
-import { spanMatchesTraceQuery } from "@/trace-search";
+import { matchingTraceSpans } from "@/trace-search";
+import type { ServiceNameResolver } from "@/trace-service-name";
 
 export type WebVitalKey = "cls" | "fcp" | "inp" | "lcp" | "ttfb";
 export type WebVitalStatus = "good" | "needs-improvement" | "poor";
@@ -8,6 +10,7 @@ export type WebVitalStatus = "good" | "needs-improvement" | "poor";
 export interface WebVitalMeasurement {
   key: WebVitalKey;
   name: string;
+  spanId: string;
   status: WebVitalStatus;
   unit: string;
   value: number;
@@ -30,6 +33,8 @@ export interface TraceRow {
 export interface TraceRowsOptions {
   autoGroup?: boolean;
   expandedGroups?: ReadonlySet<string>;
+  matchingSpanIDs?: ReadonlySet<string>;
+  serviceName?: ServiceNameResolver;
   showGaps?: boolean;
 }
 
@@ -48,8 +53,8 @@ const vitalDefinitions: Record<
     name: "Cumulative Layout Shift",
   },
   fcp: {
-    good: 900,
-    median: 1600,
+    good: 1800,
+    median: 3000,
     name: "First Contentful Paint",
   },
   inp: {
@@ -58,31 +63,19 @@ const vitalDefinitions: Record<
     name: "Interaction to Next Paint",
   },
   lcp: {
-    good: 1200,
-    median: 2400,
+    good: 2500,
+    median: 4000,
     name: "Largest Contentful Paint",
   },
   ttfb: {
-    good: 200,
-    median: 400,
+    good: 800,
+    median: 1800,
     name: "Time to First Byte",
   },
 };
 
 const vitalOrder: WebVitalKey[] = ["lcp", "fcp", "inp", "cls", "ttfb"];
-
-const text = (value: unknown) =>
-  typeof value === "string" && value !== "" ? value : undefined;
-
-const number = (value: unknown) => {
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return value;
-  }
-  if (typeof value === "string" && value.trim() !== "") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : undefined;
-  }
-};
+const otelContextIsRemoteMask = 512;
 
 const normalizedVitalKey = (value: string): WebVitalKey | undefined => {
   const normalized = value
@@ -131,7 +124,12 @@ const measurementStatus = (key: WebVitalKey, value: number) => {
 const measurement = (
   key: WebVitalKey,
   value: number,
-  unit: string
+  unit: string,
+  spanId = "",
+  status = measurementStatus(
+    key,
+    key === "cls" ? value : toMilliseconds(value, unit)
+  )
 ): WebVitalMeasurement => {
   const normalizedUnit = key === "cls" ? "ratio" : unit || "millisecond";
   const comparable =
@@ -139,82 +137,78 @@ const measurement = (
   return {
     key,
     name: vitalDefinitions[key].name,
-    status: measurementStatus(key, comparable),
+    spanId,
+    status,
     unit: normalizedUnit,
     value,
     valueMilliseconds: key === "cls" ? undefined : comparable,
   };
 };
 
-const measurementsFromPayload = (payload: unknown) => {
-  const result = new Map<WebVitalKey, WebVitalMeasurement>();
-  const values = asRecord(asRecord(payload)?.measurements);
-  for (const [rawKey, rawValue] of Object.entries(values ?? {})) {
-    const key = normalizedVitalKey(rawKey);
-    if (!key) {
-      continue;
-    }
-    const record = asRecord(rawValue);
-    const value = number(record?.value ?? rawValue);
-    if (value === undefined) {
-      continue;
-    }
-    result.set(
-      key,
-      measurement(key, value, text(record?.unit) ?? "millisecond")
-    );
-  }
-  return result;
-};
-
-const standaloneVital = (
-  span: ServiceTraceSpan
-): WebVitalMeasurement | undefined => {
-  const payload = asRecord(span.span);
-  const operation = text(payload?.op) ?? "";
-  const key = normalizedVitalKey(operation) ?? normalizedVitalKey(span.name);
-  if (!key) {
-    return;
-  }
-  const isWebVital =
-    operation.includes("webvital") || operation === "web-vital";
-  if (!isWebVital) {
-    return;
-  }
-  const data = asRecord(payload?.data);
-  const record = asRecord(payload?.measurement);
-  const value = [record?.value, data?.value, payload?.value]
-    .map(number)
-    .find((candidate) => candidate !== undefined);
-  if (value === undefined) {
-    return measurementsFromPayload(payload).get(key);
-  }
-  const unit = [record?.unit, data?.unit, payload?.unit]
-    .map(text)
-    .find((candidate) => candidate !== undefined);
-  return measurement(key, value, unit ?? "millisecond");
-};
-
-export const sentryTracePayload = (spans: ServiceTraceSpan[]) => {
-  const root =
-    spans.find((span) => span.source === "sentry" && span.isSegment) ??
-    spans.find((span) => span.source === "sentry");
-  return root ? asRecord(root.span) : undefined;
-};
+export const traceRoot = (spans: ServiceTraceSpan[]) =>
+  spans.find((span) => !span.parentSpanId) ??
+  spans.find(
+    (span) => Math.floor(span.flags / otelContextIsRemoteMask) % 2 === 1
+  ) ??
+  spans[0];
 
 export const traceWebVitals = (
-  spans: ServiceTraceSpan[]
+  webVitals: ServiceTraceWebVital[]
 ): WebVitalMeasurement[] => {
-  const values = measurementsFromPayload(sentryTracePayload(spans));
-  for (const span of spans) {
-    const standalone = standaloneVital(span);
-    if (standalone) {
-      values.set(standalone.key, standalone);
+  const values = new Map<WebVitalKey, WebVitalMeasurement>();
+  for (const vital of webVitals) {
+    const key = normalizedVitalKey(vital.name);
+    if (key) {
+      values.set(
+        key,
+        measurement(
+          key,
+          vital.value,
+          key === "cls" ? "ratio" : "millisecond",
+          vital.spanId,
+          vital.rating === "good" ||
+            vital.rating === "needs-improvement" ||
+            vital.rating === "poor"
+            ? vital.rating
+            : undefined
+        )
+      );
     }
   }
   return vitalOrder.flatMap((key) => {
     const value = values.get(key);
     return value ? [value] : [];
+  });
+};
+
+export interface WebVitalTimelineMarker {
+  timestampUnixNano: bigint;
+  vital: WebVitalMeasurement;
+}
+
+export const webVitalTimelineMarkers = (
+  vitals: WebVitalMeasurement[],
+  spans: ServiceTraceSpan[],
+  fallbackStart: bigint
+): WebVitalTimelineMarker[] => {
+  const spanStarts = new Map(
+    spans.map((span) => [span.spanId, BigInt(span.startTimeUnixNano)] as const)
+  );
+  return vitals.flatMap((vital) => {
+    if (
+      !(vital.key === "ttfb" || vital.key === "fcp" || vital.key === "lcp") ||
+      vital.valueMilliseconds === undefined
+    ) {
+      return [];
+    }
+    const anchor = spanStarts.get(vital.spanId) ?? fallbackStart;
+    return [
+      {
+        timestampUnixNano:
+          anchor + BigInt(Math.round(vital.valueMilliseconds * 1_000_000)),
+        vital,
+      },
+    ];
   });
 };
 
@@ -243,9 +237,17 @@ const groupedChildren = (children: ServiceTraceSpan[], enabled: boolean) => {
   const candidates = new Map<string, ServiceTraceSpan[]>();
   for (const child of children) {
     const payload = asRecord(child.span);
-    const key = [child.aiKind || payload?.op || child.name, child.kind].join(
-      ":"
-    );
+    const key = [
+      child.aiKind,
+      child.aiKind === "tool" ? aiTool(child).name : "",
+      child.aiProvider,
+      child.aiModel,
+      child.aiAgent,
+      child.aiOperation,
+      payload?.op ?? "",
+      child.name,
+      child.kind,
+    ].join("\u0000");
     const values = candidates.get(key) ?? [];
     values.push(child);
     candidates.set(key, values);
@@ -315,7 +317,12 @@ const traceChildRows = (
   if (showGaps && children.length > 0) {
     rows.push(...missingInstrumentationRows(parent, children));
   }
-  return rows.toSorted((left, right) => (left.start < right.start ? -1 : 1));
+  return rows.toSorted((left, right) => {
+    if (left.start === right.start) {
+      return 0;
+    }
+    return left.start < right.start ? -1 : 1;
+  });
 };
 
 const repeatedGroupRow = (
@@ -348,12 +355,7 @@ const repeatedGroupRow = (
   };
 };
 
-export const traceRows = (
-  spans: ServiceTraceSpan[],
-  collapsed: ReadonlySet<string>,
-  query = "",
-  options: TraceRowsOptions = {}
-): TraceRow[] => {
+const traceHierarchy = (spans: ServiceTraceSpan[]) => {
   const byID = new Map(spans.map((span) => [span.spanId, span]));
   const children = new Map<string, ServiceTraceSpan[]>();
   const roots: ServiceTraceSpan[] = [];
@@ -370,112 +372,230 @@ export const traceRows = (
   for (const siblings of children.values()) {
     siblings.sort(chronological);
   }
+  return { byID, children, roots };
+};
 
-  const matches = (
-    span: ServiceTraceSpan,
-    visited = new Set<string>()
-  ): boolean => {
-    if (visited.has(span.spanId)) {
-      return false;
+export const collapsibleTraceSpanIDs = (spans: ServiceTraceSpan[]) => {
+  const spanIDs = new Set(spans.map((span) => span.spanId));
+  const collapsible = new Set<string>();
+  for (const span of spans) {
+    if (spanIDs.has(span.parentSpanId)) {
+      collapsible.add(span.parentSpanId);
     }
-    visited.add(span.spanId);
-    return (
-      spanMatchesTraceQuery(span, spans, query) ||
-      (children.get(span.spanId) ?? []).some((child) => matches(child, visited))
+  }
+  return collapsible;
+};
+
+const visibleTraceSpanIDs = (
+  spans: ServiceTraceSpan[],
+  byID: ReadonlyMap<string, ServiceTraceSpan>,
+  query: string,
+  matchingSpanIDs?: ReadonlySet<string>,
+  serviceName?: ServiceNameResolver
+) => {
+  const visible = new Set<string>();
+  if (!query) {
+    return visible;
+  }
+  const directMatches =
+    matchingSpanIDs ??
+    new Set(
+      matchingTraceSpans(spans, query, serviceName).map((span) => span.spanId)
     );
-  };
-  const rows: TraceRow[] = [];
+  for (const span of spans) {
+    if (!directMatches.has(span.spanId)) {
+      continue;
+    }
+    let current: ServiceTraceSpan | undefined = span;
+    const path = new Set<string>();
+    while (current && !path.has(current.spanId)) {
+      path.add(current.spanId);
+      if (visible.has(current.spanId)) {
+        break;
+      }
+      visible.add(current.spanId);
+      current = byID.get(current.parentSpanId);
+    }
+  }
+  return visible;
+};
+
+const connectedTraceSpanIDs = (
+  roots: ServiceTraceSpan[],
+  children: ReadonlyMap<string, ServiceTraceSpan[]>
+) => {
   const connected = new Set<string>();
-  const markConnected = (span: ServiceTraceSpan) => {
-    if (connected.has(span.spanId)) {
-      return;
+  const pending = [...roots];
+  while (pending.length > 0) {
+    const span = pending.pop();
+    if (!(span && !connected.has(span.spanId))) {
+      continue;
     }
     connected.add(span.spanId);
-    for (const child of children.get(span.spanId) ?? []) {
-      markConnected(child);
-    }
-  };
-  for (const root of roots) {
-    markConnected(root);
+    pending.push(...(children.get(span.spanId) ?? []));
   }
-  const append = (
-    span: ServiceTraceSpan,
-    depth: number,
-    visited: Set<string>
-  ) => {
-    if (visited.has(span.spanId) || (query.trim() && !matches(span))) {
-      return;
-    }
-    visited.add(span.spanId);
-    const spanChildren = children.get(span.spanId) ?? [];
-    rows.push({
-      childCount: spanChildren.length,
-      depth,
-      durationNano: span.durationNano,
-      endTimeUnixNano: span.endTimeUnixNano,
-      groupedSpans: [],
-      id: span.spanId,
-      kind: "span",
-      label: span.name,
-      span,
-      startTimeUnixNano: span.startTimeUnixNano,
-    });
-    if (!query.trim() && collapsed.has(span.spanId)) {
-      return;
-    }
+  return connected;
+};
 
-    const childRows = traceChildRows(
-      span,
-      spanChildren,
-      options.autoGroup === true && !query.trim(),
-      options.showGaps === true && !query.trim()
-    );
+type AppendOperation =
+  | { depth: number; span: ServiceTraceSpan; type: "visit" }
+  | { row: TraceRow; type: "emit" }
+  | { spanID: string; type: "mark" };
 
-    for (const childRow of childRows) {
-      if (childRow.kind === "span") {
-        append(childRow.span, depth + 1, visited);
-        continue;
-      }
-      if (childRow.kind === "gap") {
-        const duration = childRow.end - childRow.start;
-        rows.push({
+const spanTraceRow = (
+  span: ServiceTraceSpan,
+  childCount: number,
+  depth: number
+): TraceRow => ({
+  childCount,
+  depth,
+  durationNano: span.durationNano,
+  endTimeUnixNano: span.endTimeUnixNano,
+  groupedSpans: [],
+  id: span.spanId,
+  kind: "span",
+  label: span.name,
+  span,
+  startTimeUnixNano: span.startTimeUnixNano,
+});
+
+const childAppendOperations = (
+  parent: ServiceTraceSpan,
+  childRow: ChildTraceRow,
+  depth: number,
+  expandedGroups?: ReadonlySet<string>
+): AppendOperation[] => {
+  if (childRow.kind === "span") {
+    return [{ depth: depth + 1, span: childRow.span, type: "visit" }];
+  }
+  if (childRow.kind === "gap") {
+    return [
+      {
+        row: {
           childCount: 0,
           depth: depth + 1,
-          durationNano: duration.toString(),
+          durationNano: (childRow.end - childRow.start).toString(),
           endTimeUnixNano: childRow.end.toString(),
           groupedSpans: [],
-          id: `gap:${span.spanId}:${childRow.start.toString()}`,
+          id: `gap:${parent.spanId}:${childRow.start.toString()}`,
           kind: "gap",
           label: "Missing instrumentation",
-          span,
+          span: parent,
           startTimeUnixNano: childRow.start.toString(),
-        });
-        continue;
-      }
-      const groupRow = repeatedGroupRow(span, childRow, depth);
-      if (!groupRow) {
-        continue;
-      }
-      rows.push(groupRow);
-      if (options.expandedGroups?.has(groupRow.id)) {
-        for (const child of childRow.spans) {
-          append(child, depth + 2, visited);
-        }
-      } else {
-        for (const child of childRow.spans) {
-          visited.add(child.spanId);
-        }
-      }
+        },
+        type: "emit",
+      },
+    ];
+  }
+  const groupRow = repeatedGroupRow(parent, childRow, depth);
+  if (!groupRow) {
+    return [];
+  }
+  const children = childRow.spans.toReversed();
+  const operations: AppendOperation[] = expandedGroups?.has(groupRow.id)
+    ? children.map((span) => ({ depth: depth + 2, span, type: "visit" }))
+    : children.map((span) => ({ spanID: span.spanId, type: "mark" }));
+  operations.push({ row: groupRow, type: "emit" });
+  return operations;
+};
+
+interface AppendTraceRowsOptions extends TraceRowsOptions {
+  children: ReadonlyMap<string, ServiceTraceSpan[]>;
+  collapsed: ReadonlySet<string>;
+  normalizedQuery: string;
+  rows: TraceRow[];
+  visible: ReadonlySet<string>;
+  visited: Set<string>;
+}
+
+const appendTraceRows = (
+  span: ServiceTraceSpan,
+  depth: number,
+  options: AppendTraceRowsOptions
+) => {
+  const operations: AppendOperation[] = [{ depth, span, type: "visit" }];
+  while (operations.length > 0) {
+    const operation = operations.pop();
+    if (!operation) {
+      continue;
     }
+    if (operation.type === "emit") {
+      options.rows.push(operation.row);
+      continue;
+    }
+    if (operation.type === "mark") {
+      options.visited.add(operation.spanID);
+      continue;
+    }
+    if (
+      options.visited.has(operation.span.spanId) ||
+      (options.normalizedQuery && !options.visible.has(operation.span.spanId))
+    ) {
+      continue;
+    }
+    options.visited.add(operation.span.spanId);
+    const spanChildren = options.children.get(operation.span.spanId) ?? [];
+    options.rows.push(
+      spanTraceRow(operation.span, spanChildren.length, operation.depth)
+    );
+    if (
+      !options.normalizedQuery &&
+      options.collapsed.has(operation.span.spanId)
+    ) {
+      continue;
+    }
+    const childRows = traceChildRows(
+      operation.span,
+      spanChildren,
+      options.autoGroup === true && !options.normalizedQuery,
+      options.showGaps === true && !options.normalizedQuery
+    );
+    for (const childRow of childRows.toReversed()) {
+      operations.push(
+        ...childAppendOperations(
+          operation.span,
+          childRow,
+          operation.depth,
+          options.expandedGroups
+        )
+      );
+    }
+  }
+};
+
+export const traceRows = (
+  spans: ServiceTraceSpan[],
+  collapsed: ReadonlySet<string>,
+  query = "",
+  options: TraceRowsOptions = {}
+): TraceRow[] => {
+  const { byID, children, roots } = traceHierarchy(spans);
+  const normalizedQuery = query.trim();
+  const visible = visibleTraceSpanIDs(
+    spans,
+    byID,
+    normalizedQuery,
+    options.matchingSpanIDs,
+    options.serviceName
+  );
+  const connected = connectedTraceSpanIDs(roots, children);
+  const rows: TraceRow[] = [];
+  const appendOptions: AppendTraceRowsOptions = {
+    ...options,
+    children,
+    collapsed,
+    normalizedQuery,
+    rows,
+    visible,
+    visited: new Set(),
   };
-  const visited = new Set<string>();
   for (const root of roots) {
-    append(root, 0, visited);
+    appendTraceRows(root, 0, appendOptions);
   }
   // Cyclic parent references should not make valid spans disappear from the trace.
   for (const span of spans) {
     if (!connected.has(span.spanId)) {
-      append(span, 0, visited);
+      appendTraceRows(span, 0, appendOptions);
     }
   }
   return rows;

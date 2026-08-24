@@ -1,6 +1,9 @@
 import type { ServiceTraceSpan } from "@/api";
 import { asRecord } from "@/errors/event-context";
-import { traceSpanSelfTime } from "@/trace-span-context";
+import { otlpAttribute } from "@/otlp";
+import { traceServiceName } from "@/trace-service-name";
+import type { ServiceNameResolver } from "@/trace-service-name";
+import { traceSpanSelfTimes } from "@/trace-span-context";
 
 interface SearchToken {
   field?: string;
@@ -10,6 +13,19 @@ interface SearchToken {
 const tokenPattern = /(?:[^\s"]+|"[^"]*")+/gu;
 const comparisonPattern =
   /^(?<operator><=|>=|=|<|>)?\s*(?<amount>\d+(?:\.\d+)?)\s*(?<unit>ns|us|µs|ms|s|m|h)?$/iu;
+const structuredSearchFields = new Set([
+  "duration",
+  "duration_ms",
+  "has",
+  "name",
+  "op",
+  "operation",
+  "self",
+  "self_time",
+  "service",
+  "source",
+  "status",
+]);
 
 const normalize = (value: string) => value.trim().toLocaleLowerCase();
 
@@ -67,28 +83,11 @@ const compare = (actual: number, expression: string) => {
   return actual === parsed.nanos;
 };
 
-const attributeValue = (value: unknown, key: string) => {
-  const attributes = asRecord(value)?.attributes;
-  if (!Array.isArray(attributes)) {
-    return "";
-  }
-  for (const attribute of attributes) {
-    const record = asRecord(attribute);
-    if (record?.key !== key) {
-      continue;
-    }
-    const wrapped = asRecord(record.value);
-    const candidate = wrapped ? Object.values(wrapped)[0] : undefined;
-    return candidate === undefined ? "" : String(candidate);
-  }
-  return "";
-};
-
 const spanOperation = (span: ServiceTraceSpan) => {
   const payload = asRecord(span.span);
   return String(
     payload?.op ??
-      attributeValue(span.span, "gen_ai.operation.name") ??
+      otlpAttribute(span.span, "gen_ai.operation.name") ??
       span.aiOperation ??
       ""
   );
@@ -118,11 +117,15 @@ const hasFeature = (span: ServiceTraceSpan, value: string) => {
   return false;
 };
 
-const searchable = (span: ServiceTraceSpan) =>
+const searchable = (
+  span: ServiceTraceSpan,
+  serviceName?: ServiceNameResolver
+) =>
   normalize(
     [
       span.name,
       span.serviceId,
+      traceServiceName(span, serviceName),
       span.source,
       span.aiAgent,
       span.aiKind,
@@ -138,17 +141,19 @@ const searchable = (span: ServiceTraceSpan) =>
 
 const matchesToken = (
   span: ServiceTraceSpan,
-  allSpans: ServiceTraceSpan[],
-  token: SearchToken
+  token: SearchToken,
+  selfTimes: ReadonlyMap<string, bigint>,
+  searchableText: string,
+  serviceName?: ServiceNameResolver
 ) => {
   if (!token.field) {
-    return searchable(span).includes(token.value);
+    return searchableText.includes(token.value);
   }
   if (["duration", "duration_ms"].includes(token.field)) {
     return compare(Number(span.durationNano), token.value);
   }
   if (["self", "self_time"].includes(token.field)) {
-    return compare(Number(traceSpanSelfTime(span, allSpans)), token.value);
+    return compare(Number(selfTimes.get(span.spanId) ?? 0n), token.value);
   }
   if (token.field === "status") {
     return normalize(spanStatus(span)) === token.value;
@@ -160,9 +165,7 @@ const matchesToken = (
     return normalize(spanOperation(span)).includes(token.value);
   }
   if (token.field === "service") {
-    return normalize(
-      attributeValue(span.resource, "service.name") || span.serviceId
-    ).includes(token.value);
+    return normalize(traceServiceName(span, serviceName)).includes(token.value);
   }
   if (token.field === "name") {
     return normalize(span.name).includes(token.value);
@@ -170,16 +173,31 @@ const matchesToken = (
   if (token.field === "has") {
     return hasFeature(span, token.value);
   }
-  return searchable(span).includes(`${token.field}:${token.value}`);
+  return searchableText.includes(`${token.field}:${token.value}`);
 };
 
-export const spanMatchesTraceQuery = (
-  span: ServiceTraceSpan,
-  allSpans: ServiceTraceSpan[],
-  query: string
-) => tokens(query).every((token) => matchesToken(span, allSpans, token));
-
-export const matchingTraceSpans = (spans: ServiceTraceSpan[], query: string) =>
-  query.trim()
-    ? spans.filter((span) => spanMatchesTraceQuery(span, spans, query))
-    : spans;
+export const matchingTraceSpans = (
+  spans: ServiceTraceSpan[],
+  query: string,
+  serviceName?: ServiceNameResolver
+) => {
+  const queryTokens = tokens(query);
+  if (queryTokens.length === 0) {
+    return spans;
+  }
+  const needsSelfTime = queryTokens.some((token) =>
+    ["self", "self_time"].includes(token.field ?? "")
+  );
+  const needsSearchableText = queryTokens.some(
+    (token) => !token.field || !structuredSearchFields.has(token.field)
+  );
+  const selfTimes = needsSelfTime ? traceSpanSelfTimes(spans) : new Map();
+  return spans.filter((span) => {
+    const searchableText = needsSearchableText
+      ? searchable(span, serviceName)
+      : "";
+    return queryTokens.every((token) =>
+      matchesToken(span, token, selfTimes, searchableText, serviceName)
+    );
+  });
+};

@@ -6,9 +6,9 @@ Every service also gets an internal Sentry DSN and an OTLP HTTP/protobuf
 endpoint. Container stdout/stderr, SDK logs, traces, metrics, and Sentry events
 flow into the always-running embedded telemetry process and are stored in chDB.
 Versioned issue state lives beside its events, so telemetry has one source of
-truth. A service can expose its Sentry receiver on a public domain, while
-OTLP logs and metrics remain private to the project network. Browser services
-can expose one exact CORS-enabled OTLP HTTP/protobuf path for traces.
+truth. A service can expose its Sentry receiver on a public domain. OTLP metrics
+remain private to the project network, while browser services can expose a
+CORS-enabled OTLP HTTP/protobuf prefix with exact trace and log routes.
 
 The server, admin UI, and container runtime are distributed as one `platformd` release executable. `platformd-forward` is a small local helper that connects short-lived API/MCP port-forward tickets to a localhost TCP port.
 

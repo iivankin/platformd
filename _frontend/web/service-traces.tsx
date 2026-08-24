@@ -10,7 +10,7 @@ import {
 import { useQueryStates } from "nuqs";
 import { useDeferredValue, useEffect, useMemo, useState } from "react";
 
-import { calculateAiPrice, formatAiPrice } from "@/ai-price";
+import { formatAiPrice, storedAiPrice } from "@/ai-price";
 import { fetchTelemetryTrace, fetchTelemetryTraces } from "@/api";
 import type {
   MetricScope,
@@ -34,44 +34,31 @@ import {
   TelemetryTimeRangePicker,
   telemetryTimeBounds,
 } from "@/telemetry-time-range";
-
-const integer = (value: string) => globalThis.BigInt(value);
-
-const nanosToMilliseconds = (value: string) =>
-  Number(integer(value)) / 1_000_000;
-
-const nanosToDate = (value: string) =>
-  new Date(Number(integer(value) / 1_000_000n));
-
-const formatDuration = (value: string) => {
-  const milliseconds = nanosToMilliseconds(value);
-  if (milliseconds < 1) {
-    return `${Math.round(milliseconds * 1000)} μs`;
-  }
-  if (milliseconds < 1000) {
-    return `${milliseconds.toFixed(milliseconds < 10 ? 2 : 1)} ms`;
-  }
-  return `${(milliseconds / 1000).toFixed(2)} s`;
-};
+import {
+  formatTraceDuration as formatDuration,
+  traceInteger as integer,
+  traceNanosToDate as nanosToDate,
+} from "@/trace-format";
+import type { ServiceNameResolver } from "@/trace-service-name";
 
 const shortID = (value: string) => `${value.slice(0, 8)}…${value.slice(-6)}`;
+
+const traceDetailMatchesSelection = (
+  detail: ServiceTraceDetail | undefined,
+  traceID: string
+) => detail?.traceId === traceID;
 
 const TraceUsage = ({ trace }: { trace: ServiceTraceSummary }) => {
   if (!trace.isAi) {
     return <span className="text-muted-foreground">—</span>;
   }
   const tokens = (trace.aiInputTokens ?? 0) + (trace.aiOutputTokens ?? 0);
-  const price = calculateAiPrice({
+  const price = storedAiPrice({
     actual: trace.aiCostUsd,
+    estimated: trace.aiEstimatedCostUsd,
     model: trace.aiModel,
+    partial: trace.aiUnpricedModelCallCount > 0,
     provider: trace.aiProvider,
-    timestamp: nanosToDate(trace.startedAtUnixNano),
-    usage: {
-      cacheReadTokens: trace.aiCacheReadTokens,
-      cacheWriteTokens: trace.aiCacheWriteTokens,
-      inputTokens: trace.aiInputTokens,
-      outputTokens: trace.aiOutputTokens,
-    },
   });
   return (
     <span className="block">
@@ -194,15 +181,7 @@ export const TelemetryTraces = ({
       setDetailLoading(true);
       setDetailError(undefined);
       try {
-        // OTEL-first: detail always returns every segment for this trace_id.
-        setDetail(
-          await fetchTelemetryTrace(
-            scope,
-            traceID,
-            controller.signal,
-            globalThis.fetch
-          )
-        );
+        setDetail(await fetchTelemetryTrace(scope, traceID, controller.signal));
         setDetailError(undefined);
       } catch (loadError) {
         if (
@@ -229,10 +208,7 @@ export const TelemetryTraces = ({
   }, [scope, traceID]);
 
   const closeTrace = () => {
-    void setTraceState(
-      { trace: null, traceSegment: null },
-      { history: "push" }
-    );
+    void setTraceState({ trace: null }, { history: "push" });
   };
   const histogramBounds = telemetryTimeBounds({
     from: timeFrom,
@@ -262,7 +238,9 @@ export const TelemetryTraces = ({
   };
 
   if (traceID) {
-    const currentDetail = detail?.traceId === traceID ? detail : undefined;
+    const currentDetail = traceDetailMatchesSelection(detail, traceID)
+      ? detail
+      : undefined;
     const currentDetailError =
       detailError?.traceID === traceID ? detailError.message : "";
     if (currentDetail) {
@@ -273,16 +251,11 @@ export const TelemetryTraces = ({
           onBack={closeTrace}
           onOpenError={onOpenError}
           onOpenLogs={onOpenLogs}
-          onOpenTrace={(nextTraceID, nextSegmentID) =>
-            void setTraceState(
-              {
-                trace: nextTraceID,
-                traceSegment: nextSegmentID ?? null,
-              },
-              { history: "push" }
-            )
+          onOpenTrace={(nextTraceID) =>
+            void setTraceState({ trace: nextTraceID }, { history: "push" })
           }
           scope={scope}
+          serviceName={serviceName}
         />
       );
     }
@@ -446,7 +419,7 @@ export const TelemetryTraces = ({
                 const identity = trace.traceId;
                 const open = () =>
                   void setTraceState(
-                    { trace: trace.traceId, traceSegment: null },
+                    { trace: trace.traceId },
                     { history: "push" }
                   );
                 return (
@@ -562,11 +535,13 @@ export const ServiceTraces = ({
   onOpenLogs,
   projectID,
   serviceID,
+  serviceName,
 }: {
   onOpenError?: (issueID: string, eventID?: string) => void;
   onOpenLogs?: (traceID: string, spanID?: string) => void;
   projectID: string;
   serviceID: string;
+  serviceName: ServiceNameResolver;
 }) => {
   const scope = useMemo<MetricScope>(
     () => ({ kind: "service", projectID, serviceID }),
@@ -577,6 +552,7 @@ export const ServiceTraces = ({
       onOpenError={onOpenError}
       onOpenLogs={onOpenLogs}
       scope={scope}
+      serviceName={serviceName}
     />
   );
 };

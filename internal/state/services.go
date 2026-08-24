@@ -20,24 +20,24 @@ var (
 )
 
 type ServiceDesired struct {
-	ID                      string
-	ProjectID               string
-	ProjectName             string
-	Name                    string
-	Enabled                 bool
-	ActiveDeploymentID      string
-	ActiveImageDigest       string
-	ActiveConfigHash        string
-	ActiveSourceRevision    string
-	SentryPublicHostname    string
-	SentryTunnelPath        string
-	OTLPTracePublicHostname string
-	OTLPTracePath           string
-	HostID                  string
-	CreatedAtMillis         int64
-	UpdatedAtMillis         int64
-	Snapshot                serviceconfig.Snapshot
-	ImageCredential         *ServiceImageCredential
+	ID                   string
+	ProjectID            string
+	ProjectName          string
+	Name                 string
+	Enabled              bool
+	ActiveDeploymentID   string
+	ActiveImageDigest    string
+	ActiveConfigHash     string
+	ActiveSourceRevision string
+	SentryPublicHostname string
+	SentryTunnelPath     string
+	OTLPPublicHostname   string
+	OTLPPathPrefix       string
+	HostID               string
+	CreatedAtMillis      int64
+	UpdatedAtMillis      int64
+	Snapshot             serviceconfig.Snapshot
+	ImageCredential      *ServiceImageCredential
 }
 
 type CreateService struct {
@@ -275,8 +275,8 @@ WHERE s.id = ?`, serviceID).Scan(
 	service.ActiveSourceRevision = activeSourceRevision.String
 	service.SentryPublicHostname = sentryPublicHostname.String
 	service.SentryTunnelPath = sentryTunnelPath.String
-	service.OTLPTracePublicHostname = otlpTracePublicHostname.String
-	service.OTLPTracePath = otlpTracePath.String
+	service.OTLPPublicHostname = otlpTracePublicHostname.String
+	service.OTLPPathPrefix = otlpTracePath.String
 	service.HostID = hostID.String
 	if err := json.Unmarshal([]byte(sourceJSON), &service.Snapshot.Source); err != nil {
 		return ServiceDesired{}, fmt.Errorf("decode service source: %w", err)

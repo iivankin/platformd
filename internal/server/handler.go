@@ -37,6 +37,14 @@ type Meta struct {
 	Version      string `json:"version"`
 }
 
+const (
+	applicationContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'self' data: wss:; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: https:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'"
+	// rrweb rebuilds captured styles as inline elements. Keep that exception inside a scriptless frame instead of weakening the application CSP.
+	replayContentSecurityPolicy = "default-src 'self'; base-uri 'none'; connect-src 'none'; font-src 'self' data:; frame-ancestors 'self'; img-src 'self' data: https:; object-src 'none'; script-src 'none'; style-src 'self' 'unsafe-inline'"
+	replayFramePath             = "/replay-frame.html"
+	replayPlayerStylePath       = "/replay-player.css"
+)
+
 type handlerConfig struct {
 	projects                ProjectRepository
 	projectWebhooks         *projectwebhook.Application
@@ -475,7 +483,11 @@ func handleMeta(meta Meta) http.HandlerFunc {
 
 func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.Header().Set("Content-Security-Policy", "default-src 'self'; base-uri 'none'; connect-src 'self' data: wss:; font-src 'self'; frame-ancestors 'none'; img-src 'self' data: https:; object-src 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'")
+		contentSecurityPolicy := applicationContentSecurityPolicy
+		if request.URL.Path == replayFramePath {
+			contentSecurityPolicy = replayContentSecurityPolicy
+		}
+		response.Header().Set("Content-Security-Policy", contentSecurityPolicy)
 		response.Header().Set("Referrer-Policy", "no-referrer")
 		response.Header().Set("X-Content-Type-Options", "nosniff")
 		next.ServeHTTP(response, request)
@@ -508,7 +520,11 @@ func (handler *spaHandler) ServeHTTP(response http.ResponseWriter, request *http
 		return
 	}
 	if _, err := fs.Stat(handler.files, path); err == nil {
-		response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		if request.URL.Path == replayFramePath || request.URL.Path == replayPlayerStylePath {
+			response.Header().Set("Cache-Control", "private, no-store")
+		} else {
+			response.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		}
 		handler.fileServer.ServeHTTP(response, request)
 		return
 	}

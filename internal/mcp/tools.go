@@ -271,7 +271,7 @@ func destructiveTool(name string) bool {
 func openWorldTool(name string) bool {
 	switch name {
 	case "list_managed_image_tags", "create_service", "update_service", "redeploy_service", "rollback_service",
-		"attach_service_domain", "detach_service_domain", "set_service_telemetry_domain",
+		"attach_service_domain", "detach_service_domain", "set_service_telemetry_domain", "set_service_public_otlp",
 		"create_managed_redis", "create_managed_postgres", "preview_managed_database_version_change",
 		"start_managed_database_version_change", "create_service_telemetry_webhook":
 		return true
@@ -347,7 +347,7 @@ func (handler *Handler) callTool(response http.ResponseWriter, request *http.Req
 			return
 		}
 		output, err = handler.callServiceTelemetry(request.Context(), call.Name, call.Arguments, identity)
-	case "get_service_telemetry", "set_service_telemetry_domain", "set_service_browser_tunnel", "rotate_service_artifact_token",
+	case "get_service_telemetry", "set_service_telemetry_domain", "set_service_public_otlp", "set_service_browser_tunnel", "rotate_service_artifact_token",
 		"create_service_telemetry_webhook", "delete_service_telemetry_webhook":
 		if handler.telemetry == nil {
 			writeRPCError(response, message.ID, codeInvalidParams, "Unknown tool")

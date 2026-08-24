@@ -12,6 +12,7 @@ export interface MetricPoint {
 
 export interface MetricSeries<T extends MetricPoint = MetricPoint> {
   color: string;
+  formatValue?: (value: number, point: T) => string;
   label: string;
   points?: T[];
   strokeDasharray?: string;
@@ -55,6 +56,50 @@ const padding = { bottom: 24, right: 12, top: 12 } as const;
 const minimumLeftPadding = 40;
 const yLabelCharacterWidth = 5.5;
 const tooltipWidth = 208;
+
+export const metricTimelineFraction = (
+  observedAt: number,
+  from: number,
+  to: number
+) => {
+  if (to <= from) {
+    return 0.5;
+  }
+  return Math.max(0, Math.min(1, (observedAt - from) / (to - from)));
+};
+
+export const nearestMetricPointIndex = <T extends MetricPoint>(
+  points: T[],
+  observedAt: number
+) => {
+  if (points.length === 0) {
+    return -1;
+  }
+  let low = 0;
+  let high = points.length;
+  while (low < high) {
+    const middle = Math.floor((low + high) / 2);
+    const point = points[middle];
+    if (point && point.observedAt < observedAt) {
+      low = middle + 1;
+    } else {
+      high = middle;
+    }
+  }
+  if (low === 0) {
+    return 0;
+  }
+  if (low === points.length) {
+    return points.length - 1;
+  }
+  const before = points[low - 1];
+  const after = points[low];
+  return before &&
+    after &&
+    observedAt - before.observedAt <= after.observedAt - observedAt
+    ? low - 1
+    : low;
+};
 
 const niceMaximum = (value: number) => {
   if (value <= 0) {
@@ -108,7 +153,7 @@ const timeLabelAnchor = (index: number, lastIndex: number) => {
   return "middle";
 };
 
-const latestValue = <T extends MetricPoint>(
+const latestSample = <T extends MetricPoint>(
   points: T[],
   metric: MetricSeries<T>
 ) => {
@@ -117,7 +162,7 @@ const latestValue = <T extends MetricPoint>(
     if (point) {
       const value = metric.value(point);
       if (value !== undefined) {
-        return value;
+        return { point, value };
       }
     }
   }
@@ -138,22 +183,25 @@ const areaPath = (coordinates: ChartCoordinate[], baseline: number) => {
 };
 
 const geometryForSeries = <T extends MetricPoint>({
+  from,
   maximum,
   metric,
   plotLeft,
   plotHeight,
   plotWidth,
   points,
+  to,
 }: {
+  from: number;
   maximum: number;
   metric: MetricSeries<T>;
   plotLeft: number;
   plotHeight: number;
   plotWidth: number;
   points: T[];
+  to: number;
 }): SeriesGeometry<T> => {
   const baseline = padding.top + plotHeight;
-  const xStep = points.length > 1 ? plotWidth / (points.length - 1) : plotWidth;
   const coordinates: SeriesGeometry["coordinates"] = Array.from({
     length: points.length,
   });
@@ -171,7 +219,9 @@ const geometryForSeries = <T extends MetricPoint>({
     }
     const coordinate = {
       pointIndex,
-      x: plotLeft + pointIndex * xStep,
+      x:
+        plotLeft +
+        metricTimelineFraction(point.observedAt, from, to) * plotWidth,
       y: padding.top + plotHeight - (Math.max(0, value) / maximum) * plotHeight,
     };
     coordinates[pointIndex] = coordinate;
@@ -337,24 +387,28 @@ const MetricChartComponent = <T extends MetricPoint>({
       chartSeries
         .map((metric) =>
           geometryForSeries({
+            from,
             maximum,
             metric,
             plotHeight,
             plotLeft,
             plotWidth,
             points,
+            to,
           })
         )
         .toReversed(),
-    [chartSeries, maximum, plotHeight, plotLeft, plotWidth, points]
+    [chartSeries, from, maximum, plotHeight, plotLeft, plotWidth, points, to]
   );
   const pointX = useCallback(
     (pointIndex: number) => {
-      const xStep =
-        points.length > 1 ? plotWidth / (points.length - 1) : plotWidth;
-      return plotLeft + pointIndex * xStep;
+      const point = points[pointIndex];
+      return point
+        ? plotLeft +
+            metricTimelineFraction(point.observedAt, from, to) * plotWidth
+        : plotLeft;
     },
-    [plotLeft, plotWidth, points.length]
+    [from, plotLeft, plotWidth, points, to]
   );
 
   const updateHover = useCallback(
@@ -386,8 +440,9 @@ const MetricChartComponent = <T extends MetricPoint>({
         plotLeft,
         Math.min(width - padding.right, event.clientX - bounds.left)
       );
-      const pointIndex = Math.round(
-        ((pointerX - plotLeft) / plotWidth) * Math.max(0, points.length - 1)
+      const pointIndex = nearestMetricPointIndex(
+        points,
+        from + ((pointerX - plotLeft) / plotWidth) * duration
       );
       updateHover(
         pointIndex,
@@ -395,7 +450,7 @@ const MetricChartComponent = <T extends MetricPoint>({
         event.clientY - bounds.top
       );
     },
-    [plotLeft, plotWidth, points, updateHover, width]
+    [duration, from, plotLeft, plotWidth, points, updateHover, width]
   );
 
   const handleFocus = useCallback(() => {
@@ -431,6 +486,10 @@ const MetricChartComponent = <T extends MetricPoint>({
     }
     return Number.isFinite(smallestStep) ? smallestStep : duration;
   }, [duration, points]);
+  const barSlotWidth =
+    duration > 0
+      ? Math.min(plotWidth, (plotWidth * sampleStep) / duration)
+      : plotWidth;
   const crosshairX = hover ? pointX(hover.pointIndex) : undefined;
   const labelEvery = Math.max(1, Math.ceil((points.length - 1) / 4));
   const tooltipHeight = 34 + series.length * 19;
@@ -457,7 +516,7 @@ const MetricChartComponent = <T extends MetricPoint>({
           {title}
         </h3>
         {chartSeries.map((metric) => {
-          const value = latestValue(points, metric);
+          const sample = latestSample(points, metric);
           return (
             <span
               className="flex items-center gap-1.5 text-[10px] text-muted-foreground"
@@ -477,7 +536,10 @@ const MetricChartComponent = <T extends MetricPoint>({
               </svg>
               {metric.label}
               <span className="text-foreground tabular-nums">
-                {value === undefined ? "—" : formatValue(value)}
+                {sample
+                  ? (metric.formatValue?.(sample.value, sample.point) ??
+                    formatValue(sample.value))
+                  : "—"}
               </span>
             </span>
           );
@@ -544,14 +606,14 @@ const MetricChartComponent = <T extends MetricPoint>({
                         key={`${metric.label}-bar-${pointIndex}`}
                         width={Math.max(
                           1,
-                          (plotWidth / Math.max(1, points.length)) *
+                          barSlotWidth *
                             (0.72 / Math.max(1, chartSeries.length))
                         )}
                         x={
                           coordinate.x -
-                          (plotWidth / Math.max(1, points.length)) * 0.36 +
+                          barSlotWidth * 0.36 +
                           seriesIndex *
-                            ((plotWidth / Math.max(1, points.length)) *
+                            (barSlotWidth *
                               (0.72 / Math.max(1, chartSeries.length)))
                         }
                         y={coordinate.y}
@@ -680,7 +742,10 @@ const MetricChartComponent = <T extends MetricPoint>({
                       <span className="truncate">{metric.label}</span>
                     </span>
                     <span className="shrink-0 font-medium text-foreground tabular-nums">
-                      {value === undefined ? "—" : formatValue(value)}
+                      {value === undefined
+                        ? "—"
+                        : (metric.formatValue?.(value, hoveredPoint) ??
+                          formatValue(value))}
                     </span>
                   </div>
                 );

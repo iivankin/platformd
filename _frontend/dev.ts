@@ -3,6 +3,10 @@ import { createMockState } from "./mock/state";
 import type { MockScenario } from "./mock/state";
 import { mockWebSocketHandlers, upgradeTerminalSocket } from "./mock/websocket";
 import type { MockSocketData } from "./mock/websocket";
+import {
+  replayFrameSourcePath,
+  replayPlayerStyleSourcePath,
+} from "./replay-assets";
 import app from "./web/index.html";
 
 const scenarios = new Set<MockScenario>(["demo", "empty", "error"]);
@@ -59,6 +63,9 @@ const server = Bun.serve<MockSocketData>({
         email: state.identity.email,
         name: state.identity.name,
       }),
+    "/replay-frame.html": () => new Response(Bun.file(replayFrameSourcePath)),
+    "/replay-player.css": () =>
+      new Response(Bun.file(replayPlayerStyleSourcePath)),
   },
   websocket: mockWebSocketHandlers,
 });
