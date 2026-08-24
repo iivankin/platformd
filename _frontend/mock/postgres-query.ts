@@ -317,6 +317,18 @@ const catalogResult = () =>
     ])
   );
 
+const autocompleteCatalogResult = () =>
+  result(
+    [
+      { name: "schema", typeOid: 25 },
+      { name: "table", typeOid: 25 },
+      { name: "column", typeOid: 25 },
+    ],
+    mockTables.flatMap((table) =>
+      table.columns.map((column) => [table.schema, table.name, column.name])
+    )
+  );
+
 const foreignKeyCatalogResult = () =>
   result(
     [
@@ -766,6 +778,9 @@ export const handlePostgresQuery = async (
 
   // Tagged comments keep the demo handler deterministic without pretending to
   // parse arbitrary SQL. Production still executes the generated statement.
+  if (sql.includes("platformd:query-autocomplete")) {
+    return json(autocompleteCatalogResult());
+  }
   if (sql.includes("platformd:data-browser:catalog")) {
     return json(catalogResult());
   }

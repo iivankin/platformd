@@ -76,6 +76,69 @@ func (stack *runtimeStack) EnableObjectStore(ctx context.Context, objectStore st
 	return stack.publishObjectStore(objectStore)
 }
 
+// DisableObjectStore refreshes the authoritative project snapshot after the
+// resource row is deleted, then withdraws its project-local DNS publication.
+func (stack *runtimeStack) DisableObjectStore(ctx context.Context, objectStore state.ObjectStore) error {
+	stack.mu.Lock()
+	if stack.closed {
+		stack.mu.Unlock()
+		return errors.New("container runtime is closed")
+	}
+	details := stack.objectStoreDetails
+	dataPlane := stack.objectStoreDataPlane
+	stack.mu.Unlock()
+	if details == nil || dataPlane == nil {
+		return errors.New("object store runtime is not configured")
+	}
+	stores, err := details.Stores(ctx, objectStore.ProjectID)
+	if err != nil {
+		return err
+	}
+	if len(stores) == 0 {
+		if err := dataPlane.RemoveDataPlaneProject(ctx, objectStore.ProjectID); err != nil {
+			return fmt.Errorf("remove empty project S3 endpoint: %w", err)
+		}
+	} else if err := stack.configureObjectStoreProject(ctx, objectStore.ProjectID); err != nil {
+		return err
+	}
+
+	stack.mu.Lock()
+	defer stack.mu.Unlock()
+	if stack.closed {
+		return errors.New("container runtime is closed")
+	}
+	zone := stack.dnsZones[objectStore.ProjectID]
+	project, projectExists := stack.firewallProjects[objectStore.ProjectID]
+	if zone == nil || !projectExists {
+		return fmt.Errorf("project %s network runtime is unavailable", objectStore.ProjectID)
+	}
+	hostname := objectStore.Name + "." + objectStore.ProjectName + ".internal"
+	if err := zone.Delete(hostname); err != nil {
+		return err
+	}
+	if len(stores) == 0 && project.ObjectStoreEnabled {
+		project.ObjectStoreEnabled = false
+		candidate := make([]firewall.Project, 0, len(stack.firewallProjects))
+		for projectID, current := range stack.firewallProjects {
+			if projectID == objectStore.ProjectID {
+				current = project
+			}
+			candidate = append(candidate, current)
+		}
+		if err := stack.firewall.Apply(candidate); err != nil {
+			return err
+		}
+		stack.firewallProjects[objectStore.ProjectID] = project
+	}
+	if len(stores) == 0 {
+		delete(stack.objectStoreProjects, objectStore.ProjectID)
+	} else {
+		stack.objectStoreProjects[objectStore.ProjectID] = true
+	}
+	delete(stack.objectStoreFailures, objectStore.ProjectID)
+	return nil
+}
+
 func (stack *runtimeStack) configureObjectStoreProject(ctx context.Context, projectID string) error {
 	stack.mu.Lock()
 	if stack.closed {

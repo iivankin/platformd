@@ -33,11 +33,14 @@ var (
 	ErrPreconditionFailed  = errors.New("object precondition failed")
 )
 
+const deleteCleanupTimeout = 30 * time.Second
+
 type Repository interface {
 	CreateObjectStore(context.Context, state.CreateObjectStore) (state.ObjectStore, state.S3Credential, error)
 	ObjectStore(context.Context, string) (state.ObjectStore, error)
 	ObjectStoreInProject(context.Context, string, string) (state.ObjectStore, error)
 	ObjectStoresByProject(context.Context, string) ([]state.ObjectStore, error)
+	DeleteObjectStore(context.Context, state.DeleteResourceInput) (state.ObjectStore, error)
 	UpdateObjectStorePortForward(context.Context, state.UpdateObjectStorePortForwardInput) (state.ObjectStore, error)
 	UpdateObjectStorePublicAccess(context.Context, state.UpdateObjectStorePublicAccessInput) (state.ObjectStore, error)
 	S3CredentialsByObjectStore(context.Context, string) ([]state.S3Credential, error)
@@ -78,16 +81,28 @@ type StoreDetails struct {
 	Secret     string
 }
 
+type DeleteInput struct {
+	ProjectID         string
+	StoreID           string
+	ExpectedUpdatedAt int64
+	Actor             Actor
+}
+
+type DeleteResult struct {
+	RequestID string
+}
+
 type Application struct {
-	repository Repository
-	storage    Storage
-	master     cryptobox.MasterKey
-	random     io.Reader
-	now        func() time.Time
-	metadataMu sync.Mutex
-	metadata   map[string]*metadataAdmission
-	requests   map[string]*requestAdmission
-	backups    map[string]bool
+	repository     Repository
+	storage        Storage
+	master         cryptobox.MasterKey
+	random         io.Reader
+	now            func() time.Time
+	metadataMu     sync.Mutex
+	metadata       map[string]*metadataAdmission
+	requests       map[string]*requestAdmission
+	backups        map[string]bool
+	onCleanupError func(error)
 }
 
 type metadataAdmission struct {
@@ -103,7 +118,14 @@ type requestAdmission struct {
 	changed chan struct{}
 }
 
-func NewApplication(repository Repository, storage Storage, master cryptobox.MasterKey, random io.Reader, now func() time.Time) (*Application, error) {
+func NewApplication(
+	repository Repository,
+	storage Storage,
+	master cryptobox.MasterKey,
+	random io.Reader,
+	now func() time.Time,
+	onCleanupError func(error),
+) (*Application, error) {
 	if repository == nil || storage == nil {
 		return nil, errors.New("object store application dependencies are incomplete")
 	}
@@ -113,10 +135,13 @@ func NewApplication(repository Repository, storage Storage, master cryptobox.Mas
 	if now == nil {
 		now = time.Now
 	}
+	if onCleanupError == nil {
+		onCleanupError = func(error) {}
+	}
 	return &Application{
 		repository: repository, storage: storage, master: master, random: random, now: now,
 		metadata: make(map[string]*metadataAdmission), requests: make(map[string]*requestAdmission),
-		backups: make(map[string]bool),
+		backups: make(map[string]bool), onCleanupError: onCleanupError,
 	}, nil
 }
 
@@ -203,6 +228,68 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 
 func (application *Application) Store(ctx context.Context, projectID, storeID string) (state.ObjectStore, error) {
 	return application.repository.ObjectStoreInProject(ctx, projectID, storeID)
+}
+
+func (application *Application) DeleteResource(ctx context.Context, input DeleteInput) (DeleteResult, error) {
+	if input.ProjectID == "" || input.StoreID == "" || input.ExpectedUpdatedAt <= 0 ||
+		input.Actor.ID == "" || (input.Actor.Kind != "access" && input.Actor.Kind != "token") ||
+		(input.Actor.Kind == "access" && input.Actor.Email == "") ||
+		(input.Actor.Kind == "token" && input.Actor.Email != "") {
+		return DeleteResult{}, fmt.Errorf("%w: delete identity and expectedUpdatedAt are required", ErrInvalidInput)
+	}
+	resourceDeleted := false
+	defer func() {
+		if resourceDeleted {
+			application.forgetDeletedResourceAdmissions(input.StoreID)
+		}
+	}()
+	store, err := application.repository.ObjectStoreInProject(ctx, input.ProjectID, input.StoreID)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	if store.UpdatedAtMillis != input.ExpectedUpdatedAt {
+		return DeleteResult{}, state.ErrObjectStoreChanged
+	}
+	identifiers, err := application.identifiers(2)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	releaseBackup, err := application.beginBackupExclusion(input.StoreID)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer releaseBackup()
+	releaseDataPlane, err := application.beginDataPlaneRestore(ctx, input.StoreID)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer func() { _ = releaseDataPlane() }()
+	releaseRequests, err := application.blockRequestsForRestore(ctx, input.StoreID)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer releaseRequests()
+	releaseMetadata, err := application.blockMetadataForRestore(ctx, input.StoreID)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer releaseMetadata()
+
+	_, err = application.repository.DeleteObjectStore(ctx, state.DeleteResourceInput{
+		ID: input.StoreID, ProjectID: input.ProjectID, ExpectedUpdatedMillis: input.ExpectedUpdatedAt,
+		AuditEventID: identifiers[0], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
+		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[1], DeletedAtMillis: application.now().UnixMilli(),
+	})
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	resourceDeleted = true
+	cleanupContext, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), deleteCleanupTimeout)
+	defer cancelCleanup()
+	if err := application.storage.DeleteBucket(cleanupContext, input.StoreID); err != nil {
+		application.onCleanupError(fmt.Errorf("remove deleted object store %s bucket: %w", input.StoreID, err))
+	}
+	return DeleteResult{RequestID: identifiers[1]}, nil
 }
 
 func (application *Application) UpdatePortForward(
@@ -597,6 +684,17 @@ func (application *Application) requestAdmissionLocked(storeID string) *requestA
 		application.requests[storeID] = admission
 	}
 	return admission
+}
+
+func (application *Application) forgetDeletedResourceAdmissions(storeID string) {
+	application.metadataMu.Lock()
+	defer application.metadataMu.Unlock()
+	if admission := application.metadata[storeID]; admission != nil && admission.active == 0 && !admission.blocked {
+		delete(application.metadata, storeID)
+	}
+	if admission := application.requests[storeID]; admission != nil && admission.active == 0 && !admission.blocked {
+		delete(application.requests, storeID)
+	}
 }
 
 func (application *Application) signalMetadataLocked(admission *metadataAdmission) {

@@ -37,6 +37,7 @@ type ManagedRedisRepository interface {
 	Deployment(context.Context, string, string, string) (state.RuntimeDeployment, error)
 	RestartDeployment(context.Context, string, string, string) error
 	RemoveDeployment(context.Context, string, string, string) error
+	Delete(context.Context, managedredis.DeleteInput) (managedredis.DeleteResult, error)
 }
 
 type managedRedisResponse struct {
@@ -72,6 +73,7 @@ func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepos
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis", listManagedRedis(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis", createManagedRedis(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}", getManagedRedis(repository))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/redis/{redisID}", deleteManagedRedis(repository))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/redis/{redisID}/port-forward", updateManagedRedisPortForward(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/persistence", getManagedRedisPersistence(repository))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/stats", getManagedRedisStats(repository))
@@ -82,6 +84,33 @@ func registerManagedRedisRoutes(mux *http.ServeMux, repository ManagedRedisRepos
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/redis/{redisID}/preview", previewManagedRedisKey(repository))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/redis/{redisID}/data/mutations", mutateManagedRedisData(repository))
 	registerManagedDeploymentRoutes(mux, "redis", repository, writeManagedRedisError)
+}
+
+func deleteManagedRedis(repository ManagedRedisRepository) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		var body requestBody
+		if !decodeManagedRedisJSON(response, request, &body) {
+			return
+		}
+		result, err := repository.Delete(request.Context(), managedredis.DeleteInput{
+			ProjectID: request.PathValue("projectID"), ResourceID: request.PathValue("redisID"),
+			ExpectedUpdatedAt: body.ExpectedUpdatedAt,
+			Actor:             managedredis.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+		})
+		if err != nil {
+			writeManagedRedisError(response, err)
+			return
+		}
+		response.Header().Set("X-Request-ID", result.RequestID)
+		response.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func getManagedRedisStats(repository ManagedRedisRepository) http.HandlerFunc {
@@ -390,6 +419,13 @@ func requireAccessIdentity(response http.ResponseWriter, request *http.Request) 
 		writeAPIError(response, http.StatusForbidden, "access_identity_required", "Cloudflare Access identity is required")
 	}
 	return identity, ok
+}
+
+func decodeManagedRedisJSON(response http.ResponseWriter, request *http.Request, destination any) bool {
+	return decodeStrictJSONRequest(
+		response, request, destination, maximumManagedRedisRequestBytes,
+		"Request body contains invalid managed Redis fields",
+	)
 }
 
 func publicManagedRedis(resource state.ManagedRedis, password string) managedRedisResponse {

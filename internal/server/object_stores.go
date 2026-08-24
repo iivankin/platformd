@@ -55,6 +55,7 @@ func registerObjectStoreRoutes(mux *http.ServeMux, application *objectstore.Appl
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores", listObjectStores(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/object-stores", createObjectStore(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}", getObjectStore(application))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/object-stores/{storeID}", deleteObjectStore(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/port-forward", updateObjectStorePortForward(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/object-stores/{storeID}/public-access", updateObjectStorePublicAccess(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/stats", getObjectStoreStats(application))
@@ -70,6 +71,33 @@ func registerObjectStoreRoutes(mux *http.ServeMux, application *objectstore.Appl
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/objects/preview", previewObject(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/object-stores/{storeID}/objects/download", downloadObject(application))
 	mux.HandleFunc("HEAD /api/v1/projects/{projectID}/object-stores/{storeID}/objects/download", downloadObject(application))
+}
+
+func deleteObjectStore(application *objectstore.Application) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		var body requestBody
+		if !decodeObjectStoreJSON(response, request, &body) {
+			return
+		}
+		result, err := application.DeleteResource(request.Context(), objectstore.DeleteInput{
+			ProjectID: request.PathValue("projectID"), StoreID: request.PathValue("storeID"),
+			ExpectedUpdatedAt: body.ExpectedUpdatedAt,
+			Actor:             objectstore.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+		})
+		if err != nil {
+			writeObjectStoreError(response, err)
+			return
+		}
+		response.Header().Set("X-Request-ID", result.RequestID)
+		response.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func manageLargestObjects(application *objectstore.Application) http.HandlerFunc {
@@ -310,6 +338,13 @@ func createObjectStore(application *objectstore.Application) http.HandlerFunc {
 		response.Header().Set("X-Request-ID", result.RequestID)
 		writeJSON(response, http.StatusCreated, publicObjectStore(result.Store, result))
 	}
+}
+
+func decodeObjectStoreJSON(response http.ResponseWriter, request *http.Request, destination any) bool {
+	return decodeStrictJSONRequest(
+		response, request, destination, maximumObjectStoreCreateBytes,
+		"Request body contains invalid object store fields",
+	)
 }
 
 func browseObjects(application *objectstore.Application) http.HandlerFunc {

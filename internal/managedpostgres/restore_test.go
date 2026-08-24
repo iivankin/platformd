@@ -54,6 +54,10 @@ func (store *postgresRestoreStore) SwitchManagedPostgresVolume(_ context.Context
 	return nil
 }
 
+func (store *postgresRestoreStore) DeleteManagedPostgres(context.Context, state.DeleteResourceInput) (state.ManagedPostgres, error) {
+	return store.resource, nil
+}
+
 type postgresRestoreEngine struct {
 	image          containerengine.Image
 	containers     map[string]containerengine.Container
@@ -61,6 +65,7 @@ type postgresRestoreEngine struct {
 	started        []string
 	stopped        []string
 	removed        []string
+	removeContext  error
 	removedVolumes []string
 	execRequest    containerengine.ExecRequest
 	execPayload    []byte
@@ -136,7 +141,8 @@ func (engine *postgresRestoreEngine) StopContainer(id string, _ uint) error {
 	return nil
 }
 
-func (engine *postgresRestoreEngine) RemoveContainer(_ context.Context, id string, _ bool) error {
+func (engine *postgresRestoreEngine) RemoveContainer(ctx context.Context, id string, _ bool) error {
+	engine.removeContext = ctx.Err()
 	if _, exists := engine.containers[id]; !exists {
 		return errors.New("remove unknown container")
 	}

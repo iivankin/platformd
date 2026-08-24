@@ -477,7 +477,7 @@ func startSDKContractServer(t testing.TB) sdkContractFixture {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = process.Close() })
-	application, err := NewApplication(store, storage, master, nil, nil)
+	application, err := NewApplication(store, storage, master, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

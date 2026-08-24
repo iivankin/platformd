@@ -1,8 +1,10 @@
 import { RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 
 import {
   deleteObject,
+  deleteObjectStore,
   fetchObjects,
   fetchObjectStore,
   previewObject,
@@ -36,6 +38,7 @@ import { ObjectStorePublicAccessSettings } from "@/object-store-public-access";
 import { ObjectStoreStats } from "@/object-store-stats";
 import type { ResourceNodeData } from "@/project-flow";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
+import { ResourceDeleteSection } from "@/resource-delete-section";
 import { ResourceVariables } from "@/resource-variables";
 import { ResourcePortForwardSettings } from "@/service-port-forward";
 
@@ -56,12 +59,36 @@ interface ObjectStoreDetailPanelProperties {
 const errorText = (error: unknown, fallback: string) =>
   error instanceof Error ? error.message : fallback;
 
+const ObjectStoreDeleteSection = ({
+  busy,
+  onDelete,
+  resource,
+}: {
+  busy: boolean;
+  onDelete: () => Promise<void>;
+  resource: ObjectStore | null;
+}) => {
+  if (!resource) {
+    return null;
+  }
+  return (
+    <ResourceDeleteSection
+      busy={busy}
+      description="Permanently removes this bucket, every live object, and its access credentials. Existing remote backups are retained."
+      label="object storage"
+      name={resource.name}
+      onDelete={onDelete}
+    />
+  );
+};
+
 export const ObjectStoreDetailPanel = ({
   data,
   projectID,
   storeID,
   view,
 }: ObjectStoreDetailPanelProperties) => {
+  const navigate = useNavigate();
   const [resource, setResource] = useState<ObjectStore | null>(null);
   const [page, setPage] = useState<ObjectPage | null>(null);
   const [prefix, setPrefix] = useState("");
@@ -204,6 +231,21 @@ export const ObjectStoreDetailPanel = ({
     }
   };
 
+  const deleteResource = async () => {
+    if (!resource || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteObjectStore(projectID, storeID, resource.updatedAt);
+      void navigate(`/projects/${encodeURIComponent(projectID)}`);
+    } catch (deleteError) {
+      setError(errorText(deleteError, "Object storage deletion failed"));
+      setBusy(false);
+    }
+  };
+
   const selectObject = (object: ObjectMetadata) => {
     setPreview(null);
     setSelected(object);
@@ -318,6 +360,11 @@ export const ObjectStoreDetailPanel = ({
               ]}
             />
           ) : null}
+          <ObjectStoreDeleteSection
+            busy={busy}
+            onDelete={deleteResource}
+            resource={resource}
+          />
         </>
       ) : null}
 

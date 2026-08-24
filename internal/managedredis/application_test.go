@@ -71,6 +71,10 @@ func (runtime *applicationRuntime) StartManagedRedis(_ context.Context, id strin
 	return nil
 }
 
+func (*applicationRuntime) DeleteManagedRedis(context.Context, state.DeleteResourceInput) (state.ManagedRedis, error) {
+	return state.ManagedRedis{}, nil
+}
+
 func (*applicationRuntime) RestartManagedRedisDeployment(context.Context, string, string) error {
 	return nil
 }

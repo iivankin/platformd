@@ -12,9 +12,12 @@ import {
   createNetworkGateway,
   createProject,
   deleteNetworkGateway,
+  deleteManagedPostgres,
+  deleteManagedRedis,
   deleteMailErrorAlert,
   deleteMailMetricAlert,
   deleteProject,
+  deleteObjectStore,
   deleteService,
   fetchAPITokens,
   fetchBackupGenerations,
@@ -93,6 +96,10 @@ import {
   postgresTableDataSQL,
   postgresUpdateCellSQL,
 } from "../web/postgres-data-browser-model";
+import {
+  postgresQueryCatalogFromResult,
+  postgresQueryCatalogSQL,
+} from "../web/postgres-query-suggestions";
 import { handleMockAPI } from "./router";
 import { createMockState } from "./state";
 import type { MockState } from "./state";
@@ -553,6 +560,59 @@ describe("mock API", () => {
     expect(correlatedLogs.records[0]?.spanId).toBe("8f3a0f34b17c9d20");
   });
 
+  test("deletes managed resources while retaining remote backup fixtures", async () => {
+    const state = createMockState("demo");
+    const mockFetch = fetcher(state);
+    const generationKeys = Object.keys(state.backupGenerations).toSorted();
+    const historyKeys = Object.keys(state.backupHistory).toSorted();
+
+    await Promise.all([
+      deleteManagedPostgres(
+        "project-demo",
+        "postgres-main",
+        state.postgres["postgres-main"]?.updatedAt ?? 0,
+        mockFetch
+      ),
+      deleteManagedRedis(
+        "project-demo",
+        "redis-cache",
+        state.redis["redis-cache"]?.updatedAt ?? 0,
+        mockFetch
+      ),
+      deleteObjectStore(
+        "project-demo",
+        "object-assets",
+        state.objectStores["object-assets"]?.updatedAt ?? 0,
+        mockFetch
+      ),
+    ]);
+
+    expect(state.postgres["postgres-main"]).toBeUndefined();
+    expect(state.redis["redis-cache"]).toBeUndefined();
+    expect(state.objectStores["object-assets"]).toBeUndefined();
+    expect(Object.keys(state.backupGenerations).toSorted()).toEqual(
+      generationKeys
+    );
+    expect(Object.keys(state.backupHistory).toSorted()).toEqual(historyKeys);
+    expect(
+      state.backupPolicies.some((policy) =>
+        ["postgres-main", "redis-cache", "object-assets"].includes(
+          policy.resourceId
+        )
+      )
+    ).toBe(false);
+    const canvas = await fetchProjectCanvas(
+      "project-demo",
+      undefined,
+      mockFetch
+    );
+    expect(
+      canvas.resources.some((resource) =>
+        ["postgres-main", "redis-cache", "object-assets"].includes(resource.id)
+      )
+    ).toBe(false);
+  });
+
   test("mock managed stats snapshots and history are available", async () => {
     const mockFetch = fetcher(createMockState("demo"));
     await expect(
@@ -695,6 +755,25 @@ describe("mock API", () => {
     expect(
       orderRelations.some((relation) => relation.direction === "incoming")
     ).toBe(true);
+  });
+
+  test("mock PostgreSQL query autocomplete exposes catalog columns", async () => {
+    const mockFetch = fetcher(createMockState("demo"));
+    const catalog = postgresQueryCatalogFromResult(
+      await queryManagedPostgres(
+        "project-demo",
+        "postgres-main",
+        postgresQueryCatalogSQL,
+        undefined,
+        mockFetch
+      )
+    );
+
+    expect(catalog).toContainEqual({
+      column: "email",
+      schema: "public",
+      table: "customers",
+    });
   });
 
   test("mock PostgreSQL data browser updates and deletes rows", async () => {

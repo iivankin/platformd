@@ -154,7 +154,7 @@ func assertProjectObjectStore(t *testing.T, ctx context.Context, runtime *runtim
 		t.Fatal(err)
 	}
 	master := cryptobox.MasterKey{1, 2, 3}
-	application, err := objectstore.NewApplication(store, daemonObjectStorageStub{}, master, nil, nil)
+	application, err := objectstore.NewApplication(store, daemonObjectStorageStub{}, master, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1700,6 +1700,25 @@ const apiError = async (response: Response, fallback: string) => {
     : new Error(fallback);
 };
 
+const deleteResource = async (
+  path: string,
+  label: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher
+): Promise<void> => {
+  const response = await fetcher(path, {
+    body: JSON.stringify({ expectedUpdatedAt }),
+    headers: { "Content-Type": "application/json" },
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw await apiError(
+      response,
+      `${label} deletion failed with ${response.status}`
+    );
+  }
+};
+
 export const fetchMeta = async (
   signal?: AbortSignal,
   fetcher: Fetcher = globalThis.fetch
@@ -3455,6 +3474,19 @@ export const fetchManagedRedis = async (
   return managedRedisSchema.parse(await response.json());
 };
 
+export const deleteManagedRedis = (
+  projectID: string,
+  redisID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> =>
+  deleteResource(
+    managedRedisPath(projectID, redisID),
+    "managed Redis",
+    expectedUpdatedAt,
+    fetcher
+  );
+
 export const updateManagedRedisPortForward = async (
   projectID: string,
   redisID: string,
@@ -3670,6 +3702,19 @@ export const fetchManagedPostgres = async (
   }
   return managedPostgresSchema.parse(await response.json());
 };
+
+export const deleteManagedPostgres = (
+  projectID: string,
+  postgresID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> =>
+  deleteResource(
+    managedPostgresPath(projectID, postgresID),
+    "managed PostgreSQL",
+    expectedUpdatedAt,
+    fetcher
+  );
 
 export const updateManagedPostgresPortForward = async (
   projectID: string,
@@ -3948,6 +3993,19 @@ export const fetchObjectStore = async (
   }
   return objectStoreSchema.parse(await response.json());
 };
+
+export const deleteObjectStore = (
+  projectID: string,
+  storeID: string,
+  expectedUpdatedAt: number,
+  fetcher: Fetcher = globalThis.fetch
+): Promise<void> =>
+  deleteResource(
+    objectStorePath(projectID, storeID),
+    "object store",
+    expectedUpdatedAt,
+    fetcher
+  );
 
 export const updateObjectStorePortForward = async (
   projectID: string,

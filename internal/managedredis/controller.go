@@ -17,6 +17,7 @@ import (
 	"github.com/iivankin/platformd/internal/containerengine"
 	"github.com/iivankin/platformd/internal/containerlogs"
 	"github.com/iivankin/platformd/internal/id"
+	"github.com/iivankin/platformd/internal/resourcelock"
 	"github.com/iivankin/platformd/internal/state"
 	"github.com/iivankin/platformd/internal/systemevent"
 )
@@ -35,6 +36,7 @@ type Store interface {
 	ManagedRedis(context.Context, string) (state.ManagedRedis, error)
 	ManagedRedisResources(context.Context) ([]state.ManagedRedis, error)
 	SwitchManagedRedisVolume(context.Context, state.SwitchManagedRedisVolume) error
+	DeleteManagedRedis(context.Context, state.DeleteResourceInput) (state.ManagedRedis, error)
 }
 
 type DeploymentStore interface {
@@ -118,6 +120,7 @@ type Config struct {
 	Now              func() time.Time
 	NewID            func() (string, error)
 	ContainerLogs    containerlogs.Sink
+	OnCleanupError   func(error)
 }
 
 type activeRuntime struct {
@@ -146,9 +149,10 @@ type Controller struct {
 	now              func() time.Time
 	newID            func() (string, error)
 	containerLogs    containerlogs.Sink
+	onCleanupError   func(error)
 
 	mu          sync.Mutex
-	locks       map[string]*sync.Mutex
+	locks       resourcelock.Pool
 	active      map[string]activeRuntime
 	maintaining map[string]struct{}
 }
@@ -189,12 +193,17 @@ func NewController(config Config) (*Controller, error) {
 	if newID == nil {
 		newID = id.New
 	}
+	onCleanupError := config.OnCleanupError
+	if onCleanupError == nil {
+		onCleanupError = func(error) {}
+	}
 	return &Controller{
 		store: config.Store, deployments: config.Deployments, engine: config.Engine, publisher: config.Publisher, growth: config.Growth, maintenance: config.Maintenance, admission: config.Admission,
 		password: config.Password, placement: config.Placement, dial: dial,
 		generatedRoot: config.GeneratedRoot, volumeRoot: config.VolumeRoot,
 		readyTimeout: readyTimeout, probePeriod: probePeriod, maintenanceDrain: maintenanceDrain, now: now, newID: newID, containerLogs: config.ContainerLogs,
-		locks: make(map[string]*sync.Mutex), active: make(map[string]activeRuntime), maintaining: make(map[string]struct{}),
+		onCleanupError: onCleanupError,
+		active:         make(map[string]activeRuntime), maintaining: make(map[string]struct{}),
 	}, nil
 }
 
@@ -221,6 +230,10 @@ func (controller *Controller) Start(ctx context.Context, resourceID string) (res
 	lock := controller.resourceLock(resourceID)
 	lock.Lock()
 	defer lock.Unlock()
+	return controller.startLocked(ctx, resourceID)
+}
+
+func (controller *Controller) startLocked(ctx context.Context, resourceID string) (resultErr error) {
 	if _, active := controller.activeRuntime(resourceID); active {
 		return nil
 	}
@@ -829,15 +842,8 @@ func (controller *Controller) finalSave(ctx context.Context, active activeRuntim
 	return connection.Save(saveContext)
 }
 
-func (controller *Controller) resourceLock(resourceID string) *sync.Mutex {
-	controller.mu.Lock()
-	defer controller.mu.Unlock()
-	lock := controller.locks[resourceID]
-	if lock == nil {
-		lock = &sync.Mutex{}
-		controller.locks[resourceID] = lock
-	}
-	return lock
+func (controller *Controller) resourceLock(resourceID string) *resourcelock.Lock {
+	return controller.locks.Get(resourceID)
 }
 
 func (controller *Controller) activeRuntime(resourceID string) (activeRuntime, bool) {

@@ -131,6 +131,10 @@ func (*postgresRuntimeStub) ResolveManagedPostgresImage(context.Context, string)
 
 func (*postgresRuntimeStub) StartManagedPostgres(context.Context, string) error { return nil }
 
+func (*postgresRuntimeStub) DeleteManagedPostgres(context.Context, state.DeleteResourceInput) (state.ManagedPostgres, error) {
+	return state.ManagedPostgres{}, nil
+}
+
 func (runtime *postgresRuntimeStub) ManagedPostgresExtensions(context.Context, string) ([]managedpostgres.Extension, error) {
 	return runtime.extensions, nil
 }

@@ -1,7 +1,9 @@
 import { Plus, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 
 import {
+  deleteManagedRedis,
   fetchManagedRedis,
   mutateManagedRedis,
   previewManagedRedisKey,
@@ -30,6 +32,7 @@ import { RedisKeyEditor } from "@/redis-key-editor";
 import { RedisNewKeyForm } from "@/redis-new-key-form";
 import { RedisPersistenceStatus } from "@/redis-persistence-status";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
+import { ResourceDeleteSection } from "@/resource-delete-section";
 import { ResourceVariables } from "@/resource-variables";
 import { ResourcePortForwardSettings } from "@/service-port-forward";
 import { WorkspaceView } from "@/workspace-view";
@@ -186,6 +189,7 @@ export const RedisDetailPanel = ({
   redisID,
   view,
 }: RedisDetailPanelProperties) => {
+  const navigate = useNavigate();
   const [resource, setResource] = useState<ManagedRedis | null>(null);
   const [keys, setKeys] = useState<RedisKey[]>([]);
   const [cursor, setCursor] = useState("0");
@@ -264,6 +268,26 @@ export const RedisDetailPanel = ({
     await Promise.all([loadResource(), loadKeys()]);
     onChanged();
   }, [loadKeys, loadResource, onChanged]);
+
+  const deleteResource = async () => {
+    if (!resource || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteManagedRedis(projectID, redisID, resource.updatedAt);
+      onChanged();
+      void navigate(`/projects/${encodeURIComponent(projectID)}`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Unable to delete managed Redis"
+      );
+      setBusy(false);
+    }
+  };
 
   const selectKey = async (key: RedisKey) => {
     setSelectedKey(key);
@@ -488,14 +512,25 @@ export const RedisDetailPanel = ({
             />
           ),
           settings: (
-            <RedisOverview
-              data={data}
-              onResourceChange={setResource}
-              onVersionChanged={refreshAfterVersionChange}
-              projectID={projectID}
-              redisID={redisID}
-              resource={resource}
-            />
+            <>
+              <RedisOverview
+                data={data}
+                onResourceChange={setResource}
+                onVersionChanged={refreshAfterVersionChange}
+                projectID={projectID}
+                redisID={redisID}
+                resource={resource}
+              />
+              {resource ? (
+                <ResourceDeleteSection
+                  busy={busy}
+                  description="Permanently removes Redis, its runtime, deployment history, and live volume. Existing remote backups are retained."
+                  label="Redis"
+                  name={resource.name}
+                  onDelete={deleteResource}
+                />
+              ) : null}
+            </>
           ),
           telemetry: (
             <ManagedContainerTelemetry

@@ -19,6 +19,26 @@ type ManagedCollection = "object-stores" | "postgres" | "redis";
 const isManagedCollection = (value: string): value is ManagedCollection =>
   value === "object-stores" || value === "postgres" || value === "redis";
 
+const portForwardChangedCode = (collection: ManagedCollection) => {
+  if (collection === "postgres") {
+    return "postgres_changed";
+  }
+  if (collection === "redis") {
+    return "redis_changed";
+  }
+  return "object_store_changed";
+};
+
+const projectCountField = (collection: ManagedCollection) => {
+  if (collection === "postgres") {
+    return "postgresCount" as const;
+  }
+  if (collection === "redis") {
+    return "redisCount" as const;
+  }
+  return "objectStoreCount" as const;
+};
+
 const managedResource = (
   state: MockState,
   collection: ManagedCollection,
@@ -33,24 +53,69 @@ const managedResource = (
   return state.objectStores[resourceID];
 };
 
-const handleManagedResource = (
+const handleManagedResource = async (
   request: Request,
   state: MockState,
   collection: string,
   resourceID: string,
   rest: string[]
-): Response | undefined => {
-  if (
-    request.method !== "GET" ||
-    rest.length > 0 ||
-    !isManagedCollection(collection)
-  ) {
+): Promise<Response | undefined> => {
+  if (rest.length > 0 || !isManagedCollection(collection)) {
     return undefined;
   }
   const resource = managedResource(state, collection, resourceID);
-  return resource
-    ? json(resource)
-    : mockError("not_found", "Managed resource not found", 404);
+  if (!resource) {
+    return mockError("not_found", "Managed resource not found", 404);
+  }
+  if (request.method === "GET") {
+    return json(resource);
+  }
+  if (request.method !== "DELETE") {
+    return undefined;
+  }
+  const body = (await request.json()) as { expectedUpdatedAt?: unknown };
+  if (body.expectedUpdatedAt !== resource.updatedAt) {
+    return mockError(
+      portForwardChangedCode(collection),
+      "Managed resource changed",
+      409
+    );
+  }
+  if (collection === "postgres") {
+    Reflect.deleteProperty(state.postgres, resourceID);
+    Reflect.deleteProperty(state.postgresExtensions, resourceID);
+  } else if (collection === "redis") {
+    Reflect.deleteProperty(state.redis, resourceID);
+  } else {
+    Reflect.deleteProperty(state.objectStores, resourceID);
+    Reflect.deleteProperty(state.objectMetadata, resourceID);
+  }
+  Reflect.deleteProperty(state.runtimeDeployments, resourceID);
+  Reflect.deleteProperty(state.logs, resourceID);
+  Reflect.deleteProperty(state.containerFiles, `${collection}:${resourceID}`);
+  Reflect.deleteProperty(state.containerPorts, `${collection}:${resourceID}`);
+  state.operations = Object.fromEntries(
+    Object.entries(state.operations).filter(
+      ([, operation]) => operation.targetId !== resourceID
+    )
+  );
+  state.backupPolicies = state.backupPolicies.filter(
+    (policy) => policy.resourceId !== resourceID
+  );
+  const canvas = state.canvases[resource.projectId];
+  if (canvas) {
+    canvas.resources = canvas.resources.filter(
+      (candidate) => candidate.id !== resourceID
+    );
+    canvas.connections = canvas.connections.filter(
+      (connection) =>
+        connection.sourceId !== resourceID && connection.targetId !== resourceID
+    );
+    const countField = projectCountField(collection);
+    canvas.project[countField] = Math.max(0, canvas.project[countField] - 1);
+    canvas.project.updatedAt = mockNow();
+  }
+  return noContent();
 };
 
 const supportsPortForward = (
@@ -59,16 +124,6 @@ const supportsPortForward = (
   collection === "postgres" ||
   collection === "object-stores" ||
   collection === "redis";
-
-const portForwardChangedCode = (collection: ManagedCollection) => {
-  if (collection === "postgres") {
-    return "postgres_changed";
-  }
-  if (collection === "redis") {
-    return "redis_changed";
-  }
-  return "object_store_changed";
-};
 
 const parsedPortForward = (value: unknown) => {
   if (typeof value !== "object" || value === null) {
@@ -662,7 +717,13 @@ export const handleManagedResourcesAPI = async (
     return undefined;
   }
   return (
-    handleManagedResource(request, state, collection, resourceID, rest) ??
+    (await handleManagedResource(
+      request,
+      state,
+      collection,
+      resourceID,
+      rest
+    )) ??
     (await handleManagedPortForward(
       request,
       state,

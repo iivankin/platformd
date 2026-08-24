@@ -38,6 +38,9 @@ func (stack *runtimeStack) ConfigureManagedPostgres(store *state.Store, master c
 		},
 		Placement: stack.postgresPlacement, VolumeRoot: stack.paths.VolumesRoot,
 		ContainerLogs: logs,
+		OnCleanupError: func(cleanupErr error) {
+			log.Printf("managed PostgreSQL cleanup: %v", cleanupErr)
+		},
 	})
 	if err != nil {
 		return err
@@ -293,6 +296,23 @@ func (stack *runtimeStack) RemoveManagedPostgresDeployment(ctx context.Context, 
 		stack.mu.Unlock()
 	}
 	return err
+}
+
+func (stack *runtimeStack) DeleteManagedPostgres(ctx context.Context, input state.DeleteResourceInput) (state.ManagedPostgres, error) {
+	stack.mu.Lock()
+	controller := stack.managedPostgres
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return state.ManagedPostgres{}, errors.New("managed PostgreSQL runtime is not ready")
+	}
+	deleted, err := controller.Delete(ctx, input)
+	if err == nil {
+		stack.mu.Lock()
+		delete(stack.postgresFailures, input.ID)
+		stack.mu.Unlock()
+	}
+	return deleted, err
 }
 
 func (stack *runtimeStack) QueryManagedPostgres(ctx context.Context, resourceID, sql string) (managedpostgres.QueryResult, error) {

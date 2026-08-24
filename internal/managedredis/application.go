@@ -34,6 +34,7 @@ type ApplicationStore interface {
 type ApplicationRuntime interface {
 	ResolveManagedRedisImage(context.Context, string) (string, error)
 	StartManagedRedis(context.Context, string) error
+	DeleteManagedRedis(context.Context, state.DeleteResourceInput) (state.ManagedRedis, error)
 	ManagedRedisPersistence(context.Context, string) (PersistenceStatus, error)
 	ManagedRedisStats(context.Context, string) (Stats, error)
 	ScanManagedRedisKeys(context.Context, string, ScanQuery) (KeyPage, error)
@@ -63,6 +64,17 @@ type CreateInput struct {
 type CreateResult struct {
 	Resource  state.ManagedRedis
 	Password  string
+	RequestID string
+}
+
+type DeleteInput struct {
+	ProjectID         string
+	ResourceID        string
+	ExpectedUpdatedAt int64
+	Actor             Actor
+}
+
+type DeleteResult struct {
 	RequestID string
 }
 
@@ -162,6 +174,25 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 
 func (application *Application) Resource(ctx context.Context, projectID, resourceID string) (state.ManagedRedis, error) {
 	return application.store.ManagedRedisInProject(ctx, projectID, resourceID)
+}
+
+func (application *Application) Delete(ctx context.Context, input DeleteInput) (DeleteResult, error) {
+	if input.ProjectID == "" || input.ResourceID == "" || input.ExpectedUpdatedAt <= 0 ||
+		input.Actor.ID == "" || (input.Actor.Kind != "access" && input.Actor.Kind != "token") ||
+		(input.Actor.Kind == "access" && input.Actor.Email == "") ||
+		(input.Actor.Kind == "token" && input.Actor.Email != "") {
+		return DeleteResult{}, fmt.Errorf("%w: delete identity and expectedUpdatedAt are required", ErrInvalidInput)
+	}
+	identifiers, err := application.identifiers(2)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	_, err = application.runtime.DeleteManagedRedis(ctx, state.DeleteResourceInput{
+		ID: input.ResourceID, ProjectID: input.ProjectID, ExpectedUpdatedMillis: input.ExpectedUpdatedAt,
+		AuditEventID: identifiers[0], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
+		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[1], DeletedAtMillis: application.now().UnixMilli(),
+	})
+	return DeleteResult{RequestID: identifiers[1]}, err
 }
 
 func (application *Application) UpdatePortForward(

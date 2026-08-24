@@ -2,7 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
+	"time"
 
 	"github.com/iivankin/platformd/internal/ingress"
 	"github.com/iivankin/platformd/internal/origin"
@@ -10,12 +13,21 @@ import (
 	"github.com/iivankin/platformd/internal/state"
 )
 
+const objectStoreCleanupTimeout = 30 * time.Second
+
 type liveObjectStoreRepository struct {
-	store        *state.Store
-	runtime      *runtimeStack
-	certificates *origin.Selector
-	router       *ingress.Router
-	publicMu     *sync.Mutex
+	store          *state.Store
+	runtime        *runtimeStack
+	certificates   *origin.Selector
+	router         *ingress.Router
+	publicMu       *sync.Mutex
+	onCleanupError func(error)
+}
+
+func (repository *liveObjectStoreRepository) reportCleanupError(err error) {
+	if err != nil && repository.onCleanupError != nil {
+		repository.onCleanupError(err)
+	}
 }
 
 func (repository *liveObjectStoreRepository) CreateObjectStore(ctx context.Context, input state.CreateObjectStore) (state.ObjectStore, state.S3Credential, error) {
@@ -74,6 +86,33 @@ func (repository *liveObjectStoreRepository) ObjectStoreInProject(ctx context.Co
 
 func (repository *liveObjectStoreRepository) ObjectStoresByProject(ctx context.Context, projectID string) ([]state.ObjectStore, error) {
 	return repository.store.ObjectStoresByProject(ctx, projectID)
+}
+
+func (repository *liveObjectStoreRepository) DeleteObjectStore(
+	ctx context.Context,
+	input state.DeleteResourceInput,
+) (state.ObjectStore, error) {
+	deleted, err := func() (state.ObjectStore, error) {
+		repository.publicMu.Lock()
+		defer repository.publicMu.Unlock()
+		return repository.store.DeleteObjectStore(ctx, input)
+	}()
+	if err != nil {
+		return state.ObjectStore{}, err
+	}
+	cleanupContext, cancelCleanup := context.WithTimeout(context.WithoutCancel(ctx), objectStoreCleanupTimeout)
+	defer cancelCleanup()
+	runtimeErr := repository.runtime.DisableObjectStore(cleanupContext, deleted)
+	if runtimeErr != nil {
+		repository.runtime.recordObjectStoreFailure(deleted.ProjectID, runtimeErr)
+		runtimeErr = fmt.Errorf("disable deleted object store runtime: %w", runtimeErr)
+	}
+	routeErr := repository.reloadPublicRoutes(cleanupContext)
+	if routeErr != nil {
+		routeErr = fmt.Errorf("reload routes after object store deletion: %w", routeErr)
+	}
+	repository.reportCleanupError(errors.Join(runtimeErr, routeErr))
+	return deleted, nil
 }
 
 func (repository *liveObjectStoreRepository) UpdateObjectStorePortForward(

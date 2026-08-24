@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	"github.com/iivankin/platformd/internal/backup"
 	"github.com/iivankin/platformd/internal/state"
@@ -39,8 +38,6 @@ type hostServiceStatus interface {
 type objectStoreDataCleaner interface {
 	DeleteStoreData(context.Context, string) error
 }
-
-const objectStoreCleanupTimeout = 30 * time.Second
 
 func (repository liveProjectRepository) Projects(ctx context.Context) ([]state.ProjectSummary, error) {
 	return repository.store.Projects(ctx)

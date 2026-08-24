@@ -44,6 +44,10 @@ func (store integrationStore) ManagedRedis(_ context.Context, id string) (state.
 	return store.resource, nil
 }
 
+func (store integrationStore) DeleteManagedRedis(context.Context, state.DeleteResourceInput) (state.ManagedRedis, error) {
+	return store.resource, nil
+}
+
 func (store integrationStore) ManagedRedisResources(context.Context) ([]state.ManagedRedis, error) {
 	return []state.ManagedRedis{store.resource}, nil
 }

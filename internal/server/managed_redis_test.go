@@ -19,9 +19,15 @@ const managedRedisTestDigest = "sha256:3b26d8c8e877651e756205368bbee1163b621f62e
 
 type managedRedisRepository struct {
 	input          managedredis.CreateInput
+	deleteInput    managedredis.DeleteInput
 	resource       state.ManagedRedis
 	mutation       managedredis.DataMutationInput
 	deploymentPage state.RuntimeDeploymentPage
+}
+
+func (repository *managedRedisRepository) Delete(_ context.Context, input managedredis.DeleteInput) (managedredis.DeleteResult, error) {
+	repository.deleteInput = input
+	return managedredis.DeleteResult{RequestID: "delete-request"}, nil
 }
 
 func (repository *managedRedisRepository) Create(_ context.Context, input managedredis.CreateInput) (managedredis.CreateResult, error) {
@@ -191,6 +197,32 @@ func TestManagedRedisAPIReturnsPasswordFromCreateAndResourceDetails(t *testing.T
 	}
 	if repository.mutation.Actor.Kind != "access" || repository.mutation.Actor.ID != "subject" || string(repository.mutation.Mutation.Key) != "key" || string(repository.mutation.Mutation.Field) != "field" || string(repository.mutation.Mutation.Value) != "value" {
 		t.Fatalf("mutation input = %+v", repository.mutation)
+	}
+}
+
+func TestManagedRedisAPIDeletesWithOptimisticVersion(t *testing.T) {
+	t.Parallel()
+	repository := &managedRedisRepository{resource: state.ManagedRedis{
+		ID: "redis", ProjectID: "project", ProjectName: "shop", Name: "cache",
+		UpdatedAtMillis: 10,
+	}}
+	handler := access.ProtectAdmin(
+		"admin.example.com", projectVerifier{},
+		server.Handler(server.DefaultMeta("ready"), server.WithManagedRedis(repository)),
+	)
+	request := projectRequest(http.MethodDelete, "/api/v1/projects/project/redis/redis", `{"expectedUpdatedAt":10}`)
+	request.Header.Set("Origin", "https://admin.example.com")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent || response.Header().Get("X-Request-ID") != "delete-request" {
+		t.Fatalf("delete status/headers = %d/%v: %s", response.Code, response.Header(), response.Body)
+	}
+	if repository.deleteInput != (managedredis.DeleteInput{
+		ProjectID: "project", ResourceID: "redis", ExpectedUpdatedAt: 10,
+		Actor: managedredis.Actor{Kind: "access", ID: "subject", Email: "admin@example.com"},
+	}) {
+		t.Fatalf("delete input = %+v", repository.deleteInput)
 	}
 }
 

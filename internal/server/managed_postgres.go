@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"mime"
 	"net/http"
 
 	"github.com/iivankin/platformd/internal/managedimages"
@@ -42,6 +40,7 @@ func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostg
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres", listManagedPostgres(application))
 	mux.HandleFunc("POST /api/v1/projects/{projectID}/postgres", createManagedPostgres(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}", getManagedPostgres(application))
+	mux.HandleFunc("DELETE /api/v1/projects/{projectID}/postgres/{postgresID}", deleteManagedPostgres(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/postgres/{postgresID}/port-forward", updateManagedPostgresPortForward(application))
 	mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}/extensions", listManagedPostgresExtensions(application))
 	mux.HandleFunc("PUT /api/v1/projects/{projectID}/postgres/{postgresID}/extensions/{extensionName}", changeManagedPostgresExtension(application, true))
@@ -52,6 +51,33 @@ func registerManagedPostgresRoutes(mux *http.ServeMux, application *managedpostg
 		mux.HandleFunc("GET /api/v1/projects/{projectID}/postgres/{postgresID}/stats/history", getManagedPostgresStatsHistory(application, stats))
 	}
 	registerManagedDeploymentRoutes(mux, "postgres", application, writeManagedPostgresError)
+}
+
+func deleteManagedPostgres(application *managedpostgres.Application) http.HandlerFunc {
+	type requestBody struct {
+		ExpectedUpdatedAt int64 `json:"expectedUpdatedAt"`
+	}
+	return func(response http.ResponseWriter, request *http.Request) {
+		identity, ok := requireAccessIdentity(response, request)
+		if !ok {
+			return
+		}
+		var body requestBody
+		if !decodeManagedPostgresJSON(response, request, &body) {
+			return
+		}
+		result, err := application.Delete(request.Context(), managedpostgres.DeleteInput{
+			ProjectID: request.PathValue("projectID"), ResourceID: request.PathValue("postgresID"),
+			ExpectedUpdatedAt: body.ExpectedUpdatedAt,
+			Actor:             managedpostgres.Actor{Kind: "access", ID: identity.Subject, Email: identity.Email},
+		})
+		if err != nil {
+			writeManagedPostgresError(response, err)
+			return
+		}
+		response.Header().Set("X-Request-ID", result.RequestID)
+		response.WriteHeader(http.StatusNoContent)
+	}
 }
 
 func getManagedPostgresStats(application *managedpostgres.Application) http.HandlerFunc {
@@ -267,19 +293,10 @@ func queryManagedPostgres(application *managedpostgres.Application) http.Handler
 }
 
 func decodeManagedPostgresJSON(response http.ResponseWriter, request *http.Request, destination any) bool {
-	mediaType, _, err := mime.ParseMediaType(request.Header.Get("Content-Type"))
-	if err != nil || mediaType != "application/json" {
-		writeAPIError(response, http.StatusUnsupportedMediaType, "json_required", "Content-Type must be application/json")
-		return false
-	}
-	request.Body = http.MaxBytesReader(response, request.Body, maximumManagedPostgresRequestBytes)
-	decoder := json.NewDecoder(request.Body)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(destination); err != nil || requireJSONEnd(decoder) != nil {
-		writeAPIError(response, http.StatusBadRequest, "invalid_json", "Request body contains invalid managed PostgreSQL fields")
-		return false
-	}
-	return true
+	return decodeStrictJSONRequest(
+		response, request, destination, maximumManagedPostgresRequestBytes,
+		"Request body contains invalid managed PostgreSQL fields",
+	)
 }
 
 func publicManagedPostgres(resource state.ManagedPostgres, password string) managedPostgresResponse {

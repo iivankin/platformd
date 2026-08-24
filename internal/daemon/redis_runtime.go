@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/netip"
 	"path"
 
@@ -26,6 +27,9 @@ func (stack *runtimeStack) ConfigureManagedRedis(store *state.Store, master cryp
 		Placement:     stack.redisPlacement,
 		GeneratedRoot: stack.paths.GeneratedRoot, VolumeRoot: stack.paths.VolumesRoot,
 		ContainerLogs: logs,
+		OnCleanupError: func(cleanupErr error) {
+			log.Printf("managed Redis cleanup: %v", cleanupErr)
+		},
 	})
 	if err != nil {
 		return err
@@ -286,6 +290,23 @@ func (stack *runtimeStack) RemoveManagedRedisDeployment(ctx context.Context, res
 		stack.mu.Unlock()
 	}
 	return err
+}
+
+func (stack *runtimeStack) DeleteManagedRedis(ctx context.Context, input state.DeleteResourceInput) (state.ManagedRedis, error) {
+	stack.mu.Lock()
+	controller := stack.managedRedis
+	closed := stack.closed
+	stack.mu.Unlock()
+	if closed || controller == nil {
+		return state.ManagedRedis{}, errors.New("managed Redis runtime is not ready")
+	}
+	deleted, err := controller.Delete(ctx, input)
+	if err == nil {
+		stack.mu.Lock()
+		delete(stack.redisFailures, input.ID)
+		stack.mu.Unlock()
+	}
+	return deleted, err
 }
 
 func (stack *runtimeStack) ManagedRedisPersistence(ctx context.Context, resourceID string) (managedredis.PersistenceStatus, error) {

@@ -574,8 +574,12 @@ func runProduction(ctx context.Context, paths layout.Paths) (returnErr error) {
 	publicMutationMu := &sync.Mutex{}
 	objectStoreRepository := &liveObjectStoreRepository{
 		store: store, runtime: runtime, certificates: certificates, publicMu: publicMutationMu,
+		onCleanupError: func(cleanupErr error) { log.Printf("object store cleanup: %v", cleanupErr) },
 	}
-	objectStoreApplication, err := objectstore.NewApplication(objectStoreRepository, objectStorage, key, nil, nil)
+	objectStoreApplication, err := objectstore.NewApplication(
+		objectStoreRepository, objectStorage, key, nil, nil,
+		func(cleanupErr error) { log.Printf("object store cleanup: %v", cleanupErr) },
+	)
 	if err != nil {
 		return err
 	}

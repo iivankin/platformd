@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
+import { useNavigate } from "react-router";
 
-import { fetchManagedPostgres, updateManagedPostgresPortForward } from "@/api";
+import {
+  deleteManagedPostgres,
+  fetchManagedPostgres,
+  updateManagedPostgresPortForward,
+} from "@/api";
 import type { ManagedPostgres } from "@/api";
 import { ConnectionDetails } from "@/connection-details";
 import { postgresConnectionURL } from "@/connection-values";
@@ -12,6 +17,7 @@ import { ManagedContainerTelemetry } from "@/managed-resource-telemetry";
 import { PostgresDatabase } from "@/postgres-database";
 import type { ResourceNodeData } from "@/project-flow";
 import { ResourceBackupPanel } from "@/resource-backup-panel";
+import { ResourceDeleteSection } from "@/resource-delete-section";
 import { ResourceVariables } from "@/resource-variables";
 import { ResourcePortForwardSettings } from "@/service-port-forward";
 import { WorkspaceView } from "@/workspace-view";
@@ -39,7 +45,9 @@ export const PostgresDetailPanel = ({
   projectID,
   view,
 }: PostgresDetailPanelProperties) => {
+  const navigate = useNavigate();
   const [resource, setResource] = useState<ManagedPostgres | null>(null);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadResource = useCallback(
@@ -81,6 +89,26 @@ export const PostgresDetailPanel = ({
     await loadResource();
     onChanged();
   }, [loadResource, onChanged]);
+
+  const deleteResource = async () => {
+    if (!resource || busy) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await deleteManagedPostgres(projectID, postgresID, resource.updatedAt);
+      onChanged();
+      void navigate(`/projects/${encodeURIComponent(projectID)}`);
+    } catch (deleteError) {
+      setError(
+        deleteError instanceof Error
+          ? deleteError.message
+          : "Unable to delete PostgreSQL"
+      );
+      setBusy(false);
+    }
+  };
 
   const hostname = resource?.hostname ?? data.internalHostname;
   const variables = resource
@@ -169,6 +197,15 @@ export const PostgresDetailPanel = ({
                       value: postgresConnectionURL(resource),
                     },
                   ]}
+                />
+              ) : null}
+              {resource ? (
+                <ResourceDeleteSection
+                  busy={busy}
+                  description="Permanently removes the database, runtime, deployment history, and live volume. Existing remote backups are retained."
+                  label="PostgreSQL"
+                  name={resource.name}
+                  onDelete={deleteResource}
                 />
               ) : null}
             </>

@@ -55,6 +55,10 @@ func (store *restoreStore) SwitchManagedRedisVolume(_ context.Context, input sta
 	return nil
 }
 
+func (store *restoreStore) DeleteManagedRedis(context.Context, state.DeleteResourceInput) (state.ManagedRedis, error) {
+	return store.resource, nil
+}
+
 type restoreEngine struct {
 	image          containerengine.Image
 	containers     map[string]containerengine.Container
@@ -62,6 +66,7 @@ type restoreEngine struct {
 	started        []string
 	stopped        []string
 	removed        []string
+	removeContext  error
 	removedVolumes []string
 }
 
@@ -116,7 +121,8 @@ func (engine *restoreEngine) StopContainer(id string, _ uint) error {
 	return nil
 }
 
-func (engine *restoreEngine) RemoveContainer(_ context.Context, id string, _ bool) error {
+func (engine *restoreEngine) RemoveContainer(ctx context.Context, id string, _ bool) error {
+	engine.removeContext = ctx.Err()
 	if _, exists := engine.containers[id]; !exists {
 		return errors.New("remove unknown container")
 	}

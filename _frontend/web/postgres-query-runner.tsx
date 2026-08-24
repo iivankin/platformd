@@ -1,33 +1,115 @@
 import { Play } from "lucide-react";
-import type { KeyboardEvent } from "react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { queryManagedPostgres } from "@/api";
 import type { PostgresQueryResult } from "@/api";
 import { Button } from "@/components/ui/button";
+import { PostgresQueryEditor } from "@/postgres-query-editor";
 import { PostgresResultTable } from "@/postgres-query-result";
+import {
+  postgresQueryCatalogFromResult,
+  postgresQueryCatalogSQL,
+} from "@/postgres-query-suggestions";
+import type { PostgresQueryCatalogColumn } from "@/postgres-query-suggestions";
 
-const starterSQL = `SELECT
-  schemaname AS schema,
-  relname AS table,
-  n_live_tup AS approximate_rows
-FROM pg_stat_user_tables
-ORDER BY schemaname, relname
-LIMIT 100;`;
+const catalogStatus = (
+  loading: boolean,
+  failed: boolean,
+  columnCount: number
+) => {
+  if (loading) {
+    return "Loading autocomplete…";
+  }
+  if (failed) {
+    return "Autocomplete unavailable";
+  }
+  return `${columnCount} columns indexed`;
+};
+
+const queryCatalog = async (
+  projectID: string,
+  postgresID: string,
+  signal?: AbortSignal
+) =>
+  postgresQueryCatalogFromResult(
+    await queryManagedPostgres(
+      projectID,
+      postgresID,
+      postgresQueryCatalogSQL,
+      signal
+    )
+  );
 
 export const PostgresQueryRunner = ({
-  initialSQL,
+  active,
+  onSQLChange,
   postgresID,
   projectID,
+  sql,
 }: {
-  initialSQL?: string;
+  active: boolean;
+  onSQLChange: (sql: string) => void;
   postgresID: string;
   projectID: string;
+  sql: string;
 }) => {
-  const [sql, setSQL] = useState(initialSQL ?? starterSQL);
   const [result, setResult] = useState<PostgresQueryResult | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string>();
+  const [catalog, setCatalog] = useState<PostgresQueryCatalogColumn[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState(false);
+  const [catalogInitialized, setCatalogInitialized] = useState(false);
+  const catalogRetryOnActivation = useRef(false);
+  const wasActive = useRef(false);
+
+  useEffect(() => {
+    const reactivated = active && !wasActive.current;
+    wasActive.current = active;
+    if (
+      !active ||
+      (catalogInitialized && !(catalogRetryOnActivation.current && reactivated))
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    const loadInitialCatalog = async () => {
+      try {
+        setCatalog(
+          await queryCatalog(projectID, postgresID, controller.signal)
+        );
+        catalogRetryOnActivation.current = false;
+        setCatalogError(false);
+      } catch (loadError) {
+        if (loadError instanceof Error && loadError.name === "AbortError") {
+          return;
+        }
+        catalogRetryOnActivation.current = true;
+        setCatalogError(true);
+      } finally {
+        if (!controller.signal.aborted) {
+          setCatalogLoading(false);
+          setCatalogInitialized(true);
+        }
+      }
+    };
+    void loadInitialCatalog();
+    return () => controller.abort();
+  }, [active, catalogInitialized, postgresID, projectID]);
+
+  const refreshCatalog = async () => {
+    setCatalogLoading(true);
+    try {
+      setCatalog(await queryCatalog(projectID, postgresID));
+      catalogRetryOnActivation.current = false;
+      setCatalogError(false);
+    } catch {
+      catalogRetryOnActivation.current = true;
+      setCatalogError(true);
+    } finally {
+      setCatalogLoading(false);
+    }
+  };
 
   const run = async () => {
     if (running || !sql.trim()) {
@@ -35,21 +117,22 @@ export const PostgresQueryRunner = ({
     }
     setRunning(true);
     try {
-      setResult(await queryManagedPostgres(projectID, postgresID, sql));
+      const nextResult = await queryManagedPostgres(projectID, postgresID, sql);
+      setResult(nextResult);
       setError(undefined);
+      if (
+        nextResult.statements.some((statement) =>
+          /^(?:ALTER|COMMENT|CREATE|DROP|RENAME)\b/iu.test(statement.commandTag)
+        )
+      ) {
+        void refreshCatalog();
+      }
     } catch (queryError) {
       setError(
         queryError instanceof Error ? queryError.message : "SQL query failed"
       );
     } finally {
       setRunning(false);
-    }
-  };
-
-  const runWithShortcut = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-      event.preventDefault();
-      void run();
     }
   };
 
@@ -63,6 +146,13 @@ export const PostgresQueryRunner = ({
           </p>
         </div>
         <div className="flex items-center gap-3">
+          <span className="hidden text-[8px] text-muted-foreground md:inline">
+            {catalogStatus(
+              catalogLoading || (active && !catalogInitialized),
+              catalogError,
+              catalog.length
+            )}
+          </span>
           <span className="hidden text-[8px] text-muted-foreground sm:inline">
             {navigator.platform.includes("Mac") ? "⌘" : "Ctrl"} + Enter
           </span>
@@ -75,16 +165,12 @@ export const PostgresQueryRunner = ({
           </Button>
         </div>
       </header>
-      <div className="relative h-56 shrink-0 border-b border-border">
-        <textarea
-          aria-label="PostgreSQL SQL editor"
-          className="h-full w-full resize-none bg-background p-4 font-mono text-[11px] leading-5 outline-none focus:bg-muted/10"
-          onChange={(event) => setSQL(event.target.value)}
-          onKeyDown={runWithShortcut}
-          spellCheck={false}
-          value={sql}
-        />
-      </div>
+      <PostgresQueryEditor
+        catalog={catalog}
+        onChange={onSQLChange}
+        onRun={() => void run()}
+        sql={sql}
+      />
       <PostgresResultTable result={result} />
       {error ? (
         <p

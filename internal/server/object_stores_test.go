@@ -39,7 +39,7 @@ func TestObjectStoreAdminWorkspaceCreateBrowseUploadPreviewDownloadAndDelete(t *
 		t.Fatal(err)
 	}
 	master := cryptobox.MasterKey{1, 2, 3}
-	application, err := objectstore.NewApplication(store, newServerObjectStorage(), master, nil, nil)
+	application, err := objectstore.NewApplication(store, newServerObjectStorage(), master, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

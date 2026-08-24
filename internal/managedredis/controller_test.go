@@ -41,6 +41,10 @@ func (store testStore) SwitchManagedRedisVolume(_ context.Context, input state.S
 	return nil
 }
 
+func (store testStore) DeleteManagedRedis(context.Context, state.DeleteResourceInput) (state.ManagedRedis, error) {
+	return store.resource, nil
+}
+
 type testEngine struct {
 	image       containerengine.Image
 	pullRequest containerengine.PullRequest

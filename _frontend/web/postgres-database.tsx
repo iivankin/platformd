@@ -23,6 +23,7 @@ import {
 import { PostgresDataBrowser } from "@/postgres-data-browser";
 import { PostgresExtensions } from "@/postgres-extensions";
 import { PostgresQueryRunner } from "@/postgres-query-runner";
+import { postgresStarterSQL } from "@/postgres-query-suggestions";
 
 type DatabaseView = "data" | "extensions" | "query";
 
@@ -596,10 +597,10 @@ export const PostgresDatabase = ({
   projectID: string;
 }) => {
   const [view, setView] = useState<DatabaseView>("data");
-  const [queryDraft, setQueryDraft] = useState<string>();
+  const [querySQL, setQuerySQL] = useState(postgresStarterSQL);
 
   const openInQuery = (sql: string) => {
-    setQueryDraft(sql);
+    setQuerySQL(sql);
     setView("query");
   };
 
@@ -642,13 +643,15 @@ export const PostgresDatabase = ({
             projectID={projectID}
           />
         </div>
-        {view === "query" ? (
+        <div className="h-full min-h-0" hidden={view !== "query"}>
           <PostgresQueryRunner
-            initialSQL={queryDraft}
+            active={view === "query"}
+            onSQLChange={setQuerySQL}
             postgresID={postgresID}
             projectID={projectID}
+            sql={querySQL}
           />
-        ) : null}
+        </div>
         {view === "extensions" ? (
           <PostgresExtensions postgresID={postgresID} projectID={projectID} />
         ) : null}

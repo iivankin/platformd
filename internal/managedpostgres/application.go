@@ -39,6 +39,7 @@ type Store interface {
 type Runtime interface {
 	ResolveManagedPostgresImage(context.Context, string) (string, error)
 	StartManagedPostgres(context.Context, string) error
+	DeleteManagedPostgres(context.Context, state.DeleteResourceInput) (state.ManagedPostgres, error)
 	ManagedPostgresExtensions(context.Context, string) ([]Extension, error)
 	ChangeManagedPostgresExtension(context.Context, string, string, bool, func(string)) error
 	QueryManagedPostgres(context.Context, string, string) (QueryResult, error)
@@ -68,6 +69,17 @@ type CreateResult struct {
 	Resource      state.ManagedPostgres
 	OwnerPassword string
 	RequestID     string
+}
+
+type DeleteInput struct {
+	ProjectID         string
+	ResourceID        string
+	ExpectedUpdatedAt int64
+	Actor             Actor
+}
+
+type DeleteResult struct {
+	RequestID string
 }
 
 type Application struct {
@@ -168,6 +180,30 @@ func (application *Application) Create(ctx context.Context, input CreateInput) (
 
 func (application *Application) Resource(ctx context.Context, projectID, resourceID string) (state.ManagedPostgres, error) {
 	return application.store.ManagedPostgresInProject(ctx, projectID, resourceID)
+}
+
+func (application *Application) Delete(ctx context.Context, input DeleteInput) (DeleteResult, error) {
+	if input.ProjectID == "" || input.ResourceID == "" || input.ExpectedUpdatedAt <= 0 ||
+		input.Actor.ID == "" || (input.Actor.Kind != "access" && input.Actor.Kind != "token") ||
+		(input.Actor.Kind == "access" && input.Actor.Email == "") ||
+		(input.Actor.Kind == "token" && input.Actor.Email != "") {
+		return DeleteResult{}, fmt.Errorf("%w: delete identity and expectedUpdatedAt are required", ErrInvalidInput)
+	}
+	identifiers, err := application.identifiers(2)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	_, err = application.runtime.DeleteManagedPostgres(ctx, state.DeleteResourceInput{
+		ID: input.ResourceID, ProjectID: input.ProjectID, ExpectedUpdatedMillis: input.ExpectedUpdatedAt,
+		AuditEventID: identifiers[0], ActorKind: input.Actor.Kind, ActorID: input.Actor.ID,
+		ActorEmail: input.Actor.Email, RequestCorrelationID: identifiers[1], DeletedAtMillis: application.now().UnixMilli(),
+	})
+	if err == nil {
+		application.mu.Lock()
+		delete(application.previousStats, input.ResourceID)
+		application.mu.Unlock()
+	}
+	return DeleteResult{RequestID: identifiers[1]}, err
 }
 
 func (application *Application) UpdatePortForward(

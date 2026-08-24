@@ -6,7 +6,6 @@ import (
 	"errors"
 	"io"
 	"reflect"
-	"sync"
 	"testing"
 
 	"github.com/iivankin/platformd/internal/admission"
@@ -72,7 +71,6 @@ func TestOpenBackupDumpStreamsOwnerCustomFormatAndReleasesLocks(t *testing.T) {
 	controller := &Controller{
 		engine: engine, admission: gate,
 		ownerPassword: func(state.ManagedPostgres) (string, error) { return "owner-password", nil },
-		locks:         make(map[string]*sync.Mutex),
 		active: map[string]activeRuntime{
 			resource.ID: {resource: resource, container: containerengine.Container{ID: "container", State: "running"}},
 		},
@@ -114,7 +112,6 @@ func TestOpenBackupDumpPropagatesNonzeroExitAndBoundedStderr(t *testing.T) {
 	controller := &Controller{
 		engine: engine, admission: admission.New(),
 		ownerPassword: func(state.ManagedPostgres) (string, error) { return "password", nil },
-		locks:         make(map[string]*sync.Mutex),
 		active: map[string]activeRuntime{
 			resource.ID: {resource: resource, container: containerengine.Container{ID: "container", State: "running"}},
 		},

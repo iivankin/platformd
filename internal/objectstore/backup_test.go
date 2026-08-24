@@ -109,7 +109,7 @@ func objectBackupFixture(t *testing.T) (*Application, string, func()) {
 	}
 	application, err := NewApplication(store, newMemoryStorage(), cryptobox.MasterKey{1, 2, 3, 4}, rand.Reader, func() time.Time {
 		return time.UnixMilli(1_720_000_000_000)
-	})
+	}, nil)
 	if err != nil {
 		store.Close()
 		t.Fatal(err)

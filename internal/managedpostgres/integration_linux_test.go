@@ -66,6 +66,10 @@ func (store *integrationStore) ManagedPostgres(_ context.Context, resourceID str
 	return store.resource, nil
 }
 
+func (store *integrationStore) DeleteManagedPostgres(context.Context, state.DeleteResourceInput) (state.ManagedPostgres, error) {
+	return store.resource, nil
+}
+
 func (store *integrationStore) ManagedPostgresResources(context.Context) ([]state.ManagedPostgres, error) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
