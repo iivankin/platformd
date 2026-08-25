@@ -45,11 +45,10 @@ export const BrowserOTELGuide = ({
       <div className="mt-3 max-w-3xl space-y-2 text-[9px] leading-4 text-muted-foreground">
         <p>
           Import telemetry.ts before the application entry point. It captures
-          the initial document load, Web Vitals, user interactions, fetch and
-          XHR requests, batches exports, sends OTLP HTTP/protobuf with gzip when
-          compression reduces the payload, and keeps async span context
-          available to Sentry. Browsers without CompressionStream fall back to
-          uncompressed protobuf.
+          the initial document load, Web Vitals, fetch and XHR requests, batches
+          exports, sends OTLP HTTP/protobuf with gzip when compression reduces
+          the payload, and keeps async span context available to Sentry.
+          Browsers without CompressionStream fall back to uncompressed protobuf.
         </p>
         <p>
           Replace api.example.com with each API origin that should receive W3C
@@ -57,10 +56,12 @@ export const BrowserOTELGuide = ({
           in CORS; do not use a match-all expression for third-party URLs.
         </p>
         <p>
-          Automatic instrumentation cannot understand framework-specific SPA
-          routes or business boundaries. Wrap route loaders, mutations, and
-          important workflows with traced() so their async work and errors stay
-          under one active span.
+          Automatic click instrumentation often creates duplicate framework
+          spans, while browser context managers lose active spans across native
+          async/await. Call traced() directly in event handlers, carry its
+          headers through library requests, and use fetchWithTraceContext as the
+          library&apos;s custom fetch implementation. This keeps client and
+          server work in one trace without relying on implicit async context.
         </p>
         {sentryDsn ? (
           <p>

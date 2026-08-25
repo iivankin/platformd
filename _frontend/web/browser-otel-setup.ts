@@ -11,12 +11,10 @@ const otelPackages = [
   ["@opentelemetry/api", "1.9.1"],
   ["@opentelemetry/api-logs", "0.221.0"],
   ["@opentelemetry/browser-instrumentation", "0.7.0"],
-  ["@opentelemetry/context-zone", "2.10.0"],
   ["@opentelemetry/core", "2.10.0"],
   ["@opentelemetry/instrumentation", "0.221.0"],
   ["@opentelemetry/instrumentation-document-load", "0.66.0"],
   ["@opentelemetry/instrumentation-fetch", "0.221.0"],
-  ["@opentelemetry/instrumentation-user-interaction", "0.65.0"],
   ["@opentelemetry/instrumentation-xml-http-request", "0.221.0"],
   ["@opentelemetry/otlp-transformer", "0.221.0"],
   ["@opentelemetry/resources", "2.10.0"],
@@ -49,7 +47,6 @@ ${tunnel ? `  tunnel: ${quoted(tunnel)},\n` : ""}  integrations: [
     Sentry.replayIntegration(),
   ],
   // OTel owns tracing. Sentry only sends errors and replay.
-  tracesSampleRate: 0,
   beforeSendTransaction: () => null,
   replaysSessionSampleRate: 0.1,
   replaysOnErrorSampleRate: 1.0,
@@ -87,14 +84,19 @@ const otelSetup = (
   conformance: boolean
 ) => `// telemetry.ts — import this before rendering the application.
 import {
+  context,
+  propagation,
   ROOT_CONTEXT,
   SpanStatusCode,
   trace,
-  type Context,
+} from "@opentelemetry/api";
+import type {
+  Context,
+  TextMapGetter,
+  TextMapSetter,
 } from "@opentelemetry/api";
 import { logs, type LogRecord } from "@opentelemetry/api-logs";
 import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
-import { ZoneContextManager } from "@opentelemetry/context-zone";
 import {
   ExportResultCode,
   type ExportResult,
@@ -102,7 +104,6 @@ import {
 import { registerInstrumentations } from "@opentelemetry/instrumentation";
 import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
 import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
-import { UserInteractionInstrumentation } from "@opentelemetry/instrumentation-user-interaction";
 import { XMLHttpRequestInstrumentation } from "@opentelemetry/instrumentation-xml-http-request";
 import {
   ProtobufLogsSerializer,
@@ -323,7 +324,7 @@ ${conformance ? "    new WebVitalConformanceProcessor(),\n" : ""}    new BatchLo
   ],
 });
 
-provider.register({ contextManager: new ZoneContextManager() });
+provider.register();
 logs.setGlobalLoggerProvider(loggerProvider);
 webVitalsInstrumentation = new WebVitalsInstrumentation({
   enabled: false,
@@ -339,7 +340,6 @@ registerInstrumentations({
   tracerProvider: provider,
   instrumentations: [
     new DocumentLoadInstrumentation(),
-    new UserInteractionInstrumentation(),
     new FetchInstrumentation({
       clearTimingResources: true,
       ignoreUrls: [traceEndpoint, logEndpoint],
@@ -355,11 +355,50 @@ registerInstrumentations({
 
 const tracer = trace.getTracer(${quoted(serviceName)});
 
-// Use for SPA route loaders and important business operations.
-export const traced = <T>(name: string, operation: () => Promise<T>) =>
+type TraceHeaders = Record<string, string>;
+type BrowserFetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit
+) => Promise<Response>;
+
+const traceHeadersGetter: TextMapGetter<Headers> = {
+  get: (carrier, key) => carrier.get(key) ?? undefined,
+  keys: (carrier) => [...carrier.keys()],
+};
+const traceHeadersSetter: TextMapSetter<TraceHeaders> = {
+  set(carrier, key, value) {
+    carrier[key] = value;
+  },
+};
+
+export const captureActiveTraceHeaders = () => {
+  const headers: TraceHeaders = {};
+  propagation.inject(context.active(), headers, traceHeadersSetter);
+  return headers;
+};
+
+// Pass this to libraries that accept a custom fetch implementation. It restores
+// the captured parent after native async/await has lost the active context.
+export const fetchWithTraceContext: BrowserFetch = (input, init) => {
+  const headers = new Headers(init?.headers);
+  const parentContext = propagation.extract(
+    context.active(),
+    headers,
+    traceHeadersGetter
+  );
+  return context.with(parentContext, () =>
+    globalThis.fetch(input, { ...init, headers })
+  );
+};
+
+// Call directly from event handlers, SPA route loaders, and important workflows.
+export const traced = <T>(
+  name: string,
+  operation: (traceHeaders: TraceHeaders) => Promise<T>
+) =>
   tracer.startActiveSpan(name, async (span) => {
     try {
-      return await operation();
+      return await operation(captureActiveTraceHeaders());
     } catch (error) {
       if (error instanceof Error) {
         span.recordException(error);
@@ -369,7 +408,12 @@ export const traced = <T>(name: string, operation: () => Promise<T>) =>
     } finally {
       span.end();
     }
-  });`;
+  });
+
+// Example:
+// void traced("checkout.submit", (headers) =>
+//   fetchWithTraceContext("/api/checkout", { method: "POST", headers })
+// );`;
 
 export const browserTelemetrySetup = ({
   conformance = false,

@@ -129,8 +129,9 @@ export const ReplayInspector = ({
     )
   );
   return (
-    <aside className="min-h-0 border-l border-border bg-background max-lg:border-t max-lg:border-l-0">
-      <nav className="flex h-10 items-end overflow-x-auto border-b border-border px-2">
+    <aside className="relative min-h-0 border-l border-border bg-background max-lg:border-t max-lg:border-l-0 lg:overflow-hidden">
+      {/* Keep long desktop event lists out of grid sizing so they scroll beside the player instead of extending its row. */}
+      <nav className="flex h-10 items-end overflow-x-auto border-b border-border px-2 lg:absolute lg:inset-x-0 lg:top-0">
         {tabs.map(({ icon: Icon, key, label }) => (
           <button
             className={cn(
@@ -148,7 +149,7 @@ export const ReplayInspector = ({
           </button>
         ))}
       </nav>
-      <div className="max-h-[34rem] overflow-y-auto">
+      <div className="max-h-[34rem] overflow-y-auto lg:absolute lg:inset-x-0 lg:top-10 lg:bottom-0 lg:max-h-none">
         {tab === "activity" ? (
           <EventRows
             currentTimestamp={currentTimestamp}

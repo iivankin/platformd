@@ -249,23 +249,60 @@ impl Store {
                GROUP BY distinct_id, visit_id\n\
              ) {SETTINGS}"
         ))?;
-        let timeseries = self.query_json_rows(&format!(
-            "SELECT toUnixTimestamp(toStartOfInterval(first_seen, INTERVAL {interval} SECOND)) * 1000 AS time,\n\
-             uniqExact(distinct_id) AS visitors, count() AS visits,\n\
-             sum(pageviews) AS pageviews, avg(duration) AS duration,\n\
-             countIf(interactive_events <= 1) / nullIf(count(), 0) AS bounce_rate\n\
-             FROM (\n\
-               SELECT distinct_id, if(session_id = '', distinct_id, session_id) AS visit_id,\n\
-                 min(timestamp) AS first_seen,\n\
-                 countIf(event_name = '$pageview') AS pageviews,\n\
-                 countIf(interactive = 1) AS interactive_events,\n\
-                 dateDiff('second', min(timestamp), max(timestamp)) AS duration\n\
-               {EVENTS} WHERE {where_sql} AND {INTERNAL_EVENTS}\n\
-               GROUP BY distinct_id, visit_id\n\
-             )\n\
-             GROUP BY time ORDER BY time {SETTINGS}",
-            interval = graph_interval(query)
-        ))?;
+        let interval = graph_interval(query);
+        let timeseries_sql = match (query.from, query.to) {
+            (Some(from), Some(to)) if to > from => {
+                let interval_millis = interval * 1000;
+                format!(
+                    "WITH buckets AS (\n\
+                       SELECT least(toInt64({to}), toInt64({from}) +\n\
+                         (toInt64(number) + 1) * toInt64({interval_millis})) AS time\n\
+                       FROM numbers(toUInt64(intDiv({to} - {from} - 1, {interval_millis}) + 1))\n\
+                     ), sessions AS (\n\
+                       SELECT distinct_id, if(session_id = '', distinct_id, session_id) AS visit_id,\n\
+                         min(timestamp) AS first_seen,\n\
+                         countIf(event_name = '$pageview') AS pageviews,\n\
+                         countIf(interactive = 1) AS interactive_events,\n\
+                         dateDiff('second', min(timestamp), max(timestamp)) AS duration\n\
+                       {EVENTS} WHERE {where_sql} AND {INTERNAL_EVENTS}\n\
+                       GROUP BY distinct_id, visit_id\n\
+                     ), totals AS (\n\
+                       SELECT least({to}, {from} +\n\
+                           (intDiv(toUnixTimestamp64Milli(first_seen) - {from}, {interval_millis}) + 1) * {interval_millis}) AS time,\n\
+                         uniqExact(distinct_id) AS visitors, count() AS visits,\n\
+                         sum(pageviews) AS pageviews, avg(duration) AS duration,\n\
+                         countIf(interactive_events <= 1) / nullIf(count(), 0) AS bounce_rate\n\
+                       FROM sessions GROUP BY time\n\
+                     )\n\
+                     SELECT buckets.time AS time,\n\
+                       ifNull(totals.visitors, 0) AS visitors,\n\
+                       ifNull(totals.visits, 0) AS visits,\n\
+                       ifNull(totals.pageviews, 0) AS pageviews,\n\
+                       ifNull(totals.duration, 0) AS duration,\n\
+                       ifNull(totals.bounce_rate, 0) AS bounce_rate\n\
+                     FROM buckets LEFT JOIN totals USING (time)\n\
+                     WHERE EXISTS (SELECT 1 FROM totals)\n\
+                     ORDER BY time {SETTINGS}"
+                )
+            }
+            _ => format!(
+                "SELECT toUnixTimestamp(toStartOfInterval(first_seen, INTERVAL {interval} SECOND)) * 1000 AS time,\n\
+                 uniqExact(distinct_id) AS visitors, count() AS visits,\n\
+                 sum(pageviews) AS pageviews, avg(duration) AS duration,\n\
+                 countIf(interactive_events <= 1) / nullIf(count(), 0) AS bounce_rate\n\
+                 FROM (\n\
+                   SELECT distinct_id, if(session_id = '', distinct_id, session_id) AS visit_id,\n\
+                     min(timestamp) AS first_seen,\n\
+                     countIf(event_name = '$pageview') AS pageviews,\n\
+                     countIf(interactive = 1) AS interactive_events,\n\
+                     dateDiff('second', min(timestamp), max(timestamp)) AS duration\n\
+                   {EVENTS} WHERE {where_sql} AND {INTERNAL_EVENTS}\n\
+                   GROUP BY distinct_id, visit_id\n\
+                 )\n\
+                 GROUP BY time ORDER BY time {SETTINGS}"
+            ),
+        };
+        let timeseries = self.query_json_rows(&timeseries_sql)?;
         Ok(json!({ "current": current, "previous": previous_rows, "timeseries": timeseries }))
     }
 

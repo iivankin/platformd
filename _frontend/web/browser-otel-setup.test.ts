@@ -19,7 +19,6 @@ describe("browser telemetry setup", () => {
 
     for (const expected of [
       "DocumentLoadInstrumentation",
-      "UserInteractionInstrumentation",
       "FetchInstrumentation",
       "XMLHttpRequestInstrumentation",
       "BatchSpanProcessor",

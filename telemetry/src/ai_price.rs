@@ -542,6 +542,7 @@ enum MatchLogic {
     EndsWith(String),
     Contains(String),
     Regex(Regex),
+    Unsupported,
 }
 
 impl MatchLogic {
@@ -554,6 +555,7 @@ impl MatchLogic {
             Self::EndsWith(expected) => value.to_ascii_lowercase().ends_with(expected),
             Self::Contains(expected) => value.to_ascii_lowercase().contains(expected),
             Self::Regex(pattern) => pattern.is_match(value),
+            Self::Unsupported => false,
         }
     }
 }
@@ -583,9 +585,16 @@ impl TryFrom<RawMatchLogic> for MatchLogic {
             RawMatchLogic::Contains { contains } => {
                 Ok(Self::Contains(contains.to_ascii_lowercase()))
             }
-            RawMatchLogic::Regex { regex } => Regex::new(&regex)
-                .map(Self::Regex)
-                .map_err(|error| format!("invalid AI price match regex {regex}: {error}")),
+            RawMatchLogic::Regex { regex } => match Regex::new(&regex) {
+                Ok(pattern) => Ok(Self::Regex(pattern)),
+                Err(error) => {
+                    // The catalog is shared across language ecosystems and may contain
+                    // constructs unsupported by Rust's regex engine. One such matcher
+                    // must not disable pricing for every otherwise valid model.
+                    tracing::warn!(%error, pattern = regex, "ignoring unsupported AI price match regex");
+                    Ok(Self::Unsupported)
+                }
+            },
         }
     }
 }
